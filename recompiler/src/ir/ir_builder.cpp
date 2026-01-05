@@ -999,6 +999,23 @@ void IRBuilder::lower_16bit_load(const Instruction& instr, ir::BasicBlock& block
             ir.dst = Operand::reg16(static_cast<uint8_t>(instr.reg16));
             ir.src = Operand::imm16(instr.imm16);
             break;
+        case InstructionType::LD_SP_HL:
+            // LD SP, HL - copy HL to SP
+            ir.opcode = Opcode::MOV_REG_REG16;
+            ir.dst = Operand::reg16(3);  // SP = index 3
+            ir.src = Operand::reg16(2);  // HL = index 2
+            break;
+        case InstructionType::LD_HL_SP_N:
+            // LD HL, SP+n - add signed offset to SP, store in HL
+            ir.opcode = Opcode::LD_HL_SP_N;
+            ir.src = Operand::offset(instr.offset);
+            break;
+        case InstructionType::LD_NN_SP:
+            // LD (nn), SP - store SP to memory
+            ir.opcode = Opcode::STORE16;
+            ir.dst = Operand::imm16(instr.imm16);
+            ir.src = Operand::reg16(3);  // SP = index 3
+            break;
         case InstructionType::PUSH:
             ir.opcode = Opcode::PUSH16;
             ir.dst = Operand::reg16(static_cast<uint8_t>(instr.reg16));
@@ -1013,6 +1030,7 @@ void IRBuilder::lower_16bit_load(const Instruction& instr, ir::BasicBlock& block
     ir.cycles = instr.cycles;
     emit(block, ir, instr);
 }
+
 
 void IRBuilder::lower_16bit_alu(const Instruction& instr, ir::BasicBlock& block) {
     IRInstruction ir;

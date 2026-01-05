@@ -770,11 +770,19 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             break;
             
         case ir::Opcode::PUSH16:
-            out << "gb_push16(ctx, ctx->" << reg16_names[instr.dst.value.reg16] << ");\n";
+            if (instr.dst.value.reg16 == 4) { // AF
+                out << "gb_pack_flags(ctx); gb_push16(ctx, ctx->af & 0xFFF0);\n";
+            } else {
+                out << "gb_push16(ctx, ctx->" << reg16_names[instr.dst.value.reg16] << ");\n";
+            }
             break;
             
         case ir::Opcode::POP16:
-            out << "ctx->" << reg16_names[instr.dst.value.reg16] << " = gb_pop16(ctx);\n";
+            if (instr.dst.value.reg16 == 4) { // AF
+                out << "ctx->af = gb_pop16(ctx) & 0xFFF0; gb_unpack_flags(ctx);\n";
+            } else {
+                out << "ctx->" << reg16_names[instr.dst.value.reg16] << " = gb_pop16(ctx);\n";
+            }
             break;
             
         case ir::Opcode::JUMP:
@@ -822,6 +830,8 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                             if (options.emit_cycle_counting && instr.cycles > 0) {
                                 out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
                                 emit_indent();
+                                out << "if (ctx->stopped) return;\n";
+                                emit_indent();
                             }
                             out << "goto loc_" << std::hex << std::setfill('0') 
                                 << std::setw(4) << target << std::dec << ";\n";
@@ -837,6 +847,8 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                         // Target is a label within a function - emit cycles before goto
                         if (options.emit_cycle_counting && instr.cycles > 0) {
                             out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
+                            emit_indent();
+                            out << "if (ctx->stopped) return;\n";
                             emit_indent();
                         }
                         out << "goto loc_" << std::hex << std::setfill('0') 
@@ -1003,6 +1015,8 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             
         case ir::Opcode::HALT:
             out << "gb_halt(ctx);\n";
+            emit_indent();
+            out << "if (ctx->halted) return;\n";
             break;
             
         case ir::Opcode::STOP:
@@ -1170,6 +1184,34 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                 out << "ctx->" << reg8_names[instr.dst.value.reg8] 
                     << " = gb_swap(ctx, ctx->" << reg8_names[instr.dst.value.reg8] << ");\n";
             }
+            break;
+            
+        case ir::Opcode::MOV_REG_REG16:
+            // LD SP,HL - copy 16-bit register to 16-bit register
+            out << "ctx->" << reg16_names[instr.dst.value.reg16] 
+                << " = ctx->" << reg16_names[instr.src.value.reg16] << ";\n";
+            break;
+            
+        case ir::Opcode::LD_HL_SP_N: {
+            // LD HL,SP+n - add signed offset to SP, store in HL, set H/C flags based on low byte
+            int8_t offset = instr.src.value.offset;
+            out << "{ uint32_t result = ctx->sp + (" << (int)offset << ");\n";
+            emit_indent();
+            out << "ctx->f_z = 0; ctx->f_n = 0;\n";
+            emit_indent();
+            out << "ctx->f_h = ((ctx->sp & 0x0F) + (" << (offset & 0x0F) << ")) > 0x0F;\n";
+            emit_indent();
+            out << "ctx->f_c = ((ctx->sp & 0xFF) + (" << (offset & 0xFF) << ")) > 0xFF;\n";
+            emit_indent();
+            out << "ctx->hl = (uint16_t)result; }\n";
+            break;
+        }
+            
+        case ir::Opcode::STORE16:
+            // LD (nn),SP - store 16-bit register to memory
+            out << "gb_write16(ctx, 0x" << std::hex << std::setfill('0') 
+                << std::setw(4) << instr.dst.value.imm16 << std::dec 
+                << ", ctx->" << reg16_names[instr.src.value.reg16] << ");\n";
             break;
             
         default:
@@ -1472,6 +1514,8 @@ GeneratedOutput generate_output(const ir::Program& program,
     cmake_ss << "add_library(gbrt STATIC\n";
     cmake_ss << "    ${GBRT_DIR}/src/gbrt.c\n";
     cmake_ss << "    ${GBRT_DIR}/src/ppu.c\n";
+    cmake_ss << "    ${GBRT_DIR}/src/audio.c\n";
+    cmake_ss << "    ${GBRT_DIR}/src/interpreter.c\n";
     cmake_ss << "    ${GBRT_DIR}/src/platform_sdl.c\n";
     cmake_ss << ")\n";
     cmake_ss << "target_include_directories(gbrt PUBLIC ${GBRT_DIR}/include)\n";

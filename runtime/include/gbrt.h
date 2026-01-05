@@ -100,6 +100,11 @@ typedef struct GBContext {
     /* Timing */
     uint32_t cycles;      /**< Cycles executed */
     uint32_t frame_cycles;/**< Cycles this frame */
+    uint8_t  frame_done;  /**< Frame is finished and rendered */
+    
+    /* Timer internal state */
+    uint16_t div_counter;   /**< Internal 16-bit divider counter */
+    uint32_t timer_counter; /**< Internal counter for TIMA */
     
     /* Memory pointers */
     uint8_t* rom;         /**< ROM data */
@@ -318,6 +323,8 @@ static inline void gb_pack_flags(GBContext* ctx) {
              (ctx->f_c ? 0x10 : 0);
 }
 
+
+
 /**
  * @brief Unpack F register into individual flags
  */
@@ -394,6 +401,11 @@ uint32_t gb_run_frame(GBContext* ctx);
  * @return Number of cycles executed
  */
 uint32_t gb_step(GBContext* ctx);
+
+/**
+ * @brief Helper to invoke audio callback
+ */
+void gb_audio_callback(GBContext* ctx, int16_t left, int16_t right);
 
 #ifdef __cplusplus
 }

@@ -27,9 +27,9 @@ extern "C" {
  * ========================================================================== */
 
 /* Uncomment to enable specific debug categories */
-// #define GB_DEBUG_PPU
-// #define GB_DEBUG_MEM  
-// #define GB_DEBUG_VRAM
+#define GB_DEBUG_PPU
+#define GB_DEBUG_MEM  
+#define GB_DEBUG_VRAM
 #define GB_DEBUG_FRAME
 #define GB_DEBUG_REGS
 // #define GB_DEBUG_ALL

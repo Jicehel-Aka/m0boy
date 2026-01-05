@@ -4,6 +4,7 @@
  */
 
 #include "platform_sdl.h"
+#include "gbrt.h"   /* For GBPlatformCallbacks */
 #include "ppu.h"
 #include "gbrt_debug.h"
 
@@ -19,6 +20,7 @@ static SDL_Renderer* g_renderer = NULL;
 static SDL_Texture* g_texture = NULL;
 static int g_scale = 3;
 static uint32_t g_last_frame_time = 0;
+static SDL_AudioDeviceID g_audio_device = 0;
 
 /* Joypad state - exported for gbrt.c to access */
 uint8_t g_joypad_buttons = 0xFF;  /* Active low: Start, Select, B, A */
@@ -28,6 +30,68 @@ uint8_t g_joypad_dpad = 0xFF;     /* Active low: Down, Up, Left, Right */
  * Platform Functions
  * ========================================================================== */
 
+
+
+void gb_platform_shutdown(void) {
+    if (g_texture) {
+        SDL_DestroyTexture(g_texture);
+        g_texture = NULL;
+    }
+    if (g_renderer) {
+        SDL_DestroyRenderer(g_renderer);
+        g_renderer = NULL;
+    }
+    if (g_window) {
+        SDL_DestroyWindow(g_window);
+        g_window = NULL;
+    }
+    if (g_audio_device) {
+        SDL_CloseAudioDevice(g_audio_device);
+        g_audio_device = 0;
+    }
+    SDL_Quit();
+}
+
+/* ============================================================================
+ * Audio
+ * ========================================================================== */
+
+#define AUDIO_SAMPLE_RATE 44100
+#define AUDIO_BUFFER_SIZE 4096 /* Samples (stereo frames) */
+
+
+static int16_t g_audio_buffer[AUDIO_BUFFER_SIZE * 2]; /* *2 for stereo */
+static int g_audio_write_pos = 0;
+static int g_audio_read_pos = 0;
+
+static void sdl_audio_callback(void* userdata, Uint8* stream, int len) {
+    (void)userdata;
+    int16_t* output = (int16_t*)stream;
+    int samples_needed = len / sizeof(int16_t) / 2; /* Stereo frames */
+    
+    for (int i = 0; i < samples_needed; i++) {
+        if (g_audio_read_pos != g_audio_write_pos) {
+            output[i*2] = g_audio_buffer[g_audio_read_pos*2];
+            output[i*2+1] = g_audio_buffer[g_audio_read_pos*2+1];
+            g_audio_read_pos = (g_audio_read_pos + 1) % AUDIO_BUFFER_SIZE;
+        } else {
+            /* Buffer underrun - silence */
+            output[i*2] = 0;
+            output[i*2+1] = 0;
+        }
+    }
+}
+
+static void on_audio_sample(GBContext* ctx, int16_t left, int16_t right) {
+    (void)ctx;
+    int next_pos = (g_audio_write_pos + 1) % AUDIO_BUFFER_SIZE;
+    if (next_pos != g_audio_read_pos) {
+        g_audio_buffer[g_audio_write_pos*2] = left;
+        g_audio_buffer[g_audio_write_pos*2+1] = right;
+        g_audio_write_pos = next_pos;
+    }
+}
+
 bool gb_platform_init(int scale) {
     g_scale = scale;
     if (g_scale < 1) g_scale = 1;
@@ -36,6 +100,28 @@ bool gb_platform_init(int scale) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0) {
         return false;
     }
+    
+    /* Initialize Audio */
+    SDL_AudioSpec want, have;
+    SDL_zero(want);
+    want.freq = AUDIO_SAMPLE_RATE;
+    want.format = AUDIO_S16SYS;
+    want.channels = 2;
+    want.samples = 1024;
+    want.callback = sdl_audio_callback;
+    
+    g_audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (g_audio_device) {
+        SDL_PauseAudioDevice(g_audio_device, 0);
+    } else {
+        printf("Failed to open audio: %s\n", SDL_GetError());
+    }
+    
+    /* Register callbacks */
+    GBPlatformCallbacks callbacks = {
+        .on_audio_sample = on_audio_sample
+    };
+    gb_set_platform_callbacks(NULL, &callbacks);
     
     g_window = SDL_CreateWindow(
         "GameBoy Recompiled",
@@ -53,14 +139,13 @@ bool gb_platform_init(int scale) {
     
     g_renderer = SDL_CreateRenderer(g_window, -1, 
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    
+        
     if (!g_renderer) {
         SDL_DestroyWindow(g_window);
         SDL_Quit();
         return false;
     }
     
-    /* Set scaling hint */
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
     
     g_texture = SDL_CreateTexture(
@@ -83,24 +168,7 @@ bool gb_platform_init(int scale) {
     return true;
 }
 
-void gb_platform_shutdown(void) {
-    if (g_texture) {
-        SDL_DestroyTexture(g_texture);
-        g_texture = NULL;
-    }
-    if (g_renderer) {
-        SDL_DestroyRenderer(g_renderer);
-        g_renderer = NULL;
-    }
-    if (g_window) {
-        SDL_DestroyWindow(g_window);
-        g_window = NULL;
-    }
-    SDL_Quit();
-}
-
 bool gb_platform_poll_events(GBContext* ctx) {
-    (void)ctx;
     SDL_Event event;
     
     while (SDL_PollEvent(&event)) {
@@ -186,28 +254,6 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     }
     
     g_frame_count++;
-    
-    /* Simulate Start button press to get past copyright */
-    extern uint8_t g_joypad_buttons;
-    if (g_frame_count == 120) {
-        printf("SIMULATING START PRESS\n");
-        g_joypad_buttons &= ~0x08; /* Press Start */
-    } else if (g_frame_count == 130) {
-        printf("SIMULATING START RELEASE\n");
-        g_joypad_buttons |= 0x08;  /* Release Start */
-    }
-    
-    /* Simulate Start button press repeatedly to get past copyright */
-    extern uint8_t g_joypad_buttons;
-    /* Press Start every 120 frames (approx 2s), hold for 10 frames */
-    int cycle = g_frame_count % 120;
-    if (cycle >= 60 && cycle < 70) {
-        if (cycle == 60) printf("SIMULATING START PRESS (Frame %d)\n", g_frame_count);
-        g_joypad_buttons &= ~0x08; /* Press Start */
-    } else {
-        if (cycle == 70) printf("SIMULATING START RELEASE (Frame %d)\n", g_frame_count);
-        g_joypad_buttons |= 0x08;  /* Release Start */
-    }
     
     /* Debug: check framebuffer content on first few frames */
     if (g_frame_count <= 3) {

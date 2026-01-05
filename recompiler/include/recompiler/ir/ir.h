@@ -25,8 +25,10 @@ namespace ir {
 enum class Opcode : uint16_t {
     // === Data Movement ===
     MOV_REG_REG,        // dst = src
+    MOV_REG_REG16,      // dst16 = src16 (for LD SP,HL)
     MOV_REG_IMM8,       // dst = imm8
     MOV_REG_IMM16,      // dst16 = imm16
+    LD_HL_SP_N,         // HL = SP + signed_imm8, set H/C flags (for LD HL,SP+n)
     LOAD8,              // dst = mem[addr]
     LOAD8_REG,          // dst = mem[reg16]
     LOAD16,             // dst16 = mem16[addr]

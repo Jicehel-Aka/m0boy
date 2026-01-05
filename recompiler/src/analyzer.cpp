@@ -430,6 +430,12 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
             }
         } else if (instr.is_return) {
             // Returns end the block
+            // But conditional returns fall through if condition is false
+            if (instr.is_conditional) {
+                uint32_t fall_through = make_address(bank, offset + instr.length);
+                result.label_addresses.insert(fall_through);
+                work_queue.push(fall_through);
+            }
         } else {
             // Continue to next instruction
             work_queue.push(make_address(bank, offset + instr.length));
@@ -483,6 +489,9 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
                 if (instr.is_conditional) {
                     block.successors.push_back(get_offset(curr) + instr.length);
                 }
+            } else if (instr.is_return && instr.is_conditional) {
+                // Conditional returns fall through if condition is false
+                block.successors.push_back(get_offset(curr) + instr.length);
             }
             
             // Check if this ends the block

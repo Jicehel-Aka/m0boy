@@ -43,6 +43,19 @@ void print_usage(const char* program) {
     std::cout << "  -h, --help            Show this help\n";
 }
 
+std::string sanitize_prefix(const std::string& name) {
+    std::string result = name;
+    for (char& c : result) {
+        if (!isalnum(c) && c != '_') {
+            c = '_';
+        }
+    }
+    if (!result.empty() && isdigit(result[0])) {
+        result = "_" + result;
+    }
+    return result;
+}
+
 int main(int argc, char* argv[]) {
     // Parse command line
     if (argc < 2) {
@@ -172,7 +185,7 @@ int main(int argc, char* argv[]) {
     std::cout << "\nGenerating C code...\n";
     
     gbrecomp::codegen::GeneratorOptions gen_opts;
-    gen_opts.output_prefix = fs::path(rom_path).stem().string();
+    gen_opts.output_prefix = sanitize_prefix(fs::path(rom_path).stem().string());
     gen_opts.output_dir = output_dir;
     gen_opts.emit_comments = emit_comments;
     gen_opts.single_function_mode = single_function;

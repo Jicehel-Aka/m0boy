@@ -6,6 +6,10 @@
 #include "gbrt.h"
 #include "ppu.h"
 #include "gbrt_debug.h"
+#include "gbrt.h"
+#include "ppu.h"
+#include "audio.h"
+#include "gbrt_debug.h"
 #include "platform_sdl.h"
 #include <stdlib.h>
 #include <string.h>
@@ -76,6 +80,9 @@ GBContext* gb_context_create(const GBConfig* config) {
     ppu_init(ppu);
     ctx->ppu = ppu;
     
+    /* Initialize Audio */
+    ctx->apu = gb_audio_create();
+    
     /* Initialize to post-bootrom state */
     gb_context_reset(ctx, true);
     
@@ -92,6 +99,7 @@ void gb_context_destroy(GBContext* ctx) {
     free(ctx->hram);
     free(ctx->io);
     free(ctx->eram);
+    if (ctx->apu) gb_audio_destroy(ctx->apu);
     free(ctx->ppu);
     free(ctx);
 }
@@ -111,6 +119,8 @@ void gb_context_reset(GBContext* ctx, bool skip_bootrom) {
         ctx->ime = 0;
         ctx->halted = 0;
         ctx->stopped = 0;
+        
+        if (ctx->apu) gb_audio_reset(ctx->apu);
         
         /* Initialize I/O registers */
         ctx->io[0x00] = 0xCF;  /* P1/JOYP */
@@ -165,6 +175,18 @@ void gb_context_reset(GBContext* ctx, bool skip_bootrom) {
     
     ctx->cycles = 0;
     ctx->frame_cycles = 0;
+    ctx->frame_done = 0;
+    
+    /* Timer initialization */
+    ctx->div_counter = 0;
+    ctx->timer_counter = 0;
+    if (skip_bootrom) {
+        ctx->io[0x04] = 0xAB; /* Random-ish DIV value post-bootrom */
+        ctx->div_counter = 0xAB00;
+        ctx->io[0x05] = 0x00; /* TIMA */
+        ctx->io[0x06] = 0x00; /* TMA */
+        ctx->io[0x07] = 0x00; /* TAC */
+    }
 }
 
 bool gb_context_load_rom(GBContext* ctx, const uint8_t* data, size_t size) {
@@ -226,10 +248,6 @@ uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
     else if (addr <= ROM_BANKN_END) {
         /* ROM Bank N */
         size_t offset = (size_t)(ctx->rom_bank) * ROM_BANK_SIZE + (addr - ROM_BANKN_START);
-        if (addr == 0x4A07) {
-            DBG_GENERAL("READ 0x4A07! Bank=%d, Offset=0x%zX, Value=0x%02X", 
-                        ctx->rom_bank, offset, (ctx->rom && offset < ctx->rom_size) ? ctx->rom[offset] : 0xFF);
-        }
         return (ctx->rom && offset < ctx->rom_size) ? ctx->rom[offset] : 0xFF;
     }
     else if (addr <= VRAM_END) {
@@ -270,6 +288,12 @@ uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
         if (addr >= 0xFF40 && addr <= 0xFF4B && ctx->ppu) {
             return ppu_read_register((GBPPU*)ctx->ppu, addr);
         }
+        
+        /* Audio registers */
+        if (addr >= 0xFF10 && addr <= 0xFF3F) {
+            return gb_audio_read(ctx, addr);
+        }
+
         /* Joypad register - return SELECT bits plus input state */
         if (addr == 0xFF00) {
             uint8_t joyp = ctx->io[0x00];
@@ -277,25 +301,35 @@ uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
             
 #ifdef GB_HAS_SDL2
             /* Get actual joypad state from platform */
-            uint8_t dpad = 0x0F;
-            uint8_t buttons = 0x0F;
-            extern uint8_t g_joypad_dpad;
-            extern uint8_t g_joypad_buttons;
-            dpad = g_joypad_dpad;
-            buttons = g_joypad_buttons;
+            uint8_t dpad = g_joypad_dpad;
+            uint8_t buttons = g_joypad_buttons;
             
             /* P14 (bit 4) = select direction keys */
             /* P15 (bit 5) = select button keys */
+            /* P14 (bit 4) = select direction keys */
+            /* P15 (bit 5) = select button keys */
+            uint8_t state = 0x0F;
             if (!(joyp & 0x10)) {
                 /* Direction keys selected */
-                result = (result & 0xF0) | (dpad & 0x0F);
+                state &= (dpad & 0x0F);
             }
             if (!(joyp & 0x20)) {
                 /* Button keys selected */
-                result = (result & 0xF0) | (buttons & 0x0F);
+                state &= (buttons & 0x0F);
+            }
+            result = (result & 0xF0) | state;
+            
+            /* Debug Input */
+            /* Log if any button is pressed (active low means bit is 0) */
+            if ((result & 0x0F) != 0x0F) { 
+                 DBG_GENERAL("JOYP Read: Select=0x%02X Result=0x%02X (dpad=0x%02X btn=0x%02X)",
+                             joyp & 0x30, result, dpad, buttons);
             }
 #endif
             return result;
+        }
+        if (addr == 0xFF04) {
+            return ctx->div_counter >> 8;
         }
         return ctx->io[addr - IO_START];
     }
@@ -376,8 +410,47 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
             ppu_write_register((GBPPU*)ctx->ppu, ctx, addr, value);
             return;
         }
+        
+        /* Audio registers */
+        if (addr >= 0xFF10 && addr <= 0xFF3F) {
+            gb_audio_write(ctx, addr, value);
+            return;
+        }
+
+        /* Serial Output Debugging */
+        if (addr == 0xFF02 && (value & 0x80)) {
+            /* Serial transfer requested */
+            uint8_t sb = ctx->io[0x01]; /* SB register */
+            printf("%c", sb);
+            fflush(stdout);
+            
+            /* Clear transfer flag immediately (instant transfer) */
+            value &= ~0x80;
+            
+            /* Request Serial interrupt */
+            ctx->io[0x0F] |= 0x08;
+        }
+        
+        if (addr == 0xFF04) {
+            /* Any write to DIV resets it to 0 */
+            ctx->div_counter = 0;
+            return;
+        }
+
+        if (addr == 0xFF4F) {
+            /* VBK: VRAM Bank Select */
+            ctx->vram_bank = value & 0x01;
+        }
+        
+        if (addr == 0xFF70) {
+            /* SVBK: WRAM Bank Select */
+            ctx->wram_bank = value & 0x07;
+            if (ctx->wram_bank == 0) ctx->wram_bank = 1;
+        }
+
         /* Also store in io array for other code to read */
         ctx->io[addr - IO_START] = value;
+        DBG_MEM("IO Write 0x%04X = 0x%02X", addr, value);
     }
     else if (addr <= HRAM_END) {
         /* High RAM */
@@ -386,6 +459,7 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
     else {
         /* IE Register */
         ctx->io[IO_SIZE] = value;
+        DBG_MEM("IE Write 0x%04X = 0x%02X", addr, value);
     }
 }
 
@@ -455,14 +529,14 @@ void gb_sub8(GBContext* ctx, uint8_t value) {
 
 void gb_sbc8(GBContext* ctx, uint8_t value) {
     uint8_t carry = ctx->f_c ? 1 : 0;
-    uint16_t result = ctx->a - value - carry;
+    int result = (int)ctx->a - (int)value - (int)carry;
     
+    ctx->f_h = ((int)(ctx->a & 0x0F) - (int)(value & 0x0F) - (int)carry) < 0;
+    ctx->f_c = result < 0;
     ctx->f_z = ((result & 0xFF) == 0);
     ctx->f_n = 1;
-    ctx->f_h = (ctx->a & 0x0F) < ((value & 0x0F) + carry);
-    ctx->f_c = ctx->a < (value + carry);
     
-    ctx->a = (uint8_t)result;
+    ctx->a = (uint8_t)(result & 0xFF);
 }
 
 void gb_and8(GBContext* ctx, uint8_t value) {
@@ -704,22 +778,22 @@ void gb_bit(GBContext* ctx, uint8_t bit, uint8_t value) {
  * ========================================================================== */
 
 void gb_daa(GBContext* ctx) {
-    uint16_t result = ctx->a;
+    uint8_t a = ctx->a;
+    uint8_t adjust = 0;
     
-    if (ctx->f_n) {
-        /* After subtraction */
-        if (ctx->f_h) result = (result - 0x06) & 0xFF;
-        if (ctx->f_c) result -= 0x60;
-    } else {
-        /* After addition */
-        if (ctx->f_h || (result & 0x0F) > 9) result += 0x06;
-        if (ctx->f_c || result > 0x9F) result += 0x60;
+    if (ctx->f_h || (!ctx->f_n && (a & 0x0F) > 0x09)) {
+        adjust |= 0x06;
     }
     
-    ctx->a = (uint8_t)(result & 0xFF);
+    if (ctx->f_c || (!ctx->f_n && a > 0x99)) {
+        adjust |= 0x60;
+        ctx->f_c = 1;
+    }
+    
+    ctx->a = ctx->f_n ? (a - adjust) : (a + adjust);
+    
     ctx->f_z = (ctx->a == 0);
     ctx->f_h = 0;
-    if (result > 0xFF) ctx->f_c = 1;
 }
 
 /* ============================================================================
@@ -761,51 +835,7 @@ void gb_dispatch_call(GBContext* ctx, uint16_t addr) {
     gb_interpret(ctx, addr);
 }
 
-void gb_interpret(GBContext* ctx, uint16_t addr) {
-    /* Set PC to the address we want to execute */
-    ctx->pc = addr;
 
-    /* Handle HRAM OAM DMA routine specifically */
-    /* Tetris calls a routine in HRAM (usually around 0xFFB6) to start DMA */
-    /* Routine starts with: LDH (0xFF46), A */
-    if (addr >= 0xFF80 && addr <= 0xFFFE) {
-        uint8_t opcode = ctx->hram[addr - 0xFF80];
-        
-        /* Check for LDH (n),A instruction (0xE0) */
-        if (opcode == 0xE0) {
-            uint8_t operand = ctx->hram[addr - 0xFF80 + 1];
-            if (operand == 0x46) {
-                /* Generic OAM DMA: LDH (0xFF46), A */
-                DBG_GENERAL("Intercepted HRAM DMA routine at 0x%04X (Generic)", addr);
-                gb_write8(ctx, 0xFF46, ctx->a);
-                gb_ret(ctx);
-                return;
-            }
-        }
-        /* Check for Tetris pattern: LD A, n (0x3E) then LDH (0xFF46), A */
-        else if (opcode == 0x3E) {
-            uint8_t op2 = ctx->hram[addr - 0xFF80 + 2];
-            uint8_t operand2 = ctx->hram[addr - 0xFF80 + 3];
-            if (op2 == 0xE0 && operand2 == 0x46) {
-                uint8_t dma_src = ctx->hram[addr - 0xFF80 + 1];
-                /* Tetris OAM DMA: LD A, n; LDH (0xFF46), A */
-                /* DBG_GENERAL("Intercepted HRAM DMA routine at 0x%04X (Tetris variant, src=0x%02X)", addr, dma_src); */
-                ctx->a = dma_src; /* Execute LD A, n */
-                gb_write8(ctx, 0xFF46, ctx->a);
-                gb_ret(ctx);
-                return;
-            }
-        }
-    }
-
-    /* Fallback: trace execution of uncompiled code (basic logging) */
-    static int missing_log_count = 0;
-    if (missing_log_count < 20) {
-        missing_log_count++;
-        DBG_GENERAL("Executing uncompiled code at 0x%04X (Bank %d) - Implementation missing using interpreter stub", 
-                    addr, ctx->rom_bank);
-    }
-}
 
 /* ============================================================================
  * CPU State
@@ -871,7 +901,7 @@ void gb_add_cycles(GBContext* ctx, uint32_t cycles) {
 }
 
 bool gb_frame_complete(GBContext* ctx) {
-    if (ctx->ppu && ppu_frame_ready((GBPPU*)ctx->ppu)) {
+    if (ctx->frame_done || ctx->frame_cycles >= CYCLES_PER_FRAME) {
         return true;
     }
     return false;
@@ -885,6 +915,8 @@ const uint32_t* gb_get_framebuffer(GBContext* ctx) {
 }
 
 void gb_reset_frame(GBContext* ctx) {
+    ctx->frame_done = 0;
+    ctx->frame_cycles = 0;
     if (ctx->ppu) {
         ppu_clear_frame_ready((GBPPU*)ctx->ppu);
     }
@@ -897,6 +929,11 @@ void gb_tick(GBContext* ctx, uint32_t cycles) {
     
     gb_add_cycles(ctx, cycles);
     
+    /* Step Audio */
+    if (ctx->apu) {
+        gb_audio_step(ctx, cycles);
+    }
+    
     /* Handle pending IME enable (from EI instruction) */
     if (ctx->ime_pending) {
         DBG_GENERAL("[INT] IME enabled via EI instruction");
@@ -906,11 +943,12 @@ void gb_tick(GBContext* ctx, uint32_t cycles) {
     
     /* Debug: periodically check interrupt state */
     int_check_count++;
-    if (int_check_count % 10000 == 1) {
+    if (int_check_count % 100000 == 1) {
         uint8_t if_reg = ctx->io[0x0F];
         uint8_t ie_reg = ctx->io[0x80];
-        DBG_GENERAL("[INT] Check #%u: IME=%d IF=0x%02X IE=0x%02X pending=0x%02X",
-                    int_check_count, ctx->ime, if_reg, ie_reg, if_reg & ie_reg & 0x1F);
+        DBG_GENERAL("[INT] Check #%u: IME=%d IF=0x%02X IE=0x%02X pending=0x%02X DIV=0x%02X TIMA=0x%02X PC=0x%04X OP=0x%02X",
+                    int_check_count, ctx->ime, if_reg, ie_reg, if_reg & ie_reg & 0x1F,
+                    ctx->io[0x04], ctx->io[0x05], ctx->pc, gb_read8(ctx, ctx->pc));
     }
     
     /* Check and dispatch interrupts */
@@ -942,6 +980,7 @@ void gb_tick(GBContext* ctx, uint32_t cycles) {
                 
                 /* Push PC and jump to handler */
                 /* Note: For recompiled code, we call the dispatch function */
+                gb_push16(ctx, ctx->pc);
                 gb_dispatch(ctx, vector);
             }
         }
@@ -973,6 +1012,7 @@ void gb_tick(GBContext* ctx, uint32_t cycles) {
             }
             gb_platform_vsync();
 #endif
+            ctx->frame_done = 1;
             ppu_clear_frame_ready((GBPPU*)ctx->ppu);
             poll_counter = 0;
         }
@@ -981,7 +1021,7 @@ void gb_tick(GBContext* ctx, uint32_t cycles) {
 #ifdef GB_HAS_SDL2
     /* Poll events frequently to keep system responsive */
     poll_counter += cycles;
-    if (poll_counter >= 4096) {  /* Every ~1ms of emulated time */
+    if (poll_counter >= 128) {  /* Poll frequently to prevent system freeze in tight loops */
         poll_counter = 0;
         if (!gb_platform_poll_events(ctx)) {
             ctx->stopped = 1;
@@ -989,7 +1029,33 @@ void gb_tick(GBContext* ctx, uint32_t cycles) {
     }
 #endif
     
-    /* TODO: Update timer, APU, etc */
+    /* Update Timer */
+    ctx->div_counter += cycles;
+    ctx->io[0x04] = ctx->div_counter >> 8;
+    
+    uint8_t tac = ctx->io[0x07];
+    if (tac & 0x04) { /* Timer enabled */
+        uint32_t threshold = 0;
+        switch (tac & 0x03) {
+            case 0x00: threshold = 1024; break; /* 4096 Hz */
+            case 0x01: threshold = 16;   break; /* 262144 Hz */
+            case 0x02: threshold = 64;   break; /* 65536 Hz */
+            case 0x03: threshold = 256;  break; /* 16384 Hz */
+        }
+        
+        ctx->timer_counter += cycles;
+        while (ctx->timer_counter >= threshold) {
+            ctx->timer_counter -= threshold;
+            
+            if (ctx->io[0x05] == 0xFF) { /* TIMA overflow */
+                ctx->io[0x05] = ctx->io[0x06]; /* Reload from TMA */
+                ctx->io[0x0F] |= 0x04;        /* Request Timer interrupt */
+                DBG_GENERAL("TIMER OVERFLOW! Reloading 0x%02X", ctx->io[0x06]);
+            } else {
+                ctx->io[0x05]++;
+            }
+        }
+    }
 }
 
 /* ============================================================================
@@ -1002,6 +1068,12 @@ void gb_set_platform_callbacks(GBContext* ctx, const GBPlatformCallbacks* callba
     (void)ctx;
     if (callbacks) {
         g_callbacks = *callbacks;
+    }
+}
+
+void gb_audio_callback(GBContext* ctx, int16_t left, int16_t right) {
+    if (g_callbacks.on_audio_sample) {
+        g_callbacks.on_audio_sample(ctx, left, right);
     }
 }
 
