@@ -15,6 +15,7 @@ find_package(SDL2 REQUIRED)
 add_library(gbrt STATIC
     ${GBRT_DIR}/src/gbrt.c
     ${GBRT_DIR}/src/ppu.c
+    ${GBRT_DIR}/src/audio.c
     ${GBRT_DIR}/src/interpreter.c
     ${GBRT_DIR}/src/platform_sdl.c
 )
