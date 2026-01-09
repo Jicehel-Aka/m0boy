@@ -12,7 +12,10 @@
 
 #include <iostream>
 #include <string>
+#include <iostream>
+#include <string>
 #include <vector>
+#include <algorithm>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -164,9 +167,33 @@ int main(int argc, char* argv[]) {
     // Analyze control flow
     std::cout << "\nAnalyzing control flow...\n";
     
+
     gbrecomp::AnalyzerOptions analyze_opts;
     analyze_opts.trace_log = trace_log;
     analyze_opts.max_instructions = limit_instructions;
+
+    // Detect standard HRAM DMA routine
+    // Routine: LDH (46),A; LD A,28; DEC A; JR NZ,-3; RET
+    const std::vector<uint8_t> pattern = {0xE0, 0x46, 0x3E, 0x28, 0x3D, 0x20, 0xFD, 0xC9};
+    const std::vector<uint8_t>& data = rom.bytes();
+    
+    auto it = std::search(data.begin(), data.end(), pattern.begin(), pattern.end());
+    if (it != data.end()) {
+            size_t rom_idx = std::distance(data.begin(), it);
+            uint8_t bank = rom_idx / 0x4000;
+            uint16_t offset = rom_idx % 0x4000;
+            if (bank > 0) offset += 0x4000;
+        
+            std::cout << "Detected OAM DMA routine at ROM 0x" << std::hex << rom_idx 
+                        << " (Bank " << (int)bank << ":0x" << offset << "). Mapping to HRAM 0xFF80.\n" << std::dec;
+            
+            gbrecomp::AnalyzerOptions::RamOverlay overlay;
+            overlay.ram_addr = 0xFF80;
+            overlay.rom_addr = gbrecomp::AnalysisResult::make_addr(bank, offset);
+            overlay.size = 8;
+            analyze_opts.ram_overlays.push_back(overlay);
+    }
+
     auto analysis = gbrecomp::analyze(rom, analyze_opts);
     
     std::cout << "  Found " << analysis.stats.total_functions << " functions\n";

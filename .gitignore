@@ -45,3 +45,5 @@ compile_commands.json
 *.dSYM/
 
 tetris_test/
+*.log
+*.asm

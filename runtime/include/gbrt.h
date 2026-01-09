@@ -42,6 +42,15 @@ typedef struct {
 } GBConfig;
 
 /* ============================================================================
+ * Debugging
+ * ========================================================================== */
+
+extern bool gbrt_trace_enabled;
+extern uint64_t gbrt_instruction_count;
+extern uint64_t gbrt_instruction_limit;
+
+
+/* ============================================================================
  * CPU Context
  * ========================================================================== */
 
@@ -100,6 +109,7 @@ typedef struct GBContext {
     /* Timing */
     uint32_t cycles;      /**< Cycles executed */
     uint32_t frame_cycles;/**< Cycles this frame */
+    uint32_t last_sync_cycles; /**< Last cycles count synchronized with hardware */
     uint8_t  frame_done;  /**< Frame is finished and rendered */
     
     /* Timer internal state */

@@ -1,6 +1,7 @@
 #include "gbrt.h"
 #include "gbrt_debug.h"
 #include "ppu.h"
+#include <stdlib.h>
 
 /* Helper macros for instruction arguments */
 #define READ8(ctx) gb_read8(ctx, ctx->pc++)
@@ -37,8 +38,8 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
     /* Set PC to the address we want to execute */
     ctx->pc = addr;
     
-    /* Interpreter entry logging disabled for performance */
-#if 0
+    /* Interpreter entry logging */
+#ifdef GB_DEBUG_REGS
     static int entry_count = 0;
     entry_count++;
     if (entry_count <= 100) {
@@ -51,9 +52,24 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
     while (!ctx->stopped) {
         instructions_executed++;
         
-        /* Debug logging disabled for performance */
-#if 0
-        if (instructions_executed % 100000 == 1) {
+        /* Debug logging */
+        (void)instructions_executed; /* Avoid unused warning */
+        
+        /* Check instruction limit */
+        if (gbrt_instruction_limit > 0 && gbrt_instruction_count >= gbrt_instruction_limit) {
+            fprintf(stderr, "[LIMIT] Reached instruction limit %llu\n", (unsigned long long)gbrt_instruction_limit);
+            exit(0);
+        }
+        gbrt_instruction_count++;
+
+        /* Debug logging */
+        if (gbrt_trace_enabled) {
+             DBG_GENERAL("Interpreter (0x%04X): Regs A=%02X B=%02X C=%02X D=%02X E=%02X H=%02X L=%02X SP=%04X HL=%04X",
+                        ctx->pc, ctx->a, ctx->b, ctx->c, ctx->d, ctx->e, ctx->h, ctx->l, ctx->sp, ctx->hl);
+        }
+
+#ifdef GB_DEBUG_REGS
+        if (1) { /* Always log if REGS is enabled */
             DBG_GENERAL("Interpreter (0x%04X): Regs A=%02X B=%02X C=%02X D=%02X E=%02X H=%02X L=%02X SP=%04X HL=%04X",
                         ctx->pc, ctx->a, ctx->b, ctx->c, ctx->d, ctx->e, ctx->h, ctx->l, ctx->sp, ctx->hl);
             
@@ -70,7 +86,6 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
             }
         }
 #endif
-        (void)instructions_executed; /* Avoid unused warning */
         
         /* NOTE: Previously we returned immediately when pc < 0x8000 (ROM area),
          * expecting the dispatcher to have compiled code for all ROM addresses.
@@ -87,7 +102,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                  DBG_GENERAL("Interpreter: Intercepted HRAM DMA at 0x%04X", ctx->pc);
                  gb_write8(ctx, 0xFF46, ctx->a);
                  gb_ret(ctx); /* Execute RET */
-                 continue;
+                 return;
              }
         }
 
@@ -184,7 +199,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
             case 0x73: gb_write8(ctx, ctx->hl, ctx->e); break; /* LD (HL), E */
             case 0x74: gb_write8(ctx, ctx->hl, ctx->h); break; /* LD (HL), H */
             case 0x75: gb_write8(ctx, ctx->hl, ctx->l); break; /* LD (HL), L */
-            case 0x76: gb_halt(ctx); break; /* HALT */
+            case 0x76: gb_halt(ctx); return; /* HALT */
             case 0x77: gb_write8(ctx, ctx->hl, ctx->a); break; /* LD (HL), A */
             
             /* LD A, r */
@@ -373,53 +388,53 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
 
             /* Control Flow */
             /* Control Flow */
-            case 0xC3: ctx->pc = READ16(ctx); break; /* JP nn */
-            case 0xE9: ctx->pc = ctx->hl; break; /* JP HL */
+            case 0xC3: ctx->pc = READ16(ctx); return; /* JP nn */
+            case 0xE9: ctx->pc = ctx->hl; return; /* JP HL */
             
             case 0xC2: { /* JP NZ, nn */
                 uint16_t dest = READ16(ctx);
-                if (!ctx->f_z) ctx->pc = dest;
+                if (!ctx->f_z) { ctx->pc = dest; return; }
                 break;
             }
             case 0xCA: { /* JP Z, nn */
                 uint16_t dest = READ16(ctx);
-                if (ctx->f_z) ctx->pc = dest;
+                if (ctx->f_z) { ctx->pc = dest; return; }
                 break;
             }
             case 0xD2: { /* JP NC, nn */
                 uint16_t dest = READ16(ctx);
-                if (!ctx->f_c) ctx->pc = dest;
+                if (!ctx->f_c) { ctx->pc = dest; return; }
                 break;
             }
             case 0xDA: { /* JP C, nn */
                 uint16_t dest = READ16(ctx);
-                if (ctx->f_c) ctx->pc = dest;
+                if (ctx->f_c) { ctx->pc = dest; return; }
                 break;
             }
             
             case 0x18: { /* JR n */
                 int8_t off = (int8_t)READ8(ctx);
                 ctx->pc += off;
-                break;
+                return;
             }
             case 0x20: { /* JR NZ, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (!ctx->f_z) ctx->pc += off;
+                if (!ctx->f_z) { ctx->pc += off; return; }
                 break;
             }
             case 0x28: { /* JR Z, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (ctx->f_z) ctx->pc += off;
+                if (ctx->f_z) { ctx->pc += off; return; }
                 break;
             }
             case 0x30: { /* JR NC, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (!ctx->f_c) ctx->pc += off;
+                if (!ctx->f_c) { ctx->pc += off; return; }
                 break;
             }
             case 0x38: { /* JR C, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (ctx->f_c) ctx->pc += off;
+                if (ctx->f_c) { ctx->pc += off; return; }
                 break;
             }
             
@@ -427,13 +442,14 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                 uint16_t dest = READ16(ctx);
                 gb_push16(ctx, ctx->pc);
                 ctx->pc = dest;
-                break;
+                return;
             }
             case 0xC4: { /* CALL NZ, nn */
                 uint16_t dest = READ16(ctx);
                 if (!ctx->f_z) {
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
+                    return;
                 }
                 break;
             }
@@ -442,6 +458,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                 if (ctx->f_z) {
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
+                    return;
                 }
                 break;
             }
@@ -450,6 +467,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                 if (!ctx->f_c) {
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
+                    return;
                 }
                 break;
             }
@@ -458,40 +476,41 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                 if (ctx->f_c) {
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
+                    return;
                 }
                 break;
             }
             
             case 0xC9: /* RET */
                 ctx->pc = gb_pop16(ctx);
-                break;
+                return;
             case 0xC0: /* RET NZ */
-                if (!ctx->f_z) ctx->pc = gb_pop16(ctx);
+                if (!ctx->f_z) { ctx->pc = gb_pop16(ctx); return; }
                 break;
             case 0xC8: /* RET Z */
-                if (ctx->f_z) ctx->pc = gb_pop16(ctx);
+                if (ctx->f_z) { ctx->pc = gb_pop16(ctx); return; }
                 break;
             case 0xD0: /* RET NC */
-                if (!ctx->f_c) ctx->pc = gb_pop16(ctx);
+                if (!ctx->f_c) { ctx->pc = gb_pop16(ctx); return; }
                 break;
             case 0xD8: /* RET C */
-                if (ctx->f_c) ctx->pc = gb_pop16(ctx);
+                if (ctx->f_c) { ctx->pc = gb_pop16(ctx); return; }
                 break;
             case 0xD9: /* RETI */
                 ctx->pc = gb_pop16(ctx);
                 ctx->ime_pending = 1; /* EI behavior? Or immediate? manual says immediate usually */
                 /* RETI enables IME immediately */
                 ctx->ime = 1;
-                break;
+                return;
                 
-            case 0xC7: gb_rst(ctx, 0x00); break;
-            case 0xCF: gb_rst(ctx, 0x08); break;
-            case 0xD7: gb_rst(ctx, 0x10); break;
-            case 0xDF: gb_rst(ctx, 0x18); break;
-            case 0xE7: gb_rst(ctx, 0x20); break;
-            case 0xEF: gb_rst(ctx, 0x28); break;
-            case 0xF7: gb_rst(ctx, 0x30); break;
-            case 0xFF: gb_rst(ctx, 0x38); break;
+            case 0xC7: gb_rst(ctx, 0x00); return;
+            case 0xCF: gb_rst(ctx, 0x08); return;
+            case 0xD7: gb_rst(ctx, 0x10); return;
+            case 0xDF: gb_rst(ctx, 0x18); return;
+            case 0xE7: gb_rst(ctx, 0x20); return;
+            case 0xEF: gb_rst(ctx, 0x28); return;
+            case 0xF7: gb_rst(ctx, 0x30); return;
+            case 0xFF: gb_rst(ctx, 0x38); return;
                 
             case 0xF3: ctx->ime = 0; break; /* DI */
             case 0xFB: ctx->ime_pending = 1; break; /* EI */
@@ -551,11 +570,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
         }
         
         /* Batch timing updates for performance - tick every 16 instructions instead of every one */
-        static uint32_t pending_cycles = 0;
-        pending_cycles += 4;
-        if (pending_cycles >= 64) {  /* 16 instructions * 4 cycles */
-            gb_tick(ctx, pending_cycles);
-            pending_cycles = 0;
-        }
+        /* Cycle counting */
+        gb_tick(ctx, 4);
     }
 }

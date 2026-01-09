@@ -300,6 +300,13 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         }
     }
     
+    // Add overlay entry points
+    for (const auto& ov : options.ram_overlays) {
+        uint32_t addr = make_address(0, ov.ram_addr);
+        result.call_targets.insert(addr);
+        work_queue.push(addr);
+    }
+    
     // Explore all reachable code
     while (!work_queue.empty()) {
         uint32_t addr = work_queue.front();
@@ -310,8 +317,17 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         uint8_t bank = get_bank(addr);
         uint16_t offset = get_offset(addr);
         
-        // Only analyze ROM space
-        if (offset >= 0x8000) continue;
+        // Check if inside any RAM overlay
+        const AnalyzerOptions::RamOverlay* overlay = nullptr;
+        for (const auto& ov : options.ram_overlays) {
+            if (offset >= ov.ram_addr && offset < ov.ram_addr + ov.size) {
+                overlay = &ov;
+                break;
+            }
+        }
+        
+        // Only analyze ROM space or RAM overlays
+        if (offset >= 0x8000 && !overlay) continue;
         
         // Bank mapping rules:
         // 0x0000-0x3FFF: Always bank 0
@@ -320,15 +336,33 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
             bank = 0;  // Force bank 0 for this region
             addr = make_address(0, offset);
             if (visited.count(addr)) continue;
-        } else if (bank == 0) {
+        } else if (offset < 0x8000 && bank == 0) {
             bank = 1;  // Default to bank 1 for switchable region
             addr = make_address(1, offset);
             if (visited.count(addr)) continue;
+        } else if (overlay) {
+            // Keep original bank/addr for overlays
+             if (visited.count(addr)) continue;
         }
         
-        // Skip if outside ROM bounds
+        // Calculate ROM offset for reading
         size_t rom_offset;
-        if (offset < 0x4000) {
+        if (overlay) {
+            // Map RAM address to ROM source
+            // Note: overlay->rom_addr is full 32-bit address (bank | addr)
+            // But ROM object access is handled by decoder? 
+            // We need linear offset for bounds check.
+            uint8_t src_bank = get_bank(overlay->rom_addr);
+            uint16_t src_addr = get_offset(overlay->rom_addr);
+            
+            if (src_addr < 0x4000) {
+                rom_offset = src_addr;
+            } else {
+                rom_offset = static_cast<size_t>(src_bank) * 0x4000 + (src_addr - 0x4000);
+            }
+            // Add offset within the overlay
+            rom_offset += (offset - overlay->ram_addr);
+        } else if (offset < 0x4000) {
             rom_offset = offset;
         } else {
             rom_offset = static_cast<size_t>(bank) * 0x4000 + (offset - 0x4000);
@@ -338,7 +372,24 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         visited.insert(addr);
         
         // Decode instruction
-        Instruction instr = decoder.decode(offset, bank);
+        Instruction instr;
+        if (overlay) {
+            // Decode at the source address (calculating bank/addr from rom_offset is hard if purely linear)
+            // But we can just use the rom source addr + offset
+             // Actually, overlay->rom_addr is 0x00BB_AAAA (Bank, Addr).
+             // If we cross 0x4000/0x8000 boundary this math is wrong for packed uint32.
+             // But overlays are usually small and within one bank.
+             uint8_t src_bank = get_bank(overlay->rom_addr);
+             uint16_t src_addr = get_offset(overlay->rom_addr) + (offset - overlay->ram_addr);
+             
+             instr = decoder.decode(src_addr, src_bank);
+             
+             // Relocate to RAM address
+             instr.address = offset; 
+             instr.bank = 0; // RAM is bank 0
+        } else {
+            instr = decoder.decode(offset, bank);
+        }
 
         // Trace logging
         if (options.trace_log) {

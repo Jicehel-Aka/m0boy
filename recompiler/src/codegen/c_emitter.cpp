@@ -565,6 +565,9 @@ static const char* get_reg8_name(int idx) {
 static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& instr, 
                                 const ir::Program& program, int indent, 
                                 const GeneratorOptions& options,
+                                uint16_t next_pc_val,
+                                uint32_t group_cycles,
+                                bool is_last_in_group,
                                 const std::string& current_func_name = "") {
     auto emit_indent = [&out, indent]() {
         for (int i = 0; i < indent; i++) out << "    ";
@@ -827,47 +830,67 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                         // Check if target is the CURRENT function - if so, use goto to avoid recursion
                         if (func_name == current_func_name) {
                             // Cycle tick before goto
-                            if (options.emit_cycle_counting && instr.cycles > 0) {
-                                out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
+                            if (options.emit_cycle_counting && group_cycles > 0) {
+                                out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                                emit_indent();
+                                out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
                                 emit_indent();
                                 out << "if (ctx->stopped) return;\n";
-                                emit_indent();
+                            } else {
+                                out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
                             }
+                            emit_indent();
                             out << "goto loc_" << std::hex << std::setfill('0') 
                                 << std::setw(4) << target << std::dec << ";\n";
                         } else {
                             // Target is a different function entry - call it and return
-                            if (options.emit_cycle_counting && instr.cycles > 0) {
-                                out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
+                            if (options.emit_cycle_counting && group_cycles > 0) {
+                                out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
                                 emit_indent();
+                                out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
+                                emit_indent();
+                                out << "if (ctx->stopped) return;\n";
+                            } else {
+                                out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
                             }
-                            out << func_name << "(ctx); return;\n";
+                            emit_indent();
+                            out << "return;\n";
                         }
                     } else {
                         // Target is a label within a function - emit cycles before goto
-                        if (options.emit_cycle_counting && instr.cycles > 0) {
-                            out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
+                        if (options.emit_cycle_counting && group_cycles > 0) {
+                            out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                            emit_indent();
+                            out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
                             emit_indent();
                             out << "if (ctx->stopped) return;\n";
-                            emit_indent();
+                        } else {
+                            out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
                         }
+                        emit_indent();
                         out << "goto loc_" << std::hex << std::setfill('0') 
                             << std::setw(4) << target << std::dec << ";\n";
                     }
                 }
             } else if (instr.dst.type == ir::OperandType::REG16) {
                 // Indirect jump via register (JP HL)
-                if (options.emit_cycle_counting && instr.cycles > 0) {
-                    out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
+                out << "gbrt_jump_hl(ctx);\n";
+                if (options.emit_cycle_counting && group_cycles > 0) {
                     emit_indent();
+                    out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
+                    emit_indent(); out << "if (ctx->stopped) return;\n";
                 }
-                out << "gb_dispatch(ctx, ctx->" << reg16_names[instr.dst.value.reg16] << "); return;\n";
+                emit_indent();
+                out << "return;\n";
             } else {
-                if (options.emit_cycle_counting && instr.cycles > 0) {
-                    out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
+                out << "gbrt_jump_hl(ctx);\n";
+                if (options.emit_cycle_counting && group_cycles > 0) {
                     emit_indent();
+                    out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
+                    emit_indent(); out << "if (ctx->stopped) return;\n";
                 }
-                out << "gb_dispatch(ctx, ctx->hl); return;\n";
+                emit_indent();
+                out << "return;\n";
             }
             break;
             
@@ -893,8 +916,14 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             }
             
             if (is_cross_bank) {
-                out << "if (" << expr << ") { gb_dispatch(ctx, 0x" << std::hex << std::setfill('0') 
-                    << std::setw(4) << target << std::dec << "); return; } /* " << cond << " */\n";
+                out << "if (" << expr << ") {\n";
+                emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                if (options.emit_cycle_counting) {
+                    emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
+                    emit_indent(); out << "    if (ctx->stopped) return;\n";
+                }
+                emit_indent(); out << "return;\n";
+                emit_indent(); out << "} /* " << cond << " */\n";
             } else {
                 // Check if target is a function entry
                 std::ostringstream func_name_ss;
@@ -908,26 +937,47 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                 if (program.functions.find(func_name) != program.functions.end()) {
                     // Check if target is the CURRENT function - if so, use goto to avoid recursion
                     if (func_name == current_func_name) {
-                        out << "if (" << expr << ") goto loc_" << std::hex << std::setfill('0') 
-                            << std::setw(4) << target << std::dec << "; /* " << cond << " */\n";
+                        out << "if (" << expr << ") {\n";
+                        emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                        if (options.emit_cycle_counting) {
+                            emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
+                            emit_indent(); out << "    if (ctx->stopped) return;\n";
+                        }
+                        emit_indent(); out << "    goto loc_" << std::hex << std::setfill('0') 
+                            << std::setw(4) << target << std::dec << ";\n";
+                        emit_indent(); out << "} /* " << cond << " */\n";
                     } else {
                         // Target is a different function entry - call it and return on condition
-                        out << "if (" << expr << ") { " << func_name << "(ctx); return; } /* " << cond << " */\n";
+                        out << "if (" << expr << ") {\n";
+                        emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                        if (options.emit_cycle_counting) {
+                            emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
+                            emit_indent(); out << "    if (ctx->stopped) return;\n";
+                        }
+                        emit_indent(); out << "    return;\n";
+                        emit_indent(); out << "} /* " << cond << " */\n";
                     }
                 } else {
-                    out << "if (" << expr << ") goto loc_" << std::hex << std::setfill('0') 
-                        << std::setw(4) << target << std::dec << "; /* " << cond << " */\n";
+                    out << "if (" << expr << ") {\n";
+                    emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                    if (options.emit_cycle_counting) {
+                        emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
+                        emit_indent(); out << "    if (ctx->stopped) return;\n";
+                    }
+                    emit_indent(); out << "    goto loc_" << std::hex << std::setfill('0') 
+                        << std::setw(4) << target << std::dec << ";\n";
+                    emit_indent(); out << "} /* " << cond << " */\n";
                 }
             }
-            if (instr.dst.type == ir::OperandType::REG16) {
-            // JP HL (Indirect Jump)
-            if (options.emit_cycle_counting && instr.cycles > 0) {
-                out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
-                emit_indent();
+            // Branch NOT taken: update PC to next and tick with base cycles
+            if (next_pc_val != 0) {
+                emit_indent(); out << "ctx->pc = 0x" << std::hex << next_pc_val << std::dec << ";\n";
             }
-            out << "gbrt_jump_hl(ctx); return;\n";
-        }
-        break;
+            if (options.emit_cycle_counting && group_cycles > 0) {
+                emit_indent(); out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
+                emit_indent(); out << "if (ctx->stopped) return;\n";
+            }
+            break;
         }
             
         case ir::Opcode::CALL: {
@@ -936,70 +986,57 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             uint16_t return_addr = instr.source_address + 3;
             out << "gb_push16(ctx, 0x" << std::hex << return_addr << std::dec << ");\n";
             emit_indent();
-
-            // For targets in banked area (0x4000-0x7FFF), always use dispatch since
-            // we don't know which bank will be active at runtime
-            if (target >= 0x4000 && target <= 0x7FFF) {
-                out << "gb_dispatch_call(ctx, 0x" << std::hex << std::setfill('0') 
-                    << std::setw(4) << target << std::dec << ");\n";
-            } else {
-                // For bank 0 targets, try direct call
-                std::ostringstream func_name_ss;
-                func_name_ss << "func_" << std::hex << std::setfill('0') << std::setw(4) << target;
-                std::string func_name = func_name_ss.str();
-                
-                // Check if function exists in analyzed program
-                if (program.functions.find(func_name) != program.functions.end()) {
-                    out << func_name << "(ctx);\n";
-                } else {
-                    // Fallback to runtime dispatch for unknown targets
-                    out << "gb_dispatch_call(ctx, 0x" << std::hex << std::setfill('0') 
-                        << std::setw(4) << target << std::dec << ");\n";
-                }
+            out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+            if (options.emit_cycle_counting && group_cycles > 0) {
+                emit_indent(); out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
+                emit_indent(); out << "if (ctx->stopped) return;\n";
             }
             emit_indent();
-            out << "return;\n"; // Force return to dispatcher
+
+            // For targets in banked area (0x4000-0x7FFF), always use dispatch
+            out << "return;\n";
             break;
         }
 
         case ir::Opcode::CALL_CC: {
             uint16_t target = instr.dst.value.imm16;
             uint16_t return_addr = instr.source_address + 3;
-            
             const char* cond = cond_names[instr.src.value.condition];
             const char* expr = (instr.src.value.condition == 0) ? "!ctx->f_z" :
                                (instr.src.value.condition == 1) ? "ctx->f_z" :
                                (instr.src.value.condition == 2) ? "!ctx->f_c" : "ctx->f_c";
             
             out << "if (" << expr << ") {\n";
-            out << "    gb_push16(ctx, 0x" << std::hex << return_addr << std::dec << ");\n";
-            
-            if (target >= 0x4000 && target <= 0x7FFF) {
-                out << "    gb_dispatch_call(ctx, 0x" << std::hex << std::setfill('0') 
-                    << std::setw(4) << target << std::dec << ");\n";
-            } else {
-                std::ostringstream func_name_ss;
-                func_name_ss << "func_" << std::hex << std::setfill('0') << std::setw(4) << target;
-                std::string func_name = func_name_ss.str();
-                
-                if (program.functions.find(func_name) != program.functions.end()) {
-                    out << "    " << func_name << "(ctx);\n";
-                } else {
-                    out << "    gb_dispatch_call(ctx, 0x" << std::hex << std::setfill('0') 
-                        << std::setw(4) << target << std::dec << ");\n";
-                }
+            emit_indent(); out << "    gb_push16(ctx, 0x" << std::hex << return_addr << std::dec << ");\n";
+            emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+            if (options.emit_cycle_counting) {
+                emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
+                emit_indent(); out << "    if (ctx->stopped) return;\n";
             }
+            emit_indent();
             out << "    return;\n";
-            out << "} /* " << cond << " */\n";
+            emit_indent(); out << "    return;\n";
+            emit_indent(); out << "} /* " << cond << " */\n";
+            
+            // Branch NOT taken
+            if (next_pc_val != 0) {
+                emit_indent(); out << "ctx->pc = 0x" << std::hex << next_pc_val << std::dec << ";\n";
+            }
+            if (options.emit_cycle_counting && group_cycles > 0) {
+                emit_indent(); out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
+                emit_indent(); out << "if (ctx->stopped) return;\n";
+            }
             break;
         }
             
         case ir::Opcode::RET:
-            if (options.emit_cycle_counting && instr.cycles > 0) {
-                out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
+            out << "gb_ret(ctx);\n";
+            if (options.emit_cycle_counting && group_cycles > 0) {
                 emit_indent();
+                out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
             }
-            out << "gb_ret(ctx); return;\n";
+            emit_indent();
+            out << "return;\n";
             break;
             
         case ir::Opcode::RET_CC: {
@@ -1007,25 +1044,52 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             const char* expr = (instr.src.value.condition == 0) ? "!ctx->f_z" :
                                (instr.src.value.condition == 1) ? "ctx->f_z" :
                                (instr.src.value.condition == 2) ? "!ctx->f_c" : "ctx->f_c";
-            out << "if (" << expr << ") { gb_ret(ctx); return; } /* " << cond << " */\n";
+            out << "if (" << expr << ") {\n";
+            emit_indent(); out << "    gb_ret(ctx);\n";
+            if (options.emit_cycle_counting) {
+                emit_indent(); out << "    gb_tick(ctx, 20); /* RET_CC cycles always 20 if taken */\n";
+            }
+            emit_indent(); out << "    return;\n";
+            emit_indent(); out << "} /* " << cond << " */\n";
+            // Not taken: update PC and tick
+            if (next_pc_val != 0) {
+                emit_indent(); out << "ctx->pc = 0x" << std::hex << next_pc_val << std::dec << ";\n";
+            }
+            if (options.emit_cycle_counting && group_cycles > 0) {
+                emit_indent(); out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
+                emit_indent(); out << "if (ctx->stopped) return;\n";
+            }
             break;
         }
             
         case ir::Opcode::RETI:
-            if (options.emit_cycle_counting && instr.cycles > 0) {
-                out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
-                emit_indent();
+            out << "ctx->ime = 1;\n";
+            emit_indent(); out << "gb_ret(ctx);\n";
+            if (options.emit_cycle_counting && group_cycles > 0) {
+                emit_indent(); out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
             }
-            out << "ctx->ime = 1; gb_ret(ctx); return;\n";
+            emit_indent(); out << "return;\n";
             break;
             
         case ir::Opcode::RST:
             {
+                // Push return address (instruction size 1)
                 uint16_t next_pc = instr.source_address + 1;
                 out << "gb_push16(ctx, 0x" << std::hex << next_pc << std::dec << ");\n";
                 emit_indent();
-                out << "rst_" << std::hex << std::setfill('0') << std::setw(2) 
-                    << (int)instr.dst.value.rst_vec << std::dec << "(ctx);\n";
+                
+                uint8_t vector = instr.dst.value.rst_vec;
+                out << "ctx->pc = 0x" << std::hex << std::setfill('0') << std::setw(2) 
+                    << (int)vector << std::dec << ";\n";
+                
+                if (options.emit_cycle_counting && group_cycles > 0) {
+                    emit_indent(); out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
+                    emit_indent(); out << "if (ctx->stopped) return;\n";
+                }
+                
+                emit_indent(); out << "gb_dispatch_call(ctx, 0x" << std::hex << std::setfill('0') << std::setw(2) 
+                    << (int)vector << std::dec << ");\n";
+                
                 emit_indent();
                 out << "return;\n";
             }
@@ -1226,16 +1290,34 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             break;
     }
     
-    // Emit cycle counting and PPU tick (but not after control flow statements that already returned)
+    // Emit cycle counting and PPU tick
     bool is_control_flow = (instr.opcode == ir::Opcode::RET || 
                             instr.opcode == ir::Opcode::RETI ||
+                            instr.opcode == ir::Opcode::RET_CC ||
                             instr.opcode == ir::Opcode::JUMP ||
-                            instr.opcode == ir::Opcode::JUMP_REG);
-    if (options.emit_cycle_counting && instr.cycles > 0 && !is_control_flow) {
-        emit_indent();
-        out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
-        emit_indent();
-        out << "if (ctx->stopped) return;\n";
+                            instr.opcode == ir::Opcode::JUMP_CC ||
+                            instr.opcode == ir::Opcode::JUMP_REG ||
+                            instr.opcode == ir::Opcode::JR ||
+                            instr.opcode == ir::Opcode::JR_CC ||
+                            instr.opcode == ir::Opcode::CALL ||
+                            instr.opcode == ir::Opcode::CALL_CC ||
+                            instr.opcode == ir::Opcode::RST ||
+                            instr.opcode == ir::Opcode::HALT ||
+                            instr.opcode == ir::Opcode::STOP);
+
+    if (is_last_in_group && !is_control_flow) {
+        // Update PC for correct resumption if stopped
+        if (next_pc_val != 0) {
+            emit_indent();
+            out << "ctx->pc = 0x" << std::hex << next_pc_val << std::dec << ";\n";
+        }
+        
+        if (options.emit_cycle_counting && group_cycles > 0) {
+            emit_indent();
+            out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
+            emit_indent();
+            out << "if (ctx->stopped) return;\n";
+        }
     }
 }
 
@@ -1261,7 +1343,9 @@ GeneratedOutput generate_output(const ir::Program& program,
     std::ostringstream source_ss;
     source_ss << "/* Generated by gbrecomp from " << program.rom_name << " */\n";
     source_ss << "#include \"" << options.output_prefix << ".h\"\n";
-    source_ss << "#include \"gbrt.h\"\n\n";
+    source_ss << "#include \"gbrt.h\"\n";
+    source_ss << "#include <stdio.h>\n";
+    source_ss << "#include <stdlib.h>\n\n";
     
     // Forward declarations
     source_ss << "/* Forward declarations */\n";
@@ -1274,10 +1358,22 @@ GeneratedOutput generate_output(const ir::Program& program,
     source_ss << "/* Bank dispatch - routes calls to the correct bank function */\n";
     source_ss << "void gb_dispatch(GBContext* ctx, uint16_t addr) {\n";
     source_ss << "    ctx->pc = addr;\n";
-    source_ss << "    while (!ctx->stopped) {\n";
+    source_ss << "    while (!ctx->stopped && !ctx->halted) {\n";
     source_ss << "        addr = ctx->pc;\n";
     source_ss << "        uint8_t bank = ctx->rom_bank;\n";
     source_ss << "        if (addr < 0x4000) bank = 0;\n";
+        
+    /* Debug checks in dispatch loop */
+    source_ss << "        if (gbrt_instruction_limit > 0 && gbrt_instruction_count >= gbrt_instruction_limit) {\n";
+    source_ss << "            fprintf(stderr, \"[LIMIT] Reached instruction limit %llu\\n\", (unsigned long long)gbrt_instruction_limit);\n";
+    source_ss << "            exit(0);\n";
+    source_ss << "        }\n";
+    source_ss << "        gbrt_instruction_count++;\n";
+    source_ss << "        \n";
+    source_ss << "        if (gbrt_trace_enabled) {\n";
+    source_ss << "            fprintf(stderr, \"[TRACE] Dispatch 0x%04X (Bank %d)\\n\", addr, bank);\n";
+    source_ss << "        }\n";
+
     source_ss << "        switch (addr) {\n";
     
     // Group functions by address for the switch statement
@@ -1390,9 +1486,35 @@ GeneratedOutput generate_output(const ir::Program& program,
             source_ss << "loc_" << std::hex << std::setfill('0') << std::setw(4) 
                       << block.start_address << std::dec << ":\n";
             
-            // Emit each IR instruction
-            for (const auto& ir_instr : block.instructions) {
-                emit_ir_instruction(source_ss, ir_instr, program, 1, options, func.name);
+            // Emit each IR instruction, grouped by source address
+            uint32_t group_cycles = 0;
+            for (size_t i = 0; i < block.instructions.size(); ++i) {
+                const auto& ir_instr = block.instructions[i];
+                group_cycles += ir_instr.cycles;
+                
+                uint16_t next_pc = 0;
+                bool is_last_in_group = true;
+                
+                // Identify if this is the last IR instruction for this GameBoy instruction
+                if (i + 1 < block.instructions.size()) {
+                    if (block.instructions[i+1].source_address == ir_instr.source_address && ir_instr.source_address != 0) {
+                        is_last_in_group = false;
+                        next_pc = ir_instr.source_address;
+                    } else {
+                        next_pc = block.instructions[i+1].source_address;
+                    }
+                } else {
+                    next_pc = block.end_address;
+                }
+                
+                // If it's the last in group, we use the accumulated cycles
+                // Actually, let's just use ir_instr.cycles if we don't want to refactor cycles accumulation yet.
+                // Re-think: better to pass the accumulated cycles only at the end.
+                
+                uint32_t cycles_to_pass = is_last_in_group ? group_cycles : 0;
+                if (is_last_in_group) group_cycles = 0; // Reset for next group
+                
+                emit_ir_instruction(source_ss, ir_instr, program, 1, options, next_pc, cycles_to_pass, is_last_in_group, func.name);
             }
             
             // Check if block falls through
@@ -1526,9 +1648,20 @@ GeneratedOutput generate_output(const ir::Program& program,
     main_ss << "#include \"platform_sdl.h\"\n";
     main_ss << "#endif\n";
     main_ss << "#include <stdio.h>\n";
-    main_ss << "#include <stdlib.h>\n\n";
+    main_ss << "#include <stdio.h>\n";
+    main_ss << "#include <stdlib.h>\n";
+    main_ss << "#include <string.h>\n\n";
     main_ss << "int main(int argc, char* argv[]) {\n";
-    main_ss << "    (void)argc; (void)argv;\n";
+    main_ss << "    // Parse args\n";
+    main_ss << "    for (int i = 1; i < argc; i++) {\n";
+    main_ss << "        if (strcmp(argv[i], \"--trace\") == 0) {\n";
+    main_ss << "            gbrt_trace_enabled = true;\n";
+    main_ss << "            printf(\"Trace enabled\\n\");\n";
+    main_ss << "        } else if (strcmp(argv[i], \"--limit\") == 0 && i + 1 < argc) {\n";
+    main_ss << "            gbrt_instruction_limit = strtoull(argv[++i], NULL, 10);\n";
+    main_ss << "            printf(\"Instruction limit: %llu\\n\", (unsigned long long)gbrt_instruction_limit);\n";
+    main_ss << "        }\n";
+    main_ss << "    }\n\n";
     main_ss << "    GBContext* ctx = gb_context_create(NULL);\n";
     main_ss << "    if (!ctx) {\n";
     main_ss << "        fprintf(stderr, \"Failed to create context\\n\");\n";
@@ -1544,9 +1677,18 @@ GeneratedOutput generate_output(const ir::Program& program,
     main_ss << "        return 1;\n";
     main_ss << "    }\n";
     main_ss << "\n";
-    main_ss << "    // Run the game - rendering happens inside gb_halt()\n";
-    main_ss << "    " << options.output_prefix << "_run(ctx);\n";
-    main_ss << "\n";
+    main_ss << "    // Run the game loop\n";
+    main_ss << "    while (1) {\n";
+    main_ss << "        gb_run_frame(ctx);\n";
+    main_ss << "        if (!gb_platform_poll_events(ctx)) break;\n";
+    main_ss << "        if (ctx->frame_done) {\n";
+    main_ss << "            const uint32_t* fb = gb_get_framebuffer(ctx);\n";
+    main_ss << "            if (fb) gb_platform_render_frame(fb);\n";
+    main_ss << "            gb_reset_frame(ctx);\n";
+    main_ss << "            ctx->stopped = 0;\n";
+    main_ss << "            gb_platform_vsync();\n";
+    main_ss << "        }\n";
+    main_ss << "    }\n";
     main_ss << "    gb_platform_shutdown();\n";
     main_ss << "#else\n";
     main_ss << "    // No SDL2 - just run for testing\n";

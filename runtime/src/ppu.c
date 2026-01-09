@@ -381,6 +381,7 @@ void ppu_tick(GBPPU* ppu, GBContext* ctx, uint32_t cycles) {
                     if (!ppu->frame_ready) {
                         convert_to_rgb(ppu);
                         ppu->frame_ready = true;
+                        ctx->frame_done = 1;
                     }
                     
                     /* Request VBlank interrupt (IF bit 0) */

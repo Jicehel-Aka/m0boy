@@ -97,25 +97,19 @@ bool gb_platform_init(int scale) {
     if (g_scale < 1) g_scale = 1;
     if (g_scale > 8) g_scale = 8;
     
+    fprintf(stderr, "[SDL] Initializing SDL...\n");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0) {
+        fprintf(stderr, "[SDL] SDL_Init failed: %s\n", SDL_GetError());
         return false;
     }
+    fprintf(stderr, "[SDL] SDL initialized.\n");
     
     /* Initialize Audio */
+    /*
     SDL_AudioSpec want, have;
-    SDL_zero(want);
-    want.freq = AUDIO_SAMPLE_RATE;
-    want.format = AUDIO_S16SYS;
-    want.channels = 2;
-    want.samples = 1024;
-    want.callback = sdl_audio_callback;
-    
-    g_audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
-    if (g_audio_device) {
-        SDL_PauseAudioDevice(g_audio_device, 0);
-    } else {
-        printf("Failed to open audio: %s\n", SDL_GetError());
-    }
+    ...
+    */
+    g_audio_device = 0;
     
     /* Register callbacks */
     GBPlatformCallbacks callbacks = {
@@ -123,6 +117,7 @@ bool gb_platform_init(int scale) {
     };
     gb_set_platform_callbacks(NULL, &callbacks);
     
+    fprintf(stderr, "[SDL] Creating window...\n");
     g_window = SDL_CreateWindow(
         "GameBoy Recompiled",
         SDL_WINDOWPOS_CENTERED,
@@ -133,10 +128,13 @@ bool gb_platform_init(int scale) {
     );
     
     if (!g_window) {
+        fprintf(stderr, "[SDL] SDL_CreateWindow failed: %s\n", SDL_GetError());
         SDL_Quit();
         return false;
     }
+    fprintf(stderr, "[SDL] Window created.\n");
     
+    fprintf(stderr, "[SDL] Creating renderer...\n");
     g_renderer = SDL_CreateRenderer(g_window, -1, 
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
         

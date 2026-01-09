@@ -141,6 +141,18 @@ struct AnalysisResult {
  * @brief Analysis options
  */
 struct AnalyzerOptions {
+    // Map of RAM address -> ROM address (source of the code)
+    // This allows analyzing code that is copied to RAM (e.g. OAM DMA routines)
+    struct RamOverlay {
+        uint16_t ram_addr;
+        uint32_t rom_addr;
+        uint16_t size;
+    };
+    std::vector<RamOverlay> ram_overlays;
+    
+    // Explicit list of entry points to analyze (in addition to standard ones)
+    std::vector<uint32_t> entry_points;
+
     bool analyze_all_banks = true;      // Analyze all ROM banks
     bool detect_computed_jumps = true;  // Try to resolve JP HL targets
     bool track_bank_switches = true;    // Track bank switch operations
