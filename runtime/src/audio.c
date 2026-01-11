@@ -588,11 +588,14 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
         /* Master Volume / Scaling */
         /* Currently values are 0-15 per channel, mixed. Max approx 60. */
         /* Scale to int16 range */
+        /* Max possible value: 15 * 4 * 8 = 480. 
+           32767 / 480 = 68. 
+           Using 64 provides good volume without clipping. */
         int vol_l = (apu->nr50 >> 4) & 7;
         int vol_r = (apu->nr50 & 7);
         
-        left = left * (vol_l + 1) * 256;
-        right = right * (vol_r + 1) * 256;
+        left = left * (vol_l + 1) * 64;
+        right = right * (vol_r + 1) * 64;
 
         gb_audio_callback(ctx, left, right);
     }

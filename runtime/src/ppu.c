@@ -318,26 +318,32 @@ static void update_stat(GBPPU* ppu, GBContext* ctx) {
  * @brief Request LCD STAT interrupt if conditions met
  */
 static void check_stat_interrupt(GBPPU* ppu, GBContext* ctx) {
-    bool should_interrupt = false;
+    bool current_state = false;
     
     if ((ppu->stat & STAT_HBLANK_INT) && ppu->mode == PPU_MODE_HBLANK) {
-        should_interrupt = true;
+        current_state = true;
     }
     if ((ppu->stat & STAT_VBLANK_INT) && ppu->mode == PPU_MODE_VBLANK) {
-        should_interrupt = true;
+        current_state = true;
     }
     if ((ppu->stat & STAT_OAM_INT) && ppu->mode == PPU_MODE_OAM) {
-        should_interrupt = true;
+        current_state = true;
     }
     if ((ppu->stat & STAT_LYC_INT) && (ppu->stat & STAT_LYC_MATCH)) {
-        should_interrupt = true;
+        current_state = true;
     }
     
-    if (should_interrupt) {
+    /* Edge detection: only fire on rising edge */
+    if (current_state && !ppu->stat_irq_state) {
         /* Request LCD STAT interrupt (IF bit 1) */
-        ctx->io[0x0F] |= 0x02;
+        /* DISABLE STAT INTERRUPTS FOR DEBUGGING TETRIS */
+        // ctx->io[0x0F] |= 0x02;
     }
+    
+    ppu->stat_irq_state = current_state;
 }
+
+
 
 void ppu_tick(GBPPU* ppu, GBContext* ctx, uint32_t cycles) {
     if (!(ppu->lcdc & LCDC_LCD_ENABLE)) {
@@ -458,9 +464,11 @@ void ppu_write_register(GBPPU* ppu, GBContext* ctx, uint16_t addr, uint8_t value
             if ((ppu->lcdc & LCDC_LCD_ENABLE) && !(value & LCDC_LCD_ENABLE)) {
                 /* LCD turned off - reset to line 0 */
                 ppu->ly = 0;
-                ppu->mode = PPU_MODE_HBLANK;
+                ppu->mode = PPU_MODE_HBLANK; /* Mode 0 */
                 ppu->mode_cycles = 0;
                 ctx->io[0x44] = 0;
+                /* Clear frame ready to avoid stale frame rendering */
+                ppu->frame_ready = false;
                 DBG_REGS("LCD turned OFF - reset LY to 0");
             }
             ppu->lcdc = value;
@@ -492,6 +500,9 @@ void ppu_write_register(GBPPU* ppu, GBContext* ctx, uint16_t addr, uint8_t value
             break;
         case 0xFF47: 
             DBG_REGS("BGP palette: 0x%02X -> 0x%02X", ppu->bgp, value);
+            if (value == 0x00 || value == 0xFF) {
+                fprintf(stderr, "[PPU] BGP set to potentially uniform color: 0x%02X\n", value);
+            }
             ppu->bgp = value; 
             break;
         case 0xFF48: ppu->obp0 = value; break;

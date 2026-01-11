@@ -188,6 +188,7 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
         if (addr >= 0xFF10 && addr <= 0xFF3F) { gb_audio_write(ctx, addr, value); return; }
         if (addr == 0xFF04) { 
             ctx->div_counter = 0; 
+            ctx->io[0x04] = 0; /* Update register view immediately */
             if (ctx->apu) gb_audio_div_reset(ctx->apu);
             return; 
         }
@@ -197,7 +198,7 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
              return;
         }
         if (addr == 0xFF02 && (value & 0x80)) {
-            printf("%c", ctx->io[0x01]); fflush(stdout);
+            /* printf("%c", ctx->io[0x01]); fflush(stdout); */
             ctx->io[0x0F] |= 0x08;
         }
         ctx->io[addr - 0xFF00] = value;
@@ -328,12 +329,21 @@ void gb_rla(GBContext* ctx) { ctx->a = gb_rl(ctx, ctx->a); ctx->f_z = 0; }
 void gb_rra(GBContext* ctx) { ctx->a = gb_rr(ctx, ctx->a); ctx->f_z = 0; }
 
 void gb_daa(GBContext* ctx) {
-    uint8_t u = 0;
-    if (ctx->f_h || (!ctx->f_n && (ctx->a & 0x0F) > 9)) u = 6;
-    if (ctx->f_c || (!ctx->f_n && ctx->a > 0x99)) { u |= 0x60; ctx->f_c = 1; }
-    ctx->a += ctx->f_n ? -u : u;
-    ctx->f_z = ctx->a == 0;
-    ctx->f_h = 0;
+   int a = ctx->a;
+   if (!ctx->f_n) {
+       if (ctx->f_h || (a & 0xF) > 9) a += 0x06;
+       if (ctx->f_c || a > 0x9F) a += 0x60;
+   } else {
+       if (ctx->f_h) a = (a - 6) & 0xFF;
+       if (ctx->f_c) a -= 0x60;
+   }
+   
+   ctx->f_h = 0;
+   if ((a & 0x100) == 0x100) ctx->f_c = 1;
+   
+   a &= 0xFF;
+   ctx->f_z = (a == 0);
+   ctx->a = (uint8_t)a;
 }
 
 /* ============================================================================

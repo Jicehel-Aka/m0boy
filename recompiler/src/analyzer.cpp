@@ -439,6 +439,19 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
              if (visited.count(addr)) continue;
         }
         
+        // Setup block analysis state
+        int known_a = -1;
+        uint8_t current_switchable_bank = 1;
+        
+        // If we are executing in a switchable bank, that IS the context
+        if (bank > 0) {
+            current_switchable_bank = bank;
+        } else {
+            // If in bank 0, try to guess context from previous blocks?
+            // For now, default to 1, but this is where flow analysis needs improvement
+            // The simplistic approach is: assume code acts locally.
+        }
+        
         // Calculate ROM offset for reading
         size_t rom_offset;
         if (overlay) {
@@ -483,6 +496,55 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
              instr.bank = 0; // RAM is bank 0
         } else {
             instr = decoder.decode(offset, bank);
+        }
+
+        // Track Register A for bank switching
+        // LD A, n (0x3E)
+        if (instr.opcode == 0x3E) {
+            known_a = instr.imm8;
+        } 
+        // LD A, (HL) or other loads invalidate A
+        else if (instr.opcode == 0x7E || instr.opcode == 0x0A || instr.opcode == 0x1A || 
+                 instr.opcode == 0xF0 || instr.opcode == 0xFA || instr.opcode == 0xF2 ||
+                 (instr.opcode >= 0x40 && instr.opcode <= 0x7F && instr.opcode != 0x78)) {
+             // 0x78 is LD A, B (if we tracked B we could propagate, but we don't yet)
+             // For now, any load to A that isn't immediate invalidates it
+             if (instr.opcode == 0x7F) { /* LD A, A - no change */ }
+             else { known_a = -1; }
+        }
+        else if (instr.opcode == 0xAF) { // XOR A
+            known_a = 0;
+        }
+        // INC/DEC A, ADD, SUB etc invalidate A
+        else if ((instr.opcode >= 0x80 && instr.opcode <= 0xBF) || 
+                 instr.opcode == 0x3C || instr.opcode == 0x3D || instr.opcode == 0x27 || instr.opcode == 0x2F) {
+            known_a = -1;
+        }
+
+        // Detect Bank Switching: LD (nnnn), A where nnnn in 0x2000-0x3FFF
+        if (instr.opcode == 0xEA) { // LD (nn), A
+            if (instr.imm16 >= 0x2000 && instr.imm16 <= 0x3FFF) {
+                // MBC Bank Switch
+                bool is_dynamic = (known_a == -1);
+                uint8_t target_b = is_dynamic ? 1 : (known_a == 0 ? 1 : known_a);
+                
+                // Mask based on MBC type if known, but generally 1F or similar
+                // For now assume standard MBC1/3/5 behavior
+                target_b &= 0xFF; // Could mask further but let's keep it raw if it's small
+                
+                result.bank_tracker.record_bank_switch(addr, target_b, is_dynamic);
+                
+                // Update our current view of the switchable bank
+                // This affects subsequent Jumps/Calls in this block
+                if (!is_dynamic) {
+                    current_switchable_bank = target_b;
+                    // std::cout << "[INFO] Static bank switch to " << (int)target_b << " at " << std::hex << (int)bank << ":" << offset << "\n";
+                } else {
+                    // Dynamic switch - we lose track of where we are going
+                    // Maybe we should assume Bank 1 or stick with current?
+                    // result.bank_tracker.record_bank_switch(addr, 0, true);
+                }
+            }
         }
 
         // Trace logging
@@ -538,7 +600,9 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
             if (target < 0x4000) return 0;  // Bank 0 region
             // For ROM ONLY (no MBC), switchable region is always bank 1
             if (rom.header().mbc_type == MBCType::NONE) return 1;
-            return bank;  // Same bank for switchable region (MBC games)
+            
+            // If target is in switchable region, use our tracked state
+            return current_switchable_bank;
         };
         
         // Track control flow
@@ -606,6 +670,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
             // Track cross-bank calls
             if (tbank != bank) {
                 result.stats.cross_bank_calls++;
+                result.bank_tracker.record_cross_bank_call(offset, target, bank, tbank);
             }
             
             // Calls fall through - mark as label so a new block starts
@@ -851,6 +916,8 @@ void print_analysis_summary(const AnalysisResult& result) {
     std::cout << "Total functions: " << result.stats.total_functions << std::endl;
     std::cout << "Call targets: " << result.call_targets.size() << std::endl;
     std::cout << "Label addresses: " << result.label_addresses.size() << std::endl;
+    std::cout << "Bank switches detected: " << result.bank_tracker.switches().size() << std::endl;
+    std::cout << "Cross-bank calls tracked: " << result.bank_tracker.calls().size() << std::endl;
     
     std::cout << "\nFunctions found:" << std::endl;
     for (const auto& [addr, func] : result.functions) {

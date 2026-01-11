@@ -8,6 +8,7 @@
 
 #include "decoder.h"
 #include "rom.h"
+#include "bank_tracker.h"
 #include <map>
 #include <set>
 #include <vector>
@@ -117,6 +118,9 @@ struct AnalysisResult {
         size_t unreachable_instructions = 0;
         size_t cross_bank_calls = 0;
     } stats;
+    
+    // Bank tracker results
+    BankTracker bank_tracker;
     
     // Helper to create combined address
     static uint32_t make_addr(uint8_t bank, uint16_t addr) {

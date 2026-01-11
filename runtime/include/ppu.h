@@ -114,6 +114,7 @@ typedef struct GBPPU {
     uint8_t wx;         /* 0xFF4B - Window X */
     
     /* Internal state */
+    bool stat_irq_state;
     PPUMode mode;
     uint32_t mode_cycles;     /* Cycles in current mode */
     uint8_t window_line;      /* Current window internal line counter */
