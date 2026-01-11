@@ -186,7 +186,11 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
     if (addr < 0xFF80) {
         if (addr >= 0xFF40 && addr <= 0xFF4B) { ppu_write_register((GBPPU*)ctx->ppu, ctx, addr, value); return; }
         if (addr >= 0xFF10 && addr <= 0xFF3F) { gb_audio_write(ctx, addr, value); return; }
-        if (addr == 0xFF04) { ctx->div_counter = 0; return; }
+        if (addr == 0xFF04) { 
+            ctx->div_counter = 0; 
+            if (ctx->apu) gb_audio_div_reset(ctx->apu);
+            return; 
+        }
         if (addr == 0xFF46) {
              uint16_t src = value << 8;
              for (int i=0; i<0xA0; i++) ctx->oam[i] = gb_read8(ctx, src + i);
@@ -459,5 +463,14 @@ void gb_halt(GBContext* ctx) { ctx->halted = 1; }
 void gb_stop(GBContext* ctx) { ctx->stopped = 1; }
 bool gb_frame_complete(GBContext* ctx) { return ctx->frame_done != 0; }
 
-void gb_set_platform_callbacks(GBContext* ctx, const GBPlatformCallbacks* c) { (void)ctx; (void)c; }
-void gb_audio_callback(GBContext* ctx, int16_t l, int16_t r) { (void)ctx; (void)l; (void)r; }
+void gb_set_platform_callbacks(GBContext* ctx, const GBPlatformCallbacks* c) {
+    if (ctx && c) {
+        ctx->callbacks = *c;
+    }
+}
+
+void gb_audio_callback(GBContext* ctx, int16_t l, int16_t r) {
+    if (ctx && ctx->callbacks.on_audio_sample) {
+        ctx->callbacks.on_audio_sample(ctx, l, r);
+    }
+}

@@ -27,6 +27,11 @@ typedef struct GBContext GBContext;
 bool gb_platform_init(int scale);
 
 /**
+ * @brief Register context with platform (sets up callbacks)
+ */
+void gb_platform_register_context(GBContext* ctx);
+
+/**
  * @brief Shutdown SDL2 platform
  */
 void gb_platform_shutdown(void);

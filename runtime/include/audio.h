@@ -47,6 +47,11 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value);
 void gb_audio_step(GBContext* ctx, uint32_t cycles);
 
 /**
+ * @brief Reset Frame Sequencer (called on DIV write)
+ */
+void gb_audio_div_reset(void* apu);
+
+/**
  * @brief Get current sample for left/right channels
  * @param apu Audio state
  * @param left Pointer to store left sample

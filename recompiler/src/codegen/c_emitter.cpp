@@ -1697,6 +1697,7 @@ GeneratedOutput generate_output(const ir::Program& program,
     main_ss << "        gb_context_destroy(ctx);\n";
     main_ss << "        return 1;\n";
     main_ss << "    }\n";
+    main_ss << "    gb_platform_register_context(ctx);\n";
     main_ss << "\n";
     main_ss << "    // Run the game loop\n";
     main_ss << "    while (1) {\n";

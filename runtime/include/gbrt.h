@@ -55,6 +55,21 @@ extern uint64_t gbrt_instruction_limit;
  * ========================================================================== */
 
 /**
+ * @brief Forward declaration
+ */
+typedef struct GBContext GBContext;
+
+/**
+ * @brief Platform callbacks for I/O and rendering
+ */
+typedef struct {
+    void (*on_vblank)(GBContext* ctx, const uint8_t* framebuffer);
+    void (*on_audio_sample)(GBContext* ctx, int16_t left, int16_t right);
+    uint8_t (*get_joypad)(GBContext* ctx);
+    void (*on_serial_byte)(GBContext* ctx, uint8_t byte);
+} GBPlatformCallbacks;
+
+/**
  * @brief CPU register and state context
  * 
  * This structure is passed to all recompiled functions and contains
@@ -137,6 +152,7 @@ typedef struct GBContext {
     
     /* Platform interface */
     void* platform;       /**< Platform-specific data */
+    GBPlatformCallbacks callbacks; /**< Platform callbacks */
     
 } GBContext;
 
@@ -387,15 +403,7 @@ void gb_tick(GBContext* ctx, uint32_t cycles);
  * Platform Interface
  * ========================================================================== */
 
-/**
- * @brief Platform callbacks for I/O and rendering
- */
-typedef struct {
-    void (*on_vblank)(GBContext* ctx, const uint8_t* framebuffer);
-    void (*on_audio_sample)(GBContext* ctx, int16_t left, int16_t right);
-    uint8_t (*get_joypad)(GBContext* ctx);
-    void (*on_serial_byte)(GBContext* ctx, uint8_t byte);
-} GBPlatformCallbacks;
+/* Moved GBPlatformCallbacks definition to top to resolve circular dependency */
 
 /**
  * @brief Set platform callbacks

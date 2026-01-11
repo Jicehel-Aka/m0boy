@@ -240,7 +240,17 @@ uint8_t gb_audio_read(GBContext* ctx, uint16_t addr) {
         /* Control */
         case 0xFF24: return apu->nr50;
         case 0xFF25: return apu->nr51;
-        case 0xFF26: return apu->nr52 | 0x70; /* Top bits always 1 */
+        case 0xFF26: {
+            /* NR52 - Power Status */
+            /* Bit 7: Power ON/OFF (Read/Write) */
+            /* Bits 0-3: Channel ON status (Read Only) */
+            uint8_t val = (apu->nr52 & 0x80) | 0x70;
+            if (apu->ch1.enabled) val |= 0x01;
+            if (apu->ch2.enabled) val |= 0x02;
+            if (apu->ch3.enabled) val |= 0x04;
+            if (apu->ch4.enabled) val |= 0x08;
+            return val;
+        }
         
         /* Wave RAM */
         case 0xFF30 ... 0xFF3F:
@@ -586,4 +596,23 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
 
         gb_audio_callback(ctx, left, right);
     }
+}
+
+void gb_audio_div_reset(void* apu_ptr) {
+    if (!apu_ptr) return;
+    GBAudio* apu = (GBAudio*)apu_ptr;
+    
+    /* When DIV is reset, the internal counter for the Frame Sequencer is NOT affected 
+       directly, but the way Game Boy hardware derives the 512 Hz clock is from 
+       specific bits of the DIV counter. 
+       
+       However, a simplified behavior that is commonly used is that resetting DIV
+       effectively aligns the Frame Sequencer timer.
+       
+       Exact behavior:
+       Frame Sequencer clocked by Bit 12 (falling edge presumably) of the internal DIV counter.
+       Writing to DIV resets internal counter to 0. 
+       So we should reset our accumulation timer.
+    */
+    apu->fs_timer = 0;
 }

@@ -235,12 +235,6 @@ bool gb_platform_init(int scale) {
         SDL_PauseAudioDevice(g_audio_device, 0); /* Start playing */
     }
     
-    /* Register callbacks */
-    GBPlatformCallbacks callbacks = {
-        .on_audio_sample = on_audio_sample
-    };
-    gb_set_platform_callbacks(NULL, &callbacks);
-    
     fprintf(stderr, "[SDL] Creating window...\n");
     g_window = SDL_CreateWindow(
         "GameBoy Recompiled",
@@ -475,6 +469,13 @@ void gb_platform_set_title(const char* title) {
     }
 }
 
+void gb_platform_register_context(GBContext* ctx) {
+    GBPlatformCallbacks callbacks = {
+        .on_audio_sample = on_audio_sample
+    };
+    gb_set_platform_callbacks(ctx, &callbacks);
+}
+
 #else  /* !GB_HAS_SDL2 */
 
 /* Stub implementations when SDL2 is not available */
@@ -504,5 +505,7 @@ void gb_platform_vsync(void) {}
 void gb_platform_set_title(const char* title) {
     (void)title;
 }
+
+void gb_platform_register_context(GBContext* ctx) { (void)ctx; }
 
 #endif /* GB_HAS_SDL2 */
