@@ -47,3 +47,7 @@ compile_commands.json
 tetris_test/
 *.log
 *.asm
+output/
+logs/
+
+tools/mgbdis

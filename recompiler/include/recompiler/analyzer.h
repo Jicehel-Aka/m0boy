@@ -160,6 +160,7 @@ struct AnalyzerOptions {
     
     // Debugging options
     bool trace_log = false;             // Print detailed execution trace
+    bool verbose = false;               // Print verbose analysis info
     size_t max_instructions = 0;        // Max instructions to analyze (0 = infinite)
     size_t max_functions = 0;           // Max functions to discover (0 = infinite)
 };

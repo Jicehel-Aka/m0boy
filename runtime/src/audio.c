@@ -27,6 +27,11 @@ typedef struct {
     int volume;
     int env_timer;
     bool enabled;
+
+    /* Sweep State */
+    int sweep_timer;
+    uint16_t shadow_freq;
+    bool sweep_enabled;
     
     /* Generation */
     uint32_t timer;
@@ -64,6 +69,9 @@ typedef struct {
     bool length_enabled;
     bool enabled;
     int wave_pos;
+
+    /* Generation */
+    uint32_t timer;
 } Channel3;
 
 typedef struct {
@@ -110,6 +118,39 @@ static const uint8_t DUTY_CYCLES[4][8] = {
     {1, 0, 0, 0, 0, 1, 1, 1}, /* 50% */
     {0, 1, 1, 1, 1, 1, 1, 0}  /* 75% */
 };
+
+/* Noise Divisors: (Divider code) => (Divisor) */
+static const int NOISE_DIVISORS[8] = { 8, 16, 32, 48, 64, 80, 96, 112 };
+
+static uint16_t calc_sweep(Channel1* ch) {
+    uint16_t new_freq = ch->shadow_freq;
+    uint8_t shift = ch->nr10 & 0x07;
+    bool sub = (ch->nr10 & 0x08) != 0;
+    
+    if (shift > 0) {
+        uint16_t delta = new_freq >> shift;
+        if (sub) new_freq -= delta;
+        else     new_freq += delta;
+    }
+    return new_freq;
+}
+
+static void step_envelope(int* timer, int* volume, uint8_t env_reg) {
+    if (*timer > 0) {
+        (*timer)--;
+        if (*timer == 0) {
+            uint8_t period = env_reg & 0x07;
+            if (period > 0) {
+                *timer = period;
+                bool up = (env_reg & 0x08) != 0;
+                if (up && *volume < 15) (*volume)++;
+                else if (!up && *volume > 0) (*volume)--;
+            } else {
+                *timer = 8; /* If period is 0, it acts like 8 for reload? Actually spec says 8 */
+            }
+        }
+    }
+}
 
 /* ============================================================================
  * Public Interface
@@ -252,7 +293,21 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
                 apu->ch1.enabled = true;
                 if (apu->ch1.length_counter == 0) apu->ch1.length_counter = 64;
                 apu->ch1.length_enabled = (value & 0x40) != 0;
-                /* TODO: Reset timer, envelope, etc */
+                
+                /* Envelope Reload */
+                apu->ch1.volume = (apu->ch1.nr12 >> 4);
+                apu->ch1.env_timer = (apu->ch1.nr12 & 0x07);
+                if (apu->ch1.env_timer == 0) apu->ch1.env_timer = 8;
+                
+                /* Sweep Reload */
+                apu->ch1.shadow_freq = apu->ch1.nr13 | ((apu->ch1.nr14 & 0x07) << 8);
+                uint8_t sweep_period = (apu->ch1.nr10 >> 4) & 0x07;
+                apu->ch1.sweep_timer = (sweep_period == 0) ? 8 : sweep_period;
+                apu->ch1.sweep_enabled = (sweep_period > 0) || ((apu->ch1.nr10 & 0x07) > 0);
+                if ((apu->ch1.nr10 & 0x07) > 0) {
+                    /* Overflow check on trigger */
+                    if (calc_sweep(&apu->ch1) > 2047) apu->ch1.enabled = false;
+                }
             }
             break;
             
@@ -269,6 +324,11 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
                 apu->ch2.enabled = true;
                 if (apu->ch2.length_counter == 0) apu->ch2.length_counter = 64;
                 apu->ch2.length_enabled = (value & 0x40) != 0;
+
+                /* Envelope Reload */
+                apu->ch2.volume = (apu->ch2.nr22 >> 4);
+                apu->ch2.env_timer = (apu->ch2.nr22 & 0x07);
+                if (apu->ch2.env_timer == 0) apu->ch2.env_timer = 8;
             }
             break;
             
@@ -281,6 +341,9 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             apu->ch3.nr34 = value;
             if (value & 0x80) {
                 apu->ch3.enabled = true;
+                if (apu->ch3.length_counter == 0) apu->ch3.length_counter = 256;
+                apu->ch3.length_enabled = (value & 0x40) != 0;
+                apu->ch3.wave_pos = 0;
             }
             break;
             
@@ -292,6 +355,16 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             apu->ch4.nr44 = value;
             if (value & 0x80) {
                 apu->ch4.enabled = true;
+                if (apu->ch4.length_counter == 0) apu->ch4.length_counter = 64;
+                apu->ch4.length_enabled = (value & 0x40) != 0;
+                
+                /* Envelope Reload */
+                apu->ch4.volume = (apu->ch4.nr42 >> 4);
+                apu->ch4.env_timer = (apu->ch4.nr42 & 0x07);
+                if (apu->ch4.env_timer == 0) apu->ch4.env_timer = 8;
+                
+                /* LFSR Reload */
+                apu->ch4.lfsr = 0x7FFF;
             }
             break;
             
@@ -333,12 +406,35 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
         
         /* Step Sweep (128 Hz): Steps 2, 6 */
         if (apu->fs_step == 2 || apu->fs_step == 6) {
-            // TODO: Sweep step
+            Channel1* ch1 = &apu->ch1;
+            if (ch1->sweep_enabled && ch1->enabled) {
+                ch1->sweep_timer--;
+                if (ch1->sweep_timer <= 0) {
+                    /* Reload timer */
+                    uint8_t period = (ch1->nr10 >> 4) & 0x07;
+                    ch1->sweep_timer = (period == 0) ? 8 : period;
+                    
+                    if (period > 0 && (ch1->nr10 & 0x07) > 0) {
+                        uint16_t new_freq = calc_sweep(ch1);
+                        if (new_freq <= 2047) {
+                            ch1->shadow_freq = new_freq;
+                            ch1->nr13 = new_freq & 0xFF;
+                            ch1->nr14 = (ch1->nr14 & ~0x07) | ((new_freq >> 8) & 0x07);
+                            /* Perform semantic overflow check again */
+                            if (calc_sweep(ch1) > 2047) ch1->enabled = false;
+                        } else {
+                            ch1->enabled = false;
+                        }
+                    }
+                }
+            }
         }
         
         /* Step Envelope (64 Hz): Step 7 */
         if (apu->fs_step == 7) {
-            // TODO: Envelope step
+            if (apu->ch1.enabled) step_envelope(&apu->ch1.env_timer, &apu->ch1.volume, apu->ch1.nr12);
+            if (apu->ch2.enabled) step_envelope(&apu->ch2.env_timer, &apu->ch2.volume, apu->ch2.nr22);
+            if (apu->ch4.enabled) step_envelope(&apu->ch4.env_timer, &apu->ch4.volume, apu->ch4.nr42);
         }
     }
     
@@ -350,7 +446,7 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
     if (apu->ch1.enabled) {
         uint16_t freq_raw = apu->ch1.nr13 | ((apu->ch1.nr14 & 0x07) << 8);
         uint32_t period = (2048 - freq_raw) * 4;
-        if (period == 0) period = 4; /* Avoid div/0 or infinite freq */
+        if (period == 0) period = 4;
         
         apu->ch1.timer += cycles;
         while (apu->ch1.timer >= period) {
@@ -371,6 +467,53 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
             apu->ch2.wave_pos = (apu->ch2.wave_pos + 1) & 7;
         }
     }
+
+    /* Channel 3 Stepping */
+    if (apu->ch3.enabled) {
+        uint16_t freq_raw = apu->ch3.nr33 | ((apu->ch3.nr34 & 0x07) << 8);
+        uint32_t period = (2048 - freq_raw) * 2; /* Wave channel is 2x faster clocking? 65536Hz base */
+        if (period == 0) period = 2;
+
+        apu->ch3.timer += (cycles); /* TODO: Verify wave timing scalar */
+        while (apu->ch3.timer >= period) {
+            apu->ch3.timer -= period;
+            apu->ch3.wave_pos = (apu->ch3.wave_pos + 1) & 31;
+        }
+    }
+
+    /* Channel 4 Stepping */
+    if (apu->ch4.enabled) {
+        /* Polynomial Counter */
+        uint8_t s = apu->ch4.nr43 >> 4;
+        uint8_t r = apu->ch4.nr43 & 0x07;
+        uint32_t period = NOISE_DIVISORS[r & 7] << s;
+        
+        /* Minimum period is 8 cycles? */
+        if (period < 8) period = 8;
+
+        /* Clock LFSR */
+        /* TODO: This timer logic is simplified, assumes we handle all cycles */
+        /* Normally we'd track residual */
+        /* For noise, we just want to know if we should clock the LFSR */
+        /* Accumulate cycles */
+        static uint32_t ch4_accum = 0; /* Should be in struct, but using static for quick fix */
+        ch4_accum += cycles;
+        
+        while (ch4_accum >= period) {
+            ch4_accum -= period;
+            
+            /* Shift LFSR */
+            uint16_t lfsr = apu->ch4.lfsr;
+            bool xor_res = (lfsr & 1) ^ ((lfsr >> 1) & 1);
+            lfsr >>= 1;
+            lfsr |= (xor_res << 14);
+            if (apu->ch4.nr43 & 0x08) { /* 7-bit mode */
+                lfsr &= ~0x40;
+                lfsr |= (xor_res << 6);
+            }
+            apu->ch4.lfsr = lfsr;
+        }
+    }
     
     if (apu->sample_timer >= apu->sample_period) {
         apu->sample_timer -= apu->sample_period;
@@ -384,8 +527,7 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
              int output = DUTY_CYCLES[duty][apu->ch1.wave_pos];
              
              if (output) {
-                 /* Fixed volume for now */
-                 int vol = 1000; 
+                 int vol = apu->ch1.volume;
                  if (apu->nr51 & 0x01) right += vol;
                  if (apu->nr51 & 0x10) left += vol;
              }
@@ -397,12 +539,51 @@ void gb_audio_step(GBContext* ctx, uint32_t cycles) {
              int output = DUTY_CYCLES[duty][apu->ch2.wave_pos];
              
              if (output) {
-                 int vol = 1000;
+                 int vol = apu->ch2.volume;
                  if (apu->nr51 & 0x02) right += vol;
                  if (apu->nr51 & 0x20) left += vol;
              }
         }
+
+        /* Channel 3 Output */
+        if (apu->ch3.enabled && (apu->ch3.nr30 & 0x80)) { // DAC ON
+             /* Get wave sample (4-bit) */
+             uint8_t byte = apu->ch3.wave_ram[apu->ch3.wave_pos / 2];
+             uint8_t sample = (apu->ch3.wave_pos & 1) ? (byte & 0x0F) : (byte >> 4);
+             
+             /* Apply volume shift */
+             uint8_t vol_code = (apu->ch3.nr32 >> 5) & 3;
+             switch (vol_code) {
+                 case 0: sample = 0; break; /* Mute */
+                 case 1: break; /* 100% */
+                 case 2: sample >>= 1; break; /* 50% */
+                 case 3: sample >>= 2; break; /* 25% */
+             }
+             
+             if (apu->nr51 & 0x04) right += sample;
+             if (apu->nr51 & 0x40) left += sample;
+        }
+
+        /* Channel 4 Output */
+        if (apu->ch4.enabled && (apu->ch4.nr42 & 0xF0)) { // DAC ON
+             bool output = !(apu->ch4.lfsr & 1); /* Output is inverted bit 0 */
+             
+             if (output) {
+                 int vol = apu->ch4.volume;
+                 if (apu->nr51 & 0x08) right += vol;
+                 if (apu->nr51 & 0x80) left += vol;
+             }
+        }
         
+        /* Master Volume / Scaling */
+        /* Currently values are 0-15 per channel, mixed. Max approx 60. */
+        /* Scale to int16 range */
+        int vol_l = (apu->nr50 >> 4) & 7;
+        int vol_r = (apu->nr50 & 7);
+        
+        left = left * (vol_l + 1) * 256;
+        right = right * (vol_r + 1) * 256;
+
         gb_audio_callback(ctx, left, right);
     }
 }

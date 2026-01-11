@@ -574,7 +574,7 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
     };
     
     // Emit source location comment if enabled
-    if (options.emit_address_comments && instr.source_address != 0) {
+    if (options.emit_address_comments && instr.has_source_location) {
         emit_indent();
         out << "/* " << std::hex << std::setfill('0');
         if (instr.source_bank > 0) {
@@ -822,11 +822,24 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                         << std::setw(4) << target << std::dec << "); return;\n";
                 } else {
                     // Same-bank jump - check if target is a function entry
-                    std::ostringstream func_name_ss;
-                    func_name_ss << "func_" << std::hex << std::setfill('0') << std::setw(4) << target;
-                    std::string func_name = func_name_ss.str();
+                    std::string func_name;
+                    bool is_func_entry = false;
                     
-                    if (program.functions.find(func_name) != program.functions.end()) {
+                    // Search for function matching target address
+                    for (const auto& kv : program.functions) {
+                        const auto& fn = kv.second;
+                        // Match if banks match (or target is in common area) and address matches
+                        bool bank_match = (fn.bank == instr.source_bank) || 
+                                          (target < 0x4000 && fn.bank == 0);
+                        
+                        if (bank_match && fn.entry_address == target) {
+                            func_name = fn.name;
+                            is_func_entry = true;
+                            break;
+                        }
+                    }
+                    
+                    if (is_func_entry) {
                         // Check if target is the CURRENT function - if so, use goto to avoid recursion
                         if (func_name == current_func_name) {
                             // Cycle tick before goto
@@ -853,6 +866,8 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                             } else {
                                 out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
                             }
+                            emit_indent();
+                            out << func_name << "(ctx);\n";
                             emit_indent();
                             out << "return;\n";
                         }
@@ -1660,6 +1675,12 @@ GeneratedOutput generate_output(const ir::Program& program,
     main_ss << "        } else if (strcmp(argv[i], \"--limit\") == 0 && i + 1 < argc) {\n";
     main_ss << "            gbrt_instruction_limit = strtoull(argv[++i], NULL, 10);\n";
     main_ss << "            printf(\"Instruction limit: %llu\\n\", (unsigned long long)gbrt_instruction_limit);\n";
+    main_ss << "        } else if (strcmp(argv[i], \"--input\") == 0 && i + 1 < argc) {\n";
+    main_ss << "            gb_platform_set_input_script(argv[++i]);\n";
+    main_ss << "        } else if (strcmp(argv[i], \"--dump-frames\") == 0 && i + 1 < argc) {\n";
+    main_ss << "            gb_platform_set_dump_frames(argv[++i]);\n";
+    main_ss << "        } else if (strcmp(argv[i], \"--screenshot-prefix\") == 0 && i + 1 < argc) {\n";
+    main_ss << "            gb_platform_set_screenshot_prefix(argv[++i]);\n";
     main_ss << "        }\n";
     main_ss << "    }\n\n";
     main_ss << "    GBContext* ctx = gb_context_create(NULL);\n";
@@ -1710,8 +1731,27 @@ GeneratedOutput generate_output(const ir::Program& program,
     cmake_ss << "# Set C standard\n";
     cmake_ss << "set(CMAKE_C_STANDARD 11)\n";
     cmake_ss << "set(CMAKE_C_STANDARD_REQUIRED ON)\n\n";
+    // Calculate relative path to runtime
+    namespace fs = std::filesystem;
+    fs::path out_path(options.output_dir);
+    std::string runtime_path;
+    
+    // Count depth to generate correct number of ../
+    int depth = 0;
+    for (const auto& p : out_path) {
+        if (p == ".") continue;
+        depth++;
+    }
+    // Ensure at least one level up
+    if (depth == 0) depth = 1;
+
+    std::stringstream rt_ss;
+    for(int i=0; i<depth; i++) rt_ss << "../";
+    rt_ss << "runtime";
+    runtime_path = rt_ss.str();
+
     cmake_ss << "# Runtime library path (relative to this output directory)\n";
-    cmake_ss << "set(GBRT_DIR \"${CMAKE_CURRENT_SOURCE_DIR}/../runtime\")\n\n";
+    cmake_ss << "set(GBRT_DIR \"${CMAKE_CURRENT_SOURCE_DIR}/" << runtime_path << "\")\n\n";
     cmake_ss << "# Find SDL2\n";
     cmake_ss << "find_package(SDL2 REQUIRED)\n\n";
     cmake_ss << "# Create runtime library with PPU and platform support\n";

@@ -423,6 +423,21 @@ uint32_t gb_step(GBContext* ctx);
  */
 void gb_audio_callback(GBContext* ctx, int16_t left, int16_t right);
 
+/**
+ * @brief Set input automation script (format: "frame:buttons:duration,...")
+ */
+void gb_platform_set_input_script(const char* script);
+
+/**
+ * @brief Set frames to dump screenshots (format: "frame1,frame2,...")
+ */
+void gb_platform_set_dump_frames(const char* frames);
+
+/**
+ * @brief Set filename prefix for screenshots
+ */
+void gb_platform_set_screenshot_prefix(const char* prefix);
+
 #ifdef __cplusplus
 }
 #endif

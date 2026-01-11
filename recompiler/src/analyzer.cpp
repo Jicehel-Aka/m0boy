@@ -237,6 +237,93 @@ static std::set<uint8_t> detect_bank_values(const ROM& rom) {
     return banks;
 }
 
+/**
+ * @brief Heuristic check if an address looks like valid code start
+ * 
+ * Checks for:
+ * 1. Repetitive byte patterns (indicative of data/tiles)
+ * 2. Immediate invalid opcodes
+ * 3. Dense invalid operations
+ */
+static bool is_likely_valid_code(const ROM& rom, uint8_t bank, uint16_t addr) {
+    // 1. Check for repetitive patterns (e.g. tile data)
+    // Most code has entropy. Data often repeats.
+    const int PATTERN_CHECK_LEN = 32;
+    if (addr + PATTERN_CHECK_LEN < 0x8000) {
+        uint8_t bytes[PATTERN_CHECK_LEN];
+        for (int i = 0; i < PATTERN_CHECK_LEN; i++) {
+            bytes[i] = rom.read_banked(bank, addr + i);
+        }
+        
+        // Check for small repeating periods (1 to 8 bytes)
+        // Check for repeating periods (1 to 8 bytes)
+        // If we see 3 full repetitions of ANY pattern, assume data.
+        // Code loops, but rarely repeats linear instruction sequences multiple times.
+        for (int period = 1; period <= 8; period++) {
+            // Check if pattern repeats at least 3 times (covering 3 * period bytes)
+            // e.g. ABC ABC ABC ...
+            int match_length = 0;
+            (void)match_length; // Suppress unused warning, logic uses it but compiler might not see it if optimization is aggressive or logic is subtle
+            
+            // Current simple logic doesn't use match_length for distinct count, removing if unused
+            // Actually, the loop uses it: if (rom.read(...) == rom.read(...)) match_length++. 
+            // But we don't READ match_length after loop.
+            // Detecting pattern based on count is enough.
+
+            const int REQUIRED_REPEATS = 3;
+            const int REQUIRED_LEN = period * REQUIRED_REPEATS;
+            
+            if (PATTERN_CHECK_LEN < REQUIRED_LEN) continue;
+            
+            bool matches = true;
+            for (int i = 0; i < REQUIRED_LEN - period; i++) {
+                if (bytes[i] != bytes[i + period]) {
+                    matches = false;
+                    break;
+                }
+            }
+            
+            if (matches) {
+                std::cout << "[DEBUG] Bank " << (int)bank << " rejected: Repeating pattern period " << period << "\n";
+                return false; 
+            }
+        }
+    }
+
+    // 2. Decode ahead and check for validity
+    Decoder decoder(rom);
+    uint16_t curr = addr;
+    int instructions_checked = 0;
+    const int MAX_CHECK = 4096; // Check full bank to be safe matching SML data blocks
+
+    while (instructions_checked < MAX_CHECK) {
+        Instruction instr = decoder.decode(curr, bank);
+        
+        // Immediate hard failure
+        if (instr.type == InstructionType::UNDEFINED || instr.type == InstructionType::INVALID) {
+            std::cout << "[DEBUG] Bank " << (int)bank << " rejected: Undefined/Invalid opcode " 
+                      << std::hex << (int)instr.opcode << " at " << curr << std::dec << "\n";
+            return false;
+        }
+        
+        // Check for suspicious control flow
+        // Data often interprets as mild control flow (conditional jumps)
+        
+        // If we hit logical terminator, we are probably okay
+        // Unconditional Return or Jump usually implies we survived the block
+        if (instr.is_return && !instr.is_conditional) return true;
+        if (instr.type == InstructionType::JP_NN) return true;
+        if (instr.type == InstructionType::JR_N) return true;
+        
+        curr += instr.length;
+        if (curr >= 0x8000) return false;
+        instructions_checked++;
+    }
+
+    // If we survived this long, assume valid
+    return true;
+}
+
 /* ============================================================================
  * Analysis Implementation
  * ========================================================================== */
@@ -291,12 +378,19 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
     if (rom.header().mbc_type != MBCType::NONE && options.analyze_all_banks) {
         std::cerr << "Analyzing all " << known_banks.size() << " banks\n";
         for (uint8_t bank : known_banks) {
-            if (bank > 0) {
-                // Check for code at common bank entry points
-                // Many games have jump tables or trampolines at 0x4000
-                work_queue.push(make_address(bank, 0x4000));
-                result.call_targets.insert(make_address(bank, 0x4000));
-            }
+
+                if (bank > 0) {
+                    // Check for code at common bank entry points
+                    // Many games have jump tables or trampolines at 0x4000
+                    // BUT: Use heuristics to avoid analyzing data banks (like SML Bank 1)
+                    if (is_likely_valid_code(rom, bank, 0x4000)) {
+                        work_queue.push(make_address(bank, 0x4000));
+                        result.call_targets.insert(make_address(bank, 0x4000));
+                    } else {
+                        // Always log this important decision
+                        std::cout << "[INFO] Skipping likely data bank " << (int)bank << " at 0x4000\n";
+                    }
+                }
         }
     }
     
@@ -397,11 +491,35 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
                       << ":" << std::setw(4) << offset << " " << instr.disassemble() << std::dec << "\n";
         }
 
+        // Heuristic: Detect 0xFF padding in switchable banks
+        // If we hit RST 38 (0xFF) in bank > 0, and it's followed by more 0xFFs, 
+        // it's likely empty space/padding, not code.
+        if (bank > 0 && instr.opcode == 0xFF) {
+            bool is_padding = true;
+            for (int i = 1; i < 16; i++) {
+                if (rom.read_banked(bank, offset + i) != 0xFF) {
+                    is_padding = false;
+                    break;
+                }
+            }
+            
+            if (is_padding) {
+                if (options.verbose) {
+                    std::cout << "[INFO] Detected padding at " 
+                              << std::hex << std::setfill('0') << std::setw(2) << (int)bank 
+                              << ":" << std::setw(4) << offset << std::dec << ", analyzing stopped for this path.\n";
+                }
+                continue;
+            }
+        }
+
         // Check for undefined instructions
         if (instr.type == InstructionType::UNDEFINED) {
              std::cout << "[ERROR] Undefined instruction at " 
                        << std::hex << std::setfill('0') << std::setw(2) << (int)bank << ":" << std::setw(4) << offset 
                        << " Opcode: " << std::setw(2) << (int)instr.opcode << std::dec << "\n";
+             // Stop analyzing this path
+             continue;
         }
 
         // Limit check
@@ -444,10 +562,19 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
                 std::vector<uint16_t> table_targets = extract_rst28_table_entries(rom, offset, bank);
                 for (uint16_t target : table_targets) {
                     uint8_t tbank = (target < 0x4000) ? 0 : bank;
-                    result.call_targets.insert(make_address(tbank, target));
-                    work_queue.push(make_address(tbank, target));
-                    // Mark these as labels too for proper block generation
-                    result.label_addresses.insert(make_address(tbank, target));
+                    // If target is in switchable bank region, we default to current bank (or Bank 1)
+                    if (tbank == 0 && target >= 0x4000) tbank = 1;
+
+                    // Verify target looks like code
+                    if (is_likely_valid_code(rom, tbank, target)) {
+                        result.call_targets.insert(make_address(tbank, target));
+                        work_queue.push(make_address(tbank, target));
+                        // Mark these as labels too for proper block generation
+                        result.label_addresses.insert(make_address(tbank, target));
+                    } else {
+                         std::cout << "[DEBUG] RST 28 target rejected: " 
+                                   << std::hex << (int)tbank << ":" << target << std::dec << "\n";
+                    }
                 }
                 std::cerr << "  RST 28 jump table at 0x" << std::hex << offset << std::dec 
                           << " with " << table_targets.size() << " entries\n";
@@ -462,7 +589,18 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         } else if (instr.is_call) {
             uint16_t target = instr.imm16;
             uint8_t tbank = target_bank(target);
+            
+            // If we are crossing banks to a switchable bank, verify it looks like code
+            // This prevents following bad pointers into data banks
+            if (tbank > 0 && tbank != bank) {
+                if (!is_likely_valid_code(rom, tbank, target)) {
+                     std::cout << "[DEBUG] Cross-bank CALL rejected: " << std::hex << (int)tbank << ":" << target << std::dec << "\n";
+                     continue;
+                }
+            }
+
             result.call_targets.insert(make_address(tbank, target));
+            // if (tbank == 1 && target == 0x4908) std::cout << "[DEBUG] CALL to 01:4908 from " << std::hex << offset << "\n";
             work_queue.push(make_address(tbank, target));
             
             // Track cross-bank calls
@@ -479,14 +617,29 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
                 uint16_t target = instr.imm16;
                 uint8_t tbank = target_bank(target);
                 if (target >= 0x4000 && target <= 0x7FFF) {
+                    // Check cross-bank jump validity
+                    if (tbank > 0 && tbank != bank) {
+                        if (!is_likely_valid_code(rom, tbank, target)) {
+                            std::cout << "[DEBUG] Cross-bank JP rejected: " << std::hex << (int)tbank << ":" << target << std::dec << "\n";
+                            continue;
+                        }
+                    }
                     result.call_targets.insert(make_address(tbank, target));
                 }
                 result.label_addresses.insert(make_address(tbank, target));
+                // if (tbank == 1 && target == 0x4908) std::cout << "[DEBUG] JP to 01:4908 from " << std::hex << offset << "\n";
                 work_queue.push(make_address(tbank, target));
             } else if (instr.type == InstructionType::JR_N || instr.type == InstructionType::JR_CC_N) {
                 uint16_t target = offset + instr.length + instr.offset;
                 result.label_addresses.insert(make_address(bank, target));
+                if (bank == 1 && target == 0x4908) std::cout << "[DEBUG] Jump to 01:4908 from " << std::hex << offset << "\n";
                 work_queue.push(make_address(bank, target));
+            } else if (instr.type == InstructionType::JP_HL) {
+                // JP (HL) - indirect jump, target is in HL register at runtime
+                // We can't statically determine the target, so we mark this as a terminator
+                // The recompiler will generate code that uses the interpreter fallback
+                // for indirect jumps. This is a limitation of static analysis.
+                // Don't continue analyzing this path - it will be handled by the interpreter.
             }
             
             if (instr.is_conditional) {
@@ -505,7 +658,10 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
             }
         } else {
             // Continue to next instruction
-            work_queue.push(make_address(bank, offset + instr.length));
+        if (bank == 1 && offset == 0x4908) {
+             std::cout << "[DEBUG] Pushing specific target 01:4908 from somewhere!\n";
+        }
+        work_queue.push(make_address(bank, offset + instr.length));
         }
     }
     
@@ -637,6 +793,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
 }
 
 AnalysisResult analyze_bank(const ROM& rom, uint8_t bank, const AnalyzerOptions& options) {
+    (void)bank; // Unused parameter
     // For now, just analyze the whole ROM
     // TODO: Filter to specific bank
     return analyze(rom, options);

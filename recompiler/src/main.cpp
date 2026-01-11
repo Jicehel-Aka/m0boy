@@ -170,6 +170,7 @@ int main(int argc, char* argv[]) {
 
     gbrecomp::AnalyzerOptions analyze_opts;
     analyze_opts.trace_log = trace_log;
+    analyze_opts.verbose = verbose;
     analyze_opts.max_instructions = limit_instructions;
 
     // Detect standard HRAM DMA routine

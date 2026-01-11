@@ -144,8 +144,10 @@ uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
     if (addr < 0xFF00) return 0xFF;
     if (addr < 0xFF80) {
         if (addr == 0xFF00) {
+             // DBG_GENERAL("Reading JOYP 0xFF00");
              uint8_t joyp = ctx->io[0x00];
-             uint8_t res = 0xCF;
+             // Bits 6-7 always 1. Bits 4-5 return what was written.
+             uint8_t res = 0xC0 | (joyp & 0x30) | 0x0F;
              if (!(joyp & 0x10)) res &= g_joypad_dpad;
              if (!(joyp & 0x20)) res &= g_joypad_buttons;
              return res;
@@ -197,7 +199,12 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
         ctx->io[addr - 0xFF00] = value;
         return;
     }
-    if (addr < 0xFFFF) { ctx->hram[addr - 0xFF80] = value; return; }
+    if (addr < 0xFFFF) { 
+        // if (addr >= 0xFF80 && addr <= 0xFF8F) {
+        //      DBG_GENERAL("Writing to HRAM[%04X]: %02X", addr, value);
+        // }
+        ctx->hram[addr - 0xFF80] = value; return; 
+    }
     if (addr == 0xFFFF) { ctx->io[0x80] = value; return; }
 }
 
@@ -356,7 +363,7 @@ void gb_add_cycles(GBContext* ctx, uint32_t cycles) {
 
 void gb_tick(GBContext* ctx, uint32_t cycles) {
     static uint32_t last_log = 0;
-    if (ctx->cycles - last_log >= 10000) {
+    if (gbrt_trace_enabled && ctx->cycles - last_log >= 10000) {
         last_log = ctx->cycles;
         fprintf(stderr, "[TICK] Cycles: %u, PC: 0x%04X, IME: %d, IF: 0x%02X, IE: 0x%02X\n", 
                 ctx->cycles, ctx->pc, ctx->ime, ctx->io[0x0F], ctx->io[0x80]);

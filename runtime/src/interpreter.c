@@ -97,9 +97,17 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
         /* HRAM DMA Interception */
         /* Check for standard HRAM DMA routine: LDH (0xFF46), A */
         if (ctx->pc >= 0xFF80 && ctx->pc <= 0xFFFE) {
+             // DBG_GENERAL("Interpreter: Executing HRAM at 0x%04X", ctx->pc);
+             // if (ctx->pc == 0xFFB6) {
+             //     DBG_GENERAL("HRAM[0xFFB6]: %02X %02X %02X %02X %02X %02X %02X %02X", 
+             //        gb_read8(ctx, 0xFFB6), gb_read8(ctx, 0xFFB7), 
+             //        gb_read8(ctx, 0xFFB8), gb_read8(ctx, 0xFFB9),
+             //        gb_read8(ctx, 0xFFBA), gb_read8(ctx, 0xFFBB),
+             //        gb_read8(ctx, 0xFFBC), gb_read8(ctx, 0xFFBD));
+             // }
              uint8_t op = gb_read8(ctx, ctx->pc);
              if (op == 0xE0 && gb_read8(ctx, ctx->pc + 1) == 0x46) {
-                 DBG_GENERAL("Interpreter: Intercepted HRAM DMA at 0x%04X", ctx->pc);
+                 // DBG_GENERAL("Interpreter: Intercepted HRAM DMA at 0x%04X", ctx->pc);
                  gb_write8(ctx, 0xFF46, ctx->a);
                  gb_ret(ctx); /* Execute RET */
                  return;
@@ -275,6 +283,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
             case 0x3D: ctx->a = gb_dec8(ctx, ctx->a); break; /* DEC A */
             case 0x34: gb_write8(ctx, ctx->hl, gb_inc8(ctx, gb_read8(ctx, ctx->hl))); break; /* INC (HL) */
             case 0x35: gb_write8(ctx, ctx->hl, gb_dec8(ctx, gb_read8(ctx, ctx->hl))); break; /* DEC (HL) */
+            case 0x36: gb_write8(ctx, ctx->hl, READ8(ctx)); break; /* LD (HL), n */
 
             case 0x80: gb_add8(ctx, ctx->b); break; /* ADD A, B */
             case 0x81: gb_add8(ctx, ctx->c); break; /* ADD A, C */

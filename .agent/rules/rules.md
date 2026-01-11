@@ -44,6 +44,8 @@ To ensure `tetris_test` reflects the latest recompiler/runtime changes, follow t
 - **Sync**: "Make sure the recompiled project is always up to date." If you modify `recompiler` logic or `runtime` headers, trigger the *Test ROM Recompilation* workflow.
 - **Resources**: Consult `ROADMAP.md` for current progress and `ARCH.md` for architectural constraints.
 - **Paths**: Usage of absolute paths is preferred for tool calls, but shell commands should be executed from the workspace root for clarity.
+- Put all the recompiled roms output on /output, since that folder is git ignored
+- Put all .log files on /logs, since that folder is git ignored
 
 ## Debugging
 - **Crash/Stuck Analysis**: If the recompiler hangs or produces invalid code:

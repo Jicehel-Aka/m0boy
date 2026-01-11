@@ -23,14 +23,127 @@ static uint32_t g_last_frame_time = 0;
 static SDL_AudioDeviceID g_audio_device = 0;
 
 /* Joypad state - exported for gbrt.c to access */
+/* Joypad state - exported for gbrt.c to access */
 uint8_t g_joypad_buttons = 0xFF;  /* Active low: Start, Select, B, A */
 uint8_t g_joypad_dpad = 0xFF;     /* Active low: Down, Up, Left, Right */
 
 /* ============================================================================
+ * Automation State
+ * ========================================================================== */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#define MAX_SCRIPT_ENTRIES 100
+typedef struct {
+    uint32_t start_frame;
+    uint32_t duration;
+    uint8_t dpad;    /* Active LOW mask to apply (0 = Pressed) */
+    uint8_t buttons; /* Active LOW mask to apply (0 = Pressed) */
+} ScriptEntry;
+
+static ScriptEntry g_input_script[MAX_SCRIPT_ENTRIES];
+static int g_script_count = 0;
+static int g_script_idx = 0;
+
+#define MAX_DUMP_FRAMES 100
+static uint32_t g_dump_frames[MAX_DUMP_FRAMES];
+static int g_dump_count = 0;
+static char g_screenshot_prefix[64] = "screenshot";
+
+/* Helper to parse button string "U,D,L,R,A,B,S,T" */
+static void parse_buttons(const char* btn_str, uint8_t* dpad, uint8_t* buttons) {
+    *dpad = 0xFF;
+    *buttons = 0xFF;
+    // Simple parser: check for existence of characters
+    if (strchr(btn_str, 'U')) *dpad &= ~0x04;
+    if (strchr(btn_str, 'D')) *dpad &= ~0x08;
+    if (strchr(btn_str, 'L')) *dpad &= ~0x02;
+    if (strchr(btn_str, 'R')) *dpad &= ~0x01;
+    if (strchr(btn_str, 'A')) *buttons &= ~0x01;
+    if (strchr(btn_str, 'B')) *buttons &= ~0x02;
+    if (strchr(btn_str, 'S')) *buttons &= ~0x08; /* Start */
+    if (strchr(btn_str, 'T')) *buttons &= ~0x04; /* Select (T for selecT) */
+}
+
+void gb_platform_set_input_script(const char* script) {
+    // Format: frame:buttons:duration,...
+    // e.g. "60:S:10,120:A:5"
+    if (!script) return;
+    
+    char* copy = strdup(script);
+    char* token = strtok(copy, ",");
+    g_script_count = 0;
+    
+    while (token && g_script_count < MAX_SCRIPT_ENTRIES) {
+        uint32_t frame = 0, duration = 0;
+        char btn_buf[16] = {0};
+        
+        if (sscanf(token, "%u:%15[^:]:%u", &frame, btn_buf, &duration) == 3) {
+            ScriptEntry* e = &g_input_script[g_script_count++];
+            e->start_frame = frame;
+            e->duration = duration;
+            parse_buttons(btn_buf, &e->dpad, &e->buttons);
+            printf("[AUTO] Added input: Frame %u, Btns '%s', Dur %u\n", frame, btn_buf, duration);
+        }
+        token = strtok(NULL, ",");
+    }
+    free(copy);
+}
+
+void gb_platform_set_dump_frames(const char* frames) {
+    if (!frames) return;
+    char* copy = strdup(frames);
+    char* token = strtok(copy, ",");
+    g_dump_count = 0;
+    while (token && g_dump_count < MAX_DUMP_FRAMES) {
+        g_dump_frames[g_dump_count++] = (uint32_t)strtoul(token, NULL, 10);
+        token = strtok(NULL, ",");
+    }
+    free(copy);
+}
+
+void gb_platform_set_screenshot_prefix(const char* prefix) {
+    if (prefix) snprintf(g_screenshot_prefix, sizeof(g_screenshot_prefix), "%s", prefix);
+}
+
+static void save_ppm(const char* filename, const uint32_t* fb, int width, int height, int frame_count) {
+    // Calculate simple hash
+    uint32_t hash = 0;
+    for (int k = 0; k < width * height; k++) {
+        hash = (hash * 33) ^ fb[k];
+    }
+    printf("[AUTO] Frame %d hash: %08X\n", frame_count, hash);
+
+    FILE* f = fopen(filename, "wb");
+    if (!f) return;
+    
+    fprintf(f, "P6\n%d %d\n255\n", width, height);
+    
+    // Convert ARGB to RGB
+    int num_pixels = width * height;
+    uint8_t* row = malloc(width * 3);
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            uint32_t p = fb[y * width + x];
+            row[x*3+0] = (p >> 16) & 0xFF; // R
+            row[x*3+1] = (p >> 8) & 0xFF;  // G
+            row[x*3+2] = (p >> 0) & 0xFF;  // B
+        }
+        fwrite(row, 1, width * 3, f);
+    }
+    
+    free(row);
+    fclose(f);
+    printf("[AUTO] Saved screenshot: %s\n", filename);
+}
+
+
+static int g_frame_count = 0;
+
+/* ============================================================================
  * Platform Functions
  * ========================================================================== */
-
-
 
 void gb_platform_shutdown(void) {
     if (g_texture) {
@@ -105,11 +218,22 @@ bool gb_platform_init(int scale) {
     fprintf(stderr, "[SDL] SDL initialized.\n");
     
     /* Initialize Audio */
-    /*
     SDL_AudioSpec want, have;
-    ...
-    */
-    g_audio_device = 0;
+    memset(&want, 0, sizeof(want));
+    want.freq = AUDIO_SAMPLE_RATE;
+    want.format = AUDIO_S16SYS;
+    want.channels = 2;
+    want.samples = 1024;
+    want.callback = sdl_audio_callback;
+    want.userdata = NULL;
+    
+    g_audio_device = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
+    if (g_audio_device == 0) {
+        fprintf(stderr, "[SDL] Failed to open audio: %s\n", SDL_GetError());
+    } else {
+        fprintf(stderr, "[SDL] Audio initialized: %d Hz, %d channels\n", have.freq, have.channels);
+        SDL_PauseAudioDevice(g_audio_device, 0); /* Start playing */
+    }
     
     /* Register callbacks */
     GBPlatformCallbacks callbacks = {
@@ -168,6 +292,9 @@ bool gb_platform_init(int scale) {
 
 bool gb_platform_poll_events(GBContext* ctx) {
     SDL_Event event;
+    uint8_t joyp = ctx ? ctx->io[0x00] : 0xFF;
+    bool dpad_selected = !(joyp & 0x10);
+    bool buttons_selected = !(joyp & 0x20);
     
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
@@ -177,48 +304,49 @@ bool gb_platform_poll_events(GBContext* ctx) {
             case SDL_KEYDOWN:
             case SDL_KEYUP: {
                 bool pressed = (event.type == SDL_KEYDOWN);
+                bool trigger = false;
                 
                 switch (event.key.keysym.scancode) {
                     /* D-pad */
                     case SDL_SCANCODE_UP:
                     case SDL_SCANCODE_W:
-                        if (pressed) g_joypad_dpad &= ~0x04;
+                        if (pressed) { g_joypad_dpad &= ~0x04; if (dpad_selected) trigger = true; }
                         else g_joypad_dpad |= 0x04;
                         break;
                     case SDL_SCANCODE_DOWN:
                     case SDL_SCANCODE_S:
-                        if (pressed) g_joypad_dpad &= ~0x08;
+                        if (pressed) { g_joypad_dpad &= ~0x08; if (dpad_selected) trigger = true; }
                         else g_joypad_dpad |= 0x08;
                         break;
                     case SDL_SCANCODE_LEFT:
                     case SDL_SCANCODE_A:
-                        if (pressed) g_joypad_dpad &= ~0x02;
+                        if (pressed) { g_joypad_dpad &= ~0x02; if (dpad_selected) trigger = true; }
                         else g_joypad_dpad |= 0x02;
                         break;
                     case SDL_SCANCODE_RIGHT:
                     case SDL_SCANCODE_D:
-                        if (pressed) g_joypad_dpad &= ~0x01;
+                        if (pressed) { g_joypad_dpad &= ~0x01; if (dpad_selected) trigger = true; }
                         else g_joypad_dpad |= 0x01;
                         break;
                     
                     /* Buttons */
                     case SDL_SCANCODE_Z:
                     case SDL_SCANCODE_J:
-                        if (pressed) g_joypad_buttons &= ~0x01;  /* A */
+                        if (pressed) { g_joypad_buttons &= ~0x01; if (buttons_selected) trigger = true; } /* A */
                         else g_joypad_buttons |= 0x01;
                         break;
                     case SDL_SCANCODE_X:
                     case SDL_SCANCODE_K:
-                        if (pressed) g_joypad_buttons &= ~0x02;  /* B */
+                        if (pressed) { g_joypad_buttons &= ~0x02; if (buttons_selected) trigger = true; } /* B */
                         else g_joypad_buttons |= 0x02;
                         break;
                     case SDL_SCANCODE_RSHIFT:
                     case SDL_SCANCODE_BACKSPACE:
-                        if (pressed) g_joypad_buttons &= ~0x04;  /* Select */
+                        if (pressed) { g_joypad_buttons &= ~0x04; if (buttons_selected) trigger = true; } /* Select */
                         else g_joypad_buttons |= 0x04;
                         break;
                     case SDL_SCANCODE_RETURN:
-                        if (pressed) g_joypad_buttons &= ~0x08;  /* Start */
+                        if (pressed) { g_joypad_buttons &= ~0x08; if (buttons_selected) trigger = true; } /* Start */
                         else g_joypad_buttons |= 0x08;
                         break;
                     
@@ -227,6 +355,12 @@ bool gb_platform_poll_events(GBContext* ctx) {
                         
                     default:
                         break;
+                }
+                
+                if (trigger && ctx && event.key.repeat == 0) {
+                    ctx->io[0x0F] |= 0x10; /* Request Joypad Interrupt */
+                    /* Also wake up HALT state immediately if needed, though handle_interrupts does it */
+                    if (ctx->halted) ctx->halted = 0;
                 }
                 break;
             }
@@ -239,10 +373,34 @@ bool gb_platform_poll_events(GBContext* ctx) {
         }
     }
     
+    /* Handle Automation Inputs */
+    for (int i = 0; i < g_script_count; i++) {
+        ScriptEntry* e = &g_input_script[i];
+        if (g_frame_count >= e->start_frame && g_frame_count < (e->start_frame + e->duration)) {
+             // Apply inputs (ANDing masks)
+             g_joypad_dpad &= e->dpad;
+             g_joypad_buttons &= e->buttons;
+             
+             // Check triggers
+             bool trigger = false;
+             if ((~e->dpad & 0x0F) && dpad_selected) trigger = true;
+             if ((~e->buttons & 0x0F) && buttons_selected) trigger = true;
+             
+                if (trigger && ctx) {
+                    /* Only trigger on initial press, not repeats or continuous hold */
+                    /* But for automation, we just check frame range. We should only trigger on EDGE. */
+                     if (g_frame_count == e->start_frame) {
+                        ctx->io[0x0F] |= 0x10;
+                        if (ctx->halted) ctx->halted = 0;
+                     }
+                }
+        }
+    }
+
     return true;
 }
 
-static int g_frame_count = 0;
+
 
 void gb_platform_render_frame(const uint32_t* framebuffer) {
     if (!g_texture || !g_renderer || !framebuffer) {
@@ -252,6 +410,15 @@ void gb_platform_render_frame(const uint32_t* framebuffer) {
     }
     
     g_frame_count++;
+    
+    /* Handle Screenshot Dumping */
+    for (int i = 0; i < g_dump_count; i++) {
+        if (g_dump_frames[i] == (uint32_t)g_frame_count) {
+             char filename[128];
+             snprintf(filename, sizeof(filename), "%s_%05d.ppm", g_screenshot_prefix, g_frame_count);
+             save_ppm(filename, framebuffer, GB_SCREEN_WIDTH, GB_SCREEN_HEIGHT, g_frame_count);
+        }
+    }
     
     /* Debug: check framebuffer content on first few frames */
     if (g_frame_count <= 3) {

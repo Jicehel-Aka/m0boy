@@ -214,6 +214,7 @@ struct IRInstruction {
     // Source location tracking
     uint8_t source_bank = 0;
     uint16_t source_address = 0;
+    bool has_source_location = false;
     
     // Cycle cost
     uint8_t cycles = 0;

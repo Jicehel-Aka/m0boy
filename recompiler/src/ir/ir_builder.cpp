@@ -594,6 +594,7 @@ void IRBuilder::emit(ir::BasicBlock& block, IRInstruction ir_instr,
     if (options_.emit_source_locations) {
         ir_instr.source_bank = src.bank;
         ir_instr.source_address = src.address;
+        ir_instr.has_source_location = true;
     }
     block.instructions.push_back(ir_instr);
 }

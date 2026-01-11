@@ -28,11 +28,11 @@ extern "C" {
 
 /* Uncomment to enable specific debug categories */
 /* All debug disabled for performance in cpu_instrs testing */
-#define GB_DEBUG_PPU
+// #define GB_DEBUG_PPU
 // #define GB_DEBUG_MEM  
 // #define GB_DEBUG_VRAM
 // #define GB_DEBUG_FRAME
-#define GB_DEBUG_REGS
+// #define GB_DEBUG_REGS
 // #define GB_DEBUG_ALL
 
 #ifdef GB_DEBUG_ALL
@@ -84,13 +84,8 @@ extern "C" {
 #define DBG_REGS(fmt, ...) ((void)0)
 #endif
 
-/* General debug (always available, can be disabled at compile time) */
-#if defined(GB_DEBUG) || defined(GB_DEBUG_PPU) || defined(GB_DEBUG_VRAM) || \
-    defined(GB_DEBUG_FRAME) || defined(GB_DEBUG_REGS) || defined(GB_DEBUG_MEM)
+/* General debug (always available) */
 #define DBG_GENERAL(fmt, ...) fprintf(stderr, "[GB] " fmt "\n", ##__VA_ARGS__)
-#else
-#define DBG_GENERAL(fmt, ...) ((void)0)
-#endif
 
 /* ============================================================================
  * Debug Helper Functions
