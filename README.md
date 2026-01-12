@@ -8,6 +8,21 @@ A **static recompiler** for original GameBoy ROMs that translates Z80 assembly d
 
 ---
 
+## Downloads
+
+Pre-built binaries are available on the [Releases](https://github.com/arcanite24/gb-recompiled/releases) page:
+
+| Platform | Architecture | File |
+|----------|--------------|------|
+| **Windows** | x64 | `gb-recompiled-windows-x64.zip` |
+| **Linux** | x64 | `gb-recompiled-linux-x64.tar.gz` |
+| **macOS** | x64 (Intel) | `gb-recompiled-macos-x64.tar.gz` |
+| **macOS** | ARM64 (Apple Silicon) | `gb-recompiled-macos-arm64.tar.gz` |
+
+> **Note**: The recompiler (`gbrecomp`) is what you download. After recompiling a ROM, you'll still need CMake, Ninja, SDL2, and a C compiler to build the generated project.
+
+---
+
 ## Features
 
 - **High Compatibility**: Successfully recompiles **98.9%** of the tested ROM library (1592/1609 ROMs) ** MOST OF THE GAMES ARE NOT FULLY PLAYABLE YET**
