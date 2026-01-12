@@ -123,7 +123,7 @@ public:
     // ========== Special ==========
     
     void emit_nop() override;
-    void emit_halt() override;
+    void emit_halt(uint16_t next_pc) override;
     void emit_stop() override;
     void emit_di() override;
     void emit_ei() override;

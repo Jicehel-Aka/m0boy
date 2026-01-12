@@ -254,6 +254,10 @@ uint8_t gb_audio_read(GBContext* ctx, uint16_t addr) {
         
         /* Wave RAM */
         case 0xFF30 ... 0xFF3F:
+            if (apu->ch3.enabled) {
+                /* On DMG, if channel 3 is enabled, reading Wave RAM returns the byte currently being accessed */
+                return apu->ch3.wave_ram[apu->ch3.wave_pos / 2];
+            }
             return apu->ch3.wave_ram[addr - 0xFF30];
             
         default: return 0xFF;
@@ -294,7 +298,11 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             apu->ch1.nr11 = value; 
             apu->ch1.length_counter = 64 - (value & 0x3F);
             break;
-        case 0xFF12: apu->ch1.nr12 = value; break;
+        case 0xFF12: 
+            apu->ch1.nr12 = value; 
+            /* DAC Check: If top 5 bits are 0, DAC is off and channel is disabled */
+            if ((value & 0xF8) == 0) apu->ch1.enabled = false;
+            break;
         case 0xFF13: apu->ch1.nr13 = value; break;
         case 0xFF14: 
             apu->ch1.nr14 = value;
@@ -326,7 +334,10 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             apu->ch2.nr21 = value; 
             apu->ch2.length_counter = 64 - (value & 0x3F);
             break;
-        case 0xFF17: apu->ch2.nr22 = value; break;
+        case 0xFF17: 
+            apu->ch2.nr22 = value; 
+            if ((value & 0xF8) == 0) apu->ch2.enabled = false;
+            break;
         case 0xFF18: apu->ch2.nr23 = value; break;
         case 0xFF19: 
             apu->ch2.nr24 = value;
@@ -343,7 +354,10 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             break;
             
         /* Channel 3 */
-        case 0xFF1A: apu->ch3.nr30 = value; break;
+        case 0xFF1A: 
+            apu->ch3.nr30 = value; 
+            if (!(value & 0x80)) apu->ch3.enabled = false;
+            break;
         case 0xFF1B: apu->ch3.nr31 = value; break;
         case 0xFF1C: apu->ch3.nr32 = value; break;
         case 0xFF1D: apu->ch3.nr33 = value; break;
@@ -359,7 +373,10 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
             
         /* Channel 4 */
         case 0xFF20: apu->ch4.nr41 = value; break;
-        case 0xFF21: apu->ch4.nr42 = value; break;
+        case 0xFF21: 
+            apu->ch4.nr42 = value; 
+            if ((value & 0xF8) == 0) apu->ch4.enabled = false;
+            break;
         case 0xFF22: apu->ch4.nr43 = value; break;
         case 0xFF23: 
             apu->ch4.nr44 = value;
@@ -384,7 +401,12 @@ void gb_audio_write(GBContext* ctx, uint16_t addr, uint8_t value) {
         
         /* Wave RAM */
         case 0xFF30 ... 0xFF3F:
-            apu->ch3.wave_ram[addr - 0xFF30] = value;
+            /* If channel 3 is enabled, writes to Wave RAM are ignored (or weird on DMG)
+             * For simplicity/safety, we block writes if enabled. 
+             */
+            if (!apu->ch3.enabled) {
+                apu->ch3.wave_ram[addr - 0xFF30] = value;
+            }
             break;
     }
 }

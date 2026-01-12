@@ -6,6 +6,10 @@ A **static recompiler** for original GameBoy ROMs that translates Z80 assembly d
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 
+<p align="center">
+  <img src="dino.png" alt="GB Recompiled Screenshot" width="400">
+</p>
+
 ---
 
 ## Downloads
@@ -27,11 +31,12 @@ Pre-built binaries are available on the [Releases](https://github.com/arcanite24
 
 - **High Compatibility**: Successfully recompiles **98.9%** of the tested ROM library (1592/1609 ROMs) **MOST OF THE GAMES ARE NOT FULLY PLAYABLE YET**
 - **Native Performance**: Generated C code compiles to native machine code
-- **Complete Runtime**: Includes a full GameBoy runtime library with:
+- **Accurate Runtime**:
+  - Cycle-accurate instruction emulation (including HALT bug)
+  - Precise OAM DMA and interrupt timing
   - Accurate PPU (graphics) emulation with scanline rendering
   - Audio subsystem (APU) with all 4 channels
-  - Memory Bank Controller support (MBC1, MBC3, MBC5)
-  - Timer, interrupts, and joypad input
+- **Memory Bank Controllers**: Full support for MBC1 (including Mode 1), MBC2, MBC3 (with RTC), and MBC5
 - **SDL2 Platform Layer**: Ready-to-run with keyboard/controller input and window display
 - **Debugging Tools**: Trace logging, instruction limits, and screenshot capture
 - **Cross-Platform**: Works on macOS, Linux, and Windows (via CMake + Ninja)
@@ -113,6 +118,20 @@ When running a recompiled game:
 | `--dump-frames <list>` | Dump specific frames as screenshots |
 | `--screenshot-prefix <path>` | Set screenshot output path |
 
+### Controls
+
+| GameBoy | Keyboard (Primary) | Keyboard (Alt) |
+|---------|-------------------|----------------|
+| **D-Pad Up** | ↑ Arrow | W |
+| **D-Pad Down** | ↓ Arrow | S |
+| **D-Pad Left** | ← Arrow | A |
+| **D-Pad Right** | → Arrow | D |
+| **A Button** | Z | J |
+| **B Button** | X | K |
+| **Start** | Enter | - |
+| **Select** | Right Shift | Backspace |
+| **Quit** | Escape | - |
+
 ---
 
 ## How It Works
@@ -169,15 +188,26 @@ Manually confirmed working examples:
 
 ---
 
-## Known Limitations
+## Project Status & Roadmap
 
-1. **RAM Execution**: Code that runs from RAM (self-modifying code, copied routines) cannot be statically recompiled. Games like `cpu_instrs.gb` use this technique.
+### Current Limitations
+1. **RAM Execution**: Code that runs from RAM (e.g., self-modifying code in `cpu_instrs.gb`) cannot be statically recompiled yet.
+2. **Computed Jumps**: Complex jump tables using `JP HL` (like switch statements) require better heuristic detection.
+3. **Audio**: Some channel quirks and "zombie mode" envelope glitches are not yet implemented.
 
-2. **Computed Jumps**: Complex jump tables using `JP HL` require heuristic detection. If not resolved, some code paths may be missed.
+### Missing Features (Roadmap)
+The following features are prioritized for future updates:
 
-3. **Timing Accuracy**: The recompiler prioritizes correctness over cycle-perfect timing. Some games with strict timing requirements may have minor glitches.
+#### Game Boy Color (CGB)
+- [ ] **Double Speed Mode**: CPU speed switching.
+- [ ] **Memory Banking**: VRAM (16KB) and WRAM (32KB) banking support.
+- [ ] **CGB Palettes**: Support for 0xFF68-0xFF6B registers.
+- [ ] **DMA**: HDMA and GDMA transfer implementation.
 
-4. **Game Boy Color**: While MBC5 and basic banking are supported, full CGB-specific features (double-speed mode, CGB palettes) are not yet complete.
+#### Accuracy & Enhancements
+- [ ] **PPU Timing**: Variable Mode 3 length for perfect pixel timing.
+- [ ] **Recompiler**: Improved detection for switch-statement-style jump tables.
+- [ ] **Self-Modifying Code**: Detection and interpreter fallback for RAM-executed code.
 
 ---
 

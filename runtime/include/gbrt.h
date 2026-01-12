@@ -109,9 +109,18 @@ typedef struct GBContext {
     uint8_t ime_pending;  /**< IME will be enabled after next instruction */
     uint8_t halted;       /**< CPU is halted */
     uint8_t stopped;      /**< CPU is stopped */
+    uint8_t halt_bug;     /**< HALT bug: next instruction byte read twice */
+    
+    /* OAM DMA state */
+    struct {
+        uint8_t active;         /**< DMA is in progress */
+        uint8_t source_high;    /**< Source address >> 8 */
+        uint8_t progress;       /**< Bytes copied (0-159) */
+        uint16_t cycles_remaining; /**< Cycles until DMA completes */
+    } dma;
     
     /* Current bank numbers */
-    uint8_t rom_bank;     /**< Current ROM bank (0x4000-0x7FFF) */
+    uint16_t rom_bank;    /**< Current ROM bank (0x4000-0x7FFF) - 9 bits for MBC5 */
     uint8_t ram_bank;     /**< Current RAM bank */
     uint8_t wram_bank;    /**< Current WRAM bank (CGB only) */
     uint8_t vram_bank;    /**< Current VRAM bank (CGB only) */
@@ -119,9 +128,10 @@ typedef struct GBContext {
     /* MBC state */
     uint8_t mbc_type;
     uint8_t ram_enabled;
-    uint8_t mbc_mode;     /**< Banking mode for MBC1 */
-    uint8_t rtc_mode;     /**< 0=RAM, 1=RTC registers (for 0xA000-0xBFFF) */
-    uint8_t rtc_reg;      /**< Selected RTC register (0x08-0x0C) */
+    uint8_t mbc_mode;       /**< Banking mode for MBC1 (0=ROM, 1=RAM/Advanced) */
+    uint8_t rom_bank_upper; /**< MBC1: Upper 2 bits of ROM bank / RAM bank selector */
+    uint8_t rtc_mode;       /**< 0=RAM, 1=RTC registers (for 0xA000-0xBFFF) */
+    uint8_t rtc_reg;        /**< Selected RTC register (0x08-0x0C) */
     
     /* Timing */
     uint32_t cycles;      /**< Cycles executed */
@@ -131,7 +141,6 @@ typedef struct GBContext {
     
     /* Timer internal state */
     uint16_t div_counter;   /**< Internal 16-bit divider counter */
-    uint32_t timer_counter; /**< Internal counter for TIMA */
     
     /* Memory pointers */
     uint8_t* rom;         /**< ROM data */

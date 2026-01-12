@@ -470,7 +470,25 @@ void CEmitter::emit_nop() {
     }
 }
 
-void CEmitter::emit_halt() { emit_line("gbrt_halt(ctx);"); }
+void CEmitter::emit_halt(uint16_t next_pc) {
+    emit_indent();
+    out_ << "if (!ctx->ime && (gbrt_read8(ctx, 0xFFFF) & gbrt_read8(ctx, 0xFF0F) & 0x1F)) {\n";
+    indent_level_++;
+    emit_indent();
+    out_ << "ctx->halt_bug = 1;\n";
+    emit_indent();
+    out_ << "ctx->pc = 0x" << std::hex << next_pc << std::dec << ";\n";
+    emit_indent();
+    out_ << "return;\n";
+    indent_level_--;
+    emit_indent();
+    out_ << "} else {\n";
+    indent_level_++;
+    emit_line("gbrt_halt(ctx);");
+    indent_level_--;
+    emit_indent();
+    out_ << "}\n";
+}
 void CEmitter::emit_stop() { emit_line("gbrt_stop(ctx);"); }
 void CEmitter::emit_di() { emit_line("ctx->ime = 0;"); }
 void CEmitter::emit_ei() { emit_line("ctx->ime_scheduled = 1;"); }
@@ -1086,9 +1104,21 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             break;
             
         case ir::Opcode::HALT:
-            out << "gb_halt(ctx);\n";
-            emit_indent();
-            out << "if (ctx->halted) return;\n";
+            // HALT bug: If IME=0 and there's a pending interrupt, next PC increment fails
+            out << "if (!ctx->ime && (gb_read8(ctx, 0xFFFF) & gb_read8(ctx, 0xFF0F) & 0x1F)) {\n";
+            emit_indent(); out << "    ctx->halt_bug = 1;\n";
+            if (next_pc_val != 0) {
+                 emit_indent(); out << "    ctx->pc = 0x" << std::hex << next_pc_val << std::dec << ";\n";
+            }
+            emit_indent(); out << "    return; /* Force interpreter to handle bug */\n";
+            emit_indent(); out << "} else {\n";
+            emit_indent(); out << "    /* Update PC to next instruction so interrupt return address is correct */\n";
+            if (next_pc_val != 0) {
+                 emit_indent(); out << "    ctx->pc = 0x" << std::hex << next_pc_val << std::dec << ";\n";
+            }
+            emit_indent(); out << "    gb_halt(ctx);\n";
+            emit_indent(); out << "    if (ctx->halted) return;\n";
+            emit_indent(); out << "}\n";
             break;
             
         case ir::Opcode::STOP:
@@ -1096,7 +1126,7 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             break;
             
         case ir::Opcode::DI:
-            out << "ctx->ime = 0;\n";
+            out << "ctx->ime = 0; ctx->ime_pending = 0; /* Also cancel pending EI */\n";
             break;
             
         case ir::Opcode::EI:
@@ -1410,7 +1440,10 @@ GeneratedOutput generate_output(const ir::Program& program,
         funcs.erase(last, funcs.end());
 
         source_ss << "            case 0x" << std::hex << std::setfill('0') << std::setw(4) << addr << std::dec << ":\n";
-        if (funcs.size() == 1) {
+        // Check if bank validation is required (allocatable space >= 0x4000)
+        bool validation_needed = (addr >= 0x4000);
+        
+        if (funcs.size() == 1 && !validation_needed) {
             source_ss << "                " << funcs[0].name << "(ctx); break;\n";
         } else {
             source_ss << "                switch (bank) {\n";

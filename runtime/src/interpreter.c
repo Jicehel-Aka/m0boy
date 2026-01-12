@@ -3,6 +3,58 @@
 #include "ppu.h"
 #include <stdlib.h>
 
+/* ============================================================================
+ * SM83 Opcode Cycle Timing Tables
+ * Based on Pan Docs: https://gbdev.io/pandocs/CPU_Instruction_Set.html
+ * Values are in T-cycles (1 M-cycle = 4 T-cycles)
+ * For conditional branches, this is the NOT-TAKEN timing; taken branches add extra cycles
+ * ========================================================================== */
+
+/* Main opcode cycles (0x00-0xFF) */
+static const uint8_t OPCODE_CYCLES[256] = {
+    /* 0x00-0x0F */   4, 12,  8,  8,  4,  4,  8,  4, 20,  8,  8,  8,  4,  4,  8,  4,
+    /* 0x10-0x1F */   4, 12,  8,  8,  4,  4,  8,  4, 12,  8,  8,  8,  4,  4,  8,  4,
+    /* 0x20-0x2F */   8, 12,  8,  8,  4,  4,  8,  4,  8,  8,  8,  8,  4,  4,  8,  4,
+    /* 0x30-0x3F */   8, 12,  8,  8, 12, 12, 12,  4,  8,  8,  8,  8,  4,  4,  8,  4,
+    /* 0x40-0x4F */   4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4,  4,  4,  8,  4,
+    /* 0x50-0x5F */   4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4,  4,  4,  8,  4,
+    /* 0x60-0x6F */   4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4,  4,  4,  8,  4,
+    /* 0x70-0x7F */   8,  8,  8,  8,  8,  8,  4,  8,  4,  4,  4,  4,  4,  4,  8,  4,
+    /* 0x80-0x8F */   4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4,  4,  4,  8,  4,
+    /* 0x90-0x9F */   4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4,  4,  4,  8,  4,
+    /* 0xA0-0xAF */   4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4,  4,  4,  8,  4,
+    /* 0xB0-0xBF */   4,  4,  4,  4,  4,  4,  8,  4,  4,  4,  4,  4,  4,  4,  8,  4,
+    /* 0xC0-0xCF */   8, 12, 12, 16, 12, 16,  8, 16,  8, 16, 12,  4, 12, 24,  8, 16,
+    /* 0xD0-0xDF */   8, 12, 12,  4, 12, 16,  8, 16,  8, 16, 12,  4, 12,  4,  8, 16,
+    /* 0xE0-0xEF */  12, 12,  8,  4,  4, 16,  8, 16, 16,  4, 16,  4,  4,  4,  8, 16,
+    /* 0xF0-0xFF */  12, 12,  8,  4,  4, 16,  8, 16, 12,  8, 16,  4,  4,  4,  8, 16
+};
+
+/* CB-prefix opcode cycles - all are 8 cycles except (HL) operations which are 16 */
+static const uint8_t CB_OPCODE_CYCLES[256] = {
+    /* 0x00-0x0F */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8,
+    /* 0x10-0x1F */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8,
+    /* 0x20-0x2F */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8,
+    /* 0x30-0x3F */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8,
+    /* 0x40-0x4F */   8,  8,  8,  8,  8,  8, 12,  8,  8,  8,  8,  8,  8,  8, 12,  8,
+    /* 0x50-0x5F */   8,  8,  8,  8,  8,  8, 12,  8,  8,  8,  8,  8,  8,  8, 12,  8,
+    /* 0x60-0x6F */   8,  8,  8,  8,  8,  8, 12,  8,  8,  8,  8,  8,  8,  8, 12,  8,
+    /* 0x70-0x7F */   8,  8,  8,  8,  8,  8, 12,  8,  8,  8,  8,  8,  8,  8, 12,  8,
+    /* 0x80-0x8F */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8,
+    /* 0x90-0x9F */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8,
+    /* 0xA0-0xAF */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8,
+    /* 0xB0-0xBF */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8,
+    /* 0xC0-0xCF */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8,
+    /* 0xD0-0xDF */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8,
+    /* 0xE0-0xEF */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8,
+    /* 0xF0-0xFF */   8,  8,  8,  8,  8,  8, 16,  8,  8,  8,  8,  8,  8,  8, 16,  8
+};
+
+/* Extra cycles for conditional branches when taken */
+#define BRANCH_TAKEN_EXTRA 4   /* JR cc, JP cc add 4 cycles when taken */
+#define CALL_TAKEN_EXTRA 12    /* CALL cc adds 12 cycles when taken */
+#define RET_TAKEN_EXTRA 12     /* RET cc adds 12 cycles when taken */
+
 /* Helper macros for instruction arguments */
 #define READ8(ctx) gb_read8(ctx, ctx->pc++)
 #define READ16(ctx) (ctx->pc += 2, gb_read16(ctx, ctx->pc - 2))
@@ -114,7 +166,18 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
              }
         }
 
-        uint8_t opcode = READ8(ctx);
+        uint8_t opcode;
+        if (ctx->halt_bug) {
+            /* HALT bug: Read opcode without incrementing PC (PC fails to advance) */
+            opcode = gb_read8(ctx, ctx->pc);
+            ctx->halt_bug = 0;
+        } else {
+            opcode = READ8(ctx);
+        }
+        
+        /* Track cycles for this instruction - will be adjusted for branches/CB prefix */
+        uint8_t cycles = OPCODE_CYCLES[opcode];
+        uint8_t extra_cycles = 0;  /* For conditional branches when taken */
         
         switch (opcode) {
             case 0x00: /* NOP */ break;
@@ -207,7 +270,15 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
             case 0x73: gb_write8(ctx, ctx->hl, ctx->e); break; /* LD (HL), E */
             case 0x74: gb_write8(ctx, ctx->hl, ctx->h); break; /* LD (HL), H */
             case 0x75: gb_write8(ctx, ctx->hl, ctx->l); break; /* LD (HL), L */
-            case 0x76: gb_halt(ctx); return; /* HALT */
+            case 0x76: /* HALT */
+                /* HALT bug: If IME=0 and there's a pending interrupt, PC fails to increment */
+                if (!ctx->ime && (gb_read8(ctx, 0xFFFF) & gb_read8(ctx, 0xFF0F) & 0x1F)) {
+                    ctx->halt_bug = 1;  /* Next instruction byte read twice */
+                } else {
+                    gb_halt(ctx);
+                }
+                gb_tick(ctx, cycles);
+                return;
             case 0x77: gb_write8(ctx, ctx->hl, ctx->a); break; /* LD (HL), A */
             
             /* LD A, r */
@@ -397,53 +468,54 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
 
             /* Control Flow */
             /* Control Flow */
-            case 0xC3: ctx->pc = READ16(ctx); return; /* JP nn */
-            case 0xE9: ctx->pc = ctx->hl; return; /* JP HL */
+            case 0xC3: ctx->pc = READ16(ctx); gb_tick(ctx, cycles); return; /* JP nn */
+            case 0xE9: ctx->pc = ctx->hl; gb_tick(ctx, cycles); return; /* JP HL */
             
             case 0xC2: { /* JP NZ, nn */
                 uint16_t dest = READ16(ctx);
-                if (!ctx->f_z) { ctx->pc = dest; return; }
+                if (!ctx->f_z) { ctx->pc = dest; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
                 break;
             }
             case 0xCA: { /* JP Z, nn */
                 uint16_t dest = READ16(ctx);
-                if (ctx->f_z) { ctx->pc = dest; return; }
+                if (ctx->f_z) { ctx->pc = dest; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
                 break;
             }
             case 0xD2: { /* JP NC, nn */
                 uint16_t dest = READ16(ctx);
-                if (!ctx->f_c) { ctx->pc = dest; return; }
+                if (!ctx->f_c) { ctx->pc = dest; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
                 break;
             }
             case 0xDA: { /* JP C, nn */
                 uint16_t dest = READ16(ctx);
-                if (ctx->f_c) { ctx->pc = dest; return; }
+                if (ctx->f_c) { ctx->pc = dest; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
                 break;
             }
             
             case 0x18: { /* JR n */
                 int8_t off = (int8_t)READ8(ctx);
                 ctx->pc += off;
+                gb_tick(ctx, cycles);
                 return;
             }
             case 0x20: { /* JR NZ, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (!ctx->f_z) { ctx->pc += off; return; }
+                if (!ctx->f_z) { ctx->pc += off; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
                 break;
             }
             case 0x28: { /* JR Z, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (ctx->f_z) { ctx->pc += off; return; }
+                if (ctx->f_z) { ctx->pc += off; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
                 break;
             }
             case 0x30: { /* JR NC, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (!ctx->f_c) { ctx->pc += off; return; }
+                if (!ctx->f_c) { ctx->pc += off; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
                 break;
             }
             case 0x38: { /* JR C, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (ctx->f_c) { ctx->pc += off; return; }
+                if (ctx->f_c) { ctx->pc += off; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
                 break;
             }
             
@@ -451,6 +523,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                 uint16_t dest = READ16(ctx);
                 gb_push16(ctx, ctx->pc);
                 ctx->pc = dest;
+                gb_tick(ctx, cycles);
                 return;
             }
             case 0xC4: { /* CALL NZ, nn */
@@ -458,6 +531,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                 if (!ctx->f_z) {
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
+                    gb_tick(ctx, cycles + CALL_TAKEN_EXTRA);
                     return;
                 }
                 break;
@@ -467,6 +541,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                 if (ctx->f_z) {
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
+                    gb_tick(ctx, cycles + CALL_TAKEN_EXTRA);
                     return;
                 }
                 break;
@@ -476,6 +551,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                 if (!ctx->f_c) {
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
+                    gb_tick(ctx, cycles + CALL_TAKEN_EXTRA);
                     return;
                 }
                 break;
@@ -485,6 +561,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                 if (ctx->f_c) {
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
+                    gb_tick(ctx, cycles + CALL_TAKEN_EXTRA);
                     return;
                 }
                 break;
@@ -492,36 +569,36 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
             
             case 0xC9: /* RET */
                 ctx->pc = gb_pop16(ctx);
+                gb_tick(ctx, cycles);
                 return;
             case 0xC0: /* RET NZ */
-                if (!ctx->f_z) { ctx->pc = gb_pop16(ctx); return; }
+                if (!ctx->f_z) { ctx->pc = gb_pop16(ctx); gb_tick(ctx, cycles + RET_TAKEN_EXTRA); return; }
                 break;
             case 0xC8: /* RET Z */
-                if (ctx->f_z) { ctx->pc = gb_pop16(ctx); return; }
+                if (ctx->f_z) { ctx->pc = gb_pop16(ctx); gb_tick(ctx, cycles + RET_TAKEN_EXTRA); return; }
                 break;
             case 0xD0: /* RET NC */
-                if (!ctx->f_c) { ctx->pc = gb_pop16(ctx); return; }
+                if (!ctx->f_c) { ctx->pc = gb_pop16(ctx); gb_tick(ctx, cycles + RET_TAKEN_EXTRA); return; }
                 break;
             case 0xD8: /* RET C */
-                if (ctx->f_c) { ctx->pc = gb_pop16(ctx); return; }
+                if (ctx->f_c) { ctx->pc = gb_pop16(ctx); gb_tick(ctx, cycles + RET_TAKEN_EXTRA); return; }
                 break;
             case 0xD9: /* RETI */
                 ctx->pc = gb_pop16(ctx);
-                ctx->ime_pending = 1; /* EI behavior? Or immediate? manual says immediate usually */
-                /* RETI enables IME immediately */
-                ctx->ime = 1;
+                ctx->ime = 1; /* RETI enables IME immediately */
+                gb_tick(ctx, cycles);
                 return;
                 
-            case 0xC7: gb_rst(ctx, 0x00); return;
-            case 0xCF: gb_rst(ctx, 0x08); return;
-            case 0xD7: gb_rst(ctx, 0x10); return;
-            case 0xDF: gb_rst(ctx, 0x18); return;
-            case 0xE7: gb_rst(ctx, 0x20); return;
-            case 0xEF: gb_rst(ctx, 0x28); return;
-            case 0xF7: gb_rst(ctx, 0x30); return;
-            case 0xFF: gb_rst(ctx, 0x38); return;
+            case 0xC7: gb_rst(ctx, 0x00); gb_tick(ctx, cycles); return;
+            case 0xCF: gb_rst(ctx, 0x08); gb_tick(ctx, cycles); return;
+            case 0xD7: gb_rst(ctx, 0x10); gb_tick(ctx, cycles); return;
+            case 0xDF: gb_rst(ctx, 0x18); gb_tick(ctx, cycles); return;
+            case 0xE7: gb_rst(ctx, 0x20); gb_tick(ctx, cycles); return;
+            case 0xEF: gb_rst(ctx, 0x28); gb_tick(ctx, cycles); return;
+            case 0xF7: gb_rst(ctx, 0x30); gb_tick(ctx, cycles); return;
+            case 0xFF: gb_rst(ctx, 0x38); gb_tick(ctx, cycles); return;
                 
-            case 0xF3: ctx->ime = 0; break; /* DI */
+            case 0xF3: ctx->ime = 0; ctx->ime_pending = 0; break; /* DI - also cancel pending EI */
             case 0xFB: ctx->ime_pending = 1; break; /* EI */
             
             /* Unused / Illegal opcodes (No-ops on some hardware, can reach here in tests) */
@@ -535,6 +612,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
             /* CB Prefix */
             case 0xCB: {
                 uint8_t cb_op = READ8(ctx);
+                cycles = CB_OPCODE_CYCLES[cb_op];  /* Override with CB-specific timing */
                 uint8_t r = cb_op & 7;
                 uint8_t b = (cb_op >> 3) & 7;
                 uint8_t val = get_reg8(ctx, r);
@@ -578,8 +656,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
                 return;
         }
         
-        /* Batch timing updates for performance - tick every 16 instructions instead of every one */
-        /* Cycle counting */
-        gb_tick(ctx, 4);
+        /* Per-instruction cycle counting - uses table lookup + extra for branches taken */
+        gb_tick(ctx, cycles + extra_cycles);
     }
 }

@@ -175,7 +175,7 @@ public:
     // ========== Special ==========
     
     virtual void emit_nop() = 0;
-    virtual void emit_halt() = 0;
+    virtual void emit_halt(uint16_t next_pc) = 0;
     virtual void emit_stop() = 0;
     virtual void emit_di() = 0;
     virtual void emit_ei() = 0;

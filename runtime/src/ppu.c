@@ -124,7 +124,9 @@ static void render_bg_scanline(GBPPU* ppu, GBContext* ctx) {
     }
     
     bool bg_enable = (ppu->lcdc & LCDC_BG_ENABLE);
-    bool window_enable = (ppu->lcdc & LCDC_WINDOW_ENABLE) && (ppu->wx <= 166) && (ppu->wy <= scanline);
+    /* Note: on DMG, LCDC_BG_ENABLE (bit 0) also controls Master Enable (BG+Window). 
+       On CGB, it controls priority. Assuming DMG mostly here. */
+    bool window_enable = bg_enable && (ppu->lcdc & LCDC_WINDOW_ENABLE) && (ppu->wx <= 166) && (ppu->wy <= scanline);
     
     /* Track if window was triggered */
     if (window_enable && !ppu->window_triggered) {
@@ -464,6 +466,8 @@ void ppu_write_register(GBPPU* ppu, GBContext* ctx, uint16_t addr, uint8_t value
             if ((ppu->lcdc & LCDC_LCD_ENABLE) && !(value & LCDC_LCD_ENABLE)) {
                 /* LCD turned off - reset to line 0 */
                 ppu->ly = 0;
+                ppu->window_line = 0;
+                ppu->window_triggered = false;
                 ppu->mode = PPU_MODE_HBLANK; /* Mode 0 */
                 ppu->mode_cycles = 0;
                 ctx->io[0x44] = 0;

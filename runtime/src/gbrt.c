@@ -71,6 +71,43 @@ void gb_context_destroy(GBContext* ctx) {
 }
 
 void gb_context_reset(GBContext* ctx, bool skip_bootrom) {
+    /* Reset DMA state */
+    ctx->dma.active = 0;
+    ctx->dma.source_high = 0;
+    ctx->dma.progress = 0;
+    ctx->dma.cycles_remaining = 0;
+    
+    /* Reset HALT bug state */
+    ctx->halt_bug = 0;
+    
+    /* Reset interrupt state */
+    ctx->ime = 0;
+    ctx->ime_pending = 0;
+    ctx->halted = 0;
+    ctx->stopped = 0;
+    
+    /* Reset RTC state */
+    ctx->rtc.s = 0;
+    ctx->rtc.m = 0;
+    ctx->rtc.h = 0;
+    ctx->rtc.dl = 0;
+    ctx->rtc.dh = 0;
+    ctx->rtc.latched_s = 0;
+    ctx->rtc.latched_m = 0;
+    ctx->rtc.latched_h = 0;
+    ctx->rtc.latched_dl = 0;
+    ctx->rtc.latched_dh = 0;
+    ctx->rtc.latch_state = 0;
+    ctx->rtc.last_time = 0;
+    ctx->rtc.active = true;  /* RTC oscillator active by default */
+    
+    /* Reset MBC state */
+    ctx->rtc_mode = 0;
+    ctx->rtc_reg = 0;
+    ctx->ram_enabled = 0;
+    ctx->mbc_mode = 0;
+    ctx->rom_bank_upper = 0;
+    
     if (skip_bootrom) {
         ctx->pc = 0x0100;
         ctx->sp = 0xFFFE;
@@ -130,27 +167,72 @@ bool gb_context_load_rom(GBContext* ctx, const uint8_t* data, size_t size) {
  * ========================================================================== */
 
 uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
-    if (addr < 0x4000) return ctx->rom[addr];
-    if (addr < 0x8000) return ctx->rom[(ctx->rom_bank * 0x4000) + (addr - 0x4000)];
+    /* During OAM DMA, only HRAM (0xFF80-0xFFFE) is accessible */
+    if (ctx->dma.active && !(addr >= 0xFF80 && addr < 0xFFFF)) {
+        return 0xFF;  /* Bus conflict - return undefined */
+    }
+    
+    /* ROM Bank 0 (0x0000-0x3FFF) */
+    if (addr < 0x4000) {
+        /* MBC1 Mode 1: Upper bits affect bank 0 region too */
+        if (ctx->mbc_type >= 0x01 && ctx->mbc_type <= 0x03 && ctx->mbc_mode == 1) {
+            uint32_t bank0 = (uint32_t)ctx->rom_bank_upper << 5;
+            uint32_t rom_addr = (bank0 * 0x4000) + addr;
+            if (rom_addr < ctx->rom_size) {
+                return ctx->rom[rom_addr];
+            }
+            return 0xFF;
+        }
+        return ctx->rom[addr];
+    }
+    
+    /* ROM Bank N (0x4000-0x7FFF) */
+    if (addr < 0x8000) {
+        uint32_t rom_addr = ((uint32_t)ctx->rom_bank * 0x4000) + (addr - 0x4000);
+        if (rom_addr < ctx->rom_size) {
+            return ctx->rom[rom_addr];
+        }
+        return 0xFF;
+    }
+    
+    /* VRAM (0x8000-0x9FFF) */
     if (addr < 0xA000) {
         if ((ctx->io[0x41] & 3) == 3) return 0xFF;
         return ctx->vram[(ctx->vram_bank * VRAM_SIZE) + (addr - 0x8000)];
     }
+    
+    /* External RAM / RTC (0xA000-0xBFFF) */
     if (addr < 0xC000) {
         if (!ctx->ram_enabled) return 0xFF;
         
+        /* MBC3 RTC mode */
         if (ctx->rtc_mode) {
-             switch (ctx->rtc_reg) {
+            switch (ctx->rtc_reg) {
                 case 0x08: return ctx->rtc.latched_s;
                 case 0x09: return ctx->rtc.latched_m;
                 case 0x0A: return ctx->rtc.latched_h;
                 case 0x0B: return ctx->rtc.latched_dl;
                 case 0x0C: return ctx->rtc.latched_dh;
                 default: return 0xFF;
-             }
+            }
         }
         
-        if (ctx->eram) return ctx->eram[(ctx->ram_bank * 0x2000) + (addr - 0xA000)];
+        /* MBC2: 512x4 bit internal RAM (upper 4 bits always high) */
+        if (ctx->mbc_type >= 0x05 && ctx->mbc_type <= 0x06) {
+            /* MBC2 RAM is only 512 bytes, echoed throughout 0xA000-0xBFFF */
+            if (ctx->eram) {
+                return ctx->eram[(addr - 0xA000) & 0x1FF] | 0xF0;
+            }
+            return 0xFF;
+        }
+        
+        /* Standard external RAM */
+        if (ctx->eram) {
+            uint32_t eram_addr = ((uint32_t)ctx->ram_bank * 0x2000) + (addr - 0xA000);
+            if (eram_addr < ctx->eram_size) {
+                return ctx->eram[eram_addr];
+            }
+        }
         return 0xFF;
     }
     if (addr < 0xD000) return ctx->wram[addr - 0xC000];
@@ -183,10 +265,73 @@ uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
 }
 
 void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
+    /* During OAM DMA, only HRAM (0xFF80-0xFFFE) is writable */
+    if (ctx->dma.active && !(addr >= 0xFF80 && addr < 0xFFFF)) {
+        return;  /* Bus conflict - write ignored */
+    }
+    
     /* MBC Write Handling */
     if (addr < 0x8000) {
-        /* MBC3 (0x0F, 0x10, 0x11, 0x12, 0x13) */
-        if (ctx->mbc_type >= 0x0F && ctx->mbc_type <= 0x13) {
+        /* ================================================================
+         * MBC1 (Cartridge types 0x01, 0x02, 0x03)
+         * ================================================================ */
+        if (ctx->mbc_type >= 0x01 && ctx->mbc_type <= 0x03) {
+            if (addr < 0x2000) {
+                /* 0x0000-0x1FFF: RAM Enable */
+                ctx->ram_enabled = ((value & 0x0F) == 0x0A);
+            } else if (addr < 0x4000) {
+                /* 0x2000-0x3FFF: ROM Bank Number (lower 5 bits) */
+                uint8_t bank = value & 0x1F;
+                if (bank == 0) bank = 1;  /* Bank 0 is not selectable */
+                ctx->rom_bank = (ctx->rom_bank & 0x60) | bank;
+            } else if (addr < 0x6000) {
+                /* 0x4000-0x5FFF: RAM Bank / Upper ROM Bank bits */
+                ctx->rom_bank_upper = value & 0x03;
+                if (ctx->mbc_mode == 0) {
+                    /* Mode 0: Upper 2 bits go to ROM bank */
+                    ctx->rom_bank = (ctx->rom_bank & 0x1F) | (ctx->rom_bank_upper << 5);
+                } else {
+                    /* Mode 1: Used as RAM bank */
+                    ctx->ram_bank = ctx->rom_bank_upper;
+                }
+            } else {
+                /* 0x6000-0x7FFF: Banking Mode Select */
+                ctx->mbc_mode = value & 0x01;
+                if (ctx->mbc_mode == 0) {
+                    /* Mode 0: RAM bank fixed to 0, upper bits go to ROM */
+                    ctx->ram_bank = 0;
+                    ctx->rom_bank = (ctx->rom_bank & 0x1F) | (ctx->rom_bank_upper << 5);
+                } else {
+                    /* Mode 1: RAM bank from upper bits, ROM bank fixed lower region */
+                    ctx->ram_bank = ctx->rom_bank_upper;
+                }
+            }
+            /* MBC1 quirk: Banks 0x00, 0x20, 0x40, 0x60 map to 0x01, 0x21, 0x41, 0x61 */
+            if ((ctx->rom_bank & 0x1F) == 0) {
+                ctx->rom_bank = (ctx->rom_bank & 0x60) | 0x01;
+            }
+        }
+        /* ================================================================
+         * MBC2 (Cartridge types 0x05, 0x06)
+         * ================================================================ */
+        else if (ctx->mbc_type >= 0x05 && ctx->mbc_type <= 0x06) {
+            if (addr < 0x4000) {
+                /* MBC2: Bit 8 of addr determines RAM enable vs ROM bank */
+                if (addr & 0x0100) {
+                    /* 0x2100-0x3FFF: ROM Bank Number (lower 4 bits) */
+                    ctx->rom_bank = value & 0x0F;
+                    if (ctx->rom_bank == 0) ctx->rom_bank = 1;
+                } else {
+                    /* 0x0000-0x1FFF: RAM Enable (if bit 8 is 0) */
+                    ctx->ram_enabled = ((value & 0x0F) == 0x0A);
+                }
+            }
+            /* 0x4000-0x7FFF: Unused for MBC2 */
+        }
+        /* ================================================================
+         * MBC3 (Cartridge types 0x0F, 0x10, 0x11, 0x12, 0x13)
+         * ================================================================ */
+        else if (ctx->mbc_type >= 0x0F && ctx->mbc_type <= 0x13) {
             if (addr < 0x2000) {
                 /* RAM/RTC Enable */
                 ctx->ram_enabled = ((value & 0x0F) == 0x0A);
@@ -203,7 +348,7 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
                     ctx->rtc_mode = 1;
                     ctx->rtc_reg = value;
                 }
-            } else if (addr < 0x8000) {
+            } else {
                 /* Latch Clock Data */
                 if (ctx->rtc.latch_state == 0 && value == 0) {
                     ctx->rtc.latch_state = 1;
@@ -220,9 +365,32 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
                 }
             }
         }
-        /* Default / MBC1 behavior for others (simplified) */
+        /* ================================================================
+         * MBC5 (Cartridge types 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E)
+         * ================================================================ */
+        else if (ctx->mbc_type >= 0x19 && ctx->mbc_type <= 0x1E) {
+            if (addr < 0x2000) {
+                /* RAM Enable */
+                ctx->ram_enabled = ((value & 0x0F) == 0x0A);
+            } else if (addr < 0x3000) {
+                /* ROM Bank Number (lower 8 bits) */
+                ctx->rom_bank = (ctx->rom_bank & 0x100) | value;
+                /* MBC5 allows bank 0 - no fixup needed */
+            } else if (addr < 0x4000) {
+                /* ROM Bank Number (9th bit) */
+                ctx->rom_bank = (ctx->rom_bank & 0xFF) | ((value & 0x01) << 8);
+            } else if (addr < 0x6000) {
+                /* RAM Bank Number (0-15) */
+                ctx->ram_bank = value & 0x0F;
+            }
+            /* 0x6000-0x7FFF: Unused for MBC5 */
+        }
+        /* ================================================================
+         * No MBC / ROM Only (type 0x00) or Unknown
+         * ================================================================ */
         else {
-            if (addr >= 0x2000 && addr <= 0x3FFF) {
+            /* Simple fallback: just ROM bank register */
+            if (addr >= 0x2000 && addr < 0x4000) {
                 ctx->rom_bank = value & 0x1F;
                 if (ctx->rom_bank == 0) ctx->rom_bank = 1;
             }
@@ -240,6 +408,7 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
         /* External RAM / RTC Write */
         if (!ctx->ram_enabled) return;
         
+        /* MBC3 RTC mode */
         if (ctx->rtc_mode) {
             /* RTC Register Write */
             switch (ctx->rtc_reg) {
@@ -252,9 +421,23 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
                     ctx->rtc.active = !(value & 0x40); /* Bit 6 is Halt */
                     break;
             }
-        } else if (ctx->eram) {
-            /* SRAM Write */
-            ctx->eram[(ctx->ram_bank * 0x2000) + (addr - 0xA000)] = value;
+            return;
+        }
+        
+        /* MBC2: 512x4 bit internal RAM (only lower 4 bits stored) */
+        if (ctx->mbc_type >= 0x05 && ctx->mbc_type <= 0x06) {
+            if (ctx->eram) {
+                ctx->eram[(addr - 0xA000) & 0x1FF] = value & 0x0F;
+            }
+            return;
+        }
+        
+        /* Standard external RAM */
+        if (ctx->eram) {
+            uint32_t eram_addr = ((uint32_t)ctx->ram_bank * 0x2000) + (addr - 0xA000);
+            if (eram_addr < ctx->eram_size) {
+                ctx->eram[eram_addr] = value;
+            }
         }
         return;
     }
@@ -274,18 +457,48 @@ void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
         if (addr >= 0xFF40 && addr <= 0xFF4B) { ppu_write_register((GBPPU*)ctx->ppu, ctx, addr, value); return; }
         if (addr >= 0xFF10 && addr <= 0xFF3F) { gb_audio_write(ctx, addr, value); return; }
         if (addr == 0xFF04) { 
+            uint16_t old_div = ctx->div_counter;
             ctx->div_counter = 0; 
             ctx->io[0x04] = 0; /* Update register view immediately */
             if (ctx->apu) gb_audio_div_reset(ctx->apu);
+            
+            /* DIV Reset Glitch: 
+             * If the selected bit for TIMA is 1 in old_div and becomes 0 (it does, since div is 0),
+             * this counts as a falling edge and increments TIMA.
+             */
+             uint8_t tac = ctx->io[0x07];
+             if (tac & 0x04) { /* Timer Enabled */
+                uint16_t mask;
+                switch (tac & 0x03) {
+                    case 0: mask = 1 << 9; break; /* 1024 cycles */
+                    case 1: mask = 1 << 3; break; /* 16 cycles */
+                    case 2: mask = 1 << 5; break; /* 64 cycles */
+                    case 3: mask = 1 << 7; break; /* 256 cycles */
+                    default: mask = 0; break;
+                }
+                if (old_div & mask) {
+                    /* Glitch triggered: Increment TIMA */
+                    if (ctx->io[0x05] == 0xFF) { 
+                        ctx->io[0x05] = ctx->io[0x06]; 
+                        ctx->io[0x0F] |= 0x04; 
+                    } else {
+                        ctx->io[0x05]++;
+                    }
+                }
+             }
             return; 
         }
         if (addr == 0xFF46) {
-             uint16_t src = value << 8;
-             for (int i=0; i<0xA0; i++) ctx->oam[i] = gb_read8(ctx, src + i);
+             /* OAM DMA: Start transfer (takes 160 M-cycles = 640 T-cycles) */
+             /* Prevent DMA from invalid regions if needed, but hardware allows it (reads FF/garbage) */
+             ctx->dma.source_high = value;
+             ctx->dma.progress = 0;
+             ctx->dma.cycles_remaining = 640;
+             ctx->dma.active = 1;
              return;
         }
         if (addr == 0xFF02 && (value & 0x80)) {
-            /* printf("%c", ctx->io[0x01]); fflush(stdout); */
+            printf("%c", ctx->io[0x01]); fflush(stdout);
             ctx->io[0x0F] |= 0x08;
         }
         ctx->io[addr - 0xFF00] = value;
@@ -496,6 +709,59 @@ static void gb_rtc_tick(GBContext* ctx, uint32_t cycles) {
     }
 }
 
+/**
+ * Process OAM DMA transfer
+ * DMA takes 160 M-cycles (640 T-cycles), copying 1 byte per M-cycle
+ */
+static void gb_dma_tick(GBContext* ctx, uint32_t cycles) {
+    if (!ctx->dma.active) return;
+    
+    /* Process DMA cycles */
+    while (cycles > 0 && ctx->dma.active) {
+        /* Each byte takes 4 T-cycles (1 M-cycle) */
+        uint32_t byte_cycles = (cycles >= 4) ? 4 : cycles;
+        cycles -= byte_cycles;
+        ctx->dma.cycles_remaining -= byte_cycles;
+        
+        /* Copy one byte every 4 T-cycles */
+        if (ctx->dma.progress < 160 && (ctx->dma.cycles_remaining % 4) == 0) {
+            uint16_t src_addr = ((uint16_t)ctx->dma.source_high << 8) | ctx->dma.progress;
+            /* Directly access ROM/RAM without triggering normal restrictions */
+            uint8_t byte;
+            if (src_addr < 0x8000) {
+                /* ROM */
+                if (src_addr < 0x4000) {
+                    byte = ctx->rom[src_addr];
+                } else {
+                    byte = ctx->rom[(ctx->rom_bank * 0x4000) + (src_addr - 0x4000)];
+                }
+            } else if (src_addr < 0xA000) {
+                /* VRAM */
+                byte = ctx->vram[src_addr - 0x8000];
+            } else if (src_addr < 0xC000) {
+                /* External RAM */
+                byte = ctx->eram ? ctx->eram[(ctx->ram_bank * 0x2000) + (src_addr - 0xA000)] : 0xFF;
+            } else if (src_addr < 0xE000) {
+                /* WRAM */
+                if (src_addr < 0xD000) {
+                    byte = ctx->wram[src_addr - 0xC000];
+                } else {
+                    byte = ctx->wram[(ctx->wram_bank * 0x1000) + (src_addr - 0xD000)];
+                }
+            } else {
+                byte = 0xFF;
+            }
+            ctx->oam[ctx->dma.progress] = byte;
+            ctx->dma.progress++;
+        }
+        
+        /* Check if DMA is complete */
+        if (ctx->dma.progress >= 160 || ctx->dma.cycles_remaining == 0) {
+            ctx->dma.active = 0;
+        }
+    }
+}
+
 void gb_tick(GBContext* ctx, uint32_t cycles) {
     static uint32_t last_log = 0;
     
@@ -517,19 +783,62 @@ void gb_tick(GBContext* ctx, uint32_t cycles) {
     
     /* RTC Tick */
     gb_rtc_tick(ctx, cycles);
+    
+    /* OAM DMA Tick */
+    gb_dma_tick(ctx, cycles);
 
-    ctx->div_counter += cycles;
+    /* Update DIV and TIMA */
+    uint16_t old_div = ctx->div_counter;
+    ctx->div_counter += (uint16_t)cycles;
     ctx->io[0x04] = (uint8_t)(ctx->div_counter >> 8);
     
     uint8_t tac = ctx->io[0x07];
-    if (tac & 0x04) {
-        uint32_t thr = 1024;
-        switch (tac & 3) { case 1: thr = 16; break; case 2: thr = 64; break; case 3: thr = 256; break; }
-        ctx->timer_counter += cycles;
-        while (ctx->timer_counter >= thr) {
-            ctx->timer_counter -= thr;
-            if (ctx->io[0x05] == 0xFF) { ctx->io[0x05] = ctx->io[0x06]; ctx->io[0x0F] |= 0x04; }
-            else ctx->io[0x05]++;
+    if (tac & 0x04) { /* Timer Enabled */
+        uint16_t mask;
+        switch (tac & 0x03) {
+            case 0: mask = 1 << 9; break; /* 4096 Hz (1024 cycles) -> bit 9 */
+            case 1: mask = 1 << 3; break; /* 262144 Hz (16 cycles) -> bit 3 */
+            case 2: mask = 1 << 5; break; /* 65536 Hz (64 cycles) -> bit 5 */
+            case 3: mask = 1 << 7; break; /* 16384 Hz (256 cycles) -> bit 7 */
+            default: mask = 0; break;
+        }
+        
+        /* Check for falling edges.
+           We detect how many times the bit flipped from 1 to 0.
+           The bit flips every 'mask' cycles (period is 2*mask).
+           We iterate to find all falling edges in the range. 
+        */
+        uint16_t current = old_div;
+        uint32_t cycles_left = cycles;
+        
+        /* Optimization: if cycles are small (common case), doing a loop is fine. */
+        while (cycles_left > 0) {
+            /* Next falling edge is at next multiple of (2*mask) */
+            uint16_t next_fall = (current | (mask * 2 - 1)) + 1;
+            
+            /* Distance to next fall */
+            uint32_t dist = (uint16_t)(next_fall - current);
+            if (dist == 0) dist = mask * 2; /* Should happen if current is exactly on edge? */
+            
+            /* Check if we reach the fall */
+            if (cycles_left >= dist) {
+                /* Validate it is a falling edge for the selected bit?
+                   next_fall is the transition 11...1 -> 00...0 for bits < bit+1.
+                   Bit 'mask' definitely transitions. 
+                   Wait, next multiple of 2*mask means mask bit becomes 0.
+                   So yes, next_fall is a falling edge point.
+                */
+                if (ctx->io[0x05] == 0xFF) { 
+                    ctx->io[0x05] = ctx->io[0x06]; /* Reload TMA */
+                    ctx->io[0x0F] |= 0x04;         /* Request Timer Interrupt */
+                } else {
+                    ctx->io[0x05]++;
+                }
+                current += (uint16_t)dist;
+                cycles_left -= dist;
+            } else {
+                break;
+            }
         }
     }
     
@@ -556,8 +865,17 @@ void gb_handle_interrupts(GBContext* ctx) {
         else if (pending & 0x10) { vec = 0x0060; bit = 0x10; }
         if (vec) {
             ctx->io[0x0F] &= ~bit;
+            
+            /* ISR takes 5 M-cycles (20 T-cycles) as per Pan Docs:
+             * - 2 M-cycles: Wait states (NOPs)
+             * - 2 M-cycles: Push PC to stack (SP decremented twice, PC written)
+             * - 1 M-cycle: Set PC to interrupt vector
+             */
+            gb_tick(ctx, 8);  /* 2 wait M-cycles */
             gb_push16(ctx, ctx->pc);
+            gb_tick(ctx, 8);  /* 2 push M-cycles */
             ctx->pc = vec;
+            gb_tick(ctx, 4);  /* 1 jump M-cycle */
             ctx->stopped = 1;
         }
     }
@@ -600,6 +918,13 @@ uint32_t gb_step(GBContext* ctx) {
         printf("Instruction limit reached (%llu)\n", (unsigned long long)gbrt_instruction_limit);
         exit(0);
     }
+    
+    /* Handle HALT bug by falling back to interpreter for the next instruction */
+    if (ctx->halt_bug) {
+        gb_interpret(ctx, ctx->pc);
+        return 0; /* Cycle counting handled by interpreter */
+    }
+
     uint32_t start = ctx->cycles;
     gb_dispatch(ctx, ctx->pc);
     return ctx->cycles - start;

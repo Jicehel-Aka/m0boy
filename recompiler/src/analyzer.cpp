@@ -340,10 +340,11 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
     // Detect which banks are used
     std::set<uint8_t> known_banks = detect_bank_values(rom);
     
-    // Track addresses to explore: (addr, known_a, current_bank_context)
+    // Track addresses to explore: (addr, known_a, known_hl, current_bank_context)
     struct AnalysisState {
         uint32_t addr;
         int known_a;
+        int known_hl; // -1 if unknown, otherwise 16-bit value
         uint8_t current_bank;
     };
     std::queue<AnalysisState> work_queue;
@@ -352,46 +353,34 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
     // Entry point is always a function (bank 0)
     result.call_targets.insert(make_address(0, 0x100));
     
-    // RST vectors are implicit functions (always bank 0)
-    // Skip any RST vector that contains only 0xFF padding (common in many ROMs)
-    // Also skip RST 30 when RST 28 uses it as part of its jump table implementation
+    // RST vectors
     bool skip_rst30 = rst28_uses_rst30(rom);
     for (uint16_t vec : {0x00, 0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38}) {
-        if (is_rst_padding(rom, vec)) {
-            continue;  // Skip this RST vector - contains only padding
-        }
-        if (vec == 0x30 && skip_rst30) {
-            continue;  // Skip RST 30 - it's part of RST 28's jump table implementation
-        }
+        if (is_rst_padding(rom, vec)) continue;
+        if (vec == 0x30 && skip_rst30) continue;
         result.call_targets.insert(make_address(0, vec));
-        work_queue.push({make_address(0, vec), -1, 1});
+        work_queue.push({make_address(0, vec), -1, -1, 1});
     }
     
-    // Interrupt vectors are functions (bank 0)
+    // Interrupt vectors
     for (uint16_t vec : result.interrupt_vectors) {
         result.call_targets.insert(make_address(0, vec));
-        work_queue.push({make_address(0, vec), -1, 1});
+        work_queue.push({make_address(0, vec), -1, -1, 1});
     }
     
     // Start from entry point
-    work_queue.push({make_address(0, 0x100), -1, 1});
+    work_queue.push({make_address(0, 0x100), -1, -1, 1});
     
-    // For MBC games, also analyze code at entry point in each bank
-    // This catches trampoline code that jumps from bank 0 to banked code
+    // For MBC games
     if (rom.header().mbc_type != MBCType::NONE && options.analyze_all_banks) {
         std::cerr << "Analyzing all " << known_banks.size() << " banks\n";
         for (uint8_t bank : known_banks) {
-
                 if (bank > 0) {
-                    // Check for code at common bank entry points
-                    // Many games have jump tables or trampolines at 0x4000
-                    // BUT: Use heuristics to avoid analyzing data banks (like SML Bank 1)
                     if (is_likely_valid_code(rom, bank, 0x4000)) {
-                        work_queue.push({make_address(bank, 0x4000), -1, bank});
+                        work_queue.push({make_address(bank, 0x4000), -1, -1, bank});
                         result.call_targets.insert(make_address(bank, 0x4000));
                     } else {
-                        // Always log this important decision
-                        std::cout << "[INFO] Skipping likely data bank " << (int)bank << " at 0x4000\n";
+                        // std::cout << "[INFO] Skipping likely data bank " << (int)bank << " at 0x4000\n";
                     }
                 }
         }
@@ -401,7 +390,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
     for (const auto& ov : options.ram_overlays) {
         uint32_t addr = make_address(0, ov.ram_addr);
         result.call_targets.insert(addr);
-        work_queue.push({addr, -1, 1});
+        work_queue.push({addr, -1, -1, 1});
     }
     
     // Explore all reachable code
@@ -411,6 +400,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         
         uint32_t addr = item.addr;
         int known_a = item.known_a;
+        int known_hl = item.known_hl;
         uint8_t current_switchable_bank = item.current_bank;
         
         if (visited.count(addr)) continue;
@@ -430,49 +420,28 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         // Only analyze ROM space or RAM overlays
         if (offset >= 0x8000 && !overlay) continue;
         
-        // Bank mapping rules:
-        // 0x0000-0x3FFF: Always bank 0
-        // 0x4000-0x7FFF: Switchable bank (1-N)
+        // Bank mapping rules
         if (offset < 0x4000) {
             bank = 0;  // Force bank 0 for this region
             addr = make_address(0, offset);
             if (visited.count(addr)) continue;
         } else if (offset < 0x8000 && bank == 0) {
-            bank = 1;  // Default to bank 1 for switchable region
+            bank = 1;  // Default to bank 1
             addr = make_address(1, offset);
             if (visited.count(addr)) continue;
         } else if (overlay) {
-            // Keep original bank/addr for overlays
              if (visited.count(addr)) continue;
         }
         
-        // if (bank == 1 && offset == 0x4908) std::cout << "[DEBUG] Reaching 01:4908 from " << std::hex << offset << "\n";
+        if (bank > 0) current_switchable_bank = bank;
         
-        // Use bank context from state
-        if (bank > 0) {
-            current_switchable_bank = bank;
-        } else {
-            // If in bank 0, try to guess context from previous blocks?
-            // For now, default to 1, but this is where flow analysis needs improvement
-            // The simplistic approach is: assume code acts locally.
-        }
-        
-        // Calculate ROM offset for reading
+        // Calculate ROM offset
         size_t rom_offset;
         if (overlay) {
-            // Map RAM address to ROM source
-            // Note: overlay->rom_addr is full 32-bit address (bank | addr)
-            // But ROM object access is handled by decoder? 
-            // We need linear offset for bounds check.
             uint8_t src_bank = get_bank(overlay->rom_addr);
             uint16_t src_addr = get_offset(overlay->rom_addr);
-            
-            if (src_addr < 0x4000) {
-                rom_offset = src_addr;
-            } else {
-                rom_offset = static_cast<size_t>(src_bank) * 0x4000 + (src_addr - 0x4000);
-            }
-            // Add offset within the overlay
+            if (src_addr < 0x4000) rom_offset = src_addr;
+            else rom_offset = static_cast<size_t>(src_bank) * 0x4000 + (src_addr - 0x4000);
             rom_offset += (offset - overlay->ram_addr);
         } else if (offset < 0x4000) {
             rom_offset = offset;
@@ -486,34 +455,65 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         // Decode instruction
         Instruction instr;
         if (overlay) {
-            // Decode at the source address (calculating bank/addr from rom_offset is hard if purely linear)
-            // But we can just use the rom source addr + offset
-             // Actually, overlay->rom_addr is 0x00BB_AAAA (Bank, Addr).
-             // If we cross 0x4000/0x8000 boundary this math is wrong for packed uint32.
-             // But overlays are usually small and within one bank.
              uint8_t src_bank = get_bank(overlay->rom_addr);
              uint16_t src_addr = get_offset(overlay->rom_addr) + (offset - overlay->ram_addr);
-             
              instr = decoder.decode(src_addr, src_bank);
-             
-             // Relocate to RAM address
              instr.address = offset; 
              instr.bank = 0; // RAM is bank 0
         } else {
             instr = decoder.decode(offset, bank);
         }
 
-        // Track Register A for bank switching
-        // LD A, n (0x3E)
-        if (instr.opcode == 0x3E) {
+        /* -------------------------------------------------------------
+         * Constant Propagation (A and HL)
+         * ------------------------------------------------------------- */
+         
+        // Track A (for banking)
+        if (instr.opcode == 0x3E) { // LD A, n
             known_a = instr.imm8;
             if (options.verbose && bank == 0 && offset == 0x00CC) {
                  std::cout << "[DEBUG] At 00CC: LD A, " << (int)known_a << ". known_a updated.\n";
             }
         } 
-        // LD A, (HL) or other loads invalidate A
-        else if (instr.opcode == 0x7E || instr.opcode == 0x0A || instr.opcode == 0x1A || 
-                 instr.opcode == 0xF0 || instr.opcode == 0xFA || instr.opcode == 0xF2) {
+        else if (instr.opcode == 0x7E) { // LD A, (HL)
+            if (known_hl != -1) {
+                // Read from ROM at known HL
+                uint16_t addr = (uint16_t)known_hl;
+                // Only valid if reading from simple ROM regions
+                if (addr < 0x4000) {
+                     known_a = rom.read_banked(0, addr);
+                } else if (addr < 0x8000) {
+                     // Depends on which bank is active for DATA reading?
+                     // Usually data tables are in the same bank or specific data banks.
+                     // Analyzer doesn't track data bank context separate from code bank context,
+                     // but usually they match.
+                     if (bank > 0) {
+                         known_a = rom.read_banked(bank, addr);
+                     } else {
+                         // If we are in bank 0 code reading bank 1 data, unknown
+                         known_a = -1;
+                     }
+                } else {
+                     // Reading RAM/Regs -> Unknown
+                     known_a = -1;
+                }
+            } else {
+                known_a = -1;
+            }
+        }
+        else if (instr.opcode == 0xFA) { // LD A, (nn)
+             uint16_t addr = instr.imm16;
+             if (addr < 0x4000) {
+                  known_a = rom.read_banked(0, addr);
+             } else if (addr < 0x8000 && bank > 0) {
+                  known_a = rom.read_banked(bank, addr);
+             } else {
+                  known_a = -1;
+             }
+        }
+        // LD A, (BC)/(DE) or other loads invalidate A
+        else if (instr.opcode == 0x0A || instr.opcode == 0x1A || 
+                 instr.opcode == 0xF0 || instr.opcode == 0xF2) {
              known_a = -1;
         }
         else if (instr.opcode >= 0x40 && instr.opcode <= 0x7F) {
@@ -531,35 +531,44 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         else if ((instr.opcode >= 0x80 && instr.opcode <= 0xBF) || 
                  instr.opcode == 0x3C || instr.opcode == 0x3D || instr.opcode == 0x27 || instr.opcode == 0x2F) {
             known_a = -1;
-        }
+        }    
         
-        if (options.verbose && bank == 0 && offset >= 0x00BD && offset <= 0x00E0) {
-            std::cout << "[DEBUG] 00:" << std::hex << offset << " Op: " << (int)instr.opcode 
-                      << " known_a: " << (int)known_a << std::dec << "\n";
+        // Track HL (for JP HL)
+        if (instr.opcode == 0x21) { // LD HL, nn
+            known_hl = instr.imm16;
+        } else if (instr.opcode == 0xE1) { // POP HL
+            known_hl = -1;
+        } else if (instr.opcode == 0x2A || instr.opcode == 0x3A) { // LD A, (HL+) / LD A, (HL-)
+            // HL changes
+            known_hl = -1;
+        } else if (instr.opcode == 0x22 || instr.opcode == 0x32) { // LD (HL+), A / LD (HL-), A
+            // HL changes
+            known_hl = -1;
+        } else if (instr.opcode == 0x23 || instr.opcode == 0x2B || instr.opcode == 0x39 || 
+                   instr.opcode == 0x09 || instr.opcode == 0x19 || instr.opcode == 0x29) {
+            // INC/DEC HL, ADD HL, ...
+            known_hl = -1;
+        } else if (instr.opcode >= 0x60 && instr.opcode <= 0x6F) {
+            // LD H, r / LD L, r
+            // Invalidate unless we track H/L separately
+            known_hl = -1;
+        } else if (instr.opcode == 0xF8) { // LD HL, SP+n
+             known_hl = -1; 
         }
 
-        // Detect Bank Switching: LD (nnnn), A where nnnn in 0x2000-0x3FFF
+        /* -------------------------------------------------------------
+         * Bank Switching Detection
+         * ------------------------------------------------------------- */
         if (instr.opcode == 0xEA) { // LD (nn), A
             if (instr.imm16 >= 0x2000 && instr.imm16 <= 0x3FFF) {
-                // MBC Bank Switch
                 bool is_dynamic = (known_a == -1);
                 uint8_t target_b = is_dynamic ? 1 : (known_a == 0 ? 1 : known_a);
-                
-                // Mask based on MBC type if known, but generally 1F or similar
-                // For now assume standard MBC1/3/5 behavior
-                target_b &= 0xFF; // Could mask further but let's keep it raw if it's small
+                target_b &= 0xFF;
                 
                 result.bank_tracker.record_bank_switch(addr, target_b, is_dynamic);
                 
-                // Update our current view of the switchable bank
-                // This affects subsequent Jumps/Calls in this block
                 if (!is_dynamic) {
                     current_switchable_bank = target_b;
-                    // std::cout << "[INFO] Static bank switch to " << (int)target_b << " at " << std::hex << (int)bank << ":" << offset << "\n";
-                } else {
-                    // Dynamic switch - we lose track of where we are going
-                    // Maybe we should assume Bank 1 or stick with current?
-                    // result.bank_tracker.record_bank_switch(addr, 0, true);
                 }
             }
         }
@@ -569,183 +578,129 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
             std::cout << "[TRACE] " << std::hex << std::setfill('0') << std::setw(2) << (int)bank
                       << ":" << std::setw(4) << offset << " " << instr.disassemble() << std::dec << "\n";
         }
-
-        // Heuristic: Detect 0xFF padding in switchable banks
-        // If we hit RST 38 (0xFF) in bank > 0, and it's followed by more 0xFFs, 
-        // it's likely empty space/padding, not code.
+        
+        // Check padding
         if (bank > 0 && instr.opcode == 0xFF) {
             bool is_padding = true;
             for (int i = 1; i < 16; i++) {
-                if (rom.read_banked(bank, offset + i) != 0xFF) {
-                    is_padding = false;
-                    break;
-                }
+                if (rom.read_banked(bank, offset + i) != 0xFF) { is_padding = false; break; }
             }
-            
-            if (is_padding) {
-                if (options.verbose) {
-                    std::cout << "[INFO] Detected padding at " 
-                              << std::hex << std::setfill('0') << std::setw(2) << (int)bank 
-                              << ":" << std::setw(4) << offset << std::dec << ", analyzing stopped for this path.\n";
-                }
-                continue;
-            }
+            if (is_padding) continue;
         }
 
-        // Check for undefined instructions
         if (instr.type == InstructionType::UNDEFINED) {
-             std::cout << "[ERROR] Undefined instruction at " 
-                       << std::hex << std::setfill('0') << std::setw(2) << (int)bank << ":" << std::setw(4) << offset 
-                       << " Opcode: " << std::setw(2) << (int)instr.opcode << std::dec << "\n";
-             // Stop analyzing this path
+             std::cout << "[ERROR] Undefined instruction at " << std::hex << (int)bank << ":" << offset << "\n";
              continue;
         }
 
-        // Limit check
         if (options.max_instructions > 0 && result.instructions.size() >= options.max_instructions) {
-            std::cerr << "Reached instruction limit (" << options.max_instructions << ")\n";
             break;
         }
         
-        // Store instruction
         size_t idx = result.instructions.size();
         result.instructions.push_back(instr);
         result.addr_to_index[addr] = idx;
         
-        // Calculate target bank for jumps/calls
         auto target_bank = [&](uint16_t target) -> uint8_t {
-            if (target < 0x4000) return 0;  // Bank 0 region
-            // For ROM ONLY (no MBC), switchable region is always bank 1
+            if (target < 0x4000) return 0;
             if (rom.header().mbc_type == MBCType::NONE) return 1;
-            
-            // If target is in switchable region, use our tracked state
             return current_switchable_bank;
         };
         
-        // Track control flow
-        // NOTE: RST instructions have is_call=true but need special handling,
-        // so we check for RST type FIRST before the general is_call check
         if (instr.type == InstructionType::RST) {
-            // RST with 0xFF padding should not be analyzed - it's not real code
-            if (is_rst_padding(rom, instr.rst_vector)) {
-                // Don't push this RST or fallthrough - target contains only padding
-                continue;
-            }
+            if (is_rst_padding(rom, instr.rst_vector)) continue;
             
             result.call_targets.insert(make_address(0, instr.rst_vector));
-            work_queue.push({make_address(0, instr.rst_vector), -1, 1});
+            work_queue.push({make_address(0, instr.rst_vector), -1, -1, 1});
             
-            // RST 28 jump table pattern: the bytes after RST 28 are table data, NOT code
-            // Only push fallthrough if this is NOT a RST 28 jump table
             bool is_rst28_jt = (instr.rst_vector == 0x28 && is_rst28_jump_table(rom));
             if (is_rst28_jt) {
-                // Extract jump table entries and add them as call targets
                 std::vector<uint16_t> table_targets = extract_rst28_table_entries(rom, offset, bank);
                 for (uint16_t target : table_targets) {
                     uint8_t tbank = (target < 0x4000) ? 0 : bank;
-                    // If target is in switchable bank region, we default to current bank (or Bank 1)
                     if (tbank == 0 && target >= 0x4000) tbank = 1;
 
-                    // Verify target looks like code
                     if (is_likely_valid_code(rom, tbank, target)) {
                         result.call_targets.insert(make_address(tbank, target));
-                        work_queue.push({make_address(tbank, target), -1, tbank});
-                        // Mark these as labels too for proper block generation
+                        work_queue.push({make_address(tbank, target), -1, -1, tbank});
                         result.label_addresses.insert(make_address(tbank, target));
-                    } else {
-                         std::cout << "[DEBUG] RST 28 target rejected: " 
-                                   << std::hex << (int)tbank << ":" << target << std::dec << "\n";
                     }
                 }
-                std::cerr << "  RST 28 jump table at 0x" << std::hex << offset << std::dec 
-                          << " with " << table_targets.size() << " entries\n";
-                
-                // DON'T push fallthrough - the bytes after RST 28 are table data
             } else {
-                // Normal RST call - push fallthrough and mark as label
                 uint32_t fall_through = make_address(bank, offset + instr.length);
                 result.label_addresses.insert(fall_through);
-                work_queue.push({fall_through, known_a, current_switchable_bank});
+                work_queue.push({fall_through, known_a, known_hl, current_switchable_bank});
             }
         } else if (instr.is_call) {
             uint16_t target = instr.imm16;
             uint8_t tbank = target_bank(target);
             instr.resolved_target_bank = tbank;
             
-            // If we are crossing banks to a switchable bank, verify it looks like code
-            // This prevents following bad pointers into data banks
             if (tbank > 0 && tbank != bank) {
-                if (!is_likely_valid_code(rom, tbank, target)) {
-                     std::cout << "[DEBUG] Cross-bank CALL rejected: " << std::hex << (int)tbank << ":" << target << std::dec << "\n";
-                     continue;
-                }
+                if (!is_likely_valid_code(rom, tbank, target)) continue;
             }
 
             result.call_targets.insert(make_address(tbank, target));
-            // if (tbank == 1 && target == 0x4908) std::cout << "[DEBUG] CALL to 01:4908 from " << std::hex << offset << "\n";
-            work_queue.push({make_address(tbank, target), -1, tbank});
+            work_queue.push({make_address(tbank, target), -1, -1, tbank});
             
-            // Track cross-bank calls
             if (tbank != bank) {
                 result.stats.cross_bank_calls++;
                 result.bank_tracker.record_cross_bank_call(offset, target, bank, tbank);
             }
             
-            // Calls fall through - mark as label so a new block starts
             uint32_t fall_through = make_address(bank, offset + instr.length);
             result.label_addresses.insert(fall_through);
-            work_queue.push({fall_through, known_a, current_switchable_bank});
+            work_queue.push({fall_through, known_a, known_hl, current_switchable_bank});
         } else if (instr.is_jump) {
             if (instr.type == InstructionType::JP_NN || instr.type == InstructionType::JP_CC_NN) {
                 uint16_t target = instr.imm16;
                 uint8_t tbank = target_bank(target);
                 instr.resolved_target_bank = tbank;
                 if (target >= 0x4000 && target <= 0x7FFF) {
-                    // Check cross-bank jump validity
                     if (tbank > 0 && tbank != bank) {
-                        if (!is_likely_valid_code(rom, tbank, target)) {
-                            std::cout << "[DEBUG] Cross-bank JP rejected: " << std::hex << (int)tbank << ":" << target << std::dec << "\n";
-                            continue;
-                        }
+                        if (!is_likely_valid_code(rom, tbank, target)) continue;
                     }
                     result.call_targets.insert(make_address(tbank, target));
                 }
                 result.label_addresses.insert(make_address(tbank, target));
-                // if (tbank == 1 && target == 0x4908) std::cout << "[DEBUG] JP to 01:4908 from " << std::hex << offset << "\n";
-                work_queue.push({make_address(tbank, target), known_a, tbank});
+                work_queue.push({make_address(tbank, target), known_a, known_hl, tbank});
             } else if (instr.type == InstructionType::JR_N || instr.type == InstructionType::JR_CC_N) {
                 uint16_t target = offset + instr.length + instr.offset;
                 result.label_addresses.insert(make_address(bank, target));
-                if (bank == 1 && target == 0x4908) std::cout << "[DEBUG] Jump to 01:4908 from " << std::hex << offset << "\n";
-                work_queue.push({make_address(bank, target), known_a, current_switchable_bank});
+                work_queue.push({make_address(bank, target), known_a, known_hl, current_switchable_bank});
             } else if (instr.type == InstructionType::JP_HL) {
-                // JP (HL) - indirect jump, target is in HL register at runtime
-                // We can't statically determine the target, so we mark this as a terminator
-                // The recompiler will generate code that uses the interpreter fallback
-                // for indirect jumps. This is a limitation of static analysis.
-                // Don't continue analyzing this path - it will be handled by the interpreter.
+                // JP HL: Check if we know where HL points
+                if (known_hl != -1) {
+                    uint16_t target = (uint16_t)known_hl;
+                    uint8_t tbank = target_bank(target);
+                    instr.resolved_target_bank = tbank; // May help debugging
+                    
+                    std::cout << "[ANALYSIS] Resolved static JP HL at " 
+                              << std::hex << (int)bank << ":" << offset 
+                              << " -> " << (int)tbank << ":" << target << std::dec << "\n";
+                              
+                    result.call_targets.insert(make_address(tbank, target));
+                    result.label_addresses.insert(make_address(tbank, target));
+                    result.computed_jump_targets.insert(make_address(tbank, target));
+                    work_queue.push({make_address(tbank, target), known_a, known_hl, tbank});
+                } else {
+                    std::cout << "[ANALYSIS] Unresolved JP HL at " << std::hex << (int)bank << ":" << offset << std::dec << "\n";
+                }
             }
             
             if (instr.is_conditional) {
-                // Conditional jumps fall through - this is also a block start
                 uint32_t fall_through = make_address(bank, offset + instr.length);
                 result.label_addresses.insert(fall_through);
-                work_queue.push({fall_through, known_a, current_switchable_bank});
+                work_queue.push({fall_through, known_a, known_hl, current_switchable_bank});
             }
         } else if (instr.is_return) {
-            // Returns end the block
-            // But conditional returns fall through if condition is false
             if (instr.is_conditional) {
                 uint32_t fall_through = make_address(bank, offset + instr.length);
                 result.label_addresses.insert(fall_through);
-                work_queue.push({fall_through, known_a, current_switchable_bank});
+                work_queue.push({fall_through, known_a, known_hl, current_switchable_bank});
             }
         } else {
-            // Continue to next instruction
-        if (bank == 1 && offset == 0x4908) {
-             std::cout << "[DEBUG] Pushing specific target 01:4908 from somewhere!\n";
-        }
-        work_queue.push({make_address(bank, offset + instr.length), known_a, current_switchable_bank});
+            work_queue.push({make_address(bank, offset + instr.length), known_a, known_hl, current_switchable_bank});
         }
     }
     
