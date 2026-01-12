@@ -289,37 +289,89 @@ static int is_likely_valid_code(const ROM& rom, uint8_t bank, uint16_t addr) {
         }
     }
 
-    // 2. Decode ahead and check for validity
+    // 2. Decode instructions
     Decoder decoder(rom);
     uint16_t curr = addr;
     int instructions_checked = 0;
-    const int MAX_CHECK = 128; // Check smaller chunk to avoid hitting data islands
+    const int MAX_CHECK = 48; // Reduce further. Real functions branch or return quickly.
+    int nop_count = 0;
+    int ld_count = 0;
+    int control_flow_count = 0;
+    int math_count = 0;
 
     while (instructions_checked < MAX_CHECK) {
         Instruction instr = decoder.decode(curr, bank);
         
-        // Immediate hard failure
-        if (instr.type == InstructionType::UNDEFINED || instr.type == InstructionType::INVALID) {
-            // std::cout << "[DEBUG] Bank " << (int)bank << " rejected: Undefined/Invalid opcode " 
-            //           << std::hex << (int)instr.opcode << " at " << curr << std::dec << "\n";
-            return 0;
+        // Immediate rejection
+        if (instr.type == InstructionType::UNDEFINED || instr.type == InstructionType::INVALID) return 0;
+        
+        // NOP Check
+        if (instr.type == InstructionType::NOP) {
+            nop_count++;
+            if (nop_count > 2 && instructions_checked == 0) return 0; // Starts with >2 NOPs? Padding.
         }
         
-        // Check for suspicious control flow
-        // Data often interprets as mild control flow (conditional jumps)
+        // Data Pattern Checks
+        if (instr.type == InstructionType::LD_R_R || instr.type == InstructionType::LD_R_N) ld_count++;
+        if (instr.type == InstructionType::ADD_A_N || instr.type == InstructionType::SUB_A_N || instr.type == InstructionType::AND_A_N || instr.type == InstructionType::OR_A_N || instr.type == InstructionType::XOR_A_N || instr.type == InstructionType::CP_A_N) math_count++;
+
+        // Control Flow Count
+        if (instr.type == InstructionType::JP_NN || instr.type == InstructionType::JR_N || instr.type == InstructionType::JR_CC_N || instr.type == InstructionType::JP_CC_NN || instr.type == InstructionType::CALL_NN || instr.type == InstructionType::CALL_CC_NN || instr.is_return) {
+            control_flow_count++;
+        }
+
+        // Red-flag opcodes that are extremely rare or usually indicative of data
+        // DAA (0x27), CPL (0x2F), SCF (0x37), CCF (0x3F) - valid but rare in random stubs
+        if (instr.opcode == 0x27 || instr.opcode == 0x2F || instr.opcode == 0x37 || instr.opcode == 0x3F) return 0;
         
-        // If we hit logical terminator, we are probably okay
-        // Unconditional Return or Jump usually implies we survived the block
-        if (instr.is_return && !instr.is_conditional) return (curr + instr.length - addr);
-        if (instr.type == InstructionType::JP_NN) return (curr + instr.length - addr);
-        if (instr.type == InstructionType::JR_N) return (curr + instr.length - addr);
+        // Rotates like RRA, RLA (0x1F, 0x17) are common in bitmapped data
+        if (instr.opcode == 0x07 || instr.opcode == 0x0F || instr.opcode == 0x17 || instr.opcode == 0x1F) {
+            if (instructions_checked < 2) return 0; // Suspect if at very start
+        }
+
+        // RST instructions (0xC7, 0xCF, etc) are common in data (0xFF, 0x00 etc)
+        if ((instr.opcode & 0xC7) == 0xC7) return 0;
+
+        // Suspicious Opcode Checks
+        if (instr.opcode == 0xF3 || instr.opcode == 0xFB) return 0; // DI/EI
+        if (instr.opcode == 0x76 || instr.opcode == 0x10) return 0; // HALT/STOP
+        
+        // Terminator Check
+        if (instr.is_return && !instr.is_conditional) {
+            // Valid terminator found. 
+            // FINAL CHECKS:
+            
+            // 1. Density Check:
+            // Data flukes are often 100% loads or 100% ALUs.
+            if (ld_count >= instructions_checked) return 0; 
+            if (math_count >= instructions_checked) return 0;
+
+            // 2. Length Check:
+            // Real functions discovered via scanning are almost always > 4 instructions.
+            // Short stubs (1-3 instrs) are almost always false positives in data.
+            // (Standard code analysis would have found them if they were calls/jumps)
+            if (instructions_checked < 5) return 0;
+
+            // 3. Meaningful Content Check:
+            // Must have at least one control flow or math instruction if it's long
+            if (control_flow_count == 1 && math_count == 0 && instructions_checked > 5) return 0; // Just loads + ret
+
+            return (curr + instr.length - addr);
+        }
+        
+        // Unconditional jumps also count as valid terminators if they stay in bank
+        if (instr.type == InstructionType::JP_NN || instr.type == InstructionType::JR_N) {
+             if (instructions_checked < 4) return 0;
+             return (curr + instr.length - addr);
+        }
         
         curr += instr.length;
         if (curr >= 0x8000) return 0;
         instructions_checked++;
     }
 
-    // If we survived this long without a terminator, doubtful.
+    // Survivability Check:
+    // If we ran MAX_CHECK instructions without a terminator, it's data.
     return 0;
 }
 
@@ -730,13 +782,19 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         banks_to_scan.push_back(0);
         for (uint8_t b : known_banks) if (b > 0) banks_to_scan.push_back(b);
 
+        // Track regions found by aggressive scanning to avoid overlapping detection in future passes
+        // (Since operands are not marked as 'visited' by the main analysis)
+        static std::set<uint32_t> aggressive_regions; 
+
         for (uint8_t bank : banks_to_scan) {
             uint16_t start_addr = (bank == 0) ? 0x0000 : 0x4000;
             uint16_t end_addr = (bank == 0) ? 0x3FFF : 0x7FFF;
             
             for (uint32_t addr = start_addr; addr <= end_addr; ) {
-                // If already visited, skip this address
-                if (visited.count(make_address(bank, addr))) {
+                uint32_t full_addr = make_address(bank, addr);
+                
+                // If already visited by ANY means, skip
+                if (visited.count(full_addr) || aggressive_regions.count(full_addr)) {
                     addr++; 
                     continue;
                 }
@@ -765,6 +823,11 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
                     uint8_t context = (bank > 0) ? bank : 1;
                     work_queue.push({entry, -1, -1, context});
                     found_count++;
+                    
+                    // Mark region as scanned
+                    for (int i = 0; i < code_len; i++) {
+                        aggressive_regions.insert(make_address(bank, addr + i));
+                    }
                     
                     // Skip the block we just found to avoid overlapping detection
                     addr += code_len;

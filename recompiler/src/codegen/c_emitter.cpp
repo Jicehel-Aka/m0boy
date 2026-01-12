@@ -818,8 +818,8 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                         out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
                         emit_indent();
                     }
-                    out << "gb_dispatch(ctx, 0x" << std::hex << std::setfill('0') 
-                        << std::setw(4) << target << std::dec << "); return;\n";
+                    out << "ctx->pc = 0x" << std::hex << std::setfill('0') 
+                        << std::setw(4) << target << std::dec << "; return;\n";
                 } else {
                     std::string target_func = program.make_function_name(tbank, target);
                     bool func_exists = program.functions.find(target_func) != program.functions.end();
@@ -858,8 +858,8 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                             out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
                             emit_indent();
                         }
-                        out << "gb_dispatch(ctx, 0x" << std::hex << std::setfill('0') 
-                            << std::setw(4) << target << std::dec << "); return;\n";
+                        out << "ctx->pc = 0x" << std::hex << std::setfill('0') 
+                            << std::setw(4) << target << std::dec << "; return;\n";
                     }
                 }
             } else if (instr.dst.type == ir::OperandType::REG16) {
@@ -1095,8 +1095,8 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                     emit_indent(); out << "if (ctx->stopped) return;\n";
                 }
                 
-                emit_indent(); out << "gb_dispatch_call(ctx, 0x" << std::hex << std::setfill('0') << std::setw(2) 
-                    << (int)vector << std::dec << ");\n";
+                emit_indent(); out << "/* Fallback to dispatcher */\n";
+                emit_indent(); out << "return;\n";
                 
                 emit_indent();
                 out << "return;\n";

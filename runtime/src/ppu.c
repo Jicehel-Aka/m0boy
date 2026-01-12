@@ -264,14 +264,8 @@ void ppu_render_scanline(GBPPU* ppu, GBContext* ctx) {
     
     /* Debug: log first scanline render details */
     if (ppu->ly == 0) {
-        DBG_PPU("Rendered scanline 0 - LCDC=0x%02X, BGP=0x%02X, SCX=%d, SCY=%d",
-                ppu->lcdc, ppu->bgp, ppu->scx, ppu->scy);
-        
-        /* Check if we have any tile data in VRAM */
-        if (ctx->vram) {
-            dbg_dump_vram_tiles(ctx->vram, 32);
-            dbg_dump_tilemap(ctx->vram, 0x1800, 16);  /* BG tilemap at 0x9800 */
-        }
+        // DBG_PPU("Rendered scanline 0 - LCDC=0x%02X, BGP=0x%02X, SCX=%d, SCY=%d",
+        //        ppu->lcdc, ppu->bgp, ppu->scx, ppu->scy);
     }
 }
 

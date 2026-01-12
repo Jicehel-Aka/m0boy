@@ -225,6 +225,10 @@ The following features are prioritized for future updates:
 - [ ] **Recompiler**: Improved detection for switch-statement-style jump tables.
 - [ ] **Self-Modifying Code**: Detection and interpreter fallback for RAM-executed code.
 
+#### Misc
+- [ ] Tools to identify entry-points or fully automate the process
+- [ ] Tools for better graphical debugging (outputting PNGs grid instead of raw PPMs)
+
 ---
 
 ## Development
