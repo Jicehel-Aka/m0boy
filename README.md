@@ -138,9 +138,6 @@ The generated code links against `libgbrt`, which provides:
 
 See [COMPATIBILITY.md](COMPATIBILITY.md) for the full test report.
 Recompilation doesn't mean fully playable. Most of the games are not fully playable yet and some are not even playable.
-Some working examples:
-- Tetris
-- Mickey Mouse (glitched graphics)
 
 | Status | Count | Percentage |
 |--------|-------|------------|
@@ -148,6 +145,12 @@ Some working examples:
 | ❌ RECOMPILE_FAIL | 1 | 0.06% |
 | ⚠️ RUN_TIMEOUT | 1 | 0.06% |
 | 🔧 EXCEPTION | 7 | 0.44% |
+
+Manually confirmed working examples:
+- **Tetris (Japan) (En)** (md5: 084f1e457749cdec86183189bd88ce69)
+  - Title screen sometimes glitches
+  - After completing a line, you need to pause and resume to fix the graphics
+  - Audio glitches
 
 ---
 
