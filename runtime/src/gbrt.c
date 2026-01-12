@@ -25,6 +25,8 @@ bool gbrt_trace_enabled = false;
 uint64_t gbrt_instruction_count = 0;
 uint64_t gbrt_instruction_limit = 0;
 
+static char* gbrt_trace_filename = NULL;
+
 
 /* ============================================================================
  * Context Management
@@ -54,11 +56,21 @@ GBContext* gb_context_create(const GBConfig* config) {
     ctx->apu = gb_audio_create();
     gb_context_reset(ctx, true);
     (void)config;
+
+    if (gbrt_trace_filename) {
+        ctx->trace_file = fopen(gbrt_trace_filename, "w");
+        if (ctx->trace_file) {
+            ctx->trace_entries_enabled = true;
+            fprintf(stderr, "[GBRT] Tracing entry points to %s\n", gbrt_trace_filename);
+        }
+    }
+
     return ctx;
 }
 
 void gb_context_destroy(GBContext* ctx) {
     if (!ctx) return;
+    if (ctx->trace_file) fclose((FILE*)ctx->trace_file);
     free(ctx->wram);
     free(ctx->vram);
     free(ctx->oam);
@@ -654,8 +666,28 @@ void gb_ret(GBContext* ctx) { ctx->pc = gb_pop16(ctx); }
 void gbrt_jump_hl(GBContext* ctx) { ctx->pc = ctx->hl; }
 void gb_rst(GBContext* ctx, uint8_t vec) { gb_push16(ctx, ctx->pc); ctx->pc = vec; }
 
-__attribute__((weak)) void gb_dispatch(GBContext* ctx, uint16_t addr) { ctx->pc = addr; gb_interpret(ctx, addr); }
-__attribute__((weak)) void gb_dispatch_call(GBContext* ctx, uint16_t addr) { ctx->pc = addr; }
+void gbrt_set_trace_file(const char* filename) {
+    if (gbrt_trace_filename) free(gbrt_trace_filename);
+    if (filename) gbrt_trace_filename = strdup(filename);
+    else gbrt_trace_filename = NULL;
+}
+
+void gbrt_log_trace(GBContext* ctx, uint16_t bank, uint16_t addr) {
+    if (ctx->trace_entries_enabled && ctx->trace_file) {
+        fprintf((FILE*)ctx->trace_file, "%d:%04x\n", (int)bank, (int)addr);
+    }
+}
+
+__attribute__((weak)) void gb_dispatch(GBContext* ctx, uint16_t addr) { 
+    gbrt_log_trace(ctx, (addr < 0x4000) ? 0 : ctx->rom_bank, addr);
+    ctx->pc = addr; 
+    gb_interpret(ctx, addr); 
+}
+
+__attribute__((weak)) void gb_dispatch_call(GBContext* ctx, uint16_t addr) { 
+    gbrt_log_trace(ctx, (addr < 0x4000) ? 0 : ctx->rom_bank, addr);
+    ctx->pc = addr; 
+}
 
 /* ============================================================================
  * Timing & Hardware Sync

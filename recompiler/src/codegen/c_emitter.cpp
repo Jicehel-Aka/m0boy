@@ -1682,6 +1682,8 @@ GeneratedOutput generate_output(const ir::Program& program,
     main_ss << "        if (strcmp(argv[i], \"--trace\") == 0) {\n";
     main_ss << "            gbrt_trace_enabled = true;\n";
     main_ss << "            printf(\"Trace enabled\\n\");\n";
+    main_ss << "        } else if (strcmp(argv[i], \"--trace-entries\") == 0 && i + 1 < argc) {\n";
+    main_ss << "            gbrt_set_trace_file(argv[++i]);\n";
     main_ss << "        } else if (strcmp(argv[i], \"--limit\") == 0 && i + 1 < argc) {\n";
     main_ss << "            gbrt_instruction_limit = strtoull(argv[++i], NULL, 10);\n";
     main_ss << "            printf(\"Instruction limit: %llu\\n\", (unsigned long long)gbrt_instruction_limit);\n";

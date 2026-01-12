@@ -47,6 +47,7 @@ void print_usage(const char* program) {
     std::cout << "  --bank <n>            Only process bank n\n";
     std::cout << "  --add-entry-point b:a Add manual entry point (e.g. 1:4000)\n";
     std::cout << "  --no-scan             Disable aggressive code scanning (enabled by default)\n";
+    std::cout << "  --use-trace <file>    Use runtime trace to find entry points\n";
     std::cout << "  -h, --help            Show this help\n";
 }
 
@@ -83,6 +84,7 @@ int main(int argc, char* argv[]) {
     bool aggressive_scan = true;
     int specific_bank = -1;
     std::vector<uint32_t> manual_entry_points;
+    std::string trace_file_path;
     
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -133,6 +135,10 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--no-scan") {
             aggressive_scan = false;
+        } else if (arg == "--use-trace") {
+            if (i + 1 < argc) {
+                trace_file_path = argv[++i];
+            }
         } else if (arg[0] != '-') {
             rom_path = arg;
         } else {
@@ -198,6 +204,7 @@ int main(int argc, char* argv[]) {
     analyze_opts.max_instructions = limit_instructions;
     analyze_opts.entry_points = manual_entry_points;
     analyze_opts.aggressive_scan = aggressive_scan;
+    analyze_opts.trace_file_path = trace_file_path;
 
     // Detect standard HRAM DMA routine
     // Routine: LDH (46),A; LD A,28; DEC A; JR NZ,-3; RET

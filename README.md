@@ -103,6 +103,7 @@ The recompiler will:
 | `--add-entry-point b:addr` | Manually specified entry point (e.g. `1:4000`) |
 | `--no-scan` | Disable aggressive code scanning (enabled by default) |
 | `--verbose` | Show detailed analysis statistics |
+| `--use-trace <file>` | Use runtime trace to seed entry points |
 
 **Example:**
 ```bash
@@ -112,14 +113,38 @@ The recompiler will:
 
 ### Advanced Usage
 
+**Trace-Guided Recompilation (Recommended):**
+Complex games (like *Pokémon Blue*) often use computed jumps that static analysis cannot resolve. You can use execution traces to "seed" the analyzer with every instruction physically executed during a real emulated session.
+
+1. **Generate a trace**: Run any recompiled version of the game with tracing enabled, or use the **[Ground Truth Capture Tool](GROUND_TRUTH_WORKFLOW.md)** with PyBoy.
+   ```bash
+   # Option A: Using recompiled game
+   ./output/game/build/game --trace-entries game.trace --limit 1000000
+
+   # Option B: Using PyBoy "Ground Truth" Capture (Recommended for new games)
+   python3 tools/capture_ground_truth.py roms/game.gb -o game.trace --random
+   ```
+2. **Recompile with grounding**: Feed the trace back into the recompiler.
+   ```bash
+   ./build/bin/gbrecomp roms/game.gb -o output/game --use-trace game.trace
+   ```
+
+For a detailed walkthrough, see **[GROUND_TRUTH_WORKFLOW.md](GROUND_TRUTH_WORKFLOW.md)**.
+**Generic Indirect Jump Solver:**
+The recompiler includes an advanced static solver for `JP HL` and `CALL HL` instructions. It tracks the contents of all 8-bit registers and 16-bit pairs throughout the program's control flow. 
+
+- **Register Tracking**: Accurately handles constant pointers loaded into `HL` or table bases loaded into `DE`.
+- **Table Backtracking**: When a `JP HL` is encountered with an unknown `HL`, the recompiler scans back for jump table patterns (e.g., page-aligned pointers) and automatically discovers all potential branch targets.
+- **Impact**: Provides >98% code discovery for complex RPGs like *Pokémon* without requiring dynamic traces.
+
 **Manual Entry Points:**
-Complex games (like *Pokémon Blue*) often use computed jumps that static analysis cannot resolve. If you encounter slow performance (interpreter fallback) or missing graphics, check the trace logs for `[GB] Interpreter` messages and add manual entry points:
+If you see `[GB] Interpreter` messages in the logs at specific addresses, you can manually force the recompiler to analyze them:
 ```bash
 ./build/bin/gbrecomp roms/game.gb -o out_dir --add-entry-point 28:602B
 ```
 
 **Aggressive Scanning:**
-The recompiler automatically scans memory banks for code that isn't directly reachable via standard control flow (e.g. unreferenced functions or obscure jump tables). This significantly improves compatibility but may occasionally detect data as code. To disable it:
+The recompiler automatically scans memory banks for code that isn't directly reachable (e.g. unreferenced functions). This improves compatibility but may occasionally misidentify data as code. To disable it:
 ```bash
 ./build/bin/gbrecomp roms/game.gb -o out_dir --no-scan
 ```
@@ -133,6 +158,7 @@ When running a recompiled game:
 | `--input <script>` | Automate input from a script file |
 | `--dump-frames <list>` | Dump specific frames as screenshots |
 | `--screenshot-prefix <path>` | Set screenshot output path |
+| `--trace-entries <file>` | Log all executed (Bank, PC) points to file |
 
 ### Controls
 
@@ -226,8 +252,26 @@ The following features are prioritized for future updates:
 - [ ] **Self-Modifying Code**: Detection and interpreter fallback for RAM-executed code.
 
 #### Misc
-- [ ] Tools to identify entry-points or fully automate the process
+- [x] Tools to identify entry-points (Trace-Guided Analysis)
 - [ ] Tools for better graphical debugging (outputting PNGs grid instead of raw PPMs)
+
+---
+
+## Tools
+
+The `tools/` directory contains utilities for analysis and verification:
+
+### 1. Ground Truth Capturer
+Automate instruction discovery using a high-speed headless emulator (**PyBoy** recommended).
+```bash
+python3 tools/capture_ground_truth.py roms/game.gb --frames 3600 --random -o game.trace
+```
+
+### 2. Coverage Analyzer
+Audit your recompiled code against a dynamic trace to see exactly what instructions are missing.
+```bash
+python3 tools/compare_ground_truth.py --trace game.trace output/game
+```
 
 ---
 

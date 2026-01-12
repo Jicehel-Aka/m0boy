@@ -170,6 +170,7 @@ struct AnalyzerOptions {
     
     // Feature flags
     bool aggressive_scan = true;        // Scan for unreferenced code (ON by default)
+    std::string trace_file_path;        // Path to entry points trace file
 };
 
 /**

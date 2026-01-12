@@ -98,6 +98,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
         fprintf(stderr, "[INTERP] Enter interpreter at 0x%04X (entry #%d)\n", addr, entry_count);
     }
 #endif
+    gbrt_log_trace(ctx, (addr < 0x4000) ? 0 : ctx->rom_bank, addr);
 
     uint32_t instructions_executed = 0;
 
@@ -467,60 +468,117 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
             }
 
             /* Control Flow */
-            /* Control Flow */
-            case 0xC3: ctx->pc = READ16(ctx); gb_tick(ctx, cycles); return; /* JP nn */
-            case 0xE9: ctx->pc = ctx->hl; gb_tick(ctx, cycles); return; /* JP HL */
+            case 0xC3: { /* JP nn */
+                uint16_t dest = READ16(ctx);
+                gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
+                ctx->pc = dest; 
+                gb_tick(ctx, cycles); 
+                return; 
+            }
+            case 0xE9: { /* JP HL */
+                gbrt_log_trace(ctx, (ctx->hl < 0x4000) ? 0 : ctx->rom_bank, ctx->hl);
+                ctx->pc = ctx->hl; 
+                gb_tick(ctx, cycles); 
+                return; 
+            }
             
             case 0xC2: { /* JP NZ, nn */
                 uint16_t dest = READ16(ctx);
-                if (!ctx->f_z) { ctx->pc = dest; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
+                if (!ctx->f_z) { 
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
+                    ctx->pc = dest; 
+                    gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); 
+                    return; 
+                }
                 break;
             }
             case 0xCA: { /* JP Z, nn */
                 uint16_t dest = READ16(ctx);
-                if (ctx->f_z) { ctx->pc = dest; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
+                if (ctx->f_z) { 
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
+                    ctx->pc = dest; 
+                    gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); 
+                    return; 
+                }
                 break;
             }
             case 0xD2: { /* JP NC, nn */
                 uint16_t dest = READ16(ctx);
-                if (!ctx->f_c) { ctx->pc = dest; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
+                if (!ctx->f_c) { 
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
+                    ctx->pc = dest; 
+                    gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); 
+                    return; 
+                }
                 break;
             }
             case 0xDA: { /* JP C, nn */
                 uint16_t dest = READ16(ctx);
-                if (ctx->f_c) { ctx->pc = dest; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
+                if (ctx->f_c) { 
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
+                    ctx->pc = dest; 
+                    gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); 
+                    return; 
+                }
                 break;
             }
             
             case 0x18: { /* JR n */
                 int8_t off = (int8_t)READ8(ctx);
-                ctx->pc += off;
+                uint16_t dest = ctx->pc + off;
+                gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
+                ctx->pc = dest;
                 gb_tick(ctx, cycles);
                 return;
             }
             case 0x20: { /* JR NZ, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (!ctx->f_z) { ctx->pc += off; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
+                if (!ctx->f_z) { 
+                    uint16_t dest = ctx->pc + off;
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
+                    ctx->pc = dest; 
+                    gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); 
+                    return; 
+                }
                 break;
             }
             case 0x28: { /* JR Z, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (ctx->f_z) { ctx->pc += off; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
+                if (ctx->f_z) { 
+                    uint16_t dest = ctx->pc + off;
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
+                    ctx->pc = dest; 
+                    gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); 
+                    return; 
+                }
                 break;
             }
             case 0x30: { /* JR NC, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (!ctx->f_c) { ctx->pc += off; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
+                if (!ctx->f_c) { 
+                    uint16_t dest = ctx->pc + off;
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
+                    ctx->pc = dest; 
+                    gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); 
+                    return; 
+                }
                 break;
             }
             case 0x38: { /* JR C, n */
                 int8_t off = (int8_t)READ8(ctx);
-                if (ctx->f_c) { ctx->pc += off; gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); return; }
+                if (ctx->f_c) { 
+                    uint16_t dest = ctx->pc + off;
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
+                    ctx->pc = dest; 
+                    gb_tick(ctx, cycles + BRANCH_TAKEN_EXTRA); 
+                    return; 
+                }
                 break;
             }
             
             case 0xCD: { /* CALL nn */
                 uint16_t dest = READ16(ctx);
+                gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
                 gb_push16(ctx, ctx->pc);
                 ctx->pc = dest;
                 gb_tick(ctx, cycles);
@@ -529,6 +587,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
             case 0xC4: { /* CALL NZ, nn */
                 uint16_t dest = READ16(ctx);
                 if (!ctx->f_z) {
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
                     gb_tick(ctx, cycles + CALL_TAKEN_EXTRA);
@@ -539,6 +598,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
             case 0xCC: { /* CALL Z, nn */
                 uint16_t dest = READ16(ctx);
                 if (ctx->f_z) {
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
                     gb_tick(ctx, cycles + CALL_TAKEN_EXTRA);
@@ -549,6 +609,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
             case 0xD4: { /* CALL NC, nn */
                 uint16_t dest = READ16(ctx);
                 if (!ctx->f_c) {
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
                     gb_tick(ctx, cycles + CALL_TAKEN_EXTRA);
@@ -559,6 +620,7 @@ void gb_interpret(GBContext* ctx, uint16_t addr) {
             case 0xDC: { /* CALL C, nn */
                 uint16_t dest = READ16(ctx);
                 if (ctx->f_c) {
+                    gbrt_log_trace(ctx, (dest < 0x4000) ? 0 : ctx->rom_bank, dest);
                     gb_push16(ctx, ctx->pc);
                     ctx->pc = dest;
                     gb_tick(ctx, cycles + CALL_TAKEN_EXTRA);

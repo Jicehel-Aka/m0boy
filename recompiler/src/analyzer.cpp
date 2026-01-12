@@ -9,6 +9,10 @@
 #include <iostream>
 #include <iomanip>
 #include <sstream>
+#include <cmath>
+#include <set>
+#include <map>
+#include <fstream>
 
 namespace gbrecomp {
 
@@ -213,6 +217,23 @@ static std::vector<uint16_t> extract_rst28_table_entries(const ROM& rom, uint16_
 }
 
 /* ============================================================================
+ * Internal State Tracking
+ * ========================================================================== */
+
+// Track addresses to explore: (addr, known_a, ..., current_bank_context)
+struct AnalysisState {
+    uint32_t addr;
+    int known_a;  // -1 if unknown
+    int known_b;
+    int known_c;
+    int known_d;
+    int known_e;
+    int known_h;
+    int known_l;
+    uint8_t current_bank;
+};
+
+/* ============================================================================
  * Bank Switch Detection
  * ========================================================================== */
 
@@ -238,62 +259,65 @@ static std::set<uint8_t> detect_bank_values(const ROM& rom) {
 }
 
 /**
+ * @brief Calculate Shannon entropy of a memory region
+ */
+static double calculate_entropy(const ROM& rom, uint8_t bank, uint16_t addr, size_t len) {
+    if (addr + len > 0x8000) return 0.0;
+    
+    uint32_t counts[256] = {0};
+    for (size_t i = 0; i < len; i++) {
+        counts[rom.read_banked(bank, addr + i)]++;
+    }
+    
+    double entropy = 0;
+    for (int i = 0; i < 256; i++) {
+        if (counts[i] > 0) {
+            double p = (double)counts[i] / len;
+            entropy -= p * std::log2(p);
+        }
+    }
+    return entropy;
+}
+
+/**
  * @brief Heuristic check if an address looks like valid code start
  * 
  * Checks for:
- * 1. Repetitive byte patterns (indicative of data/tiles)
- * 2. Immediate invalid opcodes
- * 3. Dense invalid operations
+ * 1. Shannon Entropy (filtering tile data / PCM)
+ * 2. Repetitive byte patterns
+ * 3. Illegal address access/jumps
+ * 4. Instruction density (loads vs math/control flow)
  */
 static int is_likely_valid_code(const ROM& rom, uint8_t bank, uint16_t addr) {
-    // 1. Check for repetitive patterns (e.g. tile data)
-    // Most code has entropy. Data often repeats.
-    const int PATTERN_CHECK_LEN = 256;
+    // 1. Shannon Entropy Check
+    // Typical code has moderate entropy (3.0-6.0). 
+    // Data like tilemaps is very low (< 2.0). PCM is very high (> 7.5).
+    double entropy = calculate_entropy(rom, bank, addr, 48);
+    if (entropy < 1.8 || entropy > 7.6) return 0;
+
+    // 2. Check for repetitive patterns (e.g. tile data)
+    const int PATTERN_CHECK_LEN = 128;
     if (addr + PATTERN_CHECK_LEN < 0x8000) {
-        uint8_t bytes[PATTERN_CHECK_LEN];
-        for (int i = 0; i < PATTERN_CHECK_LEN; i++) {
-            bytes[i] = rom.read_banked(bank, addr + i);
-        }
-        
-        // Check for small repeating periods (1 to 8 bytes)
-        // Check for repeating periods (1 to 8 bytes)
-        // If we see many full repetitions of ANY pattern, assume data.
-        // Code loops, but rarely repeats linear instruction sequences multiple times.
         for (int period = 1; period <= 8; period++) {
-            // Check if pattern repeats significantly (covering > 64 bytes)
-            // e.g. ABC ABC ABC ...
-            
-            const int REQUIRED_REPEATS = 32;
+            const int REQUIRED_REPEATS = 16;
             const int REQUIRED_LEN = period * REQUIRED_REPEATS;
             
-            if (PATTERN_CHECK_LEN < REQUIRED_LEN) continue;
-            
             bool matches = true;
-            for (int i = 0; i < REQUIRED_LEN - period; i++) {
-                if (bytes[i] != bytes[i + period]) {
+            for (int i = 0; i < REQUIRED_LEN; i++) {
+                if (rom.read_banked(bank, addr + i) != rom.read_banked(bank, addr + i + period)) {
                     matches = false;
                     break;
                 }
             }
-            
-            if (matches) {
-                // std::cout << "[DEBUG] Bank " << (int)bank << " rejected: Repeating pattern period " << period << "\n";
-                // Don't reject purely on pattern unless very strong
-                // return false; 
-                // Actually, let's keep pattern check but be permissive?
-                // Castlevania Bank 1 starts with 01s.
-                // My parameters passed the check.
-                // Keeping existing logic:
-                if (matches) return 0;
-            }
+            if (matches) return 0;
         }
     }
 
-    // 2. Decode instructions
+    // 3. Decode instructions
     Decoder decoder(rom);
     uint16_t curr = addr;
     int instructions_checked = 0;
-    const int MAX_CHECK = 48; // Reduce further. Real functions branch or return quickly.
+    const int MAX_CHECK = 64;
     int nop_count = 0;
     int ld_count = 0;
     int control_flow_count = 0;
@@ -302,82 +326,128 @@ static int is_likely_valid_code(const ROM& rom, uint8_t bank, uint16_t addr) {
     while (instructions_checked < MAX_CHECK) {
         Instruction instr = decoder.decode(curr, bank);
         
-        // Immediate rejection
         if (instr.type == InstructionType::UNDEFINED || instr.type == InstructionType::INVALID) return 0;
         
-        // NOP Check
         if (instr.type == InstructionType::NOP) {
             nop_count++;
-            if (nop_count > 2 && instructions_checked == 0) return 0; // Starts with >2 NOPs? Padding.
+            if (nop_count > 4) return 0; // Too many NOPs
         }
         
-        // Data Pattern Checks
-        if (instr.type == InstructionType::LD_R_R || instr.type == InstructionType::LD_R_N) ld_count++;
-        if (instr.type == InstructionType::ADD_A_N || instr.type == InstructionType::SUB_A_N || instr.type == InstructionType::AND_A_N || instr.type == InstructionType::OR_A_N || instr.type == InstructionType::XOR_A_N || instr.type == InstructionType::CP_A_N) math_count++;
-
-        // Control Flow Count
-        if (instr.type == InstructionType::JP_NN || instr.type == InstructionType::JR_N || instr.type == InstructionType::JR_CC_N || instr.type == InstructionType::JP_CC_NN || instr.type == InstructionType::CALL_NN || instr.type == InstructionType::CALL_CC_NN || instr.is_return) {
-            control_flow_count++;
+        // 4. Illegal address check
+        if (instr.type == InstructionType::LD_A_NN || instr.type == InstructionType::LD_NN_A ||
+            instr.type == InstructionType::LD_NN_SP || instr.type == InstructionType::LD_RR_NN ||
+            instr.is_call || instr.is_jump) {
+            
+            uint16_t imm = (instr.type == InstructionType::JR_N || instr.type == InstructionType::JR_CC_N) ? 0 : instr.imm16;
+            if (imm != 0) {
+                // Prohibited memory areas
+                if (imm >= 0xFEA0 && imm <= 0xFEFF) return 0;
+                // Echo RAM (usually not used by real code)
+                if (imm >= 0xE000 && imm <= 0xFDFF) return 0;
+            }
         }
 
-        // Red-flag opcodes that are extremely rare or usually indicative of data
-        // DAA (0x27), CPL (0x2F), SCF (0x37), CCF (0x3F) - valid but rare in random stubs
-        if (instr.opcode == 0x27 || instr.opcode == 0x2F || instr.opcode == 0x37 || instr.opcode == 0x3F) return 0;
+        if (instr.reads_memory || instr.writes_memory) ld_count++;
+        if (instr.is_call || instr.is_jump || instr.is_return) control_flow_count++;
         
-        // Rotates like RRA, RLA (0x1F, 0x17) are common in bitmapped data
-        if (instr.opcode == 0x07 || instr.opcode == 0x0F || instr.opcode == 0x17 || instr.opcode == 0x1F) {
-            if (instructions_checked < 2) return 0; // Suspect if at very start
+        // Math/Logic
+        if (instr.opcode >= 0x80 && instr.opcode <= 0xBF) math_count++;
+
+        // Reject rare/data-like opcodes if too frequent at start
+        if (instr.opcode == 0x27 || instr.opcode == 0x2F || instr.opcode == 0x37 || instr.opcode == 0x3F) {
+            if (instructions_checked < 4) return 0;
+        }
+        
+        // RST instructions in data are suspicious (0x00 or 0xFF)
+        if (instr.type == InstructionType::RST) {
+            if (instr.opcode == 0xC7 || instr.opcode == 0xFF) {
+                 if (instructions_checked < 2) return 0;
+            }
         }
 
-        // RST instructions (0xC7, 0xCF, etc) are common in data (0xFF, 0x00 etc)
-        if ((instr.opcode & 0xC7) == 0xC7) return 0;
-
-        // Suspicious Opcode Checks
-        if (instr.opcode == 0xF3 || instr.opcode == 0xFB) return 0; // DI/EI
-        if (instr.opcode == 0x76 || instr.opcode == 0x10) return 0; // HALT/STOP
-        
         // Terminator Check
         if (instr.is_return && !instr.is_conditional) {
-            // Valid terminator found. 
-            // FINAL CHECKS:
-            
-            // 1. Density Check:
-            // Data flukes are often 100% loads or 100% ALUs.
-            if (ld_count >= instructions_checked) return 0; 
-            if (math_count >= instructions_checked) return 0;
-
-            // 2. Length Check:
-            // Real functions discovered via scanning are almost always > 4 instructions.
-            // Short stubs (1-3 instrs) are almost always false positives in data.
-            // (Standard code analysis would have found them if they were calls/jumps)
-            if (instructions_checked < 5) return 0;
-
-            // 3. Meaningful Content Check:
-            // Must have at least one control flow or math instruction if it's long
-            if (control_flow_count == 1 && math_count == 0 && instructions_checked > 5) return 0; // Just loads + ret
-
+            if (instructions_checked < 2) return 0; 
+            // Avoid load-only functions discovered via scanning
+            if (ld_count >= instructions_checked && instructions_checked > 2) return 0;
             return (curr + instr.length - addr);
         }
         
-        // Unconditional jumps also count as valid terminators if they stay in bank
-        if (instr.type == InstructionType::JP_NN || instr.type == InstructionType::JR_N) {
-             if (instructions_checked < 4) return 0;
-             return (curr + instr.length - addr);
+        if (instr.is_jump && !instr.is_conditional) {
+             if (instructions_checked >= 3) return (curr + instr.length - addr);
+             return 0;
         }
         
         curr += instr.length;
         if (curr >= 0x8000) return 0;
         instructions_checked++;
+        
+        // High density of loads (indicative of data or large tables)
+        if (instructions_checked >= 15 && ld_count == instructions_checked) return 0;
     }
 
-    // Survivability Check:
-    // If we ran MAX_CHECK instructions without a terminator, it's data.
     return 0;
+}
+
+/**
+ * @brief Scan for 16-bit pointers that likely lead to code
+ */
+static void find_pointer_entry_points(const ROM& rom, AnalysisResult& result, std::queue<AnalysisState>& work_queue) {
+    // Scan Bank 0 for potential 16-bit pointers
+    // Typically pointers are found after the header (0x150)
+    for (uint16_t addr = 0x0150; addr < 0x3FFE; addr++) {
+        uint8_t lo = rom.read_banked(0, addr);
+        uint8_t hi = rom.read_banked(0, addr + 1);
+        uint16_t target = lo | (hi << 8);
+        
+        // Target must be in ROM
+        if (target >= 0x0150 && target < 0x8000) {
+            uint8_t tbank = (target < 0x4000) ? 0 : 1; 
+            // If it's a pointer to code, suggest it as an entry point
+            if (is_likely_valid_code(rom, tbank, target)) {
+                uint32_t full_addr = make_address(tbank, target);
+                if (result.call_targets.find(full_addr) == result.call_targets.end()) {
+                    result.call_targets.insert(full_addr);
+                    work_queue.push({full_addr, -1, -1, -1, -1, -1, -1, -1, (tbank > 0 ? tbank : (uint8_t)1)});
+                }
+            }
+        }
+    }
 }
 
 /* ============================================================================
  * Analysis Implementation
  * ========================================================================== */
+
+/**
+ * @brief Load entry points from a runtime trace file
+ */
+static void load_trace_entry_points(const std::string& path, std::set<uint32_t>& call_targets) {
+    if (path.empty()) return;
+
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        std::cerr << "Warning: Could not open trace file: " << path << "\n";
+        return;
+    }
+
+    std::string line;
+    int count = 0;
+    while (std::getline(file, line)) {
+        size_t colon = line.find(':');
+        if (colon != std::string::npos) {
+            try {
+                int bank = std::stoi(line.substr(0, colon));
+                int addr = std::stoi(line.substr(colon + 1), nullptr, 16);
+                call_targets.insert(make_address(bank, addr));
+                count++;
+            } catch (...) {
+                continue;
+            }
+        }
+    }
+    std::cout << "Loaded " << count << " entry points from trace file: " << path << "\n";
+}
 
 AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
     AnalysisResult result;
@@ -392,15 +462,10 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
     // Detect which banks are used
     std::set<uint8_t> known_banks = detect_bank_values(rom);
     
-    // Track addresses to explore: (addr, known_a, known_hl, current_bank_context)
-    struct AnalysisState {
-        uint32_t addr;
-        int known_a;
-        int known_hl; // -1 if unknown, otherwise 16-bit value
-        uint8_t current_bank;
-    };
     std::queue<AnalysisState> work_queue;
     std::set<uint32_t> visited;
+    // Pointer scanning pass
+    find_pointer_entry_points(rom, result, work_queue);
     
     // Entry point is always a function (bank 0)
     result.call_targets.insert(make_address(0, 0x100));
@@ -411,17 +476,30 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         if (is_rst_padding(rom, vec)) continue;
         if (vec == 0x30 && skip_rst30) continue;
         result.call_targets.insert(make_address(0, vec));
-        work_queue.push({make_address(0, vec), -1, -1, 1});
     }
     
     // Interrupt vectors
     for (uint16_t vec : result.interrupt_vectors) {
         result.call_targets.insert(make_address(0, vec));
-        work_queue.push({make_address(0, vec), -1, -1, 1});
+    }
+
+    // Load from trace if provided
+    load_trace_entry_points(options.trace_file_path, result.call_targets);
+
+    // Initial work queue seeding
+    for (uint32_t target : result.call_targets) {
+        uint8_t bank = get_bank(target);
+        work_queue.push({target, -1, -1, -1, -1, -1, -1, -1, (bank > 0 ? bank : (uint8_t)1)});
     }
     
-    // Start from entry point
-    work_queue.push({make_address(0, 0x100), -1, -1, 1});
+    // Manual entry points
+    for (uint32_t target : options.entry_points) {
+        if (result.call_targets.find(target) == result.call_targets.end()) {
+            result.call_targets.insert(target);
+            uint8_t bank = get_bank(target);
+            work_queue.push({target, -1, -1, -1, -1, -1, -1, -1, (bank > 0 ? bank : (uint8_t)1)});
+        }
+    }
     
     // For MBC games
     if (rom.header().mbc_type != MBCType::NONE && options.analyze_all_banks) {
@@ -429,7 +507,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         for (uint8_t bank : known_banks) {
                 if (bank > 0) {
                     if (is_likely_valid_code(rom, bank, 0x4000)) {
-                        work_queue.push({make_address(bank, 0x4000), -1, -1, bank});
+                        work_queue.push({make_address(bank, 0x4000), -1, -1, -1, -1, -1, -1, -1, bank});
                         result.call_targets.insert(make_address(bank, 0x4000));
                     } else {
                         // std::cout << "[INFO] Skipping likely data bank " << (int)bank << " at 0x4000\n";
@@ -442,7 +520,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
     for (const auto& ov : options.ram_overlays) {
         uint32_t addr = make_address(0, ov.ram_addr);
         result.call_targets.insert(addr);
-        work_queue.push({addr, -1, -1, 1});
+        work_queue.push({addr, -1, -1, -1, -1, -1, -1, -1, 1});
     }
 
     // Add manual entry points
@@ -450,7 +528,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         result.call_targets.insert(addr);
         uint8_t bank = get_bank(addr);
         uint8_t context = (bank > 0) ? bank : 1;
-        work_queue.push({addr, -1, -1, context});
+        work_queue.push({addr, -1, -1, -1, -1, -1, -1, -1, context});
     }
     
     // Multi-pass analysis
@@ -465,7 +543,12 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         
         uint32_t addr = item.addr;
         int known_a = item.known_a;
-        int known_hl = item.known_hl;
+        int known_b = item.known_b;
+        int known_c = item.known_c;
+        int known_d = item.known_d;
+        int known_e = item.known_e;
+        int known_h = item.known_h;
+        int known_l = item.known_l;
         uint8_t current_switchable_bank = item.current_bank;
         
         if (visited.count(addr)) continue;
@@ -533,93 +616,67 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
          * Constant Propagation (A and HL)
          * ------------------------------------------------------------- */
          
-        // Track A (for banking)
-        if (instr.opcode == 0x3E) { // LD A, n
-            known_a = instr.imm8;
-            if (options.verbose && bank == 0 && offset == 0x00CC) {
-                 std::cout << "[DEBUG] At 00CC: LD A, " << (int)known_a << ". known_a updated.\n";
+        // Helper to get combined HL
+        auto get_known_hl = [&]() -> int {
+            if (known_h != -1 && known_l != -1) return (known_h << 8) | known_l;
+            return -1;
+        };
+
+        // Helper to get combined registers
+        auto get_known_bc = [&]() -> int { if (known_b != -1 && known_c != -1) return (known_b << 8) | known_c; return -1; };
+        auto get_known_de = [&]() -> int { if (known_d != -1 && known_e != -1) return (known_d << 8) | known_e; return -1; };
+
+        // 8-bit Loads
+        if (instr.opcode == 0x06) known_b = instr.imm8;
+        else if (instr.opcode == 0x0E) known_c = instr.imm8;
+        else if (instr.opcode == 0x16) known_d = instr.imm8;
+        else if (instr.opcode == 0x1E) known_e = instr.imm8;
+        else if (instr.opcode == 0x26) known_h = instr.imm8;
+        else if (instr.opcode == 0x2E) known_l = instr.imm8;
+        else if (instr.opcode == 0x3E) known_a = instr.imm8;
+        // 16-bit Loads
+        else if (instr.opcode == 0x01) { known_b = (instr.imm16 >> 8); known_c = instr.imm16 & 0xFF; }
+        else if (instr.opcode == 0x11) { known_d = (instr.imm16 >> 8); known_e = instr.imm16 & 0xFF; }
+        else if (instr.opcode == 0x21) { known_h = (instr.imm16 >> 8); known_l = instr.imm16 & 0xFF; }
+        // LD r, r'
+        else if (instr.opcode >= 0x40 && instr.opcode <= 0x7F && instr.opcode != 0x76) {
+            int* regs[] = {&known_b, &known_c, &known_d, &known_e, &known_h, &known_l, nullptr, &known_a};
+            int dst = (instr.opcode >> 3) & 7;
+            int src = instr.opcode & 7;
+            if (regs[dst]) {
+                if (src == 6) { // LD r, (HL)
+                    int mhl = get_known_hl();
+                    if (mhl != -1 && mhl < 0x8000) *regs[dst] = rom.read_banked(mhl < 0x4000 ? 0 : bank, mhl);
+                    else *regs[dst] = -1;
+                } else if (regs[src]) *regs[dst] = *regs[src];
+                else *regs[dst] = -1;
+            } else if (dst == 6) { // LD (HL), r
+                 // Memory write - conceptually invalidates ROM values if we were tracking them, 
+                 // but we only track constant ROM.
             }
-        } 
-        else if (instr.opcode == 0x7E) { // LD A, (HL)
-            if (known_hl != -1) {
-                // Read from ROM at known HL
-                uint16_t addr = (uint16_t)known_hl;
-                // Only valid if reading from simple ROM regions
-                if (addr < 0x4000) {
-                     known_a = rom.read_banked(0, addr);
-                } else if (addr < 0x8000) {
-                     // Depends on which bank is active for DATA reading?
-                     // Usually data tables are in the same bank or specific data banks.
-                     // Analyzer doesn't track data bank context separate from code bank context,
-                     // but usually they match.
-                     if (bank > 0) {
-                         known_a = rom.read_banked(bank, addr);
-                     } else {
-                         // If we are in bank 0 code reading bank 1 data, unknown
-                         known_a = -1;
-                     }
-                } else {
-                     // Reading RAM/Regs -> Unknown
-                     known_a = -1;
-                }
-            } else {
-                known_a = -1;
-            }
         }
-        else if (instr.opcode == 0xFA) { // LD A, (nn)
-             uint16_t addr = instr.imm16;
-             if (addr < 0x4000) {
-                  known_a = rom.read_banked(0, addr);
-             } else if (addr < 0x8000 && bank > 0) {
-                  known_a = rom.read_banked(bank, addr);
-             } else {
-                  known_a = -1;
-             }
+        else if (instr.opcode == 0xAF) known_a = 0; // XOR A
+        // ADD HL, rr
+        else if (instr.opcode == 0x09 || instr.opcode == 0x19 || instr.opcode == 0x29) {
+            int val = -1;
+            if (instr.opcode == 0x09) val = get_known_bc();
+            if (instr.opcode == 0x19) val = get_known_de();
+            if (instr.opcode == 0x29) val = get_known_hl();
+            int mhl = get_known_hl();
+            if (mhl != -1 && val != -1) {
+                int res = (mhl + val) & 0xFFFF;
+                known_h = (res >> 8); known_l = res & 0xFF;
+            } else { known_h = -1; known_l = -1; }
         }
-        // LD A, (BC)/(DE) or other loads invalidate A
-        else if (instr.opcode == 0x0A || instr.opcode == 0x1A || 
-                 instr.opcode == 0xF0 || instr.opcode == 0xF2) {
-             known_a = -1;
-        }
-        else if (instr.opcode >= 0x40 && instr.opcode <= 0x7F) {
-             // LD r, r'
-             // Only invalidate if A is the destination (bits 3-5 are 111 => 7)
-             if (((instr.opcode >> 3) & 7) == 7 && instr.opcode != 0x7F) {
-                 // LD A, r (except LD A, A)
-                 known_a = -1;
-             }
-        }
-        else if (instr.opcode == 0xAF) { // XOR A
-            known_a = 0;
-        }
-        // INC/DEC A, ADD, SUB etc invalidate A
-        else if ((instr.opcode >= 0x80 && instr.opcode <= 0xBF) || 
-                 instr.opcode == 0x3C || instr.opcode == 0x3D || instr.opcode == 0x27 || instr.opcode == 0x2F) {
+        // Invalidate A on ALU
+        else if ((instr.opcode >= 0x80 && instr.opcode <= 0xBF) || (instr.opcode & 0xC7) == 0x06 || instr.opcode == 0x3C || instr.opcode == 0x3D) {
             known_a = -1;
-        }    
-        
-        // Track HL (for JP HL)
-        if (instr.opcode == 0x21) { // LD HL, nn
-            known_hl = instr.imm16;
-        } else if (instr.opcode == 0xE1) { // POP HL
-            known_hl = -1;
-        } else if (instr.opcode == 0x2A || instr.opcode == 0x3A) { // LD A, (HL+) / LD A, (HL-)
-            // HL changes
-            known_hl = -1;
-        } else if (instr.opcode == 0x22 || instr.opcode == 0x32) { // LD (HL+), A / LD (HL-), A
-            // HL changes
-            known_hl = -1;
-        } else if (instr.opcode == 0x23 || instr.opcode == 0x2B || instr.opcode == 0x39 || 
-                   instr.opcode == 0x09 || instr.opcode == 0x19 || instr.opcode == 0x29) {
-            // INC/DEC HL, ADD HL, ...
-            known_hl = -1;
-        } else if (instr.opcode >= 0x60 && instr.opcode <= 0x6F) {
-            // LD H, r / LD L, r
-            // Invalidate unless we track H/L separately
-            known_hl = -1;
-        } else if (instr.opcode == 0xF8) { // LD HL, SP+n
-             known_hl = -1; 
         }
+        // POPs
+        else if (instr.opcode == 0xC1) { known_b = -1; known_c = -1; }
+        else if (instr.opcode == 0xD1) { known_d = -1; known_e = -1; }
+        else if (instr.opcode == 0xE1) { known_h = -1; known_l = -1; }
+        else if (instr.opcode == 0xF1) { known_a = -1; }
 
         /* -------------------------------------------------------------
          * Bank Switching Detection
@@ -676,7 +733,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
             if (is_rst_padding(rom, instr.rst_vector)) continue;
             
             result.call_targets.insert(make_address(0, instr.rst_vector));
-            work_queue.push({make_address(0, instr.rst_vector), -1, -1, 1});
+            work_queue.push({make_address(0, instr.rst_vector), -1, -1, -1, -1, -1, -1, -1, 1});
             
             bool is_rst28_jt = (instr.rst_vector == 0x28 && is_rst28_jump_table(rom));
             if (is_rst28_jt) {
@@ -687,14 +744,14 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
 
                     if (is_likely_valid_code(rom, tbank, target)) {
                         result.call_targets.insert(make_address(tbank, target));
-                        work_queue.push({make_address(tbank, target), -1, -1, tbank});
+                        work_queue.push({make_address(tbank, target), -1, -1, -1, -1, -1, -1, -1, tbank});
                         result.label_addresses.insert(make_address(tbank, target));
                     }
                 }
             } else {
                 uint32_t fall_through = make_address(bank, offset + instr.length);
                 result.label_addresses.insert(fall_through);
-                work_queue.push({fall_through, known_a, known_hl, current_switchable_bank});
+                work_queue.push({fall_through, known_a, known_b, known_c, known_d, known_e, known_h, known_l, current_switchable_bank});
             }
         } else if (instr.is_call) {
             uint16_t target = instr.imm16;
@@ -706,7 +763,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
             }
 
             result.call_targets.insert(make_address(tbank, target));
-            work_queue.push({make_address(tbank, target), -1, -1, tbank});
+            work_queue.push({make_address(tbank, target), -1, -1, -1, -1, -1, -1, -1, tbank});
             
             if (tbank != bank) {
                 result.stats.cross_bank_calls++;
@@ -715,7 +772,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
             
             uint32_t fall_through = make_address(bank, offset + instr.length);
             result.label_addresses.insert(fall_through);
-            work_queue.push({fall_through, known_a, known_hl, current_switchable_bank});
+            work_queue.push({fall_through, known_a, known_b, known_c, known_d, known_e, known_h, known_l, current_switchable_bank});
         } else if (instr.is_jump) {
             if (instr.type == InstructionType::JP_NN || instr.type == InstructionType::JP_CC_NN) {
                 uint16_t target = instr.imm16;
@@ -728,44 +785,65 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
                     result.call_targets.insert(make_address(tbank, target));
                 }
                 result.label_addresses.insert(make_address(tbank, target));
-                work_queue.push({make_address(tbank, target), known_a, known_hl, tbank});
+                work_queue.push({make_address(tbank, target), known_a, known_b, known_c, known_d, known_e, known_h, known_l, tbank});
             } else if (instr.type == InstructionType::JR_N || instr.type == InstructionType::JR_CC_N) {
                 uint16_t target = offset + instr.length + instr.offset;
                 result.label_addresses.insert(make_address(bank, target));
-                work_queue.push({make_address(bank, target), known_a, known_hl, current_switchable_bank});
+                work_queue.push({make_address(bank, target), known_a, known_b, known_c, known_d, known_e, known_h, known_l, current_switchable_bank});
             } else if (instr.type == InstructionType::JP_HL) {
-                // JP HL: Check if we know where HL points
-                if (known_hl != -1) {
-                    uint16_t target = (uint16_t)known_hl;
+                int combined_hl = get_known_hl();
+                if (combined_hl != -1) {
+                    uint16_t target = (uint16_t)combined_hl;
                     uint8_t tbank = target_bank(target);
-                    instr.resolved_target_bank = tbank; // May help debugging
-                    
-                    std::cout << "[ANALYSIS] Resolved static JP HL at " 
-                              << std::hex << (int)bank << ":" << offset 
-                              << " -> " << (int)tbank << ":" << target << std::dec << "\n";
-                              
+                    std::cout << "[ANALYSIS] Resolved static JP HL at " << std::hex << (int)bank << ":" << offset << " -> " << (int)tbank << ":" << target << std::dec << "\n";
                     result.call_targets.insert(make_address(tbank, target));
                     result.label_addresses.insert(make_address(tbank, target));
-                    result.computed_jump_targets.insert(make_address(tbank, target));
-                    work_queue.push({make_address(tbank, target), known_a, known_hl, tbank});
+                    work_queue.push({make_address(tbank, target), known_a, known_b, known_c, known_d, known_e, known_h, known_l, tbank});
                 } else {
-                    std::cout << "[ANALYSIS] Unresolved JP HL at " << std::hex << (int)bank << ":" << offset << std::dec << "\n";
+                    // Backtracking Jump Table Heuristic
+                    bool found_table = false;
+                    // Scan back for 'LD H, imm' pattern (very common for tables)
+                    for (int back = 1; back < 10; back++) {
+                        if (offset < back) break;
+                        uint8_t op = rom.read_banked(bank, offset - back);
+                        if (op == 0x26) { // LD H, imm
+                            uint8_t table_h = rom.read_banked(bank, offset - back + 1);
+                            std::cout << "[ANALYSIS] Heuristic: Found potential jump table at " << std::hex << (int)table_h << "00 near " << (int)bank << ":" << offset << std::dec << "\n";
+                            // Scan the page for addresses that lead to code
+                            for (int i = 0; i < 256; i += 2) {
+                                uint16_t entry_addr = (table_h << 8) | i;
+                                uint8_t lo = rom.read(entry_addr);
+                                uint8_t hi = rom.read(entry_addr + 1);
+                                uint16_t target = lo | (hi << 8);
+                                if (target >= 0x0100 && target < 0x8000) {
+                                    uint8_t tbank = target_bank(target);
+                                    if (is_likely_valid_code(rom, tbank, target)) {
+                                        result.call_targets.insert(make_address(tbank, target));
+                                        work_queue.push({make_address(tbank, target), -1, -1, -1, -1, -1, -1, -1, tbank});
+                                        found_table = true;
+                                    }
+                                }
+                            }
+                            if (found_table) break;
+                        }
+                    }
+                    if (!found_table) std::cout << "[ANALYSIS] Unresolved JP HL at " << std::hex << (int)bank << ":" << offset << std::dec << "\n";
                 }
             }
             
             if (instr.is_conditional) {
                 uint32_t fall_through = make_address(bank, offset + instr.length);
                 result.label_addresses.insert(fall_through);
-                work_queue.push({fall_through, known_a, known_hl, current_switchable_bank});
+                work_queue.push({fall_through, known_a, known_b, known_c, known_d, known_e, known_h, known_l, current_switchable_bank});
             }
         } else if (instr.is_return) {
             if (instr.is_conditional) {
                 uint32_t fall_through = make_address(bank, offset + instr.length);
                 result.label_addresses.insert(fall_through);
-                work_queue.push({fall_through, known_a, known_hl, current_switchable_bank});
+                work_queue.push({fall_through, known_a, known_b, known_c, known_d, known_e, known_h, known_l, current_switchable_bank});
             }
         } else {
-            work_queue.push({make_address(bank, offset + instr.length), known_a, known_hl, current_switchable_bank});
+            work_queue.push({make_address(bank, offset + instr.length), known_a, known_b, known_c, known_d, known_e, known_h, known_l, current_switchable_bank});
         }
     } // End work_queue loop
 
@@ -821,7 +899,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
                     
                     // Add to queue
                     uint8_t context = (bank > 0) ? bank : 1;
-                    work_queue.push({entry, -1, -1, context});
+                    work_queue.push({entry, -1, -1, -1, -1, -1, -1, -1, context});
                     found_count++;
                     
                     // Mark region as scanned
@@ -852,7 +930,6 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
     
     // Build basic blocks from instruction boundaries
     std::set<uint32_t> block_starts;
-    block_starts.insert(make_address(0, 0x100));  // Entry point
     
     for (uint32_t target : result.call_targets) {
         block_starts.insert(target);

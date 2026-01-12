@@ -38,6 +38,25 @@ def parse_disassembly(disasm_dir):
                     
     return instructions
 
+def parse_trace_file(trace_path):
+    """
+    Parses a direct .trace file in bank:addr format.
+    """
+    instructions = set()
+    with open(trace_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or ':' not in line:
+                continue
+            try:
+                bank_str, addr_str = line.split(':')
+                bank = int(bank_str)
+                addr = int(addr_str, 16)
+                instructions.add((bank, addr))
+            except (ValueError, IndexError):
+                continue
+    return instructions
+
 def parse_recompiled_code(recompiled_dir):
     """
     Parses recompiled C code.
@@ -55,7 +74,9 @@ def parse_recompiled_code(recompiled_dir):
     # Regex: /* (HH:)?HHHH */
     # Group 1: Bank (optional, with colon)
     # Group 2: Address
-    comment_regex = re.compile(r'/\* ([0-9a-fA-F]{2}:)?([0-9a-fA-F]{4}) \*/')
+    # Regex: /* BB:AAAA */ or /* AAAA */
+    # We require the comment to consist ONLY of the address to avoid matching instruction descriptions.
+    comment_regex = re.compile(r'/\*\s+([0-9a-fA-F]{2}:)?([0-9a-fA-F]{4})\s+\*/')
     
     c_files = glob.glob(os.path.join(recompiled_dir, "*.c"))
     
@@ -87,18 +108,19 @@ def parse_recompiled_code(recompiled_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="Compare recompiled code code against ground truth disassembly.")
-    parser.add_argument("rom", help="Path to the original ROM file")
+    parser.add_argument("rom", help="Path to the original ROM file (optional if --trace is used)", nargs='?', default=None)
     parser.add_argument("recompiled_dir", help="Directory containing recompiled C code")
+    parser.add_argument("--trace", help="Path to a .trace file to use as ground truth instead of disassembly")
     parser.add_argument("--temp-dir", default="temp_ground_truth", help="Temporary directory for disassembly")
     parser.add_argument("--keep-temp", action="store_true", help="Keep temporary disassembly files")
     
     args = parser.parse_args()
     
-    rom_path = os.path.abspath(args.rom)
+    rom_path = os.path.abspath(args.rom) if args.rom else None
     recompiled_dir = os.path.abspath(args.recompiled_dir)
     temp_dir = os.path.abspath(args.temp_dir)
     
-    if not os.path.exists(rom_path):
+    if rom_path and not os.path.exists(rom_path):
         print(f"Error: ROM not found at {rom_path}")
         sys.exit(1)
         
@@ -106,33 +128,40 @@ def main():
         print(f"Error: Recompiled directory not found at {recompiled_dir}")
         sys.exit(1)
 
-    # 1. Disassemble ROM
-    print(f"Disassembling {rom_path}...")
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir)
-    
-    # Assuming mgbdis is in tools/mgbdis/mgbdis.py relative to project root
-    # We try to find it relative to this script
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    mgbdis_path = os.path.join(script_dir, "mgbdis", "mgbdis.py")
-    
-    if not os.path.exists(mgbdis_path):
-        # Fallback: try looking in current PWD tools/mgbdis/
-        mgbdis_path = os.path.join(os.getcwd(), "tools", "mgbdis", "mgbdis.py")
+    # 1/2. Get Ground Truth
+    if args.trace:
+        print(f"Loading ground truth from trace: {args.trace}...")
+        asm_instrs = parse_trace_file(args.trace)
+    else:
+        if not args.rom:
+            print("Error: ROM path required when not using --trace")
+            sys.exit(1)
+            
+        # 1. Disassemble ROM
+        print(f"Disassembling {rom_path}...")
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        os.makedirs(temp_dir)
         
-    if not os.path.exists(mgbdis_path):
-        print("Error: Could not find mgbdis.py")
-        sys.exit(1)
+        # Assuming mgbdis is in tools/mgbdis/mgbdis.py relative to project root
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        mgbdis_path = os.path.join(script_dir, "mgbdis", "mgbdis.py")
         
-    cmd = [sys.executable, mgbdis_path, rom_path, "--output-dir", temp_dir, "--print-hex", "--overwrite"]
-    # check_call without stdout suppression to see errors
-    subprocess.check_call(cmd)
-    
-    # 2. Parse Disassembly
-    print("Parsing disassembly...")
-    asm_instrs = parse_disassembly(temp_dir)
-    print(f"Found {len(asm_instrs)} executable instructions in ROM disassembly.")
+        if not os.path.exists(mgbdis_path):
+            mgbdis_path = os.path.join(os.getcwd(), "tools", "mgbdis", "mgbdis.py")
+            
+        if not os.path.exists(mgbdis_path):
+            print("Error: Could not find mgbdis.py")
+            sys.exit(1)
+            
+        cmd = [sys.executable, mgbdis_path, rom_path, "--output-dir", temp_dir, "--print-hex", "--overwrite"]
+        subprocess.check_call(cmd)
+        
+        # 2. Parse Disassembly
+        print("Parsing disassembly...")
+        asm_instrs = parse_disassembly(temp_dir)
+
+    print(f"Found {len(asm_instrs)} instructions in ground truth.")
     
     # 3. Parse Recompiled Code
     print("Parsing recompiled code...")
@@ -194,7 +223,7 @@ def main():
         if len(ranges) > 50:
             print(f"... and {len(ranges) - 50} more chunks.")
 
-    if not args.keep_temp:
+    if not args.keep_temp and os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
 
 if __name__ == "__main__":

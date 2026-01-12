@@ -174,6 +174,9 @@ typedef struct GBContext {
     void* platform;       /**< Platform-specific data */
     GBPlatformCallbacks callbacks; /**< Platform callbacks */
     
+    /* Trace context */
+    void* trace_file;     /**< FILE* for trace output */
+    bool trace_entries_enabled;
 } GBContext;
 
 /* ============================================================================
@@ -465,6 +468,16 @@ void gb_platform_set_dump_frames(const char* frames);
  * @brief Set filename prefix for screenshots
  */
 void gb_platform_set_screenshot_prefix(const char* prefix);
+
+/**
+ * @brief Enable entry tracing to a file
+ */
+void gbrt_set_trace_file(const char* filename);
+
+/**
+ * @brief Log an entry point to the trace file
+ */
+void gbrt_log_trace(GBContext* ctx, uint16_t bank, uint16_t addr);
 
 #ifdef __cplusplus
 }
