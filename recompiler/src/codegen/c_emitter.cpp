@@ -1600,6 +1600,8 @@ GeneratedOutput generate_output(const ir::Program& program,
     source_ss << "void " << options.output_prefix << "_init(GBContext* ctx) {\n";
     source_ss << "    /* Load ROM data into context */\n";
     source_ss << "    gb_context_load_rom(ctx, rom_data, " << rom_size << ");\n";
+    source_ss << "    /* Set MBC type from header */\n";
+    source_ss << "    ctx->mbc_type = rom_data[0x147];\n";
     source_ss << "}\n\n";
     
     source_ss << "void " << options.output_prefix << "_run(GBContext* ctx) {\n";

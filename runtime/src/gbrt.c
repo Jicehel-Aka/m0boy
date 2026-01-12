@@ -132,15 +132,35 @@ bool gb_context_load_rom(GBContext* ctx, const uint8_t* data, size_t size) {
 uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
     if (addr < 0x4000) return ctx->rom[addr];
     if (addr < 0x8000) return ctx->rom[(ctx->rom_bank * 0x4000) + (addr - 0x4000)];
-    if (addr < 0xA000) return ctx->vram[(ctx->vram_bank * VRAM_SIZE) + (addr - 0x8000)];
+    if (addr < 0xA000) {
+        if ((ctx->io[0x41] & 3) == 3) return 0xFF;
+        return ctx->vram[(ctx->vram_bank * VRAM_SIZE) + (addr - 0x8000)];
+    }
     if (addr < 0xC000) {
-        if (ctx->eram) return ctx->eram[addr - 0xA000];
+        if (!ctx->ram_enabled) return 0xFF;
+        
+        if (ctx->rtc_mode) {
+             switch (ctx->rtc_reg) {
+                case 0x08: return ctx->rtc.latched_s;
+                case 0x09: return ctx->rtc.latched_m;
+                case 0x0A: return ctx->rtc.latched_h;
+                case 0x0B: return ctx->rtc.latched_dl;
+                case 0x0C: return ctx->rtc.latched_dh;
+                default: return 0xFF;
+             }
+        }
+        
+        if (ctx->eram) return ctx->eram[(ctx->ram_bank * 0x2000) + (addr - 0xA000)];
         return 0xFF;
     }
     if (addr < 0xD000) return ctx->wram[addr - 0xC000];
     if (addr < 0xE000) return ctx->wram[(ctx->wram_bank * WRAM_BANK_SIZE) + (addr - 0xD000)];
     if (addr < 0xFE00) return gb_read8(ctx, addr - 0x2000);
-    if (addr < 0xFEA0) return ctx->oam[addr - 0xFE00];
+    if (addr < 0xFEA0) {
+        uint8_t stat = ctx->io[0x41] & 3;
+        if (stat == 2 || stat == 3) return 0xFF;
+        return ctx->oam[addr - 0xFE00];
+    }
     if (addr < 0xFF00) return 0xFF;
     if (addr < 0xFF80) {
         if (addr == 0xFF00) {
@@ -163,25 +183,92 @@ uint8_t gb_read8(GBContext* ctx, uint16_t addr) {
 }
 
 void gb_write8(GBContext* ctx, uint16_t addr, uint8_t value) {
+    /* MBC Write Handling */
     if (addr < 0x8000) {
-        if (addr >= 0x2000 && addr <= 0x3FFF) {
-            ctx->rom_bank = value & 0x1F;
-            if (ctx->rom_bank == 0) ctx->rom_bank = 1;
+        /* MBC3 (0x0F, 0x10, 0x11, 0x12, 0x13) */
+        if (ctx->mbc_type >= 0x0F && ctx->mbc_type <= 0x13) {
+            if (addr < 0x2000) {
+                /* RAM/RTC Enable */
+                ctx->ram_enabled = ((value & 0x0F) == 0x0A);
+            } else if (addr < 0x4000) {
+                /* ROM Bank Number (1-127) */
+                ctx->rom_bank = value & 0x7F;
+                if (ctx->rom_bank == 0) ctx->rom_bank = 1;
+            } else if (addr < 0x6000) {
+                /* RAM Bank Number or RTC Register Select */
+                if (value <= 0x03) {
+                    ctx->rtc_mode = 0;
+                    ctx->ram_bank = value;
+                } else if (value >= 0x08 && value <= 0x0C) {
+                    ctx->rtc_mode = 1;
+                    ctx->rtc_reg = value;
+                }
+            } else if (addr < 0x8000) {
+                /* Latch Clock Data */
+                if (ctx->rtc.latch_state == 0 && value == 0) {
+                    ctx->rtc.latch_state = 1;
+                } else if (ctx->rtc.latch_state == 1 && value == 1) {
+                    ctx->rtc.latch_state = 0;
+                    /* Latch current time */
+                    ctx->rtc.latched_s = ctx->rtc.s;
+                    ctx->rtc.latched_m = ctx->rtc.m;
+                    ctx->rtc.latched_h = ctx->rtc.h;
+                    ctx->rtc.latched_dl = ctx->rtc.dl;
+                    ctx->rtc.latched_dh = ctx->rtc.dh;
+                } else {
+                    ctx->rtc.latch_state = 0;
+                }
+            }
+        }
+        /* Default / MBC1 behavior for others (simplified) */
+        else {
+            if (addr >= 0x2000 && addr <= 0x3FFF) {
+                ctx->rom_bank = value & 0x1F;
+                if (ctx->rom_bank == 0) ctx->rom_bank = 1;
+            }
         }
         return;
     }
     if (addr < 0xA000) {
+        /* VRAM Write - Check STAT mode 3 */
+        if ((ctx->io[0x41] & 3) == 3) return;
+        
         ctx->vram[(ctx->vram_bank * VRAM_SIZE) + (addr - 0x8000)] = value;
         return;
     }
     if (addr < 0xC000) {
-        if (ctx->eram) ctx->eram[addr - 0xA000] = value;
+        /* External RAM / RTC Write */
+        if (!ctx->ram_enabled) return;
+        
+        if (ctx->rtc_mode) {
+            /* RTC Register Write */
+            switch (ctx->rtc_reg) {
+                case 0x08: ctx->rtc.s = value % 60; break;
+                case 0x09: ctx->rtc.m = value % 60; break;
+                case 0x0A: ctx->rtc.h = value % 24; break;
+                case 0x0B: ctx->rtc.dl = value; break;
+                case 0x0C: 
+                    ctx->rtc.dh = value; 
+                    ctx->rtc.active = !(value & 0x40); /* Bit 6 is Halt */
+                    break;
+            }
+        } else if (ctx->eram) {
+            /* SRAM Write */
+            ctx->eram[(ctx->ram_bank * 0x2000) + (addr - 0xA000)] = value;
+        }
         return;
     }
     if (addr < 0xD000) { ctx->wram[addr - 0xC000] = value; return; }
     if (addr < 0xE000) { ctx->wram[(ctx->wram_bank * WRAM_BANK_SIZE) + (addr - 0xD000)] = value; return; }
     if (addr < 0xFE00) { gb_write8(ctx, addr - 0x2000, value); return; }
-    if (addr < 0xFEA0) { ctx->oam[addr - 0xFE00] = value; return; }
+    if (addr < 0xFEA0) { 
+        /* OAM Write - Check STAT mode 2 or 3 */
+        uint8_t stat = ctx->io[0x41] & 3;
+        if (stat == 2 || stat == 3) return;
+        
+        ctx->oam[addr - 0xFE00] = value; 
+        return; 
+    }
     if (addr < 0xFF00) return;
     if (addr < 0xFF80) {
         if (addr >= 0xFF40 && addr <= 0xFF4B) { ppu_write_register((GBPPU*)ctx->ppu, ctx, addr, value); return; }
@@ -375,6 +462,40 @@ void gb_add_cycles(GBContext* ctx, uint32_t cycles) {
     ctx->frame_cycles += cycles;
 }
 
+
+
+static void gb_rtc_tick(GBContext* ctx, uint32_t cycles) {
+    if (!ctx->rtc.active) return;
+    
+    /* Update RTC time */
+    ctx->rtc.last_time += cycles;
+    while (ctx->rtc.last_time >= 4194304) { /* 1 second at 4.194304 MHz */
+        ctx->rtc.last_time -= 4194304;
+        
+        ctx->rtc.s++;
+        if (ctx->rtc.s >= 60) {
+            ctx->rtc.s = 0;
+            ctx->rtc.m++;
+            if (ctx->rtc.m >= 60) {
+                ctx->rtc.m = 0;
+                ctx->rtc.h++;
+                if (ctx->rtc.h >= 24) {
+                    ctx->rtc.h = 0;
+                    uint16_t d = ctx->rtc.dl | ((ctx->rtc.dh & 1) << 8);
+                    d++;
+                    ctx->rtc.dl = d & 0xFF;
+                    if (d > 0x1FF) {
+                        ctx->rtc.dh |= 0x80; /* Overflow */
+                        ctx->rtc.dh &= 0xFE; /* Clear 9th bit */
+                    } else {
+                        ctx->rtc.dh = (ctx->rtc.dh & 0xFE) | ((d >> 8) & 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
 void gb_tick(GBContext* ctx, uint32_t cycles) {
     static uint32_t last_log = 0;
     
@@ -393,6 +514,10 @@ void gb_tick(GBContext* ctx, uint32_t cycles) {
                 ctx->cycles, ctx->pc, ctx->ime, ctx->io[0x0F], ctx->io[0x80]);
     }
     gb_add_cycles(ctx, cycles);
+    
+    /* RTC Tick */
+    gb_rtc_tick(ctx, cycles);
+
     ctx->div_counter += cycles;
     ctx->io[0x04] = (uint8_t)(ctx->div_counter >> 8);
     

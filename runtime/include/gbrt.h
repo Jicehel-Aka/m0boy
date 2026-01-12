@@ -120,6 +120,8 @@ typedef struct GBContext {
     uint8_t mbc_type;
     uint8_t ram_enabled;
     uint8_t mbc_mode;     /**< Banking mode for MBC1 */
+    uint8_t rtc_mode;     /**< 0=RAM, 1=RTC registers (for 0xA000-0xBFFF) */
+    uint8_t rtc_reg;      /**< Selected RTC register (0x08-0x0C) */
     
     /* Timing */
     uint32_t cycles;      /**< Cycles executed */
@@ -141,6 +143,15 @@ typedef struct GBContext {
     uint8_t* oam;         /**< Object Attribute Memory */
     uint8_t* hram;        /**< High RAM (0xFF80-0xFFFE) */
     uint8_t* io;          /**< I/O registers (0xFF00-0xFF7F) */
+    
+    /* RTC state (MBC3) */
+    struct {
+        uint8_t s, m, h, dl, dh;        /**< Seconds, Minutes, Hours, Days Low, Days High */
+        uint8_t latched_s, latched_m, latched_h, latched_dl, latched_dh;
+        uint8_t latch_state;            /**< 0=Normal, 1=Latch prepared (wrote 0) */
+        uint64_t last_time;             /**< Last time update (in cycles) */
+        bool active;                    /**< RTC oscillator active (DH bit 6) */
+    } rtc;
     
     /* Hardware components (opaque pointers) */
     void* ppu;            /**< Pixel Processing Unit */
