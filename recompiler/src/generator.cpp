@@ -132,6 +132,7 @@ public:
         codegen::GeneratorOptions emit_config;
         emit_config.emit_address_comments = opts_.emit_comments;
         emit_config.emit_comments = true;
+        emit_config.output_dir = output_dir.string();
         emit_config.generate_bank_dispatch = opts_.generate_dispatch;
         
         codegen::GeneratedOutput output = codegen::generate_output(

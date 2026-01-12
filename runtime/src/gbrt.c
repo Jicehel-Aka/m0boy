@@ -377,6 +377,16 @@ void gb_add_cycles(GBContext* ctx, uint32_t cycles) {
 
 void gb_tick(GBContext* ctx, uint32_t cycles) {
     static uint32_t last_log = 0;
+    
+    // Check limit
+    if (gbrt_instruction_limit > 0) {
+        gbrt_instruction_count++;
+        if (gbrt_instruction_count >= gbrt_instruction_limit) {
+            printf("Instruction limit reached (%llu)\n", (unsigned long long)gbrt_instruction_limit);
+            exit(0);
+        }
+    }
+
     if (gbrt_trace_enabled && ctx->cycles - last_log >= 10000) {
         last_log = ctx->cycles;
         fprintf(stderr, "[TICK] Cycles: %u, PC: 0x%04X, IME: %d, IF: 0x%02X, IE: 0x%02X\n", 
@@ -444,6 +454,14 @@ uint32_t gb_run_frame(GBContext* ctx) {
 
     while (!ctx->frame_done) {
         gb_handle_interrupts(ctx);
+        
+        /* Check for HALT exit condition (even if IME=0) */
+        if (ctx->halted) {
+             if (ctx->io[0x0F] & ctx->io[0x80] & 0x1F) {
+                 ctx->halted = 0;
+             }
+        }
+        
         ctx->stopped = 0;
         if (ctx->halted) gb_tick(ctx, 4);
         else gb_step(ctx);
@@ -453,6 +471,10 @@ uint32_t gb_run_frame(GBContext* ctx) {
 }
 
 uint32_t gb_step(GBContext* ctx) {
+    if (gbrt_instruction_limit > 0 && ++gbrt_instruction_count >= gbrt_instruction_limit) {
+        printf("Instruction limit reached (%llu)\n", (unsigned long long)gbrt_instruction_limit);
+        exit(0);
+    }
     uint32_t start = ctx->cycles;
     gb_dispatch(ctx, ctx->pc);
     return ctx->cycles - start;

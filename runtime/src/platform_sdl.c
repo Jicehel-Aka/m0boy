@@ -257,6 +257,13 @@ bool gb_platform_init(int scale) {
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
         
     if (!g_renderer) {
+        fprintf(stderr, "[SDL] Hardware renderer failed (flags=0x%x), trying software fallback...\n", 
+                SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_SOFTWARE);
+    }
+        
+    if (!g_renderer) {
+        fprintf(stderr, "[SDL] SDL_CreateRenderer failed: %s\n", SDL_GetError());
         SDL_DestroyWindow(g_window);
         SDL_Quit();
         return false;

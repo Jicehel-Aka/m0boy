@@ -541,7 +541,9 @@ void CEmitter::emit_source_location(uint8_t bank, uint16_t addr) {
 void CEmitter::emit_add_cycles(uint8_t cycles) {
     if (options_.emit_cycle_counting) {
         emit_indent();
-        out_ << "ctx->cycles += " << (int)cycles << ";\n";
+        out_ << "gb_tick(ctx, " << (int)cycles << ");\n";
+        emit_indent();
+        out_ << "if (ctx->stopped) return;\n";
     }
 }
 
