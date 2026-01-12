@@ -25,7 +25,7 @@ Pre-built binaries are available on the [Releases](https://github.com/arcanite24
 
 ## Features
 
-- **High Compatibility**: Successfully recompiles **98.9%** of the tested ROM library (1592/1609 ROMs) ** MOST OF THE GAMES ARE NOT FULLY PLAYABLE YET**
+- **High Compatibility**: Successfully recompiles **98.9%** of the tested ROM library (1592/1609 ROMs) **MOST OF THE GAMES ARE NOT FULLY PLAYABLE YET**
 - **Native Performance**: Generated C code compiles to native machine code
 - **Complete Runtime**: Includes a full GameBoy runtime library with:
   - Accurate PPU (graphics) emulation with scanline rendering
