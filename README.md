@@ -100,12 +100,28 @@ The recompiler will:
 |------|-------------|
 | `--trace` | Print every instruction during analysis |
 | `--limit <N>` | Stop analysis after N instructions |
+| `--add-entry-point b:addr` | Manually specified entry point (e.g. `1:4000`) |
+| `--no-scan` | Disable aggressive code scanning (enabled by default) |
 | `--verbose` | Show detailed analysis statistics |
 
 **Example:**
 ```bash
 # Debug a problematic ROM
 ./build/bin/gbrecomp game.gb -o output/game --trace --limit 5000
+```
+
+### Advanced Usage
+
+**Manual Entry Points:**
+Complex games (like *Pokémon Blue*) often use computed jumps that static analysis cannot resolve. If you encounter slow performance (interpreter fallback) or missing graphics, check the trace logs for `[GB] Interpreter` messages and add manual entry points:
+```bash
+./build/bin/gbrecomp roms/game.gb -o out_dir --add-entry-point 28:602B
+```
+
+**Aggressive Scanning:**
+The recompiler automatically scans memory banks for code that isn't directly reachable via standard control flow (e.g. unreferenced functions or obscure jump tables). This significantly improves compatibility but may occasionally detect data as code. To disable it:
+```bash
+./build/bin/gbrecomp roms/game.gb -o out_dir --no-scan
 ```
 
 ### Runtime Options

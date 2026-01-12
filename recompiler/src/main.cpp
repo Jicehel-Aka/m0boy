@@ -45,6 +45,8 @@ void print_usage(const char* program) {
     std::cout << "  --single-function     Generate all code in a single function\n";
     std::cout << "  --no-comments         Don't include disassembly comments\n";
     std::cout << "  --bank <n>            Only process bank n\n";
+    std::cout << "  --add-entry-point b:a Add manual entry point (e.g. 1:4000)\n";
+    std::cout << "  --no-scan             Disable aggressive code scanning (enabled by default)\n";
     std::cout << "  -h, --help            Show this help\n";
 }
 
@@ -78,7 +80,9 @@ int main(int argc, char* argv[]) {
     size_t limit_instructions = 0;
     bool single_function = false;
     bool emit_comments = true;
+    bool aggressive_scan = true;
     int specific_bank = -1;
+    std::vector<uint32_t> manual_entry_points;
     
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -110,6 +114,25 @@ int main(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 specific_bank = std::stoi(argv[++i]);
             }
+        } else if (arg == "--add-entry-point") {
+            if (i + 1 < argc) {
+                std::string param = argv[++i];
+                size_t colon = param.find(':');
+                if (colon != std::string::npos) {
+                    try {
+                        int bank = std::stoi(param.substr(0, colon), nullptr, 0);
+                        int addr = std::stoi(param.substr(colon + 1), nullptr, 16);
+                        manual_entry_points.push_back(gbrecomp::AnalysisResult::make_addr(bank, addr));
+                        std::cout << "Added manual entry point: Bank " << bank << " Address 0x" << std::hex << addr << std::dec << "\n";
+                    } catch (...) {
+                        std::cerr << "Invalid entry point format: " << param << "\n";
+                    }
+                } else {
+                     std::cerr << "Invalid entry point format (expected bank:addr): " << param << "\n";
+                }
+            }
+        } else if (arg == "--no-scan") {
+            aggressive_scan = false;
         } else if (arg[0] != '-') {
             rom_path = arg;
         } else {
@@ -171,7 +194,10 @@ int main(int argc, char* argv[]) {
     gbrecomp::AnalyzerOptions analyze_opts;
     analyze_opts.trace_log = trace_log;
     analyze_opts.verbose = verbose;
+    analyze_opts.verbose = verbose;
     analyze_opts.max_instructions = limit_instructions;
+    analyze_opts.entry_points = manual_entry_points;
+    analyze_opts.aggressive_scan = aggressive_scan;
 
     // Detect standard HRAM DMA routine
     // Routine: LDH (46),A; LD A,28; DEC A; JR NZ,-3; RET

@@ -245,7 +245,7 @@ static std::set<uint8_t> detect_bank_values(const ROM& rom) {
  * 2. Immediate invalid opcodes
  * 3. Dense invalid operations
  */
-static bool is_likely_valid_code(const ROM& rom, uint8_t bank, uint16_t addr) {
+static int is_likely_valid_code(const ROM& rom, uint8_t bank, uint16_t addr) {
     // 1. Check for repetitive patterns (e.g. tile data)
     // Most code has entropy. Data often repeats.
     const int PATTERN_CHECK_LEN = 256;
@@ -284,7 +284,7 @@ static bool is_likely_valid_code(const ROM& rom, uint8_t bank, uint16_t addr) {
                 // Castlevania Bank 1 starts with 01s.
                 // My parameters passed the check.
                 // Keeping existing logic:
-                if (matches) return false;
+                if (matches) return 0;
             }
         }
     }
@@ -302,7 +302,7 @@ static bool is_likely_valid_code(const ROM& rom, uint8_t bank, uint16_t addr) {
         if (instr.type == InstructionType::UNDEFINED || instr.type == InstructionType::INVALID) {
             // std::cout << "[DEBUG] Bank " << (int)bank << " rejected: Undefined/Invalid opcode " 
             //           << std::hex << (int)instr.opcode << " at " << curr << std::dec << "\n";
-            return false;
+            return 0;
         }
         
         // Check for suspicious control flow
@@ -310,17 +310,17 @@ static bool is_likely_valid_code(const ROM& rom, uint8_t bank, uint16_t addr) {
         
         // If we hit logical terminator, we are probably okay
         // Unconditional Return or Jump usually implies we survived the block
-        if (instr.is_return && !instr.is_conditional) return true;
-        if (instr.type == InstructionType::JP_NN) return true;
-        if (instr.type == InstructionType::JR_N) return true;
+        if (instr.is_return && !instr.is_conditional) return (curr + instr.length - addr);
+        if (instr.type == InstructionType::JP_NN) return (curr + instr.length - addr);
+        if (instr.type == InstructionType::JR_N) return (curr + instr.length - addr);
         
         curr += instr.length;
-        if (curr >= 0x8000) return false;
+        if (curr >= 0x8000) return 0;
         instructions_checked++;
     }
 
-    // If we survived this long, assume valid
-    return true;
+    // If we survived this long without a terminator, doubtful.
+    return 0;
 }
 
 /* ============================================================================
@@ -392,10 +392,23 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         result.call_targets.insert(addr);
         work_queue.push({addr, -1, -1, 1});
     }
+
+    // Add manual entry points
+    for (uint32_t addr : options.entry_points) {
+        result.call_targets.insert(addr);
+        uint8_t bank = get_bank(addr);
+        uint8_t context = (bank > 0) ? bank : 1;
+        work_queue.push({addr, -1, -1, context});
+    }
     
+    // Multi-pass analysis
+    bool scanning_pass = false;
+
     // Explore all reachable code
-    while (!work_queue.empty()) {
-        auto item = work_queue.front();
+    while (true) {
+        // Drain work queue
+        while (!work_queue.empty()) {
+            auto item = work_queue.front();
         work_queue.pop();
         
         uint32_t addr = item.addr;
@@ -702,7 +715,77 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
         } else {
             work_queue.push({make_address(bank, offset + instr.length), known_a, known_hl, current_switchable_bank});
         }
+    } // End work_queue loop
+
+    // Aggressive Code Scanning
+    if (options.aggressive_scan && !scanning_pass) {
+        scanning_pass = true; // prevent infinite loops if we find nothing new
+        
+        if (options.verbose) std::cout << "[ANALYSIS] Starting aggressive scan for missing code..." << std::endl;
+        
+        size_t found_count = 0;
+
+        // Iterate through all known banks (and bank 0)
+        std::vector<uint8_t> banks_to_scan;
+        banks_to_scan.push_back(0);
+        for (uint8_t b : known_banks) if (b > 0) banks_to_scan.push_back(b);
+
+        for (uint8_t bank : banks_to_scan) {
+            uint16_t start_addr = (bank == 0) ? 0x0000 : 0x4000;
+            uint16_t end_addr = (bank == 0) ? 0x3FFF : 0x7FFF;
+            
+            for (uint32_t addr = start_addr; addr <= end_addr; ) {
+                // If already visited, skip this address
+                if (visited.count(make_address(bank, addr))) {
+                    addr++; 
+                    continue;
+                }
+                
+                // Alignment heuristic: most functions start on some boundary? No.
+                // But we can skip obvious padding (0xFF or 0x00)
+                uint8_t byte = rom.read_banked(bank, addr);
+                if (byte == 0xFF || byte == 0x00) {
+                    addr++;
+                    continue;
+                }
+
+                // Check if this looks like valid code
+                int code_len = is_likely_valid_code(rom, bank, addr);
+                if (code_len > 0) {
+                    if (options.verbose) {
+                        std::cout << "[ANALYSIS] Detected potential function at " 
+                                  << std::hex << (int)bank << ":" << addr << std::dec << "\n";
+                    }
+                    
+                    // Add as a new entry point
+                    uint32_t entry = make_address(bank, addr);
+                    result.call_targets.insert(entry);
+                    
+                    // Add to queue
+                    uint8_t context = (bank > 0) ? bank : 1;
+                    work_queue.push({entry, -1, -1, context});
+                    found_count++;
+                    
+                    // Skip the block we just found to avoid overlapping detection
+                    addr += code_len;
+                    continue;
+                } else {
+                    // Not valid code, skip ahead.
+                    addr++;
+                }
+            }
+        }
+        
+        if (found_count > 0) {
+            if (options.verbose) std::cout << "[ANALYSIS] Found " << found_count << " new entry points. Restarting analysis." << std::endl;
+            scanning_pass = false; // Reset pass flag to allow further scanning after this batch is analyzed
+            continue; // Go back to work_queue processing
+        }
     }
+    
+    // If we get here, we are done
+    break; 
+    } // End while(true)
     
     // Build basic blocks from instruction boundaries
     std::set<uint32_t> block_starts;
