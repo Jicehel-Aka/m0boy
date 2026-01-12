@@ -140,6 +140,7 @@ enum class OperandType : uint8_t {
 
 struct Operand {
     OperandType type = OperandType::NONE;
+    uint8_t bank = 0; // ROM bank context for this operand (0 for fixed, 1-N for switched)
     
     union {
         uint8_t reg8;           // Register index (0=A, 1=B, 2=C, 3=D, 4=E, 5=H, 6=L)

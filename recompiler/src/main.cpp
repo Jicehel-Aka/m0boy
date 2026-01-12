@@ -256,11 +256,7 @@ int main(int argc, char* argv[]) {
     }
     
     std::cout << "\nBuild instructions:\n";
-    std::cout << "  cd " << out_path << "\n";
-    std::cout << "  mkdir build && cd build\n";
-    std::cout << "  cmake -G Ninja ..\n";
-    std::cout << "  cmake --build .\n";
-    std::cout << "  ./" << gen_opts.output_prefix << "\n";
+    std::cout << "  cd " << out_path << " && mkdir -p build && cd build && cmake -G Ninja .. && cmake --build . && ./" << gen_opts.output_prefix << "\n";
     
     return 0;
 }

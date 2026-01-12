@@ -791,29 +791,9 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
         case ir::Opcode::JUMP:
             if (instr.dst.type == ir::OperandType::IMM16) {
                 uint16_t target = instr.dst.value.imm16;
-                uint8_t source_bank = instr.source_bank;
+                uint8_t tbank = instr.dst.bank;
                 
-                // Check if this is a cross-bank jump
-                bool is_cross_bank = false;
-                
-                // From bank 0 (0x0000-0x3FFF): only cross-bank if target is in 0x4000-0x7FFF
-                // From any banked code (0x4000-0x7FFF in bank N): 
-                //   - Jumping to 0x0000-0x3FFF is cross-bank (to bank 0)
-                //   - Jumping to 0x4000-0x7FFF could be same bank or different bank
-                
-                if (target >= 0x4000 && target <= 0x7FFF) {
-                    // Target is in switchable area - always use dispatch
-                    is_cross_bank = true;
-                } else if (target < 0x4000 && source_bank > 0) {
-                    // Target is in bank 0 fixed area, but we're in a banked function
-                    // This is a cross-bank jump to bank 0
-                    is_cross_bank = true;
-                } else if (target >= 0x8000) {
-                    // Target is in RAM/VRAM/etc - not valid code, use dispatch which will handle it
-                    is_cross_bank = true;
-                }
-                
-                if (is_cross_bank) {
+                if (tbank == 255) {
                     if (options.emit_cycle_counting && instr.cycles > 0) {
                         out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
                         emit_indent();
@@ -821,58 +801,12 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                     out << "gb_dispatch(ctx, 0x" << std::hex << std::setfill('0') 
                         << std::setw(4) << target << std::dec << "); return;\n";
                 } else {
-                    // Same-bank jump - check if target is a function entry
-                    std::string func_name;
-                    bool is_func_entry = false;
+                    std::string target_func = program.make_function_name(tbank, target);
+                    bool func_exists = program.functions.find(target_func) != program.functions.end();
                     
-                    // Search for function matching target address
-                    for (const auto& kv : program.functions) {
-                        const auto& fn = kv.second;
-                        // Match if banks match (or target is in common area) and address matches
-                        bool bank_match = (fn.bank == instr.source_bank) || 
-                                          (target < 0x4000 && fn.bank == 0);
-                        
-                        if (bank_match && fn.entry_address == target) {
-                            func_name = fn.name;
-                            is_func_entry = true;
-                            break;
-                        }
-                    }
-                    
-                    if (is_func_entry) {
-                        // Check if target is the CURRENT function - if so, use goto to avoid recursion
-                        if (func_name == current_func_name) {
-                            // Cycle tick before goto
-                            if (options.emit_cycle_counting && group_cycles > 0) {
-                                out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
-                                emit_indent();
-                                out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
-                                emit_indent();
-                                out << "if (ctx->stopped) return;\n";
-                            } else {
-                                out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
-                            }
-                            emit_indent();
-                            out << "goto loc_" << std::hex << std::setfill('0') 
-                                << std::setw(4) << target << std::dec << ";\n";
-                        } else {
-                            // Target is a different function entry - call it and return
-                            if (options.emit_cycle_counting && group_cycles > 0) {
-                                out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
-                                emit_indent();
-                                out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
-                                emit_indent();
-                                out << "if (ctx->stopped) return;\n";
-                            } else {
-                                out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
-                            }
-                            emit_indent();
-                            out << func_name << "(ctx);\n";
-                            emit_indent();
-                            out << "return;\n";
-                        }
-                    } else {
-                        // Target is a label within a function - emit cycles before goto
+                    // If the target is a function entry, check if it's the current function
+                    if (func_exists && target_func == current_func_name) {
+                        // Same function: use goto
                         if (options.emit_cycle_counting && group_cycles > 0) {
                             out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
                             emit_indent();
@@ -885,6 +819,27 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                         emit_indent();
                         out << "goto loc_" << std::hex << std::setfill('0') 
                             << std::setw(4) << target << std::dec << ";\n";
+                    } else if (func_exists) {
+                        // Different function or cross-bank: call and return
+                        if (options.emit_cycle_counting && instr.cycles > 0) {
+                            out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
+                            emit_indent();
+                        }
+                        out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                        emit_indent();
+                        
+                        // Direct call
+                        out << target_func << "(ctx);\n";
+                        emit_indent();
+                        out << "return;\n";
+                    } else {
+                        // Not a recompiled function, use dispatcher
+                        if (options.emit_cycle_counting && instr.cycles > 0) {
+                            out << "gb_tick(ctx, " << (int)instr.cycles << ");\n";
+                            emit_indent();
+                        }
+                        out << "gb_dispatch(ctx, 0x" << std::hex << std::setfill('0') 
+                            << std::setw(4) << target << std::dec << "); return;\n";
                     }
                 }
             } else if (instr.dst.type == ir::OperandType::REG16) {
@@ -911,68 +866,27 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             
         case ir::Opcode::JUMP_CC: {
             uint16_t target = instr.dst.value.imm16;
-            uint8_t source_bank = instr.source_bank;
+            uint8_t tbank = instr.dst.bank; // Use instr.dst.bank for target bank
             const char* cond = cond_names[instr.src.value.condition];
             const char* expr = (instr.src.value.condition == 0) ? "!ctx->f_z" :
                                (instr.src.value.condition == 1) ? "ctx->f_z" :
                                (instr.src.value.condition == 2) ? "!ctx->f_c" : "ctx->f_c";
-            
-            // Check if this is a cross-bank jump
-            bool is_cross_bank = false;
-            if (target >= 0x4000 && target <= 0x7FFF && source_bank == 0) {
-                // Jump from bank 0 to switchable bank region - cross-bank
-                is_cross_bank = true;
-            } else if (target < 0x4000 && source_bank > 0) {
-                // Jump from switchable bank to bank 0 - cross-bank
-                is_cross_bank = true;
-            } else if (target >= 0x8000) {
-                // Target is in RAM/VRAM/etc - not valid code
-                is_cross_bank = true;
-            }
-            
-            if (is_cross_bank) {
+
+            if (tbank == 255) {
+                // Cross-bank or unknown, call dispatcher
                 out << "if (" << expr << ") {\n";
                 emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
                 if (options.emit_cycle_counting) {
                     emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
                     emit_indent(); out << "    if (ctx->stopped) return;\n";
                 }
-                emit_indent(); out << "return;\n";
+                emit_indent(); out << "    return;\n";
                 emit_indent(); out << "} /* " << cond << " */\n";
             } else {
-                // Check if target is a function entry
-                std::ostringstream func_name_ss;
-                if (source_bank > 0) {
-                    func_name_ss << "func_" << std::hex << std::setfill('0') << std::setw(2) << (int)source_bank << "_" << std::setw(4) << target;
-                } else {
-                    func_name_ss << "func_" << std::hex << std::setfill('0') << std::setw(4) << target;
-                }
-                std::string func_name = func_name_ss.str();
-                
-                if (program.functions.find(func_name) != program.functions.end()) {
-                    // Check if target is the CURRENT function - if so, use goto to avoid recursion
-                    if (func_name == current_func_name) {
-                        out << "if (" << expr << ") {\n";
-                        emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
-                        if (options.emit_cycle_counting) {
-                            emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
-                            emit_indent(); out << "    if (ctx->stopped) return;\n";
-                        }
-                        emit_indent(); out << "    goto loc_" << std::hex << std::setfill('0') 
-                            << std::setw(4) << target << std::dec << ";\n";
-                        emit_indent(); out << "} /* " << cond << " */\n";
-                    } else {
-                        // Target is a different function entry - call it and return on condition
-                        out << "if (" << expr << ") {\n";
-                        emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
-                        if (options.emit_cycle_counting) {
-                            emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
-                            emit_indent(); out << "    if (ctx->stopped) return;\n";
-                        }
-                        emit_indent(); out << "    return;\n";
-                        emit_indent(); out << "} /* " << cond << " */\n";
-                    }
-                } else {
+                std::string target_func = program.make_function_name(tbank, target);
+                bool func_exists = program.functions.find(target_func) != program.functions.end();
+
+                if (func_exists && target_func == current_func_name) {
                     out << "if (" << expr << ") {\n";
                     emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
                     if (options.emit_cycle_counting) {
@@ -981,6 +895,27 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
                     }
                     emit_indent(); out << "    goto loc_" << std::hex << std::setfill('0') 
                         << std::setw(4) << target << std::dec << ";\n";
+                    emit_indent(); out << "} /* " << cond << " */\n";
+                } else if (func_exists) {
+                    // Different function: call and return
+                    out << "if (" << expr << ") {\n";
+                    emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                    if (options.emit_cycle_counting) {
+                        emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
+                        emit_indent(); out << "    if (ctx->stopped) return;\n";
+                    }
+                    emit_indent(); out << "    " << target_func << "(ctx);\n";
+                    emit_indent(); out << "    return;\n";
+                    emit_indent(); out << "} /* " << cond << " */\n";
+                } else {
+                    // Fallback to dispatcher
+                    out << "if (" << expr << ") {\n";
+                    emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                    if (options.emit_cycle_counting) {
+                        emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
+                        emit_indent(); out << "    if (ctx->stopped) return;\n";
+                    }
+                    emit_indent(); out << "    return;\n";
                     emit_indent(); out << "} /* " << cond << " */\n";
                 }
             }
@@ -997,41 +932,79 @@ static void emit_ir_instruction(std::ostream& out, const ir::IRInstruction& inst
             
         case ir::Opcode::CALL: {
             uint16_t target = instr.dst.value.imm16;
-            // PUSH return address (Instruction size 3)
+            uint8_t target_bank = instr.dst.bank;
             uint16_t return_addr = instr.source_address + 3;
-            out << "gb_push16(ctx, 0x" << std::hex << return_addr << std::dec << ");\n";
-            emit_indent();
-            out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
-            if (options.emit_cycle_counting && group_cycles > 0) {
-                emit_indent(); out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
-                emit_indent(); out << "if (ctx->stopped) return;\n";
-            }
-            emit_indent();
 
-            // For targets in banked area (0x4000-0x7FFF), always use dispatch
-            out << "return;\n";
+            if (target_bank == 255) {
+                // Cross-bank or unknown, call dispatcher
+                out << "gb_push16(ctx, 0x" << std::hex << return_addr << std::dec << ");\n";
+                emit_indent(); out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                if (options.emit_cycle_counting && group_cycles > 0) {
+                    emit_indent(); out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
+                    emit_indent(); out << "if (ctx->stopped) return;\n";
+                }
+                emit_indent(); out << "return;\n";
+            } else {
+                std::string func_name = program.make_function_name(target_bank, target);
+                bool func_exists = program.functions.find(func_name) != program.functions.end();
+
+                out << "gb_push16(ctx, 0x" << std::hex << return_addr << std::dec << ");\n";
+                emit_indent(); out << "ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                if (options.emit_cycle_counting && group_cycles > 0) {
+                    emit_indent(); out << "gb_tick(ctx, " << (int)group_cycles << ");\n";
+                    emit_indent(); out << "if (ctx->stopped) return;\n";
+                }
+                emit_indent();
+                
+                if (func_exists) {
+                    out << func_name << "(ctx);\n";
+                } else {
+                    // Fallback to dispatcher (implicit by return)
+                }
+                emit_indent();
+                out << "return;\n";
+            }
             break;
         }
 
         case ir::Opcode::CALL_CC: {
             uint16_t target = instr.dst.value.imm16;
+            uint8_t target_bank = instr.dst.bank;
             uint16_t return_addr = instr.source_address + 3;
             const char* cond = cond_names[instr.src.value.condition];
             const char* expr = (instr.src.value.condition == 0) ? "!ctx->f_z" :
                                (instr.src.value.condition == 1) ? "ctx->f_z" :
                                (instr.src.value.condition == 2) ? "!ctx->f_c" : "ctx->f_c";
             
-            out << "if (" << expr << ") {\n";
-            emit_indent(); out << "    gb_push16(ctx, 0x" << std::hex << return_addr << std::dec << ");\n";
-            emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
-            if (options.emit_cycle_counting) {
-                emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
-                emit_indent(); out << "    if (ctx->stopped) return;\n";
+            if (target_bank == 255) {
+                out << "if (" << expr << ") {\n";
+                emit_indent(); out << "    gb_push16(ctx, 0x" << std::hex << return_addr << std::dec << ");\n";
+                emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                if (options.emit_cycle_counting) {
+                    emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
+                    emit_indent(); out << "    if (ctx->stopped) return;\n";
+                }
+                emit_indent(); out << "    return;\n";
+                emit_indent(); out << "} /* " << cond << " */\n";
+            } else {
+                std::string func_name = program.make_function_name(target_bank, target);
+                bool func_exists = program.functions.find(func_name) != program.functions.end();
+
+                out << "if (" << expr << ") {\n";
+                emit_indent(); out << "    gb_push16(ctx, 0x" << std::hex << return_addr << std::dec << ");\n";
+                emit_indent(); out << "    ctx->pc = 0x" << std::hex << target << std::dec << ";\n";
+                if (options.emit_cycle_counting) {
+                    emit_indent(); out << "    gb_tick(ctx, " << (int)instr.cycles_branch_taken << ");\n";
+                    emit_indent(); out << "    if (ctx->stopped) return;\n";
+                }
+                if (func_exists) {
+                    emit_indent(); out << "    " << func_name << "(ctx);\n";
+                } else {
+                    // Fallback to dispatcher (implicit by return)
+                }
+                emit_indent(); out << "    return;\n";
+                emit_indent(); out << "} /* " << cond << " */\n";
             }
-            emit_indent();
-            out << "    return;\n";
-            emit_indent(); out << "    return;\n";
-            emit_indent(); out << "} /* " << cond << " */\n";
             
             // Branch NOT taken
             if (next_pc_val != 0) {

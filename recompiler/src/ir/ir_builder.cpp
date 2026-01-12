@@ -507,6 +507,7 @@ void IRBuilder::lower_instruction(const Instruction& instr, ir::BasicBlock& bloc
                 IRInstruction ir;
                 ir.opcode = instr.is_conditional ? Opcode::JUMP_CC : Opcode::JUMP;
                 ir.dst = Operand::imm16(instr.imm16);
+                ir.dst.bank = instr.resolved_target_bank;
                 if (instr.is_conditional) {
                     ir.src = Operand::condition(static_cast<uint8_t>(instr.condition));
                 }
@@ -535,6 +536,7 @@ void IRBuilder::lower_instruction(const Instruction& instr, ir::BasicBlock& bloc
                 // Calculate absolute target from relative offset
                 uint16_t target = instr.address + instr.length + instr.offset;
                 ir.dst = Operand::imm16(target);
+                ir.dst.bank = instr.bank; // JR is always in the same bank
                 if (instr.is_conditional) {
                     ir.src = Operand::condition(static_cast<uint8_t>(instr.condition));
                 }
@@ -552,9 +554,11 @@ void IRBuilder::lower_instruction(const Instruction& instr, ir::BasicBlock& bloc
                 if (instr.type == InstructionType::RST) {
                     ir.opcode = Opcode::RST;
                     ir.dst = Operand::rst_vec(instr.rst_vector);
+                    ir.dst.bank = 0; // RST always targets bank 0
                 } else {
                     ir.opcode = instr.is_conditional ? Opcode::CALL_CC : Opcode::CALL;
                     ir.dst = Operand::imm16(instr.imm16);
+                    ir.dst.bank = instr.resolved_target_bank;
                     if (instr.is_conditional) {
                         ir.src = Operand::condition(static_cast<uint8_t>(instr.condition));
                     }
