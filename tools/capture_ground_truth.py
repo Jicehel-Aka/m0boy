@@ -34,35 +34,31 @@ def main():
             if frame % 600 == 0:
                 print(f"  Frame {frame}/{args.frames}, unique addresses: {len(visited)}")
             
-            # Record PC/Bank multiple times per frame for better coverage
-            # Note: Ticking manually is slow but captures more entry points
-            # We skip 70224 cycles per frame (approx)
-            # We sample every 1000 cycles
-            for _ in range(70): 
-                try:
-                    pc = pyboy.register_file.PC
-                    bank = 0
-                    if pc >= 0x4000 and pc < 0x8000:
-                        try:
-                            bank = pyboy.cartridge.active_rom_bank
-                        except:
-                            bank = 1 
-                    visited.add((bank, pc))
-                except:
-                    pass
-                # Tick by a few cycles? PyBoy doesn't support cycle-level stepping easily from Python
-                # We can use tick(1) which is 1 frame, reaching deeper requires faster emulator features.
-                # However, for our purposes, sampling ONCE per frame with random input is usually okay 
-                # IF the game is actually running.
-                break 
+            # Note: PyBoy.tick() advances by 1 frame (approx 17556 cycles)
+            # Sampling only at the end of the frame is okay for many points, 
+            # but we rely on random input to discover more code paths.
+            try:
+                pc = pyboy.register_file.PC
+                bank = 0
+                if pc >= 0x4000 and pc < 0x8000:
+                    try:
+                        bank = pyboy.cartridge.active_rom_bank
+                    except:
+                        bank = 1 
+                visited.add((bank, pc))
+            except:
+                pass
 
             # Random automation
             if frame % 10 == 0:
-                if frame < 300: # Force start at beginning to skip intro
-                    pyboy.button("start", 10)
-                elif args.random and random.random() < 0.1:
-                    btn = random.choice(buttons)
-                    pyboy.button(btn, 10)
+                if frame < 500: # Force start/A at beginning to skip intro
+                    btn = "start" if frame % 20 == 0 else "a"
+                    pyboy.button(btn, 5)
+                elif args.random:
+                    # More aggressive random mashing
+                    if random.random() < 0.3:
+                        btn = random.choice(buttons)
+                        pyboy.button(btn, 15)
             
             # Run one frame
             if not pyboy.tick():
