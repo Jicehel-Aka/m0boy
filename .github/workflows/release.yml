@@ -115,6 +115,9 @@ jobs:
         run: |
           choco install ninja -y
 
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Download SDL2 development libraries
         run: |
           Invoke-WebRequest -Uri "https://github.com/libsdl-org/SDL/releases/download/release-2.30.6/SDL2-devel-2.30.6-VC.zip" -OutFile "SDL2-devel.zip"
@@ -123,7 +126,7 @@ jobs:
 
       - name: Configure CMake
         run: |
-          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DSDL2_DIR="$PWD/SDL2/cmake"
+          cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DSDL2_DIR="$PWD/SDL2/cmake" -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$($env:BUILD_TYPE -eq 'Debug' ? 'Debug' : '')"
         env:
           SDL2_ROOT: ${{ github.workspace }}/SDL2
 
@@ -137,7 +140,9 @@ jobs:
           Copy-Item "SDL2/lib/x64/SDL2.dll" -Destination "package/gb-recompiled-windows/"
           Copy-Item "README.md" -Destination "package/gb-recompiled-windows/"
           if (Test-Path "LICENSE") { Copy-Item "LICENSE" -Destination "package/gb-recompiled-windows/" }
-          Compress-Archive -Path "package/gb-recompiled-windows" -DestinationPath "package/gb-recompiled-windows-x64.zip"
+          # Compress contents of the folder, not the folder itself
+          cd package/gb-recompiled-windows
+          Compress-Archive -Path * -DestinationPath "../gb-recompiled-windows-x64.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
