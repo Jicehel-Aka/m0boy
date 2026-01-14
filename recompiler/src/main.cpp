@@ -185,7 +185,7 @@ int main(int argc, char* argv[]) {
         std::cout << "============\n";
         
         uint8_t bank = (specific_bank >= 0) ? specific_bank : 0;
-        auto instructions = gbrecomp::decode_bank(rom.data(), rom.size(), bank);
+        auto instructions = gbrecomp::decode_bank(rom, bank);
         
         for (const auto& instr : instructions) {
             std::cout << instr.disassemble() << "\n";

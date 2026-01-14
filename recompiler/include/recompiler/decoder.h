@@ -286,8 +286,6 @@ private:
  * @param bank Current ROM bank (0 for fixed region)
  * @return Decoded instruction
  */
-Instruction decode_instruction(const uint8_t* rom, size_t rom_size,
-                               uint16_t address, uint8_t bank = 0);
 
 /**
  * @brief Decode all instructions in a ROM
@@ -300,8 +298,8 @@ Instruction decode_instruction(const uint8_t* rom, size_t rom_size,
  * @param bank Bank to decode (0 for bank 0, 1+ for switchable)
  * @return Vector of decoded instructions
  */
-std::vector<Instruction> decode_bank(const uint8_t* rom, size_t rom_size,
-                                      uint8_t bank = 0);
+std::vector<Instruction> decode_bank(const ROM& rom, uint8_t bank = 0);
+
 
 /**
  * @brief Get cycle count for an instruction

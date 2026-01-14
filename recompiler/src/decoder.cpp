@@ -1174,8 +1174,7 @@ std::string Instruction::disassemble() const {
     return gbrecomp::disassemble(*this);
 }
 
-std::vector<Instruction> decode_bank(const uint8_t* rom, size_t rom_size, 
-                                     uint8_t bank) {
+std::vector<Instruction> decode_bank(const ROM& rom, uint8_t bank) {
     std::vector<Instruction> instructions;
     
     // Determine bank boundaries
@@ -1184,75 +1183,22 @@ std::vector<Instruction> decode_bank(const uint8_t* rom, size_t rom_size,
     
     if (bank == 0) {
         start_offset = 0;
-        end_offset = std::min(BANK_SIZE, rom_size);
+        end_offset = std::min(BANK_SIZE, rom.size());
     } else {
         start_offset = bank * BANK_SIZE;
-        end_offset = std::min(start_offset + BANK_SIZE, rom_size);
+        end_offset = std::min(start_offset + BANK_SIZE, rom.size());
     }
     
-    if (start_offset >= rom_size) {
+    if (start_offset >= rom.size()) {
         return instructions;
     }
     
-    // Decode instructions sequentially
+    Decoder decoder(rom);
     uint16_t addr = (bank == 0) ? 0x0000 : 0x4000;
     size_t offset = start_offset;
     
     while (offset < end_offset) {
-        Instruction instr = {};
-        instr.address = addr;
-        instr.bank = bank;
-        instr.length = 1;
-        instr.cycles = 4;
-        instr.is_cb_prefixed = false;
-        
-        uint8_t opcode = rom[offset];
-        instr.opcode = opcode;
-        
-        // Handle CB prefix
-        if (opcode == 0xCB && offset + 1 < end_offset) {
-            instr.is_cb_prefixed = true;
-            instr.opcode = rom[offset + 1];
-            instr.length = 2;
-            instr.type = InstructionType::NOP;  // Simplified for now
-        } else {
-            // Decode instruction length
-            switch (opcode) {
-                // 3-byte instructions
-                case 0x01: case 0x11: case 0x21: case 0x31:  // LD rr,nn
-                case 0x08:  // LD (nn),SP
-                case 0xC2: case 0xC3: case 0xCA: case 0xD2: case 0xDA:  // JP
-                case 0xC4: case 0xCC: case 0xCD: case 0xD4: case 0xDC:  // CALL
-                case 0xEA: case 0xFA:  // LD (nn),A and LD A,(nn)
-                    instr.length = 3;
-                    instr.cycles = 12;
-                    if (offset + 2 < end_offset) {
-                        instr.imm16 = rom[offset + 1] | (rom[offset + 2] << 8);
-                    }
-                    break;
-                    
-                // 2-byte instructions
-                case 0x06: case 0x0E: case 0x16: case 0x1E:  // LD r,n
-                case 0x26: case 0x2E: case 0x36: case 0x3E:
-                case 0x18: case 0x20: case 0x28: case 0x30: case 0x38:  // JR
-                case 0xC6: case 0xCE: case 0xD6: case 0xDE:  // ALU A,n
-                case 0xE6: case 0xEE: case 0xF6: case 0xFE:
-                case 0xE0: case 0xF0: case 0xE8: case 0xF8:  // LDH, ADD SP,n
-                    instr.length = 2;
-                    if (offset + 1 < end_offset) {
-                        instr.imm8 = rom[offset + 1];
-                    }
-                    break;
-                    
-                default:
-                    instr.length = 1;
-                    break;
-            }
-            
-            // Simplified type assignment
-            instr.type = InstructionType::NOP;  // Will be properly decoded later
-        }
-        
+        Instruction instr = decoder.decode(addr, bank);
         instructions.push_back(instr);
         
         offset += instr.length;
@@ -1261,5 +1207,6 @@ std::vector<Instruction> decode_bank(const uint8_t* rom, size_t rom_size,
     
     return instructions;
 }
+
 
 } // namespace gbrecomp
