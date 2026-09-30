@@ -498,6 +498,18 @@ Each change below is measured against the step before it:
 | `gbl_io_rd`/`gbl_io_wr` serve LY, STAT, scroll, palette and window registers in Thumb-1; `gbl_lookup` checks the dispatch cache without a frame | Batman −4.2%, R.C. Pro-Am −1.3% |
 | `render_line` in Thumb-1 (sprites sorted as 16-bit keys `x << 8 \| index`), tile-hash loop and `gbl_cp` | −1% to −3% |
 
+Ten more games (`tools/m0bench/panel.txt`: SD streaming, MBC2, raster
+effects, many sprites, scrolling) give the same hashes with both runtimes.
+On all fifteen the change in average cycles per frame ranges from −11% to
+−52% (median −18%); the time freed is 4% to 9% of the 60 Hz frame budget
+(804k cycles at 48 MHz, emulation only). Heavy frames gain less (p99 −0%
+to −18%); frames over the budget go from 180 to 77 of 1,599 on
+Prehistorik Man, and barely move on Zelda (85 to 84) and Donkey Kong Land
+(24 to 23), where the interpreter, ROM bank switching and wait-loop
+divisions dominate. `m0_estimate.py` now prints these per-frame figures
+and runs streaming projects (the whole ROM stands in for the SD card; the
+SD transfer time is not modelled).
+
 Every step keeps the pixel, signature and state hashes of the five games
 equal to the C runtime's (`BENCH_PIXEL_HASH`, `BENCH_STATE_HASH`; see
 Validation). The firmware grows by about 1.2 KiB of flash (the three

@@ -26,7 +26,7 @@ import time
 
 from capstone import CS_ARCH_ARM, CS_MODE_MCLASS, CS_MODE_THUMB, Cs
 from elftools.elf.elffile import ELFFile
-from unicorn import UC_ARCH_ARM, UC_HOOK_BLOCK, UC_MODE_MCLASS, UC_MODE_THUMB, Uc
+from unicorn import UC_ARCH_ARM, UC_HOOK_BLOCK, UC_HOOK_CODE, UC_MODE_MCLASS, UC_MODE_THUMB, Uc
 from unicorn.arm_const import UC_ARM_REG_SP
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -73,6 +73,11 @@ def build(project, out_dir, frames, opt, input_file, extra):
     sources = sorted(os.path.join(src, f) for f in os.listdir(src)
                      if (f.endswith(".c") or f.endswith(".S")) and (f.startswith("gbl_") or f.endswith("_gen.c") or f.endswith("_rom.c")))
     sources.append(os.path.join(HERE, "bench_main.c"))
+    # Streaming projects: the whole ROM stands in for the SD card (placed in
+    # its own region by bench.ld; the SD transfer time is not modelled).
+    host = os.path.join(project, "host")
+    if os.path.isdir(host):
+        sources += sorted(os.path.join(host, f) for f in os.listdir(host) if f.endswith("_romfull.c"))
     elf = os.path.join(out_dir, "bench.elf")
     cmd = [find_gcc(), "-mcpu=cortex-m0plus", "-mthumb", "-" + opt, "-g", "-std=gnu11",
            "-ffunction-sections", "-fdata-sections", "--param", "max-inline-insns-single=500",
@@ -127,6 +132,7 @@ def main():
     uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
     uc.mem_map(0, 0x40000)
     uc.mem_map(0x20000000, 0x8000)
+    uc.mem_map(0x10000000, 0x400000)  # stand-in SD card (bench.ld SDROM)
     symbols = []
     with open(elf_path, "rb") as f:
         elf = ELFFile(f)
@@ -135,12 +141,15 @@ def main():
                 uc.mem_write(seg["p_paddr"], seg.data())
         symtab = elf.get_section_by_name(".symtab")
         done = None
+        frame_fn = None
         pixel_hash_addr = None
         state_hash_addr = None
         alu_errors_addr = None
         for s in symtab.iter_symbols():
             if s["st_info"]["type"] == "STT_FUNC" and s["st_size"]:
                 symbols.append((s["st_value"] & ~1, s["st_size"], s.name))
+            if s.name == "bench_frame":
+                frame_fn = s["st_value"] & ~1
             if s.name == "bench_done":
                 done = s["st_value"] & ~1
             if s.name == "bench_pixel_hash":
@@ -160,17 +169,35 @@ def main():
 
     counts = collections.Counter()
     sizes = {}
+    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS)
+    # Running cycle total, for the cost of each frame (between two calls of
+    # bench_frame, i.e. VBlank to VBlank).
+    block_cost = {}
+    running = [0.0]
+    frame_marks = []
 
-    def on_block(_uc, addr, size, _data):
+    def on_block(uc_, addr, size, _data):
         counts[addr] += 1
         sizes[addr] = size
+        c = block_cost.get((addr, size))
+        if c is None:
+            c = 0.0
+            for insn in md.disasm(bytes(uc_.mem_read(addr, size)), addr):
+                cy, w = classify(insn)
+                c += cy + (0 if addr >= 0x20000000 else w)
+            block_cost[(addr, size)] = c
+        running[0] += c
+
+    def on_frame(_uc, _addr, _size, _data):
+        frame_marks.append(running[0])
 
     uc.hook_add(UC_HOOK_BLOCK, on_block)
+    if frame_fn is not None:
+        uc.hook_add(UC_HOOK_CODE, on_frame, begin=frame_fn, end=frame_fn)
     t0 = time.time()
     uc.emu_start(pc | 1, done)
     wall = time.time() - t0
 
-    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS)
     per_func = collections.Counter()
     per_block = collections.Counter()
     block_func = {}
@@ -207,6 +234,17 @@ def main():
     print("estimated M0+ cycles per frame: %.0f core + %.0f flash wait = %.0f" %
           (total_cyc / frames, total_ws / frames, per_frame))
     print("=> %.1f emulated frames/s at 48 MHz with every frame rendered (DMG: 59.7)" % (48e6 / per_frame))
+    if len(frame_marks) > 2:
+        # Skip frame 0 (boot): costs of whole VBlank-to-VBlank frames.
+        per = sorted(b - a for a, b in zip(frame_marks[1:], frame_marks[2:]))
+        pick = lambda q: per[min(len(per) - 1, int(q * len(per)))]
+        budget = 48e6 / 59.7275
+        print("frame cost: median %.0f, p95 %.0f, p99 %.0f, max %.0f cycles; "
+              "%.1f%% of the 60 Hz budget on average, %d frames over %.0f%% of it" %
+              (pick(0.5), pick(0.95), pick(0.99), per[-1], 100 * sum(per) / len(per) / budget,
+               sum(1 for c in per if c > 0.5 * budget), 50))
+        print("frames over the 60 Hz budget (%.0f cycles, emulation only): %d of %d" %
+              (budget, sum(1 for c in per if c > budget), len(per)))
     groups = collections.Counter()
     for name, c in per_func.items():
         if name.startswith("r") and "_" in name and name[1:].split("_")[0].isdigit():

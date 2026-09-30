@@ -1,0 +1,20 @@
+# M0 estimator panel: generated projects under out/ (made by compile.sh; the
+# ROMs, projects and inputs are local artifacts, not in git).  Input: the
+# project's coverage-auto1.input, else auto.input.  1,600 frames each.
+#
+# key      project directory under out/                        why
+sml        Super_Mario_Land__World___Rev_A_                    reference; LYC, window, redraws
+rc         Super_R_C__Pro_Am__USA__Europe_                     STAT polling, interpreter share
+bat        Batman___The_Video_Game__World_                     raster effects, many events
+burai      Burai_Fighter_Deluxe__USA__Europe_                  window, mostly static frames
+solar      SolarStriker__World_                                generated-code heavy, EI loops
+tetris     Tetris__World___Rev_A_                              32 KiB, no MBC, static frames
+zelda      Legend_of_Zelda__The___Link_s_Awakening             SD streaming (512 KiB), bank switching
+dkl        Donkey_Kong_Land                                    SD streaming, wait loops, scrolling
+mq         Mystic_Quest                                        SD streaming, MBC2, battery RAM
+f1         F_1_Race__World___Rev_A_                            MBC2, per-line road raster
+nemesis    Nemesis__Europe_                                    shooter, many sprites per line
+prehist    Prehistorik_Man__USA__Europe_                       heavy raster and large sprites
+ninja      Ninja_Gaiden_Shadow__USA_                           parallax raster
+pinball    Pinball_Dreams__USA__Europe_                        fast vertical scrolling
+cv2        Castlevania_II___Belmont_s_Revenge__USA__Europe_    platformer, scrolling

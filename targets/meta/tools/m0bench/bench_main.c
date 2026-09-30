@@ -95,6 +95,21 @@ __attribute__((noinline)) void bench_frame(uint32_t frame) {
 }
 
 #include "gbl_config.h"
+#if GBL_ROM_STREAM
+/* SD card stand-in: the whole ROM (host/*_romfull.c, in bench.ld's SDROM
+ * region).  Only the copy is counted, not the SD transfer. */
+extern const uint8_t gbl_rom_full[];
+uint32_t bench_sd_sectors;
+
+int gbl_platform_rom_read(uint32_t sector, uint8_t *dst) {
+    if ((sector + 1u) * 512u > gbl_rom_size) return 0;
+    const uint32_t *s = (const uint32_t *)(gbl_rom_full + sector * 512u);
+    uint32_t *d = (uint32_t *)dst;
+    for (int i = 0; i < 128; i++) d[i] = s[i];
+    bench_sd_sectors++;
+    return 1;
+}
+#endif
 #if GBL_ERAM_SIZE > 0
 /* No storage in the benchmark: cartridge RAM starts erased. */
 int gbl_platform_save_read(uint32_t sector, uint8_t *dst) { (void)sector; (void)dst; return 0; }
