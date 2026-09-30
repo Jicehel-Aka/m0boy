@@ -204,6 +204,32 @@ reste que 1 à 15 % d'instructions interprétées, mesuré avec d'autres entrée
 que celles de la partie automatique. Une partie jouée à la main améliore
 encore les niveaux que la partie automatique n'atteint pas.
 
+## Compilateur multiplateforme (Node)
+
+`tools/meta-compiler/compile.mjs` fait la même chose que `compile.sh`
+(mêmes dossiers, mêmes profils, mêmes firmwares), aussi sous Windows et
+macOS, avec une interface plein écran : liste des ROMs à cocher, puis
+tableau de bord des jeux en cours.
+
+```bash
+cd tools/meta-compiler && npm install && cd ../..   # une fois (Node 22+)
+node tools/meta-compiler/compile.mjs                  # comme ./compile.sh
+node tools/meta-compiler/compile.mjs --all --no-icons # sans menu
+```
+
+Options : `--all`, `--update`, `--force`, `--no-icons`, `--play`, `--pack`
+/ `--no-pack` (et les mêmes variables d'environnement que `compile.sh`).
+`q` arrête de lancer de nouveaux jeux, Ctrl-C arrête tout. Sans `npm install`
+(ou hors terminal), il se contente d'une liste numérotée ou traite tout.
+
+## Émulateur (tester sans la console)
+
+`tools/gb-emu/` est une version de gamebuino-emulator qui fait tourner ces
+firmwares : exécution depuis la SRAM et carte SD émulée (voir son
+`LISEZMOI.md`). Ouvre `tools/gb-emu/dist/index.html` et choisis un dossier
+de `roms/meta/` : il sert de carte SD et son `.bin` est chargé. Pas de son,
+et la vitesse n'est pas celle de la console.
+
 ## 3. Mettre le jeu sur la META
 
 - Par USB : `pio run -d out/tetris -t upload`.

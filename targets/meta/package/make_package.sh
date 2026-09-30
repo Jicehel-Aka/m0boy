@@ -23,7 +23,8 @@ pkg=$stage/gbrecomp-meta
 mkdir -p "$pkg"
 git -C "$root" archive "$rev" recompiler/CMakeLists.txt recompiler/include recompiler/src \
     targets/meta tests/test_host_configuration.c tests/test_meta_fat.py \
-    tests/test_meta_target_e2e.py compile.sh LICENSE | tar -x -C "$pkg"
+    tests/test_meta_target_e2e.py compile.sh LICENSE \
+    tools/meta-compiler tools/gb-emu | tar -x -C "$pkg"
 rm -rf "$pkg/targets/meta/package"
 git -C "$root" show "$rev:targets/meta/package/CMakeLists.txt" > "$pkg/CMakeLists.txt"
 git -C "$root" show "$rev:targets/meta/package/META.md" > "$pkg/META.md"
@@ -31,7 +32,11 @@ mkdir -p "$pkg/roms/gb"
 git -C "$root" show "$rev:targets/meta/package/LISEZMOI.txt" > "$pkg/roms/gb/LISEZMOI.txt"
 cp -r "$profiles" "$pkg/profiles"
 
-# No ROM or firmware may slip in.
+# No ROM, firmware or installed Node packages may slip in.
+if find "$pkg" -type d -name node_modules | grep -q .; then
+    echo "refusing: node_modules in the package" >&2
+    exit 1
+fi
 if find "$pkg" -type f \( -iname '*.gb' -o -iname '*.gbc' -o -iname '*.bin' -o -iname '*.elf' \
         -o -iname '*.sav' \) | grep -q .; then
     echo "refusing: ROM or binary in the package" >&2

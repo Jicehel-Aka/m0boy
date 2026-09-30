@@ -1,0 +1,34 @@
+{
+  "name": "@aoneill01/gamebuino-emulator",
+  "version": "1.1.0",
+  "description": "Library to emulate a Gamebuino.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "test": "mocha -r ts-node/register src/**/*.spec.ts",
+    "build": "node ./node_modules/webpack/bin/webpack",
+    "start": "webpack-dev-server --config webpack.config.js",
+    "build:cjs": "tsc --skipLibCheck --outDir dist-cjs",
+    "headless": "node headless.js"
+  },
+  "author": "Andy O'Neill <aoneill01@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aoneill01/gamebuino-emulator.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/chai": "^4.0.4",
+    "@types/mocha": "^2.2.43",
+    "@types/node": "^7.0.5",
+    "chai": "^4.1.2",
+    "mocha": "^4.0.1",
+    "ts-loader": "^5.2.1",
+    "ts-node": "^7.0.1",
+    "typescript": "^3.9.10",
+    "webpack": "^4.47.0",
+    "webpack-cli": "^3.1.2",
+    "webpack-dev-server": "^3.7.1",
+    "webpack-uglify-js-plugin": "^1.1.9"
+  }
+}

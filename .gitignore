@@ -60,5 +60,8 @@ imgui.ini
 __pycache__/
 *.pyc
 
+# Node (tools/meta-compiler)
+node_modules/
+
 tech_docs/
 SameBoy/

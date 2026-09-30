@@ -50,7 +50,8 @@
 #   JOBS=n        ROMs traitées en parallèle (défaut : cœurs / 4 ; 1 avec PLAY=1)
 #   AUTO_REDO=1   refaire la partie automatique même si elle est déjà enregistrée
 #   REPLAY=1      rejouer les parties à la main enregistrées (profils à jour)
-#   PACK=1        données de ROM peu lues compressées (LZSS) dans la flash au
+#   PACK=1 (défaut)
+#                 données de ROM peu lues compressées (LZSS) dans la flash au
 #                 lieu d'être lues sur la carte SD : plus de place pour le code
 #                 compilé, pas de .GB à copier (retombe sur la SD ou le mode
 #                 normal si la ROM compressée ne tient pas)
@@ -91,7 +92,7 @@ AUTO_SECONDS="${AUTO_SECONDS:-60}"  # plafond de temps réel par partie
 JOBS="${JOBS:-$(( NPROC / 4 > 0 ? NPROC / 4 : 1 ))}"
 AUTO_REDO="${AUTO_REDO:-0}"
 REPLAY="${REPLAY:-0}"
-PACK="${PACK:-0}"
+PACK="${PACK:-1}"  # auto : packe quand ça tient, retombe sur la carte SD sinon (PACK=0 pour désactiver)
 ALL="${ALL:-0}"
 UPDATE="${UPDATE:-0}"
 FORCE="${FORCE:-0}"
@@ -210,7 +211,7 @@ import re, sys
 def norm(s):
     return " ".join(re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", s).split()).casefold()
 target = norm(sys.argv[2])
-best, best_score = None, -1
+best, best_score = None, float("-inf")
 for line in open(sys.argv[1], encoding="utf-8"):
     dec, _, enc = line.rstrip("\n").partition("\t")
     if norm(dec) != target:

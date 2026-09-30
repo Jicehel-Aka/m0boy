@@ -1,0 +1,17 @@
+{
+  "name": "gbrecomp-meta-compiler",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Compileur multiplateforme (Node) : ROMs Game Boy -> firmwares Gamebuino META, interface plein écran ink",
+  "bin": {
+    "gbrecomp-meta-compiler": "./compile.mjs"
+  },
+  "scripts": {
+    "start": "node compile.mjs"
+  },
+  "dependencies": {
+    "ink": "^7.1.1",
+    "react": "^19.3.0"
+  }
+}

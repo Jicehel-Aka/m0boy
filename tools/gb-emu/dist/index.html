@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Test</title>
+    <link href="https://fonts.googleapis.com/css?family=Open+Sans" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Open Sans', sans-serif;
+            color: #4d545d;
+        }
+
+        #emulator {
+            width: 320px;
+            height: 256px;
+            margin: 0 auto;
+            background-image: url(controls.png);
+        }
+
+        .main-content {
+            width: 500px;
+            margin: 20px auto;
+        }
+        
+        h2 {
+            font-size: large;
+            margin-bottom: .25em;
+        }
+
+        p {
+            margin-top: 0;
+        }
+
+        #instruction {
+            font-weight: bold;
+        }
+
+        #drop-zone {
+            width:  100%;
+            background-color: #e9ecef;
+            border-radius: .3rem;
+            padding: 50px;
+            text-align: center;
+            box-sizing: border-box;
+        }
+
+        #drop-zone.drag-over {
+            background-color: #b3b5b8;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="emulator"></div>
+    <div class="main-content">
+        <p>🎴 <a href="#" onclick="loadSolitaire(); return false;">Try out Solitaire</a></p>
+        
+        <p>⟳ <a href="#" onclick="reset();">Reset Game</a></p>
+
+        <p>🖮 <a id="custom-keys" href="#" onclick="doDown(); return false;">Create your own key mapping</a> <span id="instruction"></span></p>
+        
+        <h2>Upload Game</h2>
+        <div id="drop-zone" ondrop="dropHandler(event);" ondragover="event.preventDefault();" ondragenter="dragOverStyle(true);" ondragleave="dragOverStyle(false);">
+            Drop your .bin here
+        </div>
+        <div>Or choose file: <input type="file" id="file-upload" /></div>
+    </div>
+
+    <script src="meta-emulator.js"></script>
+
+    <script>
+        var emulator = new metaEmulator.Emulator("emulator");
+        
+        document.getElementById("file-upload").onchange = function() {
+            if (this.files.length == 1) {
+                var f = this.files[0];
+                var reader = new FileReader();
+                reader.onload = function (e) {
+                    emulator.loadFromBuffer(e.target.result);
+                };
+                reader.readAsArrayBuffer(f);
+                this.value = "";
+            }
+        };
+
+        function loadSolitaire() {
+            emulator.loadFromUrl("https://raw.githubusercontent.com/Rodot/Games-META/master/binaries/Solitaire/Solitaire.bin");
+        }
+
+        function reset() {
+            emulator.reset();
+        }
+
+        function dragOverStyle(enabled) {
+            document.getElementById('drop-zone').className = (enabled ? 'drag-over' : '');
+        }
+
+        var dropCount = 0; // 1er dépôt = firmware, 2e = carte SD (.img)
+        function dropHandler(ev) {
+            ev.preventDefault();
+            dragOverStyle(false);
+            var dt = ev.dataTransfer;
+            var f = null;
+            if (dt.items && dt.items[0] && dt.items[0].kind == "file") {
+                f = dt.items[0].getAsFile();
+            } else if (dt.files && dt.files[0]) {
+                f = dt.files[0];
+            }
+            if (!f) return;
+            dropCount++;
+            var reader = new FileReader();
+            reader.onload = function (e) {
+                if (dropCount == 1) {
+                    emulator.loadFromBuffer(e.target.result);
+                    giveInstruction("Firmware chargé. Dépose maintenant l'image de la carte SD (.img), ou recharge la page pour changer de firmware.");
+                } else {
+                    emulator.loadSdImageFromBuffer(e.target.result);
+                    giveInstruction("Carte SD attachée (" + f.name + "). Clique sur \u00ab Reset Game \u00bb : le jeu d\u00e9marre avec la carte (les stream\u00e9s lisent leur .GB dessus).");
+                }
+            };
+            reader.readAsArrayBuffer(f);
+        }
+
+        function giveInstruction(message) {
+            var span = document.getElementById('instruction');
+            span.innerText = message;
+        }
+
+        var keymap;
+        function doDown() {
+            keymap = [];
+            giveInstruction("Press Down");
+            var handler = (event) => {
+                event.preventDefault();
+                keymap.push([event.keyCode]);
+                document.removeEventListener('keydown', handler);
+                doLeft();
+            };
+            document.addEventListener('keydown', handler);
+        }
+
+        function doLeft() {
+            giveInstruction("Press Left");
+            var handler = (event) => {
+                event.preventDefault();
+                keymap.push([event.keyCode]);
+                document.removeEventListener('keydown', handler);
+                doRight();
+            };
+            document.addEventListener('keydown', handler);
+        }
+
+        function doRight() {
+            giveInstruction("Press Right");
+            var handler = (event) => {
+                event.preventDefault();
+                keymap.push([event.keyCode]);
+                document.removeEventListener('keydown', handler);
+                doUp();
+            };
+            document.addEventListener('keydown', handler);
+        }
+
+        function doUp() {
+            giveInstruction("Press Up");
+            var handler = (event) => {
+                event.preventDefault();
+                keymap.push([event.keyCode]);
+                document.removeEventListener('keydown', handler);
+                doA();
+            };
+            document.addEventListener('keydown', handler);
+        }
+
+        function doA() {
+            giveInstruction("Press A");
+            var handler = (event) => {
+                event.preventDefault();
+                keymap.push([event.keyCode]);
+                document.removeEventListener('keydown', handler);
+                doB();
+            };
+            document.addEventListener('keydown', handler);
+        }
+
+        function doB() {
+            giveInstruction("Press B");
+            var handler = (event) => {
+                event.preventDefault();
+                keymap.push([event.keyCode]);
+                document.removeEventListener('keydown', handler);
+                doMenu();
+            };
+            document.addEventListener('keydown', handler);
+        }
+
+        function doMenu() {
+            giveInstruction("Press Menu");
+            var handler = (event) => {
+                event.preventDefault();
+                keymap.push([event.keyCode]);
+                document.removeEventListener('keydown', handler);
+                doHome();
+            };
+            document.addEventListener('keydown', handler);
+        }
+
+        function doHome() {
+            giveInstruction("Press Home");
+            var handler = (event) => {
+                event.preventDefault();
+                keymap.push([event.keyCode]);
+                document.removeEventListener('keydown', handler);
+                emulator.setKeymap(keymap);
+                giveInstruction("");
+            };
+            document.addEventListener('keydown', handler);
+        }
+
+    </script>
+</body>
+
+</html>

@@ -218,9 +218,10 @@ default; `on` / `off` force it):
 `compile.sh` records the profiles, regenerates with them, and copies the
 ROM into the game's folder under its card name.
 
-## Compressed ROM in flash (`--meta-pack`, `PACK=1`)
+## Compressed ROM in flash (`--meta-pack`, default on)
 
-With `--meta-pack` (`PACK=1` for `compile.sh`), the streaming machinery
+With `--meta-pack` (the default in `compile.sh` and the Node compiler;
+`PACK=0` / `--no-pack` turn it off), the streaming machinery
 reads from flash instead of the SD card (`GBL_ROM_PACKED`):
 - Bank 0 and the hot 4 KiB chunks stay raw and mapped directly. By default
   they take at most a third of the free flash, so more of it goes to
@@ -313,6 +314,19 @@ current ones).
   `<rom dir>/profiles/<sha1>/` (`.input`, `.cov`, `.prof`) and reused by
   later runs. `AUTO_REDO=1` redoes the random runs, and `REPLAY=1` replays
   the played ones.
+
+A cross-platform Node port lives in `tools/meta-compiler/`:
+`node tools/meta-compiler/compile.mjs [rom dir] [output dir]`. Same output
+layout, same state files and icon cache (it interchanges compiled games,
+profiles and `.gbrmeta.json` with `compile.sh`), same environment
+variables plus `--all` / `--update` / `--force` / `--no-icons` / `--play`
+/ `--pack` flags. In a terminal it runs a fullscreen interface (ink): a checkable
+list of the ROMs with their state, then a dashboard with the games and
+their current phase on one pane, global counters and the activity log on
+the other (`q` stops launching new games, Ctrl-C kills the running
+builds). `ink` and `react` are installed with npm on first run; a
+numbered-list fallback needs no dependency. `compile.sh` stays the
+reference.
 
 Unique instructions found by random runs:
 
@@ -641,11 +655,21 @@ at slightly different instruction boundaries. `--dump-frame N file.ppm`,
 `--wav file.wav` and `--hash-every 1` help narrow down differences.
 
 The firmware also runs in
-[gamebuino-emulator](https://github.com/aoneill01/gamebuino-emulator) (load
-`.pio/build/meta/firmware.bin` in its page; keys: arrows, J = A, K = B,
-U = MENU, I = HOME; no sound, TC4 and the DAC are not emulated).
-`tools/emu/meta_emu_run.ts` drives it headless for screenshots and a frame
-rate in the emulator's 20-MIPS time model.
+[gamebuino-emulator](https://github.com/aoneill01/gamebuino-emulator)
+(load `.pio/build/meta/firmware.bin` in its page; keys: arrows, J = A,
+K = B, U = MENU, I = HOME; no sound, TC4 and the DAC are not emulated).
+Use the fork in `tools/gb-emu/` (from upstream `9631729`, MIT; see its
+`LISEZMOI.md`):
+upstream could not execute code from SRAM, where our firmware runs its
+PPU assembly (`GBL_PPU_RAMFUNC`) — firmwares crashed on the first
+rendered frame — and had no SD card, so streamed games stopped on the
+red « ROM introuvable » screen. The fork decodes SRAM lazily and
+emulates a SPI-mode SD card backed by a raw FAT image or, built on the
+fly, by a local directory (game saves are rewritten into the folder's
+files). Streamed games boot and render there too. `headless.js` drives
+it from Node and prints the dominant screen colors:
+`node headless.js <firmware.bin> [ticks] [batches] <sd.img | directory>`;
+the web page gains a file picker for the card image.
 
 To estimate the cost on a Cortex-M0+ without hardware:
 
@@ -697,7 +721,7 @@ drift apart after that. The M0+ estimate was not measured on a device.
 - ROMs of 256 KiB and more need their ROM file on the SD card (see above).
   The SD reader has not run on a device yet.
 - Frames are skipped under load, at most `META_MAX_SKIP` in a row.
-- The META frontend runs in gamebuino-emulator (title screen and gameplay,
-  full speed in its 20-MIPS model) but has not yet run on a device in this
-  repository's history. Buttons follow the Gamebuino library order (down,
+- In the `tools/gb-emu` fork, plain, packed and streamed builds boot and
+  render (streamed ones from an emulated SD card); the upstream emulator
+  needs `compile.mjs --emu` builds and cannot run streamed games. Buttons follow the Gamebuino library order (down,
   left, right, up, A, B, MENU, HOME), as the emulator does.

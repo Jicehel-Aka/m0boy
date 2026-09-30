@@ -17,7 +17,7 @@ state, evidence and open items.
 | META frontend | `targets/meta/platform/src/` (LCD DMA, audio, SD/FAT, saves, stream) |
 | Host harness | `targets/meta/host/gbl_host.c` (`_host`, `_profile`, `_play` targets) |
 | Tests | `ctest -R meta` (7 tests); `tests/test_meta_target_e2e.py` is the main gate |
-| Tools | `targets/meta/tools/m0bench/` (`m0_estimate.py` M0+ cycle model, `where.py` stall finder), `tools/emu/` (gamebuino-emulator driver) |
+| Tools | `targets/meta/tools/m0bench/` (`m0_estimate.py` M0+ cycle model, `where.py` stall finder), `tools/gb-emu/` (gamebuino-emulator fork: SRAM execution, emulated SD card, `headless.js`), `tools/meta-compiler/` (Node port of `compile.sh`) |
 | Batch | `compile.sh` (reference), `tools/meta-compiler/` (Node/ink port by another agent; uncommitted, in progress) |
 
 ## Done
