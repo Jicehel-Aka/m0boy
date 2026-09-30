@@ -144,8 +144,29 @@ void Reset_Handler(void) {
 __attribute__((section(".isr_vector"), used))
 static const void *const vectors[2] = {&_estack, (void *)Reset_Handler};
 
+#ifdef BENCH_ALU_CHECK
+/* Every (A, v) pair of the ALU helpers against the C formulas: the
+ * assembly versions cannot run in the host's exhaustive test. */
+uint32_t bench_alu_errors;
+
+static void alu_check(void) {
+    for (uint32_t a = 0; a < 256; a++)
+        for (uint32_t v = 0; v < 256; v++) {
+            gbr.a = (uint8_t)a;
+            gbr.zr = gbr.cf = gbr.hf = gbr.nf = 0x55;
+            gbl_cp((uint8_t)v);
+            if (gbr.a != a || gbr.zr != (uint8_t)(a - v) || gbr.cf != (a < v) ||
+                gbr.hf != ((a & 15) < (v & 15)) || gbr.nf != 1)
+                bench_alu_errors++;
+        }
+}
+#endif
+
 int main(void) {
     char probe;
+#ifdef BENCH_ALU_CHECK
+    alu_check();
+#endif
     gbl_stack_limit = (uintptr_t)&probe - 3072u;
     gbl_reset();
     gbl_run();

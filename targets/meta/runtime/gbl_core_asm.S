@@ -17,8 +17,14 @@
     .syntax unified
     .thumb
 
-/* gbl_cpu_t layout (gbl.h): sp is the halfword at offset 6. */
+/* gbl_cpu_t layout (gbl.h): sp is the halfword at offset 6, then pc, and
+ * the bytes a, zr, cf, hf, nf. */
 #define GBR_SP 6
+#define GBR_A 10
+#define GBR_ZR 11
+#define GBR_CF 12
+#define GBR_HF 13
+#define GBR_NF 14
 
 /*
  * uint8_t gbl_rd(uint16_t a) / void gbl_wr(uint16_t a, uint8_t v)
@@ -184,6 +190,38 @@ gbl_pop:
 8:  .word   gbl_wram
 9:  .word   gbr
     .size gbl_pop, . - gbl_pop
+
+/*
+ * void gbl_cp(uint8_t v)
+ * CP: zr = A - v, cf = A < v, hf = (A & 15) < (v & 15), nf = 1, from the
+ * borrows of two subtractions (SBCS/NEGS), with no stack frame.  The M0
+ * benchmark checks every (A, v) pair with -DBENCH_ALU_CHECK.
+ */
+    .section .text.gbl_cp, "ax", %progbits
+    .align 2
+    .global gbl_cp
+    .type gbl_cp, %function
+    .thumb_func
+gbl_cp:
+    ldr     r3, 9f
+    ldrb    r1, [r3, #GBR_A]
+    subs    r2, r1, r0
+    strb    r2, [r3, #GBR_ZR]
+    sbcs    r2, r2                 /* -1 on borrow */
+    negs    r2, r2
+    strb    r2, [r3, #GBR_CF]
+    lsls    r1, r1, #28
+    lsls    r0, r0, #28
+    subs    r1, r1, r0             /* low nibbles */
+    sbcs    r2, r2
+    negs    r2, r2
+    strb    r2, [r3, #GBR_HF]
+    movs    r2, #1
+    strb    r2, [r3, #GBR_NF]
+    bx      lr
+    .align 2
+9:  .word   gbr
+    .size gbl_cp, . - gbl_cp
 
 /*
  * uint32_t gbl_oam_dma_asm(uint8_t *oam, const uint8_t *src)

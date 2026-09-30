@@ -137,6 +137,7 @@ def main():
         done = None
         pixel_hash_addr = None
         state_hash_addr = None
+        alu_errors_addr = None
         for s in symtab.iter_symbols():
             if s["st_info"]["type"] == "STT_FUNC" and s["st_size"]:
                 symbols.append((s["st_value"] & ~1, s["st_size"], s.name))
@@ -146,6 +147,8 @@ def main():
                 pixel_hash_addr = s["st_value"]
             if s.name == "bench_state_hash":
                 state_hash_addr = s["st_value"]
+            if s.name == "bench_alu_errors":
+                alu_errors_addr = s["st_value"]
         text = elf.get_section_by_name(".text")
         flash_used = text["sh_size"]
     symbols.sort()
@@ -193,6 +196,8 @@ def main():
     frames = args.frames
     if pixel_hash_addr is not None:
         print("pixel hash: %08x" % int.from_bytes(uc.mem_read(pixel_hash_addr, 4), "little"))
+    if alu_errors_addr is not None:
+        print("alu errors: %d" % int.from_bytes(uc.mem_read(alu_errors_addr, 4), "little"))
     if state_hash_addr is not None:
         print("state hash: %08x" % int.from_bytes(uc.mem_read(state_hash_addr, 4), "little"))
     est = total_cyc + total_ws

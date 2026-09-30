@@ -7,6 +7,14 @@
 #include "gbl_config.h"
 #include "gbl_internal.h"
 
+#include <stddef.h>
+
+/* Offsets used by gbl_core_asm.S. */
+_Static_assert(offsetof(gbl_cpu_t, sp) == 6 && offsetof(gbl_cpu_t, a) == 10 &&
+               offsetof(gbl_cpu_t, zr) == 11 && offsetof(gbl_cpu_t, cf) == 12 &&
+               offsetof(gbl_cpu_t, hf) == 13 && offsetof(gbl_cpu_t, nf) == 14,
+               "gbl_cpu_t layout");
+
 /* ---- flag helpers --------------------------------------------------------- */
 
 void gbl_add(uint8_t v) {
@@ -41,6 +49,7 @@ void gbl_sbc(uint8_t v) {
     gbr.a = gbr.zr = (uint8_t)(a - v - c);
 }
 
+#if !(GBL_CORE_ASM && defined(__ARM_ARCH_6M__)) /* else gbl_core_asm.S */
 void gbl_cp(uint8_t v) {
     uint32_t a = gbr.a;
     gbr.hf = (a & 0xF) < (v & 0xFu);
@@ -48,6 +57,7 @@ void gbl_cp(uint8_t v) {
     gbr.nf = 1;
     gbr.zr = (uint8_t)(a - v);
 }
+#endif
 
 uint8_t gbl_inc(uint8_t v) {
     uint8_t r = (uint8_t)(v + 1);
