@@ -21,6 +21,7 @@ Documentation roles:
 - `ACCURACY.md`: current external-ROM test snapshot
 - `GBC.md`: CGB implementation and validation status
 - `ANDROID.md`: Android generation and APK workflow
+- `targets/meta/README.md`: Gamebuino META backend (`--target meta`), coverage workflow, and limits
 - `GROUND_TRUTH_WORKFLOW.md`: trace-assisted coverage, including its limits
 - `NATIVE_PATCHES.md`: exact-ROM native replacement manifest and callback ABI
 - `PORT_MODULES.md`: exact-ROM read-only port/frontend module ABI
@@ -192,6 +193,16 @@ For APU scheduling regression checks, compare the default batched path against `
 For generated-build footprint work, use `tools/profile_generated_build.py` rather than a shell `time` around Ninja. Generated Ninja projects limit executable-target compilation to eight jobs by default; override with `-DGBRECOMP_GENERATED_COMPILE_JOBS=<n>`, or use `0` to disable the pool. Compare source bytes/files, cold wall time, compiler process-tree RSS, executable/loadable size, and runtime separately.
 
 For scene-specific slowdown investigation, combine `--debug-performance`, `--log-slow-frames`, `--log-slow-vsync`, and `--log-lcd-transitions` with recorded input.
+
+## Gamebuino META target
+
+`--target meta` is a separate compact backend (`recompiler/src/codegen/meta_emitter.cpp`, runtime in `targets/meta/runtime`). Changes to it, to the `gbl` runtime, or to its templates must pass:
+
+```bash
+ctest --test-dir build -R meta --output-on-failure
+```
+
+For game-level changes, compare the host builds of a generated project: a `--meta-precise` project must print the same `run_hash` as `--interp` for the same input, and the PlatformIO build (`pio run -d <project>`) must still fit the RAM/Flash report. Label `m0_estimate.py` numbers as estimates, never as device measurements.
 
 ## Multi-ROM, Android, and releases
 

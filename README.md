@@ -118,6 +118,7 @@ ctest --test-dir build-tests --output-on-failure
 - [Native replacement SDK](NATIVE_PATCHES.md) — exact-ROM hooks and fail-closed manifests
 - [Port modules](PORT_MODULES.md) — semantic access and host presentation
 - [Data-mod packages](DATA_MODS.md) — deterministic ROM-free overlays
+- [Gamebuino META target](targets/meta/README.md) — compact coverage-driven backend for a 48 MHz Cortex-M0+ handheld
 - [Android](ANDROID.md) — single-ROM Android generation and APK workflow
 - [Project backlog](TODO.md) — prioritized remaining work
 
