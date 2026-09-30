@@ -128,9 +128,12 @@ is drawn from the lower line alone for one frame and blended on the next.
 Lines that changed are rendered again on the next frame, so things that
 keep moving find their upper line (0 late rows over 119 frames of sprites
 moving down in the test). M0 estimator, real display pipeline
-(`--cflag=-DBENCH_META_DISPLAY=0`, 1 for TILE): SMOOTH costs 6% to 29%
-more per frame than TILE on six games (Super Mario Land 107k → 139k cycles,
-Prehistorik Man 428k → 484k), mostly the blend of every row.
+(`--cflag=-DBENCH_META_DISPLAY=0`, 1 for TILE), 25 games: SMOOTH costs
+3.6% to 31% more per frame than TILE (median 12%; Super Mario Land 106k →
+131k cycles), mostly the blend of every row; frames over the 60 Hz budget
+go up on Prehistorik Man (23 → 103 of 1,599) and Faceball 2000 (35 → 67).
+With the identity BGP (0xE4, most games) packed lines are the raw shades,
+copied without a table.
 
 `meta_display_panel_matches_reference` runs the real display pipeline
 against a simulated ST7735 (row windows included) and checks every mode
@@ -563,6 +566,17 @@ call cost as much as the loop itself. Every game run entirely
 interpreted (`BENCH_INTERP_ONLY`, 800 frames) is 10% to 24% faster with
 the same hashes; in normal runs R.C. Pro-Am −2.6%, F-1 Race −5.3%,
 Prehistorik Man −3.3%, Donkey Kong Land p99 −15%.
+
+Ten more games (`panel.txt`: software 3D, isometric, non-identity BGP,
+RPG menus, beat 'em up) found three more things: the ALU helpers called by
+generated code (`gbl_add`, `gbl_adc`, `gbl_sub`, `gbl_sbc`, `gbl_inc`,
+`gbl_dec`) are Thumb-1 now like `gbl_cp` (every input checked by
+`BENCH_ALU_CHECK`; −0.5% on Kid Icarus: GCC's were close, the cost is the
+calls themselves), the dispatch cache has 32 entries (Faceball 2000 −2%,
+frames over the budget 67 → 32; 128 bytes of RAM), and SMOOTH's line check
+no longer mixes the display mode into each signature (a mode change voids
+them all). On the 25 games the runtime is 9.9% to 52.8% faster than the C
+runtime of `c9e1bfb` (median 21.7%), with the same hashes.
 
 All fifteen games against the C runtime of `c9e1bfb`:
 

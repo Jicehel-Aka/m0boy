@@ -156,8 +156,10 @@ int main(void) {
             /* Things that keep moving: sprites going down one line per frame
              * must not leave late rows after the first frame. */
             unsigned moving_late = 0;
+            gbl_io_wr(0x47, 0xE4); /* the identity palette has its own path */
             for (int frame = 0; frame < 120; frame++) {
                 for (int i = 0; i < 40; i += 4) gbl_wr((uint16_t)(0xFE00 + i * 4), (uint8_t)(16 + (frame + i) % 150));
+                gbl_io_wr(0x43, (uint8_t)(frame * 3)); /* fine scroll too */
                 gbr.cyc += 70224u;
                 gbl_sync();
                 meta_display_flush();
@@ -168,7 +170,7 @@ int main(void) {
                         if (panel[row][x] != expected_pixel(mode, ref, row, x)) { bad = 1; break; }
                 if (bad && frame > 0) moving_late++;
             }
-            printf("display_sim smooth : sprites moving down, %u of 119 frames with a late row\n", moving_late);
+            printf("display_sim smooth : sprites moving down and scrolling (BGP E4), %u of 119 frames with a late row\n", moving_late);
             if (moving_late) failures++;
         }
         if (frames_bad) failures++;

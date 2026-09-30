@@ -97,7 +97,8 @@ static uint8_t index_palette; /* PPU currently emits shade indices */
 
 #if META_LINE_SKIP
 /* Signature of what each line last put on screen, by line (the modes that
- * keep whole lines index it like their rows). */
+ * keep whole lines index it like their rows).  A mode change voids them
+ * all, so the mode needs no place in the signature. */
 static uint32_t line_sig[144];
 static uint8_t line_valid[144];
 static uint32_t pending_sig; /* merge modes: signature of the held line 7 */
@@ -231,7 +232,6 @@ static int smooth_check(uint8_t ly, uint32_t sig) {
     unsigned group = DIV9(ly), j = ly - group * 9u;
     if (j == 0) smooth_prev_ok = smooth_prev_changed = 0; /* rows never span groups */
 #if META_LINE_SKIP
-    sig = gbl_sig_combine(sig, (uint32_t)display_mode);
     unsigned changed = !line_valid[ly] || line_sig[ly] != sig;
     line_sig[ly] = sig;
     line_valid[ly] = 1;
@@ -278,7 +278,6 @@ int gbl_platform_line_check(uint8_t ly, uint32_t sig) {
 #if META_LINE_SKIP
     if (line_kind[ly] == L_HOLD) { pending_sig = sig; return 1; } /* needed if its pair changed */
     if (line_kind[ly] == L_MERGE) sig = gbl_sig_combine(pending_sig, sig);
-    sig = gbl_sig_combine(sig, (uint32_t)display_mode);
     if (line_valid[ly] && line_sig[ly] == sig) { meta_display_rows_skipped++; return 0; }
     line_sig[ly] = sig;
     line_valid[ly] = 1;

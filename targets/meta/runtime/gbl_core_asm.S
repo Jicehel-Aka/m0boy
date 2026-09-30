@@ -266,17 +266,120 @@ gbl_pop:
     .size gbl_pop, . - gbl_pop
 
 /*
- * void gbl_cp(uint8_t v)
- * CP: zr = A - v, cf = A < v, hf = (A & 15) < (v & 15), nf = 1, from the
- * borrows of two subtractions (SBCS/NEGS), with no stack frame.  The M0
- * benchmark checks every (A, v) pair with -DBENCH_ALU_CHECK.
+ * The ALU helpers generated code calls: ADD, ADC, SUB, SBC, CP, INC, DEC
+ * (gbl_cpu.c keeps the C versions for other targets).  Flags come from the
+ * sign of a subtraction or bit 4/8 of a sum, with no branch and no stack
+ * frame.  The M0 benchmark checks every input with -DBENCH_ALU_CHECK.
  */
-    .section .text.gbl_cp, "ax", %progbits
+.macro ALU_FN name
+    .section .text.\name, "ax", %progbits
     .align 2
-    .global gbl_cp
-    .type gbl_cp, %function
+    .global \name
+    .type \name, %function
     .thumb_func
-gbl_cp:
+\name:
+.endm
+
+/* half-carry of (r1 & 15) +/- (r0 & 15) [+/- r2] into r2 via \op, bit \bit */
+    ALU_FN gbl_add
+    ldr     r3, 9f
+    ldrb    r1, [r3, #GBR_A]
+    lsls    r2, r1, #28
+    lsrs    r2, r2, #28
+    adds    r1, r1, r0             /* a + v */
+    lsls    r0, r0, #28
+    lsrs    r0, r0, #28
+    adds    r2, r2, r0
+    lsrs    r2, r2, #4             /* half carry */
+    strb    r2, [r3, #GBR_HF]
+    lsrs    r2, r1, #8             /* carry */
+    strb    r2, [r3, #GBR_CF]
+    strb    r1, [r3, #GBR_A]
+    strb    r1, [r3, #GBR_ZR]
+    movs    r2, #0
+    strb    r2, [r3, #GBR_NF]
+    bx      lr
+    .align 2
+9:  .word   gbr
+    .size gbl_add, . - gbl_add
+
+    ALU_FN gbl_adc
+    ldr     r3, 9f
+    ldrb    r1, [r3, #GBR_A]
+    ldrb    r2, [r3, #GBR_CF]
+    push    {r4}
+    lsls    r4, r1, #28
+    lsrs    r4, r4, #28
+    adds    r4, r4, r2
+    adds    r1, r1, r2
+    adds    r1, r1, r0             /* a + v + c */
+    lsls    r0, r0, #28
+    lsrs    r0, r0, #28
+    adds    r4, r4, r0
+    lsrs    r4, r4, #4
+    strb    r4, [r3, #GBR_HF]
+    pop     {r4}
+    lsrs    r2, r1, #8
+    strb    r2, [r3, #GBR_CF]
+    strb    r1, [r3, #GBR_A]
+    strb    r1, [r3, #GBR_ZR]
+    movs    r2, #0
+    strb    r2, [r3, #GBR_NF]
+    bx      lr
+    .align 2
+9:  .word   gbr
+    .size gbl_adc, . - gbl_adc
+
+    ALU_FN gbl_sub
+    ldr     r3, 9f
+    ldrb    r1, [r3, #GBR_A]
+    lsls    r2, r1, #28
+    lsrs    r2, r2, #28
+    subs    r1, r1, r0             /* a - v */
+    lsls    r0, r0, #28
+    lsrs    r0, r0, #28
+    subs    r2, r2, r0
+    lsrs    r2, r2, #31            /* half borrow */
+    strb    r2, [r3, #GBR_HF]
+    lsrs    r2, r1, #31            /* borrow */
+    strb    r2, [r3, #GBR_CF]
+    strb    r1, [r3, #GBR_A]
+    strb    r1, [r3, #GBR_ZR]
+    movs    r2, #1
+    strb    r2, [r3, #GBR_NF]
+    bx      lr
+    .align 2
+9:  .word   gbr
+    .size gbl_sub, . - gbl_sub
+
+    ALU_FN gbl_sbc
+    ldr     r3, 9f
+    ldrb    r1, [r3, #GBR_A]
+    ldrb    r2, [r3, #GBR_CF]
+    push    {r4}
+    lsls    r4, r1, #28
+    lsrs    r4, r4, #28
+    subs    r4, r4, r2
+    subs    r1, r1, r2
+    subs    r1, r1, r0             /* a - v - c */
+    lsls    r0, r0, #28
+    lsrs    r0, r0, #28
+    subs    r4, r4, r0
+    lsrs    r4, r4, #31
+    strb    r4, [r3, #GBR_HF]
+    pop     {r4}
+    lsrs    r2, r1, #31
+    strb    r2, [r3, #GBR_CF]
+    strb    r1, [r3, #GBR_A]
+    strb    r1, [r3, #GBR_ZR]
+    movs    r2, #1
+    strb    r2, [r3, #GBR_NF]
+    bx      lr
+    .align 2
+9:  .word   gbr
+    .size gbl_sbc, . - gbl_sbc
+
+    ALU_FN gbl_cp
     ldr     r3, 9f
     ldrb    r1, [r3, #GBR_A]
     subs    r2, r1, r0
@@ -296,6 +399,40 @@ gbl_cp:
     .align 2
 9:  .word   gbr
     .size gbl_cp, . - gbl_cp
+
+    ALU_FN gbl_inc
+    ldr     r3, 9f
+    lsls    r2, r0, #28
+    lsrs    r2, r2, #28
+    adds    r2, #1
+    lsrs    r2, r2, #4             /* (v & 15) == 15 */
+    strb    r2, [r3, #GBR_HF]
+    movs    r2, #0
+    strb    r2, [r3, #GBR_NF]
+    adds    r0, #1
+    uxtb    r0, r0
+    strb    r0, [r3, #GBR_ZR]
+    bx      lr
+    .align 2
+9:  .word   gbr
+    .size gbl_inc, . - gbl_inc
+
+    ALU_FN gbl_dec
+    ldr     r3, 9f
+    lsls    r2, r0, #28
+    lsrs    r2, r2, #28
+    subs    r2, #1
+    lsrs    r2, r2, #31            /* (v & 15) == 0 */
+    strb    r2, [r3, #GBR_HF]
+    movs    r2, #1
+    strb    r2, [r3, #GBR_NF]
+    subs    r0, #1
+    uxtb    r0, r0
+    strb    r0, [r3, #GBR_ZR]
+    bx      lr
+    .align 2
+9:  .word   gbr
+    .size gbl_dec, . - gbl_dec
 
 /*
  * uint32_t gbl_oam_dma_asm(uint8_t *oam, const uint8_t *src)

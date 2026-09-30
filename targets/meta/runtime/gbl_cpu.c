@@ -21,6 +21,7 @@ _Static_assert(offsetof(gbl_cpu_t, sp) == 6 && offsetof(gbl_cpu_t, a) == 10 &&
 
 /* ---- flag helpers --------------------------------------------------------- */
 
+#if !(GBL_CORE_ASM && defined(__ARM_ARCH_6M__)) /* else gbl_core_asm.S */
 void gbl_add(uint8_t v) {
     uint32_t a = gbr.a, r = a + v;
     gbr.hf = ((a & 0xF) + (v & 0xF)) > 0xF;
@@ -53,7 +54,6 @@ void gbl_sbc(uint8_t v) {
     gbr.a = gbr.zr = (uint8_t)(a - v - c);
 }
 
-#if !(GBL_CORE_ASM && defined(__ARM_ARCH_6M__)) /* else gbl_core_asm.S */
 void gbl_cp(uint8_t v) {
     uint32_t a = gbr.a;
     gbr.hf = (a & 0xF) < (v & 0xFu);
@@ -61,7 +61,6 @@ void gbl_cp(uint8_t v) {
     gbr.nf = 1;
     gbr.zr = (uint8_t)(a - v);
 }
-#endif
 
 uint8_t gbl_inc(uint8_t v) {
     uint8_t r = (uint8_t)(v + 1);
@@ -78,6 +77,7 @@ uint8_t gbl_dec(uint8_t v) {
     gbr.zr = r;
     return r;
 }
+#endif
 
 void gbl_addhl(uint16_t v) {
     uint32_t hl = gbr.hl, r = hl + v;

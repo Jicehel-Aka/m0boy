@@ -211,20 +211,39 @@ __attribute__((section(".isr_vector"), used))
 static const void *const vectors[2] = {&_estack, (void *)Reset_Handler};
 
 #ifdef BENCH_ALU_CHECK
-/* Every (A, v) pair of the ALU helpers against the C formulas: the
- * assembly versions cannot run in the host's exhaustive test. */
+/* Every input of the ALU helpers (CP, ADD, SUB, ADC, SBC with both carries,
+ * INC, DEC) against the C formulas: the assembly versions cannot run in the
+ * host's exhaustive test. */
 uint32_t bench_alu_errors;
 
+static void alu_expect(uint32_t a, uint32_t zr, uint32_t cf, uint32_t hf, uint32_t nf) {
+    if (gbr.a != a || gbr.zr != zr || gbr.cf != cf || gbr.hf != hf || gbr.nf != nf) bench_alu_errors++;
+}
+
 static void alu_check(void) {
-    for (uint32_t a = 0; a < 256; a++)
-        for (uint32_t v = 0; v < 256; v++) {
-            gbr.a = (uint8_t)a;
-            gbr.zr = gbr.cf = gbr.hf = gbr.nf = 0x55;
-            gbl_cp((uint8_t)v);
-            if (gbr.a != a || gbr.zr != (uint8_t)(a - v) || gbr.cf != (a < v) ||
-                gbr.hf != ((a & 15) < (v & 15)) || gbr.nf != 1)
-                bench_alu_errors++;
-        }
+    for (uint32_t c = 0; c < 2; c++)
+        for (uint32_t a = 0; a < 256; a++)
+            for (uint32_t v = 0; v < 256; v++) {
+#define ALU_RUN(call) (gbr.a = (uint8_t)a, gbr.zr = gbr.hf = gbr.nf = 0x55, gbr.cf = (uint8_t)c, call)
+                ALU_RUN(gbl_cp((uint8_t)v));
+                alu_expect(a, (uint8_t)(a - v), a < v, (a & 15) < (v & 15), 1);
+                ALU_RUN(gbl_add((uint8_t)v));
+                alu_expect((uint8_t)(a + v), (uint8_t)(a + v), a + v > 255, (a & 15) + (v & 15) > 15, 0);
+                ALU_RUN(gbl_sub((uint8_t)v));
+                alu_expect((uint8_t)(a - v), (uint8_t)(a - v), a < v, (a & 15) < (v & 15), 1);
+                ALU_RUN(gbl_adc((uint8_t)v));
+                alu_expect((uint8_t)(a + v + c), (uint8_t)(a + v + c), a + v + c > 255, (a & 15) + (v & 15) + c > 15, 0);
+                ALU_RUN(gbl_sbc((uint8_t)v));
+                alu_expect((uint8_t)(a - v - c), (uint8_t)(a - v - c), a < v + c, (a & 15) < (v & 15) + c, 1);
+            }
+    for (uint32_t v = 0; v < 256; v++) {
+        gbr.a = 0x33; gbr.cf = 0x44; gbr.zr = gbr.hf = gbr.nf = 0x55;
+        if (gbl_inc((uint8_t)v) != (uint8_t)(v + 1)) bench_alu_errors++;
+        alu_expect(0x33, (uint8_t)(v + 1), 0x44, (v & 15) == 15, 0);
+        gbr.zr = gbr.hf = gbr.nf = 0x55;
+        if (gbl_dec((uint8_t)v) != (uint8_t)(v - 1)) bench_alu_errors++;
+        alu_expect(0x33, (uint8_t)(v - 1), 0x44, (v & 15) == 0, 1);
+    }
 }
 #endif
 

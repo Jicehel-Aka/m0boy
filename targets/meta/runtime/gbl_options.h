@@ -105,7 +105,7 @@
 #define GBL_UNPACK_ASM 0
 #endif
 #ifndef GBL_LOOKUP_CACHE
-#define GBL_LOOKUP_CACHE 16 /* dispatch cache entries, a power of two */
+#define GBL_LOOKUP_CACHE 32 /* dispatch cache entries, a power of two */
 #endif
 #if GBL_LOOKUP_CACHE & (GBL_LOOKUP_CACHE - 1) || GBL_LOOKUP_CACHE > 256
 #error "GBL_LOOKUP_CACHE must be 0 or a power of two up to 256"

@@ -18,3 +18,13 @@ prehist    Prehistorik_Man__USA__Europe_                       heavy raster and 
 ninja      Ninja_Gaiden_Shadow__USA_                           parallax raster
 pinball    Pinball_Dreams__USA__Europe_                        fast vertical scrolling
 cv2        Castlevania_II___Belmont_s_Revenge__USA__Europe_    platformer, scrolling
+kidicarus  Kid_Icarus___Of_Myths_and_Monsters__USA__Europe_    MBC2, vertical scrolling, ALU-helper heavy
+contra     Contra___The_Alien_Wars__USA___SGB_Enhanced_        action, many events
+ducktales  DuckTales__Europe_                                  platformer (Capcom engine)
+lemmings   Lemmings__Europe___Rev_A_                           non-identity BGP, render-heavy
+faceball   Faceball_2000__USA_                                 software 3D, interpreter-heavy
+ffl        Final_Fantasy_Legend__The__USA_                     RPG menus and text, MBC2 battery
+ddragon    Double_Dragon__USA__Europe_                         beat 'em up, interpreted code
+advisland  Adventure_Island__USA__Europe_                      side scrolling
+motocross  Motocross_Maniacs__Europe___Rev_A_                  32 KiB, no MBC, scrolling
+altered    Altered_Space___A_3_D_Alien_Adventure__Europe_      isometric, interpreter-heavy

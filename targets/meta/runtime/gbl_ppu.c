@@ -566,7 +566,15 @@ __attribute__((noinline)) void draw_line(uint16_t *out, uint8_t lcdc, int window
                 }
                 bgp_byte_bgp = bgp;
             }
-            if (use_bg) {
+            if (bgp == 0xE4) {
+                /* The identity palette (most games): the raw shades as they are. */
+                if (use_bg) memcpy(out, bg, 40);
+                else if (!fine) for (int g = 0; g < 20; g++) out[g] = (uint16_t)t[g];
+                else {
+                    uint32_t sh = 16u - 2u * fine;
+                    for (int g = 0; g < 20; g++) out[g] = (uint16_t)((t[g] << 16 | t[g + 1]) >> sh);
+                }
+            } else if (use_bg) {
                 for (int g = 0; g < 20; g++) out[g] = (uint16_t)(bgp_byte[bg[g] >> 8] << 8 | bgp_byte[bg[g] & 255u]);
             } else if (!fine) {
                 for (int g = 0; g < 20; g++) out[g] = (uint16_t)(bgp_byte[(t[g] >> 8) & 255u] << 8 | bgp_byte[t[g] & 255u]);
