@@ -114,13 +114,13 @@ Display modes (144 DMG lines on 128 META lines), cycled with HOME held:
 
 | Mode | Method |
 | --- | --- |
-| SMOOTH (default) | Area resampling, 9 lines onto 8 rows: row k of each group is (8 − k)/9 of line k plus (k + 1)/9 of line k + 1, nothing dropped. Lines are rendered packed (2-bit shades, `gbl_ppu_packed`, no colour conversion in the PPU) and every row is blended from two of them, two pixels per lookup in 4 KiB of compile-time tables (Thumb-1 loop in `meta_display_asm.S`) |
+| SMOOTH | Area resampling, 9 lines onto 8 rows: row k of each group is (8 − k)/9 of line k plus (k + 1)/9 of line k + 1, nothing dropped. Lines are rendered packed (2-bit shades, `gbl_ppu_packed`, no colour conversion in the PPU) and every row is blended from two of them, two pixels per lookup in 4 KiB of compile-time tables (Thumb-1 loop in `meta_display_asm.S`) |
 | TILE | Drops the last line of each tile row (8k+7), keeping lines 63 and 95; fonts usually leave that line blank, so text stays intact (taken from gm0) |
 | BLEND | Merges lines 8 and 9 of every 9 with averaged colours (1 KiB table) |
 | DARK | Same merge, keeping the darker shade |
 | CROP | No scaling: DMG lines 8–135 |
 | SKIP | Drops the 9th line of every 9 |
-| TBLEND | TILE's rows, but line 8k+7 is averaged into line 8k+8 instead of dropped: 7 rows of 8 stay sharp, only line 143 is lost (taken from gm0's ESPboy port). The two lines are rendered packed; the 15 held lines are kept across frames (600 bytes, in the RAM of the BLEND/DARK buffers) so a held line is rendered only when it changes, and the pair goes through SMOOTH's Thumb-1 loop with a 1 KiB flash table of ½ weights |
+| TBLEND (default) | TILE's rows, but line 8k+7 is averaged into line 8k+8 instead of dropped: 7 rows of 8 stay sharp, only line 143 is lost (taken from gm0's ESPboy port). The two lines are rendered packed; the 15 held lines are kept across frames (600 bytes, in the RAM of the BLEND/DARK buffers) so a held line is rendered only when it changes, and the pair goes through SMOOTH's Thumb-1 loop with a 1 KiB flash table of ½ weights |
 
 SMOOTH and line skipping: a row needs both of its lines, but only the
 previous one is kept (keeping all 144 would take 5.6 KiB of RAM). When only
@@ -758,7 +758,8 @@ drift apart after that. The M0+ estimate was not measured on a device.
   - STOP acts as a NOP;
   - link-cable transfers complete with no partner;
   - sound is quantized to one frame.
-- The display drops every ninth DMG line to fit 144 lines into 128.
+- 144 lines onto 128: the default TBLEND merges 15 line pairs and drops
+  line 143; streaming builds (TILE) drop 16 lines.
 - ROMs of 256 KiB and more need their ROM file on the SD card (see above).
   The SD reader has not run on a device yet.
 - Frames are skipped under load, at most `META_MAX_SKIP` in a row.

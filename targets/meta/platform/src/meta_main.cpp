@@ -3,10 +3,11 @@
  *
  * Video: the display pipeline (meta_display.c) renders scanlines into strips
  * sent to the ST7735 by DMA while emulation continues.  The DMG's 144 lines
- * become the META's 128 with one of six modes (HOME held one second cycles
- * them): SMOOTH (default: every row blends two lines by area, nothing is
- * dropped), TILE (drop the last line of each tile row), BLEND, DARK, CROP,
- * SKIP.
+ * become the META's 128 with one of seven modes (HOME held one second
+ * cycles them): TBLEND (default: TILE, with the last line of each tile row
+ * merged into the next instead of dropped), SMOOTH (every row blends two
+ * lines by area), TILE (drop the last line of each tile row), BLEND, DARK,
+ * CROP, SKIP.
  *
  * Input:  D-pad, A = Game Boy B and B = Game Boy A (META_SWAP_AB), MENU =
  *         Start, HOME tap = Select,
@@ -340,7 +341,7 @@ void setup() {
     meta_lcd_fill(meta_dmg_palette[0]);
     meta_audio_init();
 
-    meta_display_set_mode(META_MODE_SMOOTH);
+    meta_display_set_mode(META_MODE_TBLEND); /* TILE when streaming */
     /* Keep generated code within a fixed C stack budget; deeper nesting
      * unwinds to the nearest dispatcher loop. */
     char probe;

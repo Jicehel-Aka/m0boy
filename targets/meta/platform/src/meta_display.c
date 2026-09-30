@@ -1,7 +1,7 @@
 /*
  * META display pipeline (see meta_display.h).
  *
- * SMOOTH (the default) resamples 9 DMG lines onto 8 rows by area: row k of
+ * SMOOTH resamples 9 DMG lines onto 8 rows by area: row k of
  * each group of nine lines is (8 - k)/9 of line k plus (k + 1)/9 of line
  * k + 1, two pixels per lookup in compile-time tables.  Lines are rendered
  * packed (gbl_ppu_packed: 2-bit shades, 40 bytes, no colour conversion in
@@ -17,7 +17,8 @@
  * The other modes render rows straight to RGB565 into strips of META_STRIP_LINES rows;
  * in the merge modes the two lines being merged are rendered as shade
  * indices instead (the PPU palette is switched per line) and combined two
- * pixels per lookup in a 1 KiB table.  TBLEND (gm0's ESPboy shrink) keeps
+ * pixels per lookup in a 1 KiB table.  TBLEND (the default; gm0's ESPboy
+ * shrink; TILE where the merge modes are left out) keeps
  * TILE's rows but merges line 8k+7 into the next line: both are rendered
  * packed, the held one kept across frames (600 bytes, sharing RAM with the
  * BLEND/DARK buffers) so it is rendered only when it changes, and the pair
@@ -92,7 +93,7 @@ static uint16_t strip[META_LCD_BUFFERS][160 * META_STRIP_LINES] __attribute__((a
 static uint32_t strip_seq[META_LCD_BUFFERS]; /* transfer that last used each buffer */
 static uint8_t strip_cur, strip_fill, strip_row0;
 
-static uint8_t display_mode = META_MODE_SMOOTH;
+static uint8_t display_mode = META_MODE_TILE; /* until meta_display_set_mode */
 #if META_MERGE_MODES
 /* Buffers of one mode at a time (meta_display_set_mode rebuilds them):
  * BLEND and DARK keep their merged line and table, TBLEND the held lines. */
@@ -199,11 +200,12 @@ static void set_index_palette(uint8_t on) {
 uint8_t meta_display_mode(void) { return display_mode; }
 
 void meta_display_set_mode(uint8_t mode) {
+    if (mode >= META_MODE_COUNT) mode = META_MODE_TBLEND;
 #if !META_MERGE_MODES
     if (mode == META_MODE_BLEND || mode == META_MODE_DARK) mode = META_MODE_CROP;
     if (mode == META_MODE_TBLEND) mode = META_MODE_TILE;
 #endif
-    display_mode = mode < META_MODE_COUNT ? mode : META_MODE_SMOOTH;
+    display_mode = mode;
     gbl_ppu_packed = display_mode == META_MODE_SMOOTH;
     index_palette = 1;
     set_index_palette(0);

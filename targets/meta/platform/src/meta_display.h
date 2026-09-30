@@ -16,13 +16,13 @@ extern "C" {
 #endif
 
 enum {
-    META_MODE_SMOOTH, /* default: every row is two DMG lines weighted by area (9 -> 8) */
+    META_MODE_SMOOTH, /* every row is two DMG lines weighted by area (9 -> 8) */
     META_MODE_TILE,  /* drop line 7 of each tile row (gm0), keep 63 and 95 */
     META_MODE_BLEND, /* merge lines 8 and 9 of every nine, averaged colours */
     META_MODE_DARK,  /* same merge, darker shade wins */
     META_MODE_CROP,  /* no scaling: DMG lines 8..135 */
     META_MODE_SKIP,  /* drop the ninth line of every nine */
-    META_MODE_TBLEND, /* TILE's rows, line 7 of each tile row merged into the next (gm0 ESPboy) */
+    META_MODE_TBLEND, /* default: TILE's rows, line 7 of each tile row merged into the next (gm0 ESPboy) */
     META_MODE_COUNT
 };
 

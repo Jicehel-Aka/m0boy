@@ -80,15 +80,15 @@ static uint8_t parse_buttons(const char *s) {
 }
 
 int main(int argc, char **argv) {
-    uint8_t mode = META_MODE_SMOOTH;
+    uint8_t mode = META_MODE_TBLEND;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) max_frames = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--mode") && i + 1 < argc) {
             const char *m = argv[++i];
             mode = !strcmp(m, "skip") ? META_MODE_SKIP : !strcmp(m, "dark") ? META_MODE_DARK
                  : !strcmp(m, "crop") ? META_MODE_CROP : !strcmp(m, "blend") ? META_MODE_BLEND
-                 : !strcmp(m, "tile") ? META_MODE_TILE : !strcmp(m, "tblend") ? META_MODE_TBLEND
-                 : META_MODE_SMOOTH;
+                 : !strcmp(m, "tile") ? META_MODE_TILE : !strcmp(m, "smooth") ? META_MODE_SMOOTH
+                 : META_MODE_TBLEND;
         } else if (!strcmp(argv[i], "--dump") && i + 2 < argc && ndumps < 256) {
             dumps[ndumps].frame = (uint32_t)atoi(argv[++i]);
             dumps[ndumps++].path = argv[++i];

@@ -20,9 +20,12 @@ exécute le reste.
 - Le résultat de l'émulation est identique à la version 0.1.0 (vérifié
   image par image sur ces 15 jeux) ; la taille du firmware ne change
   presque pas (+0,2 Ko).
-- Nouvel affichage par défaut, SMOOTH : les 144 lignes du Game Boy sont
-  vraiment réduites à 128 (mélange de lignes voisines) au lieu d'en sauter
-  une sur huit. L'ancien mode (TILE) reste disponible avec HOME maintenu 1 s.
+- Nouvel affichage par défaut, TBLEND : la dernière ligne de chaque rangée
+  de tuiles est fusionnée avec la suivante au lieu d'être sautée, donc plus
+  de texte coupé, pour quasiment le coût de l'ancien mode (+2 % par image
+  en médiane, estimation). L'ancien mode (TILE) et SMOOTH (réduction
+  complète, environ 15 % plus cher) restent disponibles avec HOME maintenu
+  1 s.
 - Les firmwares faits avec la 0.1.0 sont proposés à la reconstruction par
   `compile.sh` (la version est inscrite dans chaque `.bin`).
 
@@ -248,20 +251,20 @@ et la vitesse n'est pas celle de la console.
 | B | A |
 | MENU | Start |
 | HOME (appui court) | Select |
-| HOME maintenu 1 s | Mode d'affichage suivant : SMOOTH, TILE, BLEND, DARK, CROP, SKIP, TBLEND |
+| HOME maintenu 1 s | Mode d'affichage suivant : TBLEND, SMOOTH, TILE, BLEND, DARK, CROP, SKIP |
 | HOME maintenu 3 s | Retour au loader Gamebuino |
 
 Modes d'affichage (les 144 lignes Game Boy sur les 128 de la META) :
 
 | Mode | Méthode |
 |---|---|
-| SMOOTH (défaut) | Vraie réduction 144 → 128 : chaque ligne de l'écran mélange deux lignes Game Boy au prorata de leur surface, aucune n'est sautée. Un peu plus coûteux ; une ligne peut garder une image de retard au tout début d'un changement |
+| SMOOTH | Vraie réduction 144 → 128 : chaque ligne de l'écran mélange deux lignes Game Boy au prorata de leur surface, aucune n'est sautée. Un peu plus coûteux ; une ligne peut garder une image de retard au tout début d'un changement |
 | TILE | Retire la dernière ligne de chaque rangée de tuiles (souvent vide dans les polices) : le texte reste net |
 | BLEND | Fusionne 2 lignes sur 9 avec des couleurs moyennées |
 | DARK | Fusionne en gardant la teinte la plus sombre |
 | CROP | Pas de réduction : lignes 8 à 135 (le haut et le bas sont coupés) |
 | SKIP | Saute 1 ligne sur 9 |
-| TBLEND | Comme TILE, mais la dernière ligne de chaque rangée de tuiles est fusionnée (couleurs moyennées) avec la suivante au lieu d'être sautée : 7 lignes sur 8 restent nettes (repris du portage ESPboy de gm0) |
+| TBLEND (défaut) | Comme TILE, mais la dernière ligne de chaque rangée de tuiles est fusionnée (couleurs moyennées) avec la suivante au lieu d'être sautée : 7 lignes sur 8 restent nettes (repris du portage ESPboy de gm0) |
 
 Pour voir l'écran exact de la META sur PC :
 `out/<jeu>/host/build/<jeu>_metaview --mode tile --frames 300 --dump 200 ecran.ppm`.
