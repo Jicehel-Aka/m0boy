@@ -1,0 +1,1743 @@
+/**
+ * @file meta_emitter.cpp
+ * @brief Coverage-driven compact C generation for the gbl runtime.
+ *
+ * Execution model (see targets/meta/runtime/gbl.h):
+ *  - Covered instructions are grouped by address into regions.  Each region
+ *    is one C function whose entry switch accepts every address that can be
+ *    reached from outside it; control inside a region uses goto.
+ *  - CALL is a C call followed by a return-address check, RET is a C return.
+ *    Any mismatch unwinds to the nearest gbl_exec() loop, which continues
+ *    from gbr.pc through compiled regions or the interpreter.
+ *  - Cycles are accumulated per straight-line run and flushed before control
+ *    transfers and IO accesses.  Interrupts are polled at region entry, loop
+ *    heads, HALT, and after writes that can raise or unmask one.  The
+ *    precise mode polls before every instruction instead, reproducing the
+ *    interpreter's timing exactly for differential testing.
+ *  - Flags are computed only when a later instruction can observe them.
+ */
+
+#include "recompiler/codegen/meta_emitter.h"
+#include "recompiler/decoder.h"
+
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <fstream>
+#include <map>
+#include <set>
+#include <sstream>
+#include <unordered_map>
+
+namespace gbrecomp {
+
+namespace fs = std::filesystem;
+
+namespace {
+
+constexpr uint8_t FZ = 1, FN = 2, FH = 4, FC = 8, FALL = 15;
+
+/* Base T-cycles; conditional control flow lists the not-taken cost.  Must
+ * stay identical to cyc_main in targets/meta/runtime/gbl_cpu.c. */
+const uint8_t kCycles[256] = {
+     4,12, 8, 8, 4, 4, 8, 4,20, 8, 8, 8, 4, 4, 8, 4,
+     4,12, 8, 8, 4, 4, 8, 4,12, 8, 8, 8, 4, 4, 8, 4,
+     8,12, 8, 8, 4, 4, 8, 4, 8, 8, 8, 8, 4, 4, 8, 4,
+     8,12, 8, 8,12,12,12, 4, 8, 8, 8, 8, 4, 4, 8, 4,
+     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
+     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
+     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
+     8, 8, 8, 8, 8, 8, 4, 8, 4, 4, 4, 4, 4, 4, 8, 4,
+     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
+     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
+     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
+     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
+     8,12,12,16,12,16, 8,16, 8,16,12, 4,12,24, 8,16,
+     8,12,12, 4,12,16, 8,16, 8,16,12, 4,12, 4, 8,16,
+    12,12, 8, 4, 4,16, 8,16,16, 4,16, 4, 4, 4, 8,16,
+    12,12, 8, 4, 4,16, 8,16,12, 8,16, 4, 4, 4, 8,16,
+};
+
+bool is_undefined(uint8_t op) {
+    switch (op) {
+    case 0xD3: case 0xDB: case 0xDD: case 0xE3: case 0xE4: case 0xEB:
+    case 0xEC: case 0xED: case 0xF4: case 0xFC: case 0xFD:
+        return true;
+    default:
+        return false;
+    }
+}
+
+uint8_t op_length(uint8_t op) {
+    switch (op) {
+    case 0x01: case 0x11: case 0x21: case 0x31: case 0x08:
+    case 0xC2: case 0xC3: case 0xCA: case 0xD2: case 0xDA:
+    case 0xC4: case 0xCC: case 0xCD: case 0xD4: case 0xDC:
+    case 0xEA: case 0xFA:
+        return 3;
+    case 0x06: case 0x0E: case 0x16: case 0x1E: case 0x26: case 0x2E: case 0x36: case 0x3E:
+    case 0x18: case 0x20: case 0x28: case 0x30: case 0x38:
+    case 0xC6: case 0xCE: case 0xD6: case 0xDE: case 0xE6: case 0xEE: case 0xF6: case 0xFE:
+    case 0xE0: case 0xF0: case 0xE8: case 0xF8: case 0xCB: case 0x10:
+        return 2;
+    default:
+        return 1;
+    }
+}
+
+enum class Flow { Seq, Jump, JumpCond, JumpDyn, Call, CallCond, Ret, RetCond, Reti, Halt, Bad };
+
+struct Ins {
+    uint16_t bank = 0;
+    uint16_t addr = 0;
+    uint8_t len = 1;
+    uint8_t op = 0;
+    uint8_t n8 = 0;
+    uint16_t n16 = 0;
+    uint8_t cycles = 4;
+    uint8_t extra = 0;
+    Flow flow = Flow::Seq;
+    uint16_t target = 0;
+    bool entry = false;
+    uint8_t use = 0;
+    uint8_t def = 0;
+    uint8_t live_in = FALL;
+    uint8_t live_out = FALL;
+    int region = -1;
+    size_t order = 0;
+    bool label = false;
+    bool sw_case = false;
+    bool loop_head = false;
+    /* Wait-loop fast-forward (see detect_spin_loops).  On the back edge:
+     * spin 1 = side-effect-free polling loop, 2 = DEC r delay loop, 3 = DEC rr
+     * delay loop (spin_reg is the counter).  spin_head marks the loop head,
+     * spin_read the one read whose timing bounds the skip. */
+    uint8_t spin = 0;
+    uint8_t spin_reg = 0;
+    uint16_t spin_period = 0;   /* cycles per iteration (back edge taken) */
+    uint16_t spin_read_ofs = 0; /* cycles from the head to the timed read */
+    bool spin_head = false;
+    bool spin_read = false;
+    std::string spin_kind;
+    std::vector<size_t> spin_body; /* delay loop: body without the back edge */
+    /* Cycles still pending (not yet added to gbr.cyc) when execution falls
+     * through into this label; other entries (gotos, the region switch)
+     * subtract it so every path agrees.  0 where gbr.cyc must be exact. */
+    int carry = 0;
+    /* EI whose next instruction is emitted a second time on the EI path,
+     * followed by the delayed interrupt poll and a goto to the one after
+     * (see emit_ins): the poll then stays out of loops that the next
+     * instruction may head. */
+    bool ei_dup = false;
+    std::string text;
+
+    uint16_t next() const { return static_cast<uint16_t>(addr + len); }
+    bool falls() const {
+        return flow == Flow::Seq || flow == Flow::JumpCond || flow == Flow::Call ||
+               flow == Flow::CallCond || flow == Flow::RetCond || flow == Flow::Halt;
+    }
+};
+
+uint32_t key(uint16_t bank, uint16_t addr) {
+    return (static_cast<uint32_t>(bank) << 16) | addr;
+}
+
+std::string hex(unsigned v, int width) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "0x%0*x", width, v);
+    return buf;
+}
+
+std::string hex4(unsigned v) {
+    char buf[8];
+    std::snprintf(buf, sizeof(buf), "%04x", v & 0xFFFF);
+    return buf;
+}
+
+/* 8.3 name of a streamed ROM on the SD card: up to 8 upper-case letters
+ * and digits of the project name, extension GB. */
+std::string stream_name(const std::string& project) {
+    std::string n;
+    for (char c : project) {
+        if (std::isalnum(static_cast<unsigned char>(c))) n += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        if (n.size() == 8) break;
+    }
+    return n.empty() ? "ROM" : n;
+}
+
+std::string stream_name83(const std::string& project) {
+    std::string n = stream_name(project);
+    n.resize(8, ' ');
+    return n + "GB ";
+}
+
+uint8_t cond_use(uint8_t op) {
+    return ((op >> 3) & 3) < 2 ? FZ : FC;
+}
+
+std::string cond_expr(uint8_t op) {
+    switch ((op >> 3) & 3) {
+    case 0: return "gbr.zr != 0";
+    case 1: return "gbr.zr == 0";
+    case 2: return "!gbr.cf";
+    default: return "gbr.cf";
+    }
+}
+
+bool decode(const ROM& rom, uint16_t bank, uint16_t addr, Ins& in) {
+    const uint32_t limit = addr < 0x4000 ? 0x4000u : 0x8000u;
+    in.bank = bank;
+    in.addr = addr;
+    in.op = rom.read_banked(bank, addr);
+    in.len = op_length(in.op);
+    if (static_cast<uint32_t>(addr) + in.len > limit) return false;
+    in.n8 = in.len > 1 ? rom.read_banked(bank, static_cast<uint16_t>(addr + 1)) : 0;
+    in.n16 = static_cast<uint16_t>(
+        in.n8 | (in.len > 2 ? rom.read_banked(bank, static_cast<uint16_t>(addr + 2)) << 8 : 0));
+    in.cycles = kCycles[in.op];
+    const uint8_t op = in.op;
+
+    if (is_undefined(op)) {
+        in.flow = Flow::Bad;
+        return true;
+    }
+    if (op == 0xCB) {
+        const uint8_t cb = in.n8;
+        const bool mem = (cb & 7) == 6;
+        in.cycles = mem ? ((cb >> 6) == 1 ? 12 : 16) : 8;
+        if ((cb >> 6) == 0) {
+            in.def = FALL;
+            if (cb >= 0x10 && cb < 0x20) in.use = FC;
+        } else if ((cb >> 6) == 1) {
+            in.def = FZ | FN | FH;
+        }
+        return true;
+    }
+
+    switch (op) {
+    case 0x18:
+        in.flow = Flow::Jump;
+        in.target = static_cast<uint16_t>(addr + 2 + static_cast<int8_t>(in.n8));
+        break;
+    case 0x20: case 0x28: case 0x30: case 0x38:
+        in.flow = Flow::JumpCond;
+        in.extra = 4;
+        in.target = static_cast<uint16_t>(addr + 2 + static_cast<int8_t>(in.n8));
+        in.use = cond_use(op);
+        break;
+    case 0xC3:
+        in.flow = Flow::Jump;
+        in.target = in.n16;
+        break;
+    case 0xC2: case 0xCA: case 0xD2: case 0xDA:
+        in.flow = Flow::JumpCond;
+        in.extra = 4;
+        in.target = in.n16;
+        in.use = cond_use(op);
+        break;
+    case 0xE9:
+        in.flow = Flow::JumpDyn;
+        break;
+    case 0xCD:
+        in.flow = Flow::Call;
+        in.target = in.n16;
+        in.use = FALL;
+        break;
+    case 0xC4: case 0xCC: case 0xD4: case 0xDC:
+        in.flow = Flow::CallCond;
+        in.extra = 12;
+        in.target = in.n16;
+        in.use = FALL;
+        break;
+    case 0xC7: case 0xCF: case 0xD7: case 0xDF: case 0xE7: case 0xEF: case 0xF7: case 0xFF:
+        in.flow = Flow::Call;
+        in.target = op & 0x38;
+        in.use = FALL;
+        break;
+    case 0xC9:
+        in.flow = Flow::Ret;
+        break;
+    case 0xD9:
+        in.flow = Flow::Reti;
+        break;
+    case 0xC0: case 0xC8: case 0xD0: case 0xD8:
+        in.flow = Flow::RetCond;
+        in.extra = 12;
+        in.use = cond_use(op);
+        break;
+    case 0x76:
+        in.flow = Flow::Halt;
+        break;
+    case 0x04: case 0x0C: case 0x14: case 0x1C: case 0x24: case 0x2C: case 0x34: case 0x3C:
+    case 0x05: case 0x0D: case 0x15: case 0x1D: case 0x25: case 0x2D: case 0x35: case 0x3D:
+        in.def = FZ | FN | FH;
+        break;
+    case 0x09: case 0x19: case 0x29: case 0x39:
+        in.def = FN | FH | FC;
+        break;
+    case 0xE8: case 0xF8: case 0x07: case 0x0F: case 0xF1:
+        in.def = FALL;
+        break;
+    case 0x17: case 0x1F:
+        in.def = FALL;
+        in.use = FC;
+        break;
+    case 0x27:
+        in.use = FN | FH | FC;
+        in.def = FZ | FH | FC;
+        break;
+    case 0x2F:
+        in.def = FN | FH;
+        break;
+    case 0x37:
+        in.def = FN | FH | FC;
+        break;
+    case 0x3F:
+        in.use = FC;
+        in.def = FN | FH | FC;
+        break;
+    case 0xF5:
+        in.use = FALL;
+        break;
+    default:
+        if ((op >= 0x80 && op < 0xC0) || (op >= 0xC6 && (op & 7) == 6)) {
+            const unsigned grp = (op >> 3) & 7;
+            in.def = FALL;
+            if (grp == 1 || grp == 3) in.use = FC;
+        }
+        break;
+    }
+    return true;
+}
+
+const char* kR8[8] = {"gbr.b", "gbr.c", "gbr.d", "gbr.e", "gbr.h", "gbr.l", nullptr, "gbr.a"};
+const char* kR16[4] = {"gbr.bc", "gbr.de", "gbr.hl", "gbr.sp"};
+
+class Generator {
+public:
+    Generator(const ROM& rom, const MetaTargetOptions& opt) : rom_(rom), opt_(opt) {
+        stream_ = opt.stream == 1 || (opt.stream < 0 && rom.size() >= 0x40000);
+    }
+
+    /* ROM streaming (see MetaTargetOptions::stream): plan_stream reads the
+     * data-read profiles and splits the flash between compiled code and
+     * resident ROM chunks; load_coverage then adds the fetches of code left
+     * to the interpreter, and choose_resident picks the hottest chunks. */
+    bool streaming() const { return stream_; }
+    bool plan_stream(MetaTargetStats& stats, std::string& error);
+    void choose_resident(MetaTargetStats& stats);
+    std::string emit_rom_full() const;
+
+    bool load_coverage(MetaTargetStats& stats, std::string& error);
+    void build();
+    std::string emit_code();
+    std::string emit_rom() const;
+    std::string emit_config(std::string& error) const;
+
+    size_t compiled() const { return ins_.size(); }
+    size_t dropped() const { return dropped_; }
+    size_t regions() const { return regions_.size(); }
+    size_t entries() const { return entry_count_; }
+
+private:
+    Ins* find(uint16_t bank, uint16_t addr) {
+        auto it = index_.find(key(bank, addr));
+        return it == index_.end() ? nullptr : &ins_[it->second];
+    }
+    /* Resolve a static target.  bank_check is set when the target lives in the
+     * switchable window and the ROM bank must be verified at run time. */
+    Ins* resolve(const Ins& from, uint16_t target, int& bank_check);
+    std::string region_name(int r) const;
+
+    void emit_region(std::ostringstream& o, int r);
+    void emit_ins(std::ostringstream& o, Ins& in, const Ins* following);
+    void emit_transfer(std::ostringstream& o, const Ins& from, uint16_t target, bool set_pc);
+    void emit_call(std::ostringstream& o, const Ins& in);
+    void emit_alu(std::ostringstream& o, unsigned grp, const std::string& src, bool mem,
+                  bool src_is_a, uint8_t live);
+    void emit_cb(std::ostringstream& o, const Ins& in);
+    std::string const_read(std::ostringstream& o, uint16_t a);
+    void const_write(std::ostringstream& o, uint16_t a, const std::string& v, bool& sync_after);
+    void flush(std::ostringstream& o) {
+        if (pend_) {
+            o << "    CY(" << pend_ << ");\n";
+            pend_ = 0;
+        }
+    }
+    void detect_spin_loops();
+    void emit_spin(std::ostringstream& o, const Ins& in);
+
+    const ROM& rom_;
+    const MetaTargetOptions& opt_;
+    std::vector<Ins> ins_;
+    std::unordered_map<uint32_t, size_t> index_;
+    std::vector<std::vector<size_t>> regions_;
+    size_t dropped_ = 0;
+    size_t entry_count_ = 0;
+    int pend_ = 0;
+    int cur_region_ = -1;
+    bool ei_pending_ = false;
+    size_t spin_loops_ = 0, counted_loops_ = 0;
+    bool replaying_ = false;
+    bool stream_ = false;
+    size_t stream_code_budget_ = 0, resident_budget_ = 0;
+    std::vector<uint64_t> chunk_weight_; /* per 4 KiB ROM chunk */
+    std::vector<int> resident_index_;    /* per chunk: slot in flash, -1 on the card */
+
+public:
+    size_t spin_loops() const { return spin_loops_; }
+    size_t counted_loops() const { return counted_loops_; }
+};
+
+bool Generator::load_coverage(MetaTargetStats& stats, std::string& error) {
+    /* flags: 1 executed, 2 entered non-sequentially, 4 speculative (from
+     * static analysis rather than a play session). */
+    std::map<uint32_t, uint8_t> cov;
+    std::set<uint32_t> played;
+    std::unordered_map<uint32_t, uint64_t> hits; /* optional 4th column */
+    for (const fs::path& path : opt_.coverage_files) {
+        std::ifstream in(path);
+        if (!in) {
+            error = "cannot read coverage file " + path.string();
+            return false;
+        }
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            unsigned bank = 0, addr = 0, flags = 0, count = 1;
+            if (std::sscanf(line.c_str(), "%x %x %x %x", &bank, &addr, &flags, &count) < 3) continue;
+            if (addr < 0x4000) bank = 0;
+            if (addr >= 0x8000 || bank >= rom_.bank_count()) continue;
+            const uint32_t k = key(static_cast<uint16_t>(bank), static_cast<uint16_t>(addr));
+            cov[k] |= static_cast<uint8_t>(flags & 3);
+            if (!(flags & 4)) {
+                played.insert(k);
+                hits[k] += count ? count : 1;
+            }
+        }
+    }
+    stats.covered = cov.size();
+
+    std::vector<Ins> all;
+    for (const auto& [k, flags] : cov) {
+        Ins in;
+        if (!decode(rom_, static_cast<uint16_t>(k >> 16), static_cast<uint16_t>(k), in)) {
+            dropped_++;
+            continue;
+        }
+        in.entry = (flags & 2) != 0;
+        all.push_back(std::move(in));
+    }
+
+    /* Flash budget: played code first, hottest first (execution counts from
+     * the profile), then the most promising speculative code: loops (spans
+     * closed by a backward branch) are likely hot, bank 0 holds the shared
+     * routines. */
+    size_t budget = opt_.code_budget_bytes;
+    if (!budget && stream_) {
+        budget = stream_code_budget_;
+    } else if (!budget) {
+        const size_t app = 245760, runtime = 40960;
+        budget = app > runtime + rom_.size() ? app - runtime - rom_.size() : 0;
+    }
+    const size_t max_ins = budget / (opt_.bytes_per_instruction ? opt_.bytes_per_instruction : 20);
+    std::vector<uint8_t> keep(all.size(), 1);
+    size_t spec = 0;
+    for (const Ins& in : all)
+        if (!played.count(key(in.bank, in.addr))) spec++;
+    stats.speculative = spec;
+    if (all.size() > max_ins) {
+        std::vector<uint8_t> score(all.size(), 0);
+        std::unordered_map<uint32_t, size_t> pos;
+        for (size_t i = 0; i < all.size(); i++) pos[key(all[i].bank, all[i].addr)] = i;
+        for (size_t i = 0; i < all.size(); i++) {
+            const Ins& in = all[i];
+            if ((in.flow == Flow::Jump || in.flow == Flow::JumpCond) && in.target <= in.addr &&
+                in.addr - in.target < 512 && (in.target < 0x4000) == (in.addr < 0x4000)) {
+                auto it = pos.find(key(in.bank, in.target));
+                if (it == pos.end()) continue;
+                for (size_t j = it->second; j <= i; j++) score[j] |= 2;
+            }
+            if (in.bank == 0) score[i] |= 1;
+        }
+        std::vector<size_t> order(all.size());
+        for (size_t i = 0; i < all.size(); i++) order[i] = i;
+        auto heat = [&](size_t i) -> uint64_t {
+            auto it = hits.find(key(all[i].bank, all[i].addr));
+            return it == hits.end() ? 0 : it->second;
+        };
+        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            const bool pa = played.count(key(all[a].bank, all[a].addr)) != 0;
+            const bool pb = played.count(key(all[b].bank, all[b].addr)) != 0;
+            if (pa != pb) return pa;
+            if (pa) return heat(a) > heat(b);
+            return score[a] > score[b];
+        });
+        for (size_t n = 0; n < order.size(); n++)
+            if (n >= max_ins) keep[order[n]] = 0;
+    }
+    stats.budget_instructions = max_ins;
+    if (stream_) {
+        /* Played code left to the interpreter fetches its opcodes from the
+         * ROM: that counts as reads of its chunk (about len bytes each). */
+        for (size_t i = 0; i < all.size(); i++) {
+            const Ins& in = all[i];
+            if (keep[i] || in.addr < 0x4000) continue;
+            auto it = hits.find(key(in.bank, in.addr));
+            if (it == hits.end()) continue;
+            const size_t c = (static_cast<size_t>(in.bank) * 0x4000u + (in.addr - 0x4000u)) >> 12;
+            if (c < chunk_weight_.size()) chunk_weight_[c] += it->second * in.len;
+        }
+    }
+    Decoder dec(rom_);
+    for (size_t i = 0; i < all.size(); i++) {
+        if (!keep[i]) continue;
+        Ins& in = all[i];
+        if (!played.count(key(in.bank, in.addr))) stats.speculative_kept++;
+        if (opt_.emit_comments) in.text = dec.decode(in.addr, in.bank).disassemble();
+        index_[key(in.bank, in.addr)] = ins_.size();
+        ins_.push_back(std::move(in));
+    }
+    return true;
+}
+
+Ins* Generator::resolve(const Ins& from, uint16_t target, int& bank_check) {
+    bank_check = -1;
+    if (target < 0x4000) return find(0, target);
+    if (target >= 0x8000) return nullptr;
+    if (from.bank != 0) {
+        Ins* t = find(from.bank, target);
+        if (t) bank_check = from.bank;
+        return t;
+    }
+    Ins* found = nullptr;
+    for (uint16_t b = 1; b < rom_.bank_count(); b++) {
+        if (Ins* t = find(b, target)) {
+            if (found) return nullptr; /* reached through several banks */
+            found = t;
+            bank_check = b;
+        }
+    }
+    return found;
+}
+
+bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
+    const size_t chunks = (rom_.size() + 4095) / 4096;
+    chunk_weight_.assign(chunks, 0);
+    resident_index_.assign(chunks, -1);
+    for (size_t c = 0; c < 4 && c < chunks; c++) resident_index_[c] = 0; /* bank 0: gbl_rom */
+    for (const fs::path& path : opt_.rom_profile_files) {
+        std::ifstream in(path);
+        if (!in) {
+            error = "cannot read ROM read profile " + path.string();
+            return false;
+        }
+        std::string line;
+        while (std::getline(in, line)) {
+            unsigned page = 0;
+            unsigned long long count = 0;
+            if (std::sscanf(line.c_str(), "%x %llu", &page, &count) != 2) continue;
+            if (page / 16 < chunks) chunk_weight_[page / 16] += count;
+        }
+    }
+    /* Flash: 240 KiB minus the runtime with the SD reader, bank 0 and the
+     * chunk map; the rest is shared between resident chunks and code. */
+    const size_t app = 245760, runtime = 45056;
+    const size_t fixed = runtime + 0x4000 + chunks;
+    const size_t available = app > fixed ? app - fixed : 0;
+    size_t touched = 0;
+    for (size_t c = 4; c < chunks; c++)
+        if (chunk_weight_[c]) touched += 4096;
+    resident_budget_ = opt_.rom_resident_bytes ? opt_.rom_resident_bytes
+                                               : std::min(touched, available / 2);
+    resident_budget_ = std::min(resident_budget_ / 4096 * 4096, available / 4096 * 4096);
+    stream_code_budget_ = available - resident_budget_;
+    stats.stream = true;
+    return true;
+}
+
+void Generator::choose_resident(MetaTargetStats& stats) {
+    std::vector<size_t> order;
+    for (size_t c = 4; c < chunk_weight_.size(); c++)
+        if (chunk_weight_[c]) order.push_back(c);
+    std::stable_sort(order.begin(), order.end(),
+                     [&](size_t a, size_t b) { return chunk_weight_[a] > chunk_weight_[b]; });
+    int slot = 0;
+    for (size_t k = 0; k < order.size() && static_cast<size_t>(slot) < resident_budget_ / 4096; k++)
+        resident_index_[order[k]] = slot++;
+    stats.resident_chunks = static_cast<size_t>(slot);
+    stats.streamed_chunks = chunk_weight_.size() > 4 ? chunk_weight_.size() - 4 - slot : 0;
+}
+
+std::string Generator::region_name(int r) const {
+    const Ins& first = ins_[regions_[r].front()];
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "r%u_%04x", first.bank, first.addr);
+    return buf;
+}
+
+void Generator::build() {
+    /* ins_ is sorted by key because coverage came from an ordered map. */
+    std::vector<size_t>* cur = nullptr;
+    const Ins* prev = nullptr;
+    for (size_t i = 0; i < ins_.size(); i++) {
+        Ins& in = ins_[i];
+        bool split = cur == nullptr || prev->bank != in.bank ||
+                     (prev->addr < 0x4000) != (in.addr < 0x4000) ||
+                     in.addr > prev->next() + 32;
+        if (!split && cur->size() >= opt_.max_region_instructions &&
+            !(prev->falls() && prev->next() == in.addr))
+            split = true;
+        if (split) {
+            regions_.emplace_back();
+            cur = &regions_.back();
+        }
+        in.region = static_cast<int>(regions_.size() - 1);
+        in.order = cur->size();
+        cur->push_back(i);
+        prev = &in;
+    }
+
+    /* Labels and region entry points. */
+    for (Ins& in : ins_) {
+        if (in.entry) in.sw_case = in.label = true;
+        if (in.falls()) {
+            if (Ins* n = find(in.bank, in.next())) {
+                const bool adjacent = n->region == in.region && n->order == in.order + 1;
+                if (!adjacent) {
+                    n->label = true;
+                    if (n->region != in.region) n->sw_case = true;
+                }
+            }
+        }
+        if (in.flow == Flow::Call || in.flow == Flow::CallCond) {
+            if (Ins* ret = find(in.bank, in.next())) ret->sw_case = ret->label = true;
+        }
+        if (in.flow == Flow::Jump || in.flow == Flow::JumpCond || in.flow == Flow::Call ||
+            in.flow == Flow::CallCond) {
+            int bank_check;
+            if (Ins* t = resolve(in, in.target, bank_check)) {
+                t->label = true;
+                const bool is_call = in.flow == Flow::Call || in.flow == Flow::CallCond;
+                if (is_call || t->region != in.region) t->sw_case = true;
+                if (!is_call && t->region == in.region && t->order <= in.order) {
+                    t->loop_head = true;
+                    t->sw_case = true;
+                }
+            }
+        }
+    }
+    /* EI followed by a plain instruction N in the same region: N is
+     * duplicated on the EI path, which then jumps to the instruction after
+     * N (labelled here). */
+    if (!opt_.precise) {
+        for (Ins& in : ins_) {
+            if (in.op != 0xFB) continue;
+            Ins* n = find(in.bank, in.next());
+            if (!n || n->region != in.region || n->flow != Flow::Seq || n->op == 0xFB) continue;
+            Ins* m = find(n->bank, n->next());
+            if (!m || m->region != in.region) continue;
+            in.ei_dup = true;
+            m->label = true;
+        }
+    }
+    for (auto& reg : regions_) {
+        Ins& first = ins_[reg.front()];
+        first.label = true;
+    }
+
+    /* Flag liveness, per region: least fixed point from empty sets.  Exits to
+     * other regions or the interpreter keep every flag live. */
+    for (Ins& in : ins_) in.live_in = in.live_out = 0;
+    for (size_t r = 0; r < regions_.size(); r++) {
+        const std::vector<size_t>& reg = regions_[r];
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (size_t k = reg.size(); k-- > 0;) {
+                Ins& in = ins_[reg[k]];
+                uint8_t out = 0;
+                if (in.falls()) {
+                    Ins* n = find(in.bank, in.next());
+                    out |= (n && n->region == in.region) ? n->live_in : FALL;
+                }
+                if (in.flow == Flow::Jump || in.flow == Flow::JumpCond) {
+                    int bank_check;
+                    Ins* t = resolve(in, in.target, bank_check);
+                    out |= (t && t->region == in.region) ? t->live_in : FALL;
+                }
+                if (in.flow == Flow::JumpDyn || in.flow == Flow::Ret || in.flow == Flow::Reti ||
+                    in.flow == Flow::RetCond || in.flow == Flow::Bad)
+                    out |= FALL;
+                const uint8_t live_in = static_cast<uint8_t>(in.use | (out & ~in.def));
+                if (out != in.live_out || live_in != in.live_in) {
+                    in.live_out = out;
+                    in.live_in = live_in;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if (!opt_.precise) detect_spin_loops();
+    for (const Ins& in : ins_)
+        if (in.sw_case) entry_count_++;
+}
+
+/* ---- wait loops ------------------------------------------------------------
+ *
+ * A loop whose body has no side effect but register and flag writes, and
+ * whose registers carry nothing from one iteration to the next, repeats the
+ * same iteration until something it reads changes.  What it reads can only
+ * change when code runs (an interrupt, i.e. at a device event), at a device
+ * event, or for LY/STAT at the next PPU mode change.  The back edge then
+ * adds whole periods to the cycle counter up to the first iteration where
+ * that can happen (gbl_spin); the iterations skipped would have produced the
+ * same state, so the result is identical to running them.  Delay loops
+ * counting a register down to zero (DEC r / DEC rr; LD A,hi; OR lo; JR NZ)
+ * skip whole iterations the same way, up to the next device event. */
+
+namespace {
+
+constexpr uint8_t RB = 1, RC = 2, RD = 4, RE = 8, RH = 16, RL = 32, RA = 128;
+
+uint8_t rbit(unsigned r) { return r == 6 ? 0 : static_cast<uint8_t>(1u << r); }
+uint8_t pair_bits(unsigned p) { return p == 0 ? (RB | RC) : p == 1 ? (RD | RE) : (RH | RL); }
+
+struct SpinFx {
+    uint8_t rd = 0, wr = 0;
+    int mem = 0;       /* 0 none, 1 constant address, 2 through register pair */
+    uint16_t addr = 0;
+    unsigned pair = 0; /* 0 BC, 1 DE, 2 HL */
+};
+
+/* Register effects of an instruction allowed in a wait loop; false for
+ * anything with a side effect (memory or IO writes, stack, IME, calls). */
+bool spin_effects(const Ins& in, SpinFx& fx) {
+    const uint8_t op = in.op;
+    auto src = [&](unsigned r) {
+        if (r == 6) {
+            fx.mem = 2;
+            fx.pair = 2;
+            fx.rd |= RH | RL;
+        } else {
+            fx.rd |= rbit(r);
+        }
+    };
+    if (op >= 0x40 && op < 0x80) {
+        const unsigned d = (op >> 3) & 7;
+        if (op == 0x76 || d == 6) return false;
+        src(op & 7);
+        fx.wr |= rbit(d);
+        return true;
+    }
+    if (op >= 0x80 && op < 0xC0) {
+        src(op & 7);
+        fx.rd |= RA;
+        if (((op >> 3) & 7) != 7) fx.wr |= RA;
+        return true;
+    }
+    switch (op) {
+    case 0x00: case 0x37: case 0x3F:
+    case 0x18: case 0x20: case 0x28: case 0x30: case 0x38:
+    case 0xC3: case 0xC2: case 0xCA: case 0xD2: case 0xDA:
+        return true;
+    case 0x06: case 0x0E: case 0x16: case 0x1E: case 0x26: case 0x2E: case 0x3E:
+        fx.wr |= rbit((op >> 3) & 7);
+        return true;
+    case 0x04: case 0x0C: case 0x14: case 0x1C: case 0x24: case 0x2C: case 0x3C:
+    case 0x05: case 0x0D: case 0x15: case 0x1D: case 0x25: case 0x2D: case 0x3D:
+        fx.rd |= rbit((op >> 3) & 7);
+        fx.wr |= rbit((op >> 3) & 7);
+        return true;
+    case 0x03: case 0x13: case 0x23: case 0x0B: case 0x1B: case 0x2B:
+        fx.rd |= pair_bits(op >> 4);
+        fx.wr |= pair_bits(op >> 4);
+        return true;
+    case 0x0A: case 0x1A:
+        fx.mem = 2;
+        fx.pair = op >> 4;
+        fx.rd |= pair_bits(op >> 4);
+        fx.wr |= RA;
+        return true;
+    case 0xF0: case 0xFA:
+        fx.mem = 1;
+        fx.addr = op == 0xF0 ? static_cast<uint16_t>(0xFF00 | in.n8) : in.n16;
+        fx.wr |= RA;
+        return true;
+    case 0x07: case 0x0F: case 0x17: case 0x1F: case 0x2F:
+        fx.rd |= RA;
+        fx.wr |= RA;
+        return true;
+    case 0xC6: case 0xCE: case 0xD6: case 0xDE: case 0xE6: case 0xEE: case 0xF6: case 0xFE:
+        fx.rd |= RA;
+        if (op != 0xFE) fx.wr |= RA;
+        return true;
+    case 0xCB: {
+        const unsigned r = in.n8 & 7, grp = in.n8 >> 6;
+        if (r == 6) {
+            if (grp != 1) return false;
+            src(6);
+            return true;
+        }
+        fx.rd |= rbit(r);
+        if (grp != 1) fx.wr |= rbit(r);
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+/* How a read of constant address a can change while nothing runs:
+ * 0 only when code runs, 1 at a device event, 2 at the next PPU mode or line
+ * change (LY, STAT), 3 at any time (no fast-forward).  Must match
+ * gbl_spin_kind() in the runtime. */
+int spin_const_kind(uint16_t a) {
+    if (a < 0xFF00 || a >= 0xFF80) return 0;
+    switch (a & 0xFF) {
+    case 0x00: case 0x0F: return 1;
+    case 0x41: case 0x44: return 2;
+    case 0x40: case 0x42: case 0x43: case 0x45: case 0x47: case 0x48:
+    case 0x49: case 0x4A: case 0x4B: return 0;
+    default: return 3;
+    }
+}
+
+} // namespace
+
+void Generator::detect_spin_loops() {
+    static const char* kPair[3] = {"gbr.bc", "gbr.de", "gbr.hl"};
+    for (const std::vector<size_t>& reg : regions_) {
+        for (size_t k = 0; k < reg.size(); k++) {
+            Ins& b = ins_[reg[k]];
+            if (b.flow != Flow::Jump && b.flow != Flow::JumpCond) continue;
+            int bank_check;
+            Ins* t = resolve(b, b.target, bank_check);
+            if (!t || t->region != b.region || t->order > b.order) continue;
+
+            /* Straight-line body from the head along the fall-through path
+             * to the back edge; its only branches leave the loop, and no
+             * other loop starts inside. */
+            std::vector<Ins*> body;
+            bool ok = true;
+            for (Ins* in = t; ok;) {
+                if (in->region != b.region || (in != t && in->loop_head) || body.size() >= 32) {
+                    ok = false;
+                    break;
+                }
+                /* The instruction emitted after an EI polls interrupts after
+                 * itself (unless the EI path duplicates it, ei_dup): a poll
+                 * inside the body the skip does not bound. */
+                if (in->order > 0 && ins_[reg[in->order - 1]].op == 0xFB &&
+                    !ins_[reg[in->order - 1]].ei_dup) {
+                    ok = false;
+                    break;
+                }
+                body.push_back(in);
+                if (in == &b) break;
+                if (in->flow == Flow::JumpCond) {
+                    if (in->target >= t->addr && in->target <= b.addr) ok = false;
+                } else if (in->flow != Flow::Seq) {
+                    ok = false;
+                }
+                in = find(in->bank, in->next());
+                if (!in) ok = false;
+            }
+            if (!ok) continue;
+            std::vector<SpinFx> fx(body.size());
+            uint8_t loop_wr = 0, loop_fdef = 0;
+            bool exits = false;
+            for (size_t j = 0; j < body.size() && ok; j++) {
+                if (!spin_effects(*body[j], fx[j])) ok = false;
+                loop_wr |= fx[j].wr;
+                loop_fdef |= body[j]->def;
+                if (body[j] != &b && body[j]->flow == Flow::JumpCond) exits = true;
+            }
+            if (!ok) continue;
+
+            /* Delay loop: one DEC counter, the back edge taken while it is
+             * nonzero, nothing else leaving the loop. */
+            int cnt = -1;
+            for (size_t j = 0; j < body.size(); j++) {
+                const uint8_t op = body[j]->op;
+                const bool dec8 = (op & 0xC7) == 0x05 && op != 0x35;
+                const bool dec16 = op == 0x0B || op == 0x1B || op == 0x2B;
+                if (dec8 || dec16) cnt = cnt == -1 ? static_cast<int>(j) : -2;
+            }
+            uint8_t cnt_bits = 0;
+            int counted = 0; /* 2: 8-bit counter, 3: 16-bit counter */
+            unsigned cnt_reg = 0;
+            if (cnt >= 0 && !exits && b.flow == Flow::JumpCond && (b.op == 0x20 || b.op == 0xC2)) {
+                const Ins& dec = *body[cnt];
+                const size_t n = body.size();
+                if (dec.op & 0x04) {
+                    cnt_reg = (dec.op >> 3) & 7;
+                    cnt_bits = rbit(cnt_reg);
+                    counted = 2;
+                    for (size_t j = cnt + 1; j + 1 < n; j++)
+                        if (body[j]->def & FZ) counted = 0;
+                } else {
+                    cnt_reg = dec.op >> 4;
+                    cnt_bits = pair_bits(cnt_reg);
+                    const unsigned hi = cnt_reg * 2, lo = cnt_reg * 2 + 1;
+                    const Ins* ld = n >= 3 ? body[n - 3] : nullptr;
+                    const Ins* orr = n >= 3 ? body[n - 2] : nullptr;
+                    if (ld && orr && static_cast<size_t>(cnt) < n - 3 && ld->op >= 0x78 && ld->op < 0x80 &&
+                        orr->op >= 0xB0 && orr->op < 0xB8) {
+                        const unsigned x = ld->op & 7, y = orr->op & 7;
+                        if ((x == hi && y == lo) || (x == lo && y == hi)) counted = 3;
+                    }
+                }
+                for (size_t j = 0; j < body.size() && counted; j++)
+                    if (static_cast<int>(j) != cnt && (fx[j].wr & cnt_bits)) counted = 0;
+                if (!counted) cnt_bits = 0;
+            }
+
+            /* Nothing may flow from one iteration into the next except the
+             * counter: every register or flag written in the loop is written
+             * before it is read. */
+            const uint8_t carried = static_cast<uint8_t>(loop_wr & ~cnt_bits);
+            uint8_t written = 0, fwritten = 0;
+            for (size_t j = 0; j < body.size() && ok; j++) {
+                const uint8_t rd = static_cast<int>(j) == cnt && counted ? 0 : fx[j].rd;
+                if (rd & carried & ~written) ok = false;
+                if (body[j]->use & loop_fdef & ~fwritten) ok = false;
+                written |= fx[j].wr;
+                fwritten |= body[j]->def;
+            }
+            if (!ok) continue;
+
+            /* Reads: any number that change only when code runs, at most
+             * one whose value can change with time. */
+            int timed = -1;
+            std::string kind = "0";
+            for (size_t j = 0; j < body.size() && ok; j++) {
+                if (!fx[j].mem) continue;
+                if (fx[j].mem == 1) {
+                    const int kd = spin_const_kind(fx[j].addr);
+                    if (kd == 0) continue;
+                    if (kd == 3 || counted || timed >= 0) ok = false;
+                    timed = static_cast<int>(j);
+                    kind = std::to_string(kd);
+                } else {
+                    if (counted || timed >= 0 || (loop_wr & pair_bits(fx[j].pair))) ok = false;
+                    timed = static_cast<int>(j);
+                    kind = std::string("gbl_spin_kind(") + kPair[fx[j].pair] + ")";
+                }
+            }
+            if (!ok) continue;
+
+            int period = 0, read_ofs = 0;
+            for (size_t j = 0; j < body.size(); j++) {
+                period += body[j]->cycles;
+                if (static_cast<int>(j) == timed) read_ofs = period;
+            }
+            if (b.flow == Flow::JumpCond) period += b.extra;
+            t->spin_head = true;
+            if (timed >= 0) body[timed]->spin_read = true;
+            b.spin_period = static_cast<uint16_t>(period);
+            b.spin_read_ofs = static_cast<uint16_t>(read_ofs);
+            b.spin = counted ? static_cast<uint8_t>(counted) : 1;
+            b.spin_reg = static_cast<uint8_t>(cnt_reg);
+            b.spin_kind = kind;
+            if (counted)
+                for (size_t j = 0; j + 1 < body.size(); j++)
+                    b.spin_body.push_back(static_cast<size_t>(body[j] - ins_.data()));
+            if (counted) counted_loops_++;
+            else spin_loops_++;
+        }
+    }
+}
+
+void Generator::emit_spin(std::ostringstream& o, const Ins& in) {
+    const int period = in.spin_period;
+    if (in.spin == 1) {
+        o << "    gbl_spin(" << period << ", " << in.spin_read_ofs << ", " << in.spin_kind << ");\n";
+        return;
+    }
+    /* Delay loop: count the skipped iterations off, then replay the last one
+     * (without its cycles) so registers and flags that depend on the counter
+     * hold what they would after it: an interrupt taken at the loop head
+     * sees them. */
+    const std::string r = in.spin == 2 ? kR8[in.spin_reg] : kR16[in.spin_reg];
+    const char* cast = in.spin == 2 ? "(uint8_t)" : "(uint16_t)";
+    std::ostringstream replay;
+    const int saved = pend_;
+    const bool saved_ei = ei_pending_;
+    for (size_t j = 0; j < in.spin_body.size(); j++) {
+        Ins copy = ins_[in.spin_body[j]];
+        copy.label = copy.spin_head = copy.spin_read = false;
+        const Ins* following = j + 1 < in.spin_body.size() ? &ins_[in.spin_body[j + 1]] : &in;
+        replaying_ = true;
+        emit_ins(replay, copy, following);
+        replaying_ = false;
+    }
+    pend_ = saved;
+    ei_pending_ = saved_ei;
+    o << "    { uint32_t k = gbl_spin_n(" << period << ", " << r << " - 1u);\n"
+      << "    if (k) {\n    " << r << " = " << cast << "(" << r << " - k + 1u);\n";
+    std::istringstream lines(replay.str());
+    for (std::string line; std::getline(lines, line);)
+        if (line.rfind("    CY(", 0) != 0) o << line << "\n";
+    o << "    } }\n";
+}
+
+std::string Generator::const_read(std::ostringstream& o, uint16_t a) {
+    if (a < 0x4000) return hex(rom_.read_banked(0, a), 2);
+    if (a < 0x8000) return "gbl_rd(" + hex(a, 4) + ")";
+    if (a < 0xA000) return "gbl_vram[" + hex(a - 0x8000, 4) + "]";
+    if (a < 0xC000) return "gbl_rd(" + hex(a, 4) + ")";
+    if (a < 0xE000) return "gbl_wram[" + hex(a - 0xC000, 4) + "]";
+    if (a < 0xFE00) return "gbl_wram[" + hex(a - 0xE000, 4) + "]";
+    if (a < 0xFF00) return "gbl_rd(" + hex(a, 4) + ")";
+    if (a < 0xFF80) {
+        flush(o);
+        return "gbl_io_rd(" + hex(a & 0xFF, 2) + ")";
+    }
+    if (a < 0xFFFF) return "gbl_hram[" + hex(a - 0xFF80, 2) + "]";
+    return "gbl_ie";
+}
+
+void Generator::const_write(std::ostringstream& o, uint16_t a, const std::string& v,
+                            bool& sync_after) {
+    if (a >= 0x8000 && a < 0xA000) {
+        o << "    GBL_VRAM_WR(" << hex(a - 0x8000, 4) << ", " << v << ");\n";
+    } else if (a >= 0xC000 && a < 0xE000) {
+        o << "    gbl_wram[" << hex(a - 0xC000, 4) << "] = " << v << ";\n";
+    } else if (a >= 0xE000 && a < 0xFE00) {
+        o << "    gbl_wram[" << hex(a - 0xE000, 4) << "] = " << v << ";\n";
+    } else if (a >= 0xFF00 && a < 0xFF80) {
+        flush(o);
+        o << "    gbl_io_wr(" << hex(a & 0xFF, 2) << ", " << v << ");\n";
+        const uint8_t n = a & 0xFF;
+        if (n == 0x0F || n == 0x40 || n == 0x41 || n == 0x45) sync_after = true;
+    } else if (a >= 0xFF80 && a < 0xFFFF) {
+        o << "    gbl_hram[" << hex(a - 0xFF80, 2) << "] = " << v << ";\n";
+    } else {
+        if (a == 0xFFFF) {
+            flush(o);
+            sync_after = true;
+        }
+        o << "    gbl_wr(" << hex(a, 4) << ", " << v << ");\n";
+    }
+}
+
+/* Emit a jump to target.  pc is always written first so any path out of the
+ * region resumes at the right place. */
+void Generator::emit_transfer(std::ostringstream& o, const Ins& from, uint16_t target,
+                              bool set_pc) {
+    int bank_check;
+    Ins* t = resolve(from, target, bank_check);
+    if (t && t->region == from.region) {
+        if (t->carry) o << "    CY(" << -t->carry << ");\n";
+        o << "    goto L_" << hex4(target) << ";\n";
+        return;
+    }
+    if (set_pc) o << "    gbr.pc = " << hex(target, 4) << ";\n";
+    if (!t) {
+        o << "    gbl_exec(); return;\n";
+    } else if (bank_check < 0) {
+        o << "    " << region_name(t->region) << "(); return;\n";
+    } else {
+        o << "    if (gbr.rom_bank == " << bank_check << ") { " << region_name(t->region)
+          << "(); return; }\n    gbl_exec(); return;\n";
+    }
+}
+
+void Generator::emit_call(std::ostringstream& o, const Ins& in) {
+    const uint16_t ret = in.next();
+    o << "    gbl_push(" << hex(ret, 4) << "); gbr.pc = " << hex(in.target, 4) << ";\n";
+    int bank_check;
+    Ins* t = resolve(in, in.target, bank_check);
+    if (!t) {
+        o << "    gbl_exec();\n";
+    } else if (bank_check < 0) {
+        o << "    " << region_name(t->region) << "();\n";
+    } else {
+        o << "    if (gbr.rom_bank == " << bank_check << ") " << region_name(t->region)
+          << "(); else gbl_exec();\n";
+    }
+    o << "    if (gbr.pc != " << hex(ret, 4) << ") return;\n";
+}
+
+void Generator::emit_alu(std::ostringstream& o, unsigned grp, const std::string& src, bool mem,
+                         bool src_is_a, uint8_t live) {
+    const bool z = live & FZ, n = live & FN, h = live & FH, c = live & FC;
+    static const char* helper[8] = {"gbl_add", "gbl_adc", "gbl_sub", "gbl_sbc",
+                                    nullptr, nullptr, nullptr, "gbl_cp"};
+    std::string s = "    ";
+    switch (grp) {
+    case 0: case 1: case 2: case 3: {
+        if (h) {
+            o << "    " << helper[grp] << "(" << src << ");\n";
+            return;
+        }
+        const bool sub = grp >= 2;
+        const char* carry_in = (grp == 1) ? " + gbr.cf" : (grp == 3) ? " - gbr.cf" : "";
+        if (z || c) {
+            s += "{ uint32_t t = (uint32_t)gbr.a " + std::string(sub ? "- " : "+ ") + "(uint32_t)" +
+                 src + carry_in + "; ";
+            if (c) s += sub ? "gbr.cf = (uint8_t)((t >> 8) & 1); " : "gbr.cf = (uint8_t)(t >> 8); ";
+            s += "gbr.a = (uint8_t)t; ";
+            if (z) s += "gbr.zr = gbr.a; ";
+            s += "}";
+        } else {
+            s += "gbr.a = (uint8_t)(gbr.a " + std::string(sub ? "- " : "+ ") + src + carry_in + ");";
+        }
+        if (n) s += sub ? " gbr.nf = 1;" : " gbr.nf = 0;";
+        o << s << "\n";
+        return;
+    }
+    case 4: case 5: case 6: {
+        if (grp == 5 && src_is_a) s += "gbr.a = 0;";
+        else if (src_is_a) s += "";
+        else s += std::string("gbr.a ") + (grp == 4 ? "&= " : grp == 5 ? "^= " : "|= ") + src + ";";
+        if (z) s += " gbr.zr = gbr.a;";
+        if (n) s += " gbr.nf = 0;";
+        if (h) s += grp == 4 ? " gbr.hf = 1;" : " gbr.hf = 0;";
+        if (c) s += " gbr.cf = 0;";
+        o << s << "\n";
+        return;
+    }
+    default: {
+        if (h) {
+            o << "    gbl_cp(" << src << ");\n";
+            return;
+        }
+        if (z || c) {
+            s += "{ uint32_t t = (uint32_t)gbr.a - (uint32_t)" + src + "; ";
+            if (z) s += "gbr.zr = (uint8_t)t; ";
+            if (c) s += "gbr.cf = (uint8_t)((t >> 8) & 1); ";
+            s += "}";
+        } else if (mem) {
+            s += "(void)" + src + ";";
+        }
+        if (n) s += " gbr.nf = 1;";
+        o << s << "\n";
+        return;
+    }
+    }
+}
+
+void Generator::emit_cb(std::ostringstream& o, const Ins& in) {
+    const uint8_t cb = in.n8;
+    const unsigned r = cb & 7, grp = cb >> 6, bit = (cb >> 3) & 7;
+    const bool mem = r == 6;
+    const std::string src = mem ? "gbl_rd(gbr.hl)" : kR8[r];
+    const uint8_t live = in.live_out;
+    const std::string mask = hex(1u << bit, 2);
+    if (grp == 1) {
+        std::string s = "   ";
+        if (live & FZ) s += " gbr.zr = (uint8_t)(" + src + " & " + mask + ");";
+        else if (mem) s += " (void)" + src + ";";
+        if (live & FN) s += " gbr.nf = 0;";
+        if (live & FH) s += " gbr.hf = 1;";
+        o << s << "\n";
+        return;
+    }
+    if (grp == 2 || grp == 3) {
+        const std::string expr = grp == 2 ? "(uint8_t)(" + src + " & ~" + mask + ")"
+                                          : "(uint8_t)(" + src + " | " + mask + ")";
+        if (mem) o << "    gbl_wr(gbr.hl, " << expr << ");\n";
+        else o << "    " << kR8[r] << " = " << expr << ";\n";
+        return;
+    }
+    static const char* rexpr[8] = {"(v << 1) | (v >> 7)", "(v >> 1) | (v << 7)",
+                                   "(v << 1) | gbr.cf", "(v >> 1) | ((uint32_t)gbr.cf << 7)",
+                                   "v << 1", "(v >> 1) | (v & 0x80)", "(v >> 4) | (v << 4)",
+                                   "v >> 1"};
+    static const char* cexpr[8] = {"v >> 7", "v & 1", "v >> 7", "v & 1",
+                                   "v >> 7", "v & 1", "0", "v & 1"};
+    const unsigned k = (cb >> 3) & 7;
+    std::string s = "    { uint32_t v = " + src + "; uint8_t r = (uint8_t)(" + rexpr[k] + ");";
+    if (live & FC) s += std::string(" gbr.cf = (uint8_t)(") + cexpr[k] + ");";
+    s += mem ? " gbl_wr(gbr.hl, r);" : std::string(" ") + kR8[r] + " = r;";
+    if (live & FZ) s += " gbr.zr = r;";
+    s += " }";
+    if (live & FN) s += " gbr.nf = 0;";
+    if (live & FH) s += " gbr.hf = 0;";
+    o << s << "\n";
+}
+
+void Generator::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
+    const uint8_t op = in.op;
+    const uint8_t live = in.live_out;
+    bool sync_after = false;
+    const bool after_ei = ei_pending_;
+    ei_pending_ = false;
+
+    if (in.label) {
+        /* Loop heads poll interrupts and need gbr.cyc exact; elsewhere the
+         * pending cycles carry across the label (see Ins::carry). */
+        if (in.loop_head || opt_.precise) flush(o);
+        in.carry = pend_;
+        o << "L_" << hex4(in.addr) << ":\n";
+        if (in.loop_head && !opt_.precise) o << "    SYNC(" << hex(in.addr, 4) << ");\n";
+    }
+    if (opt_.emit_comments && !replaying_) o << "    /* " << hex4(in.addr) << ": " << in.text << " */\n";
+    if (opt_.precise) {
+        flush(o);
+        if (!after_ei) o << "    SYNC(" << hex(in.addr, 4) << ");\n";
+    }
+    pend_ += in.cycles;
+    if (opt_.precise || in.spin_read) flush(o); /* a timed read sees the exact cycle */
+
+    auto rd = [&](unsigned r) { return r == 6 ? std::string("gbl_rd(gbr.hl)") : std::string(kR8[r]); };
+
+    if (in.flow == Flow::Bad) {
+        flush(o);
+        o << "    gbr.pc = " << hex(in.addr, 4) << "; gbl_exec(); return;\n";
+        return;
+    }
+
+    if (op >= 0x40 && op < 0x80 && op != 0x76) {
+        const unsigned d = (op >> 3) & 7, s = op & 7;
+        if (d == 6) o << "    gbl_wr(gbr.hl, " << kR8[s] << ");\n";
+        else if (d != s) o << "    " << kR8[d] << " = " << rd(s) << ";\n";
+    } else if (op >= 0x80 && op < 0xC0) {
+        emit_alu(o, (op >> 3) & 7, rd(op & 7), (op & 7) == 6, (op & 7) == 7, live);
+    } else if (op == 0xCB) {
+        emit_cb(o, in);
+    } else {
+        switch (op) {
+        case 0x00: case 0x10: break;
+        case 0x01: case 0x11: case 0x21: case 0x31:
+            o << "    " << kR16[op >> 4] << " = " << hex(in.n16, 4) << ";\n";
+            break;
+        case 0x02: o << "    gbl_wr(gbr.bc, gbr.a);\n"; break;
+        case 0x12: o << "    gbl_wr(gbr.de, gbr.a);\n"; break;
+        case 0x22: o << "    gbl_wr(gbr.hl, gbr.a); gbr.hl++;\n"; break;
+        case 0x32: o << "    gbl_wr(gbr.hl, gbr.a); gbr.hl--;\n"; break;
+        case 0x0A: o << "    gbr.a = gbl_rd(gbr.bc);\n"; break;
+        case 0x1A: o << "    gbr.a = gbl_rd(gbr.de);\n"; break;
+        case 0x2A: o << "    gbr.a = gbl_rd(gbr.hl); gbr.hl++;\n"; break;
+        case 0x3A: o << "    gbr.a = gbl_rd(gbr.hl); gbr.hl--;\n"; break;
+        case 0x03: case 0x13: case 0x23: case 0x33: o << "    " << kR16[op >> 4] << "++;\n"; break;
+        case 0x0B: case 0x1B: case 0x2B: case 0x3B: o << "    " << kR16[op >> 4] << "--;\n"; break;
+        case 0x09: case 0x19: case 0x29: case 0x39: {
+            const char* rr = kR16[op >> 4];
+            if (live & FH) {
+                o << "    gbl_addhl(" << rr << ");\n";
+            } else {
+                if (live & FC)
+                    o << "    { uint32_t t = (uint32_t)gbr.hl + " << rr
+                      << "; gbr.cf = (uint8_t)(t >> 16); gbr.hl = (uint16_t)t; }\n";
+                else
+                    o << "    gbr.hl = (uint16_t)(gbr.hl + " << rr << ");\n";
+                if (live & FN) o << "    gbr.nf = 0;\n";
+            }
+            break;
+        }
+        case 0x04: case 0x0C: case 0x14: case 0x1C: case 0x24: case 0x2C: case 0x34: case 0x3C:
+        case 0x05: case 0x0D: case 0x15: case 0x1D: case 0x25: case 0x2D: case 0x35: case 0x3D: {
+            const unsigned r = (op >> 3) & 7;
+            const bool inc = (op & 1) == 0;
+            if (live & FH) {
+                const std::string call = std::string(inc ? "gbl_inc(" : "gbl_dec(") + rd(r) + ")";
+                if (r == 6) o << "    gbl_wr(gbr.hl, " << call << ");\n";
+                else o << "    " << kR8[r] << " = " << call << ";\n";
+            } else {
+                const std::string expr = "(uint8_t)(" + rd(r) + (inc ? " + 1)" : " - 1)");
+                std::string s = "    { uint8_t t = " + expr + ";";
+                s += r == 6 ? " gbl_wr(gbr.hl, t);" : std::string(" ") + kR8[r] + " = t;";
+                if (live & FZ) s += " gbr.zr = t;";
+                s += " }";
+                if (live & FN) s += inc ? " gbr.nf = 0;" : " gbr.nf = 1;";
+                o << s << "\n";
+            }
+            break;
+        }
+        case 0x06: case 0x0E: case 0x16: case 0x1E: case 0x26: case 0x2E: case 0x36: case 0x3E: {
+            const unsigned r = (op >> 3) & 7;
+            if (r == 6) o << "    gbl_wr(gbr.hl, " << hex(in.n8, 2) << ");\n";
+            else o << "    " << kR8[r] << " = " << hex(in.n8, 2) << ";\n";
+            break;
+        }
+        case 0x07: case 0x0F: case 0x17: case 0x1F: {
+            static const char* rexpr[4] = {"(v << 1) | (v >> 7)", "(v >> 1) | (v << 7)",
+                                           "(v << 1) | gbr.cf", "(v >> 1) | ((uint32_t)gbr.cf << 7)"};
+            static const char* cexpr[4] = {"v >> 7", "v & 1", "v >> 7", "v & 1"};
+            const unsigned k = (op >> 3) & 3;
+            std::string s = std::string("    { uint32_t v = gbr.a; gbr.a = (uint8_t)(") + rexpr[k] + ");";
+            if (live & FC) s += std::string(" gbr.cf = (uint8_t)(") + cexpr[k] + ");";
+            s += " }";
+            if (live & FZ) s += " gbr.zr = 1;";
+            if (live & FN) s += " gbr.nf = 0;";
+            if (live & FH) s += " gbr.hf = 0;";
+            o << s << "\n";
+            break;
+        }
+        case 0x08: {
+            bool dummy = false;
+            const_write(o, in.n16, "(uint8_t)gbr.sp", dummy);
+            const_write(o, static_cast<uint16_t>(in.n16 + 1), "(uint8_t)(gbr.sp >> 8)", dummy);
+            if (dummy) sync_after = true;
+            break;
+        }
+        case 0x27: o << "    gbl_daa();\n"; break;
+        case 0x2F: {
+            std::string s = "    gbr.a = (uint8_t)~gbr.a;";
+            if (live & FN) s += " gbr.nf = 1;";
+            if (live & FH) s += " gbr.hf = 1;";
+            o << s << "\n";
+            break;
+        }
+        case 0x37: case 0x3F: {
+            std::string s = "   ";
+            if (live & FC) s += op == 0x37 ? " gbr.cf = 1;" : " gbr.cf ^= 1;";
+            if (live & FN) s += " gbr.nf = 0;";
+            if (live & FH) s += " gbr.hf = 0;";
+            o << s << "\n";
+            break;
+        }
+        case 0xC1: o << "    gbr.bc = gbl_pop();\n"; break;
+        case 0xD1: o << "    gbr.de = gbl_pop();\n"; break;
+        case 0xE1: o << "    gbr.hl = gbl_pop();\n"; break;
+        case 0xF1: o << "    { uint16_t v = gbl_pop(); gbr.a = (uint8_t)(v >> 8); gbl_setf((uint8_t)v); }\n"; break;
+        case 0xC5: o << "    gbl_push(gbr.bc);\n"; break;
+        case 0xD5: o << "    gbl_push(gbr.de);\n"; break;
+        case 0xE5: o << "    gbl_push(gbr.hl);\n"; break;
+        case 0xF5: o << "    gbl_push((uint16_t)((gbr.a << 8) | gbl_getf()));\n"; break;
+        case 0xC6: case 0xCE: case 0xD6: case 0xDE: case 0xE6: case 0xEE: case 0xF6: case 0xFE:
+            emit_alu(o, (op >> 3) & 7, hex(in.n8, 2), false, false, live);
+            break;
+        case 0xE0: const_write(o, static_cast<uint16_t>(0xFF00 | in.n8), "gbr.a", sync_after); break;
+        case 0xF0: {
+            const std::string v = const_read(o, static_cast<uint16_t>(0xFF00 | in.n8));
+            o << "    gbr.a = " << v << ";\n";
+            break;
+        }
+        case 0xE2:
+            flush(o);
+            o << "    gbl_wr((uint16_t)(0xFF00 | gbr.c), gbr.a);\n";
+            sync_after = true;
+            break;
+        case 0xF2:
+            flush(o);
+            o << "    gbr.a = gbl_rd((uint16_t)(0xFF00 | gbr.c));\n";
+            break;
+        case 0xEA: const_write(o, in.n16, "gbr.a", sync_after); break;
+        case 0xFA: {
+            const std::string v = const_read(o, in.n16);
+            o << "    gbr.a = " << v << ";\n";
+            break;
+        }
+        case 0xE8: o << "    gbr.sp = gbl_spofs(" << hex(in.n8, 2) << ");\n"; break;
+        case 0xF8: o << "    gbr.hl = gbl_spofs(" << hex(in.n8, 2) << ");\n"; break;
+        case 0xF9: o << "    gbr.sp = gbr.hl;\n"; break;
+        case 0xF3: o << "    gbr.ime = 0;\n"; break;
+        case 0xFB:
+            o << "    gbr.ime = 1; gbl_update_evt();\n";
+            if (in.ei_dup) {
+                /* The next instruction runs before interrupts can be taken:
+                 * emit it here, poll, and continue after it. */
+                Ins* n = find(in.bank, in.next());
+                Ins* m = find(n->bank, n->next());
+                Ins copy = *n;
+                copy.label = copy.loop_head = copy.spin_head = copy.spin_read = false;
+                copy.ei_dup = false;
+                copy.spin = 0;
+                replaying_ = true;
+                emit_ins(o, copy, m);
+                replaying_ = false;
+                flush(o);
+                o << "    SYNC(" << hex(m->addr, 4) << ");\n";
+                emit_transfer(o, in, m->addr, true);
+                return;
+            }
+            ei_pending_ = true;
+            break;
+        case 0x76:
+            flush(o);
+            o << "    if (gbl_halt(" << hex(in.next(), 4) << ")) return;\n";
+            break;
+        case 0x18: case 0xC3:
+            flush(o);
+            if (in.spin) emit_spin(o, in);
+            emit_transfer(o, in, in.target, true);
+            return;
+        case 0x20: case 0x28: case 0x30: case 0x38:
+        case 0xC2: case 0xCA: case 0xD2: case 0xDA:
+            flush(o);
+            o << "    if (" << cond_expr(op) << ") {\n    CY(" << int(in.extra) << ");\n";
+            if (in.spin) emit_spin(o, in);
+            emit_transfer(o, in, in.target, true);
+            o << "    }\n";
+            break;
+        case 0xE9:
+            flush(o);
+            o << "    gbr.pc = gbr.hl; gbl_exec(); return;\n";
+            return;
+        case 0xCD:
+        case 0xC7: case 0xCF: case 0xD7: case 0xDF: case 0xE7: case 0xEF: case 0xF7: case 0xFF:
+            flush(o);
+            emit_call(o, in);
+            break;
+        case 0xC4: case 0xCC: case 0xD4: case 0xDC:
+            flush(o);
+            o << "    if (" << cond_expr(op) << ") {\n    CY(" << int(in.extra) << ");\n";
+            emit_call(o, in);
+            o << "    }\n";
+            break;
+        case 0xC9:
+            flush(o);
+            o << "    gbr.pc = gbl_pop(); return;\n";
+            return;
+        case 0xD9:
+            flush(o);
+            o << "    gbr.pc = gbl_pop(); gbr.ime = 1; gbl_update_evt(); return;\n";
+            return;
+        case 0xC0: case 0xC8: case 0xD0: case 0xD8:
+            flush(o);
+            o << "    if (" << cond_expr(op) << ") { CY(" << int(in.extra)
+              << "); gbr.pc = gbl_pop(); return; }\n";
+            break;
+        default:
+            break;
+        }
+    }
+
+    /* Sequential continuation. */
+    if (after_ei && !opt_.precise) sync_after = true;
+    if (sync_after && !opt_.precise) {
+        flush(o);
+        o << "    SYNC(" << hex(in.next(), 4) << ");\n";
+    }
+    if (!in.falls()) return;
+    const bool adjacent = following && following->bank == in.bank && following->addr == in.next();
+    if (!adjacent) {
+        flush(o);
+        emit_transfer(o, in, in.next(), true);
+    }
+}
+
+void Generator::emit_region(std::ostringstream& o, int r) {
+    const std::vector<size_t>& reg = regions_[r];
+    cur_region_ = r;
+    pend_ = 0;
+    ei_pending_ = false;
+    /* First pass only computes each label's carry (the cycles pending when
+     * execution falls into it), which the switch and the gotos need. */
+    for (int pass = 0; pass < 2; pass++) {
+        std::ostringstream scratch;
+        std::ostringstream& out = pass ? o : scratch;
+        pend_ = 0;
+        ei_pending_ = false;
+        if (pass) {
+            out << "\nvoid " << region_name(r) << "(void) {\n    ENTER();\n";
+            if (!opt_.precise) out << "    SYNC(gbr.pc);\n";
+            out << "    switch (gbr.pc) {\n";
+            for (size_t idx : reg) {
+                const Ins& in = ins_[idx];
+                if (!in.sw_case) continue;
+                out << "    case " << hex(in.addr, 4) << ": ";
+                if (in.carry) out << "CY(" << -in.carry << "); ";
+                out << "goto L_" << hex4(in.addr) << ";\n";
+            }
+            out << "    default: gbl_exec(); return;\n    }\n";
+        }
+        for (size_t k = 0; k < reg.size(); k++) {
+            const Ins* following = k + 1 < reg.size() ? &ins_[reg[k + 1]] : nullptr;
+            emit_ins(out, ins_[reg[k]], following);
+        }
+        flush(out);
+        if (pass) out << "}\n";
+    }
+}
+
+std::string Generator::emit_code() {
+    std::ostringstream o;
+    o << "/* Generated by gbrecomp --target meta. Do not edit. */\n"
+      << "#include \"gbl_gen.h\"\n\n"
+      << "#if GBL_GEN_OPTIMIZE_SIZE\n#pragma GCC optimize(\"Os\")\n#endif\n"
+      << "#pragma GCC diagnostic ignored \"-Wunused-label\"\n\n";
+    for (size_t r = 0; r < regions_.size(); r++)
+        o << "void " << region_name(static_cast<int>(r)) << "(void);\n";
+    for (size_t r = 0; r < regions_.size(); r++) emit_region(o, static_cast<int>(r));
+
+    /* Dispatch tables: every switch entry, sorted per bank. */
+    const unsigned banks = rom_.bank_count();
+    std::vector<std::vector<const Ins*>> per_bank(banks);
+    for (const Ins& in : ins_)
+        if (in.sw_case) per_bank[in.bank].push_back(&in);
+    o << "\n";
+    if (ins_.empty()) o << "/* No coverage profile: every instruction runs in the interpreter. */\n";
+    for (unsigned b = 0; b < banks; b++) {
+        if (per_bank[b].empty()) continue;
+        o << "static const uint16_t t" << b << "_addr[] = {";
+        for (size_t i = 0; i < per_bank[b].size(); i++)
+            o << (i % 12 ? " " : "\n    ") << hex(per_bank[b][i]->addr, 4) << ",";
+        o << "\n};\nstatic const gbl_fn t" << b << "_fn[] = {";
+        for (size_t i = 0; i < per_bank[b].size(); i++)
+            o << (i % 6 ? " " : "\n    ") << region_name(per_bank[b][i]->region) << ",";
+        o << "\n};\n";
+    }
+    o << "const gbl_bank_table gbl_tables[" << banks << "] = {\n";
+    for (unsigned b = 0; b < banks; b++) {
+        if (per_bank[b].empty()) o << "    {0, 0, 0},\n";
+        else
+            o << "    {" << per_bank[b].size() << ", t" << b << "_addr, t" << b << "_fn},\n";
+    }
+    o << "};\nconst uint16_t gbl_table_count = " << banks << ";\n";
+    return o.str();
+}
+
+namespace {
+void emit_bytes(std::ostringstream& o, const uint8_t* d, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (i % 24 == 0) o << "\n";
+        o << unsigned(d[i]) << ",";
+    }
+}
+} // namespace
+
+/* Host only: the whole ROM, which a streaming firmware reads from the SD. */
+std::string Generator::emit_rom_full() const {
+    std::ostringstream o;
+    o << "/* Whole ROM for the host harness of a streaming project (the META\n"
+      << " * firmware reads it from the SD card). */\n#include <stdint.h>\n\n"
+      << "const uint8_t gbl_rom_full[" << rom_.size() << "] __attribute__((aligned(4))) = {";
+    emit_bytes(o, rom_.data(), rom_.size());
+    o << "\n};\n";
+    return o.str();
+}
+
+std::string Generator::emit_rom() const {
+    std::ostringstream o;
+    if (stream_) {
+        const size_t chunks = chunk_weight_.size();
+        std::vector<size_t> slots;
+        for (size_t c = 4; c < chunks; c++)
+            if (resident_index_[c] >= 0) slots.push_back(c);
+        std::sort(slots.begin(), slots.end(),
+                  [&](size_t a, size_t b) { return resident_index_[a] < resident_index_[b]; });
+        o << "/* ROM for gbl, streaming build: bank 0 and the resident 4 KiB chunks\n"
+          << " * in flash, every other chunk read from the SD card. */\n#include <stdint.h>\n\n"
+          << "const uint32_t gbl_rom_size = " << rom_.size() << "u;\n"
+          << "const uint8_t gbl_rom[16384] __attribute__((aligned(4))) = {";
+        emit_bytes(o, rom_.data(), 16384);
+        o << "\n};\nconst uint8_t gbl_rom_resident[" << (slots.empty() ? 1 : slots.size())
+          << "][4096] __attribute__((aligned(4))) = {";
+        for (size_t c : slots) {
+            o << "\n{";
+            emit_bytes(o, rom_.data() + c * 4096, std::min<size_t>(4096, rom_.size() - c * 4096));
+            o << "\n},";
+        }
+        if (slots.empty()) o << "{0}";
+        o << "\n};\n/* Per chunk: 1 + slot in gbl_rom_resident, or 0 on the card. */\n"
+          << "const uint8_t gbl_rom_chunk_map[" << chunks << "] = {";
+        for (size_t c = 0; c < chunks; c++) {
+            if (c % 32 == 0) o << "\n";
+            o << (c < 4 ? 0 : resident_index_[c] + 1) << ",";
+        }
+        o << "\n};\n";
+        return o.str();
+    }
+    o << "/* ROM image for gbl (flash resident). */\n#include <stdint.h>\n\n"
+      << "const uint32_t gbl_rom_size = " << rom_.size() << "u;\n"
+      << "const uint8_t gbl_rom[" << rom_.size() << "] __attribute__((aligned(4))) = {";
+    const uint8_t* d = rom_.data();
+    for (size_t i = 0; i < rom_.size(); i++) {
+        if (i % 24 == 0) o << "\n";
+        o << unsigned(d[i]) << ",";
+    }
+    o << "\n};\n";
+    return o.str();
+}
+
+std::string Generator::emit_config(std::string& error) const {
+    const ROMHeader& h = rom_.header();
+    int mbc = -1;
+    switch (h.mbc_type) {
+    case MBCType::NONE: case MBCType::ROM_RAM: case MBCType::ROM_RAM_BATTERY: mbc = 0; break;
+    case MBCType::MBC1: case MBCType::MBC1_RAM: case MBCType::MBC1_RAM_BATTERY: mbc = 1; break;
+    case MBCType::MBC2: case MBCType::MBC2_BATTERY: mbc = 2; break;
+    case MBCType::MBC3: case MBCType::MBC3_RAM: case MBCType::MBC3_RAM_BATTERY:
+    case MBCType::MBC3_TIMER_BATTERY: case MBCType::MBC3_TIMER_RAM_BATTERY: mbc = 3; break;
+    case MBCType::MBC5: case MBCType::MBC5_RAM: case MBCType::MBC5_RAM_BATTERY:
+    case MBCType::MBC5_RUMBLE: case MBCType::MBC5_RUMBLE_RAM:
+    case MBCType::MBC5_RUMBLE_RAM_BATTERY: mbc = 5; break;
+    default: break;
+    }
+    if (mbc < 0) {
+        error = std::string("unsupported cartridge type for the gbl runtime: ") +
+                mbc_type_name(h.mbc_type);
+        return {};
+    }
+    if (h.is_cgb_only) {
+        error = "CGB-only ROMs are not supported by the DMG-only gbl runtime";
+        return {};
+    }
+    size_t eram = mbc == 2 ? 512 : h.ram_size_bytes;
+    /* Battery-backed cartridge types (header byte 0x147). */
+    const uint8_t cart = rom_.read_banked(0, 0x147);
+    const bool battery = cart == 0x03 || cart == 0x06 || cart == 0x09 || cart == 0x0D ||
+                         cart == 0x0F || cart == 0x10 || cart == 0x13 || cart == 0x1B ||
+                         cart == 0x1E || cart == 0xFF;
+    unsigned banks = rom_.bank_count();
+    std::ostringstream o;
+    o << "/* Generated cartridge configuration for gbl. */\n#ifndef GBL_CONFIG_H\n#define GBL_CONFIG_H\n"
+      << "#define GBL_MBC " << mbc << "\n"
+      << "#define GBL_ROM_BANKS " << banks << "\n"
+      << "#define GBL_ERAM_SIZE " << eram << "\n"
+      << (battery && eram ? "#define GBL_BATTERY 1\n" : "")
+      << (eram ? "#define GBL_SAVE_NAME \"" + stream_name(opt_.name) + ".SAV\"\n#define GBL_SAVE_NAME83 \"" +
+                     stream_name(opt_.name).append(8 - std::min<size_t>(8, stream_name(opt_.name).size()), ' ') +
+                     "SAV\"\n"
+               : std::string())
+      << (stream_ ? "#define GBL_ROM_STREAM 1\n#define GBL_ROM_CHUNKS " +
+                        std::to_string(chunk_weight_.size()) + "\n#define GBL_STREAM_NAME \"" +
+                        stream_name(opt_.name) + ".GB\"\n#define GBL_STREAM_NAME83 \"" +
+                        stream_name83(opt_.name) + "\"\n"
+                  : std::string())
+      << "#define GBL_TITLE \"" << [&] {
+             std::string t;
+             for (char c : h.title)
+                 if (c >= 0x20 && c < 0x7F && c != '"' && c != '\\') t += c;
+             return t;
+         }() << "\"\n"
+      << "#endif\n";
+    return o.str();
+}
+
+bool write_file(const fs::path& path, const std::string& text, std::string& error) {
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        error = "cannot write " + path.string();
+        return false;
+    }
+    out << text;
+    return static_cast<bool>(out);
+}
+
+bool copy_dir_files(const fs::path& from, const fs::path& to, std::string& error) {
+    std::error_code ec;
+    if (!fs::is_directory(from, ec)) {
+        error = "missing template directory " + from.string();
+        return false;
+    }
+    fs::create_directories(to, ec);
+    for (const auto& entry : fs::directory_iterator(from, ec)) {
+        if (!entry.is_regular_file()) continue;
+        fs::copy_file(entry.path(), to / entry.path().filename(),
+                      fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            error = "cannot copy " + entry.path().string() + ": " + ec.message();
+            return false;
+        }
+    }
+    return true;
+}
+
+std::string substitute(std::string text, const std::string& name) {
+    const std::string token = "@NAME@";
+    for (size_t p = text.find(token); p != std::string::npos; p = text.find(token, p))
+        text.replace(p, token.size(), name);
+    return text;
+}
+
+bool read_file(const fs::path& path, std::string& text, std::string& error) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        error = "cannot read " + path.string();
+        return false;
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    text = ss.str();
+    return true;
+}
+
+} // namespace
+
+bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
+                           MetaTargetStats& stats, std::string& error) {
+    Generator gen(rom, options);
+    if (gen.streaming() && !gen.plan_stream(stats, error)) return false;
+    if (!gen.load_coverage(stats, error)) return false;
+    if (gen.streaming()) {
+        gen.choose_resident(stats);
+        stats.stream_file = stream_name(options.name) + ".GB";
+    }
+    gen.build();
+
+    const std::string config = gen.emit_config(error);
+    if (config.empty()) return false;
+
+    const fs::path out = options.output_dir;
+    const fs::path src = out / "src";
+    const fs::path tpl = options.template_dir;
+    std::error_code ec;
+    fs::create_directories(src, ec);
+    fs::create_directories(out / "host", ec);
+    fs::create_directories(out / "boards", ec);
+    fs::create_directories(out / "coverage", ec);
+    if (ec) {
+        error = "cannot create " + out.string() + ": " + ec.message();
+        return false;
+    }
+
+    if (!copy_dir_files(tpl / "runtime", src, error) ||
+        !copy_dir_files(tpl / "platform" / "src", src, error) ||
+        !copy_dir_files(tpl / "platform" / "boards", out / "boards", error))
+        return false;
+    fs::copy_file(tpl / "host" / "gbl_host.c", out / "host" / "gbl_host.c",
+                  fs::copy_options::overwrite_existing, ec);
+    if (!ec)
+        fs::copy_file(tpl / "host" / "gbl_metaview.c", out / "host" / "gbl_metaview.c",
+                      fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        error = "cannot copy host harness: " + ec.message();
+        return false;
+    }
+    for (const char* file : {"platformio.ini", "gamebuino_meta.ld", "README.md"}) {
+        std::string text;
+        if (!read_file(tpl / "platform" / (std::string(file) + ".in"), text, error)) return false;
+        if (!write_file(out / file, substitute(text, options.name), error)) return false;
+    }
+    {
+        std::string text;
+        if (!read_file(tpl / "host" / "CMakeLists.txt.in", text, error)) return false;
+        if (!write_file(out / "host" / "CMakeLists.txt", substitute(text, options.name), error))
+            return false;
+    }
+    for (size_t i = 0; i < options.coverage_files.size(); i++) {
+        fs::copy_file(options.coverage_files[i],
+                      out / "coverage" / options.coverage_files[i].filename(),
+                      fs::copy_options::overwrite_existing, ec);
+    }
+
+    /* A previous generation into this directory may have used another
+     * prefix; its generated sources would be linked in as well. */
+    for (const auto& entry : fs::directory_iterator(src, ec)) {
+        const std::string fname = entry.path().filename().string();
+        const bool generated = (fname.size() > 6 && fname.compare(fname.size() - 6, 6, "_gen.c") == 0) ||
+                               (fname.size() > 6 && fname.compare(fname.size() - 6, 6, "_rom.c") == 0);
+        if (generated && fname != options.name + "_gen.c" && fname != options.name + "_rom.c")
+            fs::remove(entry.path(), ec);
+    }
+    if (!write_file(src / "gbl_config.h", config, error) ||
+        !write_file(src / (options.name + "_gen.c"), gen.emit_code(), error) ||
+        !write_file(src / (options.name + "_rom.c"), gen.emit_rom(), error))
+        return false;
+    /* The host harness of a streaming project needs the whole ROM. */
+    for (const auto& entry : fs::directory_iterator(out / "host", ec)) {
+        const std::string fname = entry.path().filename().string();
+        if (fname.size() > 10 && fname.compare(fname.size() - 10, 10, "_romfull.c") == 0)
+            fs::remove(entry.path(), ec);
+    }
+    if (gen.streaming() &&
+        !write_file(out / "host" / (options.name + "_romfull.c"), gen.emit_rom_full(), error))
+        return false;
+
+    stats.compiled = gen.compiled();
+    stats.dropped = gen.dropped();
+    stats.regions = gen.regions();
+    stats.dispatch_entries = gen.entries();
+    stats.spin_loops = gen.spin_loops();
+    stats.counted_loops = gen.counted_loops();
+    return true;
+}
+
+} // namespace gbrecomp

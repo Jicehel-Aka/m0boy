@@ -1,0 +1,54 @@
+# Host harness for the generated gbl project.
+#   @NAME@_host     compiled code + interpreter fallback (what the Meta runs)
+#   @NAME@_profile  same program with coverage recording and --trace support
+#   @NAME@_play     SDL2 window for recording coverage while playing (optional)
+cmake_minimum_required(VERSION 3.20)
+project(@NAME@_gbl_host C)
+
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+set(GBL_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+file(GLOB GBL_RUNTIME ${GBL_SRC}/gbl_*.c)
+set(GBL_GENERATED ${GBL_SRC}/@NAME@_gen.c ${GBL_SRC}/@NAME@_rom.c)
+# Streaming projects (ROM read from the SD card on the META) link the whole
+# ROM on the host, and their profile builds record ROM data reads
+# (--rom-profile-out) for choosing what stays in flash.
+file(GLOB GBL_ROM_FULL ${CMAKE_CURRENT_SOURCE_DIR}/*_romfull.c)
+list(APPEND GBL_GENERATED ${GBL_ROM_FULL})
+
+foreach(target @NAME@_host @NAME@_profile)
+    add_executable(${target} gbl_host.c ${GBL_RUNTIME} ${GBL_GENERATED})
+    target_include_directories(${target} PRIVATE ${GBL_SRC})
+    target_compile_options(${target} PRIVATE -Wall -Wno-unused-label)
+endforeach()
+target_compile_definitions(@NAME@_profile PRIVATE GBL_COVERAGE GBL_TRACE)
+if(GBL_ROM_FULL)
+    target_compile_definitions(@NAME@_profile PRIVATE GBL_ROM_TRACE)
+endif()
+
+# @NAME@_play: interactive window (SDL2) that records coverage and input
+# while you play, e.g.
+#   @NAME@_play --interp --coverage play.cov --record-input play.input
+find_package(SDL2 QUIET)
+if(SDL2_FOUND)
+    add_executable(@NAME@_play gbl_host.c ${GBL_RUNTIME} ${GBL_GENERATED})
+    target_include_directories(@NAME@_play PRIVATE ${GBL_SRC} ${SDL2_INCLUDE_DIRS})
+    target_compile_options(@NAME@_play PRIVATE -Wall -Wno-unused-label)
+    target_compile_definitions(@NAME@_play PRIVATE GBL_COVERAGE GBL_SDL)
+    if(GBL_ROM_FULL)
+        target_compile_definitions(@NAME@_play PRIVATE GBL_ROM_TRACE)
+    endif()
+    if(TARGET SDL2::SDL2)
+        target_link_libraries(@NAME@_play PRIVATE SDL2::SDL2)
+    else()
+        target_link_libraries(@NAME@_play PRIVATE ${SDL2_LIBRARIES})
+    endif()
+endif()
+
+# @NAME@_metaview: the game through the real META display pipeline, written
+# as 160x128 images of the console screen (--mode, --dump N file.ppm).
+add_executable(@NAME@_metaview gbl_metaview.c ${GBL_RUNTIME} ${GBL_GENERATED} ${GBL_SRC}/meta_display.c)
+target_include_directories(@NAME@_metaview PRIVATE ${GBL_SRC})
+target_compile_options(@NAME@_metaview PRIVATE -Wall -Wno-unused-label)

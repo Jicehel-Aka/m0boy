@@ -10,6 +10,7 @@
 #include "recompiler/ir/ir.h"
 #include "recompiler/ir/ir_builder.h"
 #include "recompiler/codegen/c_emitter.h"
+#include "recompiler/codegen/meta_emitter.h"
 #include "recompiler/native_patch.h"
 
 #include <iostream>
@@ -134,6 +135,17 @@ void print_usage(const char* program) {
     std::cout << "  --trace               Trace execution analysis (very verbose)\n";
     std::cout << "  --limit <n>           Limit analysis to n instructions\n";
     std::cout << "  -j, --jobs <n>        Parallel workers for codegen and batch generation (0=auto)\n";
+    std::cout << "  --target meta         Emit a compact gbl project for the Gamebuino META\n";
+    std::cout << "                        (coverage-driven; see targets/meta/README.md)\n";
+    std::cout << "  --coverage <file>     gbl coverage profile for --target meta (repeatable)\n";
+    std::cout << "  --meta-precise        Poll interrupts before every instruction (differential tests)\n";
+    std::cout << "  --meta-static         Add the code found by static analysis (no play session needed)\n";
+    std::cout << "  --meta-bytes-per-instruction <n>  Flash estimate per compiled instruction (default 20)\n";
+    std::cout << "  --meta-code-budget <bytes>        Flash for generated code (default: 240 KiB - runtime - ROM)\n";
+    std::cout << "  --meta-stream auto|on|off         Read the ROM from the SD card (auto: ROMs of 256 KiB or more)\n";
+    std::cout << "  --rom-profile <file>              ROM data reads recorded by the host (--rom-profile-out)\n";
+    std::cout << "  --meta-rom-resident-kib <n>       Streamed ROM kept in flash (default: up to half the free flash)\n";
+    std::cout << "  --meta-dir <dir>      gbl target templates (normally auto-detected)\n";
     std::cout << "  --android             Also emit an Android project scaffold (single-ROM only)\n";
     std::cout << "  --android-package <p> Android Java package (default: io.gbrecompiled.<game>)\n";
     std::cout << "  --android-app-name <n> Android app name (default: ROM title)\n";
@@ -1718,6 +1730,149 @@ static bool generate_multi_rom_module(const fs::path& rom_path,
     return true;
 }
 
+static fs::path resolve_meta_dir(const char* argv0, const fs::path& explicit_dir) {
+    std::vector<fs::path> candidates;
+    if (!explicit_dir.empty()) candidates.push_back(explicit_dir);
+    if (const char* env = std::getenv("GBRECOMP_META_DIR")) {
+        if (*env) candidates.emplace_back(env);
+    }
+    std::error_code error;
+    const fs::path executable = fs::absolute(argv0, error);
+    if (!error) {
+        candidates.push_back(executable.parent_path() / "targets" / "meta");
+        candidates.push_back(executable.parent_path().parent_path().parent_path() / "targets" / "meta");
+    }
+    candidates.push_back(fs::current_path() / "targets" / "meta");
+#ifdef GBRECOMP_DEFAULT_META_DIR
+    candidates.emplace_back(GBRECOMP_DEFAULT_META_DIR);
+#endif
+    for (const fs::path& candidate : candidates) {
+        error.clear();
+        if (fs::is_regular_file(candidate / "runtime" / "gbl.h", error) &&
+            fs::is_regular_file(candidate / "platform" / "platformio.ini.in", error)) {
+            return fs::weakly_canonical(candidate, error);
+        }
+    }
+    return {};
+}
+
+/* --meta-code-budget: flash bytes for generated code (0 = derived from the
+ * ROM size, see MetaTargetOptions::code_budget_bytes). */
+static size_t g_meta_code_budget = 0;
+static int g_meta_stream = -1;                  /* --meta-stream auto|on|off */
+static std::vector<fs::path> g_rom_profiles;    /* --rom-profile FILE */
+static size_t g_meta_resident = 0;              /* --meta-rom-resident-kib */
+
+static int run_meta_target(const char* argv0, const std::string& rom_path,
+                           const std::string& output_dir, const std::string& output_prefix,
+                           const fs::path& explicit_meta_dir,
+                           const std::vector<fs::path>& coverage_paths, bool precise,
+                           bool static_coverage, size_t bytes_per_instruction,
+                           bool emit_comments) {
+    gbrecomp::MetaTargetOptions options;
+    options.template_dir = resolve_meta_dir(argv0, explicit_meta_dir);
+    if (options.template_dir.empty()) {
+        std::cerr << "Error: could not locate targets/meta. Use --meta-dir or GBRECOMP_META_DIR.\n";
+        return 1;
+    }
+    auto rom = gbrecomp::ROM::load(rom_path);
+    if (!rom || !rom->is_valid()) {
+        std::cerr << "Error: cannot load ROM " << rom_path;
+        if (rom) std::cerr << ": " << rom->error();
+        std::cerr << "\n";
+        return 1;
+    }
+    options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string())
+                                         : output_prefix;
+    options.output_dir = output_dir.empty() ? fs::path(fs::path(rom_path).stem().string() + "_meta")
+                                            : fs::path(output_dir);
+    options.coverage_files = coverage_paths;
+    options.bytes_per_instruction = bytes_per_instruction;
+    options.code_budget_bytes = g_meta_code_budget;
+    options.stream = g_meta_stream;
+    options.rom_profile_files = g_rom_profiles;
+    options.rom_resident_bytes = g_meta_resident;
+    if (static_coverage) {
+        /* Everything the control-flow analysis reaches, without the
+         * aggressive data scan: a play-free profile that the emitter merges
+         * with any recorded sessions. */
+        gbrecomp::AnalyzerOptions analyze_opts;
+        analyze_opts.aggressive_scan = false;
+        for (const auto& overlay : detect_oam_dma_overlays(*rom))
+            analyze_opts.ram_overlays.push_back(overlay);
+        auto analysis = gbrecomp::analyze(*rom, analyze_opts);
+        std::set<uint32_t> entries;
+        for (const auto& [key, block] : analysis.blocks) entries.insert(key);
+        for (uint32_t key : analysis.label_addresses) entries.insert(key);
+        for (uint32_t key : analysis.call_targets) entries.insert(key);
+        std::error_code ec;
+        fs::create_directories(options.output_dir, ec);
+        const fs::path static_path = options.output_dir / "static-analysis.cov";
+        std::ofstream cov(static_path);
+        if (!cov) {
+            std::cerr << "Error: cannot write " << static_path.string() << "\n";
+            return 1;
+        }
+        cov << "# gbl coverage v1 from static analysis\n";
+        size_t written = 0;
+        for (const auto& ins : analysis.instructions) {
+            if (ins.address >= 0x8000 || ins.bank == gbrecomp::UNKNOWN_BANK) continue;
+            const unsigned bank = ins.address < 0x4000 ? 0u : ins.bank;
+            const uint32_t key = (static_cast<uint32_t>(ins.bank) << 16) | ins.address;
+            const unsigned flags = 5u | (entries.count(key) ? 2u : 0u); /* 4: speculative */
+            char line[32];
+            std::snprintf(line, sizeof(line), "%02x %04x %x\n", bank, ins.address, flags);
+            cov << line;
+            written++;
+        }
+        cov.close();
+        std::cout << std::dec << "Static analysis: " << written << " instructions\n";
+        options.coverage_files.push_back(static_path);
+    }
+    options.precise = precise;
+    options.emit_comments = emit_comments;
+
+    gbrecomp::MetaTargetStats stats;
+    std::string error;
+    if (!gbrecomp::generate_meta_project(*rom, options, stats, error)) {
+        std::cerr << "Error: " << error << "\n";
+        return 1;
+    }
+    if (coverage_paths.empty()) {
+        std::cout << "No --coverage profile: the project runs everything in the gbl interpreter.\n"
+                     "Record a profile with host/build/" << options.name << "_profile --interp --coverage <file>\n"
+                     "and regenerate with --coverage <file> (see targets/meta/README.md).\n";
+    }
+    const size_t cart_ram = rom->header().ram_size_bytes;
+    if (cart_ram > 4096) {
+        std::cout << "Warning: " << cart_ram << " bytes of cartridge RAM are allocated in the "
+                     "META's 32 KiB; check the PlatformIO RAM report.\n";
+    }
+    std::cout << std::dec;
+    std::cout << "Flash budget: about " << stats.budget_instructions << " compiled instructions";
+    if (stats.speculative)
+        std::cout << " (static analysis contributes " << stats.speculative_kept << " of "
+                  << stats.speculative << ")";
+    std::cout << "\n";
+    std::cout << "gbl project written to " << options.output_dir.string() << "\n"
+              << "  coverage records:   " << stats.covered << "\n"
+              << "  compiled:           " << stats.compiled << " instructions in "
+              << stats.regions << " regions\n"
+              << "  interpreter only:   " << stats.dropped << "\n"
+              << "  dispatch entries:   " << stats.dispatch_entries << "\n"
+              << "  wait loops:         " << stats.spin_loops << " polling, " << stats.counted_loops
+              << " delay (fast-forwarded)\n"
+              << (stats.stream ? "  ROM streaming:      " + std::to_string(stats.resident_chunks * 4) +
+                                     " KiB of banks 1+ in flash, " + std::to_string(stats.streamed_chunks * 4) +
+                                     " KiB read from the SD card as " + stats.stream_file + "\n"
+                               : std::string())
+              << (precise ? "  mode:               precise (interrupt poll per instruction)\n" : "")
+              << "Build firmware:  pio run -d " << options.output_dir.string() << "\n"
+              << "Build host test: cmake -G Ninja -S " << (options.output_dir / "host").string()
+              << " -B " << (options.output_dir / "host" / "build").string() << "\n";
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     // Parse command line
     if (argc < 2) {
@@ -1760,6 +1915,12 @@ int main(int argc, char* argv[]) {
     bool emit_android_project = false;
     std::string android_package;
     std::string android_app_name;
+    std::string target = "desktop";
+    std::vector<fs::path> coverage_paths;
+    bool meta_precise = false;
+    bool meta_static = false;
+    size_t meta_bpi = 20;
+    fs::path meta_dir;
     
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -1871,6 +2032,39 @@ int main(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 annotation_file_path = argv[++i];
             }
+        } else if (arg == "--target") {
+            if (i + 1 < argc) {
+                target = argv[++i];
+            }
+        } else if (arg == "--coverage") {
+            if (i + 1 < argc) {
+                coverage_paths.emplace_back(argv[++i]);
+            }
+        } else if (arg == "--meta-precise") {
+            meta_precise = true;
+        } else if (arg == "--meta-static") {
+            meta_static = true;
+        } else if (arg == "--meta-bytes-per-instruction") {
+            if (i + 1 < argc) {
+                meta_bpi = std::stoul(argv[++i]);
+            }
+        } else if (arg == "--meta-stream") {
+            if (i + 1 < argc) {
+                const std::string v = argv[++i];
+                g_meta_stream = v == "on" ? 1 : v == "off" ? 0 : -1;
+            }
+        } else if (arg == "--rom-profile") {
+            if (i + 1 < argc) g_rom_profiles.emplace_back(argv[++i]);
+        } else if (arg == "--meta-rom-resident-kib") {
+            if (i + 1 < argc) g_meta_resident = std::stoul(argv[++i]) * 1024u;
+        } else if (arg == "--meta-code-budget") {
+            if (i + 1 < argc) {
+                g_meta_code_budget = std::stoul(argv[++i]);
+            }
+        } else if (arg == "--meta-dir") {
+            if (i + 1 < argc) {
+                meta_dir = argv[++i];
+            }
         } else if (arg[0] != '-') {
             rom_path = arg;
         } else {
@@ -1882,6 +2076,18 @@ int main(int argc, char* argv[]) {
     if (rom_path.empty()) {
         std::cerr << "Error: No ROM file specified\n";
         print_usage(argv[0]);
+        return 1;
+    }
+    if (target != "desktop" && target != "meta") {
+        std::cerr << "Error: unknown --target '" << target << "' (expected desktop or meta)\n";
+        return 1;
+    }
+    if (target == "meta") {
+        return run_meta_target(argv[0], rom_path, output_dir, output_prefix, meta_dir,
+                               coverage_paths, meta_precise, meta_static, meta_bpi, emit_comments);
+    }
+    if (!coverage_paths.empty() || meta_precise || meta_static || !meta_dir.empty()) {
+        std::cerr << "Error: --coverage, --meta-precise, --meta-static and --meta-dir require --target meta\n";
         return 1;
     }
     if (!emit_android_project && (!android_package.empty() || !android_app_name.empty())) {

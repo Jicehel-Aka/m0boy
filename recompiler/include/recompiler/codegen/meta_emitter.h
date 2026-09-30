@@ -1,0 +1,73 @@
+/**
+ * @file meta_emitter.h
+ * @brief Compact coverage-driven code generation for the gbl runtime
+ *        (Gamebuino META and other small microcontrollers).
+ *
+ * Unlike the desktop emitter, this backend compiles only instructions that a
+ * profiling run actually executed (see targets/meta/host), relies on the gbl
+ * interpreter for everything else, and trades per-instruction timing for
+ * block-level cycle accounting so the generated code fits in on-chip flash.
+ */
+
+#ifndef RECOMPILER_CODEGEN_META_EMITTER_H
+#define RECOMPILER_CODEGEN_META_EMITTER_H
+
+#include "recompiler/rom.h"
+
+#include <cstddef>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+namespace gbrecomp {
+
+struct MetaTargetOptions {
+    std::string name;                                  ///< C identifier for files
+    std::filesystem::path output_dir;
+    std::filesystem::path template_dir;                ///< targets/meta
+    std::vector<std::filesystem::path> coverage_files; ///< gbl coverage v1 files
+    bool emit_comments = true;
+    bool precise = false;      ///< poll interrupts before every instruction
+    size_t max_region_instructions = 256;
+    /* Flash available for generated code; 0 = derive from the META's 240 KiB
+     * application area minus the runtime (~40 KiB) and the ROM image.
+     * Played coverage is always compiled; speculative (static analysis)
+     * instructions fill the remaining budget, loops first, then bank 0. */
+    size_t code_budget_bytes = 0;
+    size_t bytes_per_instruction = 20;
+    /* ROM streaming from the SD card: -1 automatic (ROMs of 256 KiB or more,
+     * which cannot fit in flash), 0 off, 1 on.  Bank 0 and the most-read
+     * 4 KiB chunks of the other banks stay in flash (the resident set), the
+     * rest is read from <stream name>.GB on the card through a small cache. */
+    int stream = -1;
+    std::vector<std::filesystem::path> rom_profile_files; ///< host --rom-profile-out
+    size_t rom_resident_bytes = 0; ///< 0 = automatic (at most half the free flash)
+};
+
+struct MetaTargetStats {
+    size_t covered = 0;       ///< coverage records read
+    size_t compiled = 0;      ///< instructions emitted as C
+    size_t dropped = 0;       ///< covered but left to the interpreter
+    size_t regions = 0;
+    size_t dispatch_entries = 0;
+    size_t speculative = 0;      ///< static-analysis instructions offered
+    size_t speculative_kept = 0; ///< ... and compiled within the budget
+    size_t budget_instructions = 0;
+    bool stream = false;         ///< ROM streamed from the SD card
+    std::string stream_file;     ///< its 8.3 name on the card
+    size_t resident_chunks = 0;  ///< 4 KiB chunks kept in flash (bank 0 excluded)
+    size_t streamed_chunks = 0;  ///< chunks read from the card
+    size_t spin_loops = 0;       ///< polling loops fast-forwarded to the next change
+    size_t counted_loops = 0;    ///< DEC/JR NZ delay loops fast-forwarded
+};
+
+/**
+ * @brief Write a PlatformIO + host-harness project for the gbl runtime.
+ * @return false and fill @p error when generation is impossible.
+ */
+bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
+                           MetaTargetStats& stats, std::string& error);
+
+} // namespace gbrecomp
+
+#endif

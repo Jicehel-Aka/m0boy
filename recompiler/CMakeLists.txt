@@ -10,6 +10,7 @@ add_library(gbrecomp_core STATIC
     src/ir/ir_builder.cpp
     src/ir/ir_optimizer.cpp
     src/codegen/c_emitter.cpp
+    src/codegen/meta_emitter.cpp
 )
 
 target_include_directories(gbrecomp_core
@@ -35,5 +36,6 @@ add_executable(gbrecomp src/main.cpp)
 target_link_libraries(gbrecomp PRIVATE gbrecomp_core)
 target_compile_definitions(gbrecomp PRIVATE
     GBRECOMP_DEFAULT_RUNTIME_DIR="${PROJECT_SOURCE_DIR}/runtime"
+    GBRECOMP_DEFAULT_META_DIR="${PROJECT_SOURCE_DIR}/targets/meta"
     GBRECOMP_VERSION="${PROJECT_VERSION}"
 )
