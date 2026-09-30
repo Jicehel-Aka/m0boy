@@ -325,8 +325,12 @@ def make_rom(seed: int) -> bytes:
     return bytes(rom)
 
 
-def run(cmd: list[str], cwd: Path | None = None) -> str:
-    proc = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+def run(cmd: list[str], cwd: Path | None = None, timeout: int = 600) -> str:
+    try:
+        proc = subprocess.run(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                              timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise SystemExit("command timed out (livelock?): " + " ".join(cmd))
     if proc.returncode != 0:
         sys.stdout.write(proc.stdout)
         raise SystemExit("command failed: " + " ".join(cmd))
@@ -446,6 +450,15 @@ def main() -> int:
                           "--frames", str(FRAMES), "--wram-hash-bytes", str(RESULT_BYTES)])
         results["packed"] = parse(packed_out)
         pm = re.search(r"rom_stream sectors_read (\d+)", packed_out)
+        # C stack exhaustion: compiled regions unwind and the dispatcher
+        # resumes them. Small budgets (bytes) include the ones where a
+        # region is entered with too little room for its own guard, which
+        # used to spin forever; zero budget must fall back to the interpreter.
+        # Frames and WRAM must match the interpreter everywhere, and a 1 KiB
+        # stack must not even change the full machine state.
+        stack_runs = {n: parse(run([packed_bin, "--frames", str(FRAMES), "--stack-bytes", str(n),
+                                    "--wram-hash-bytes", str(RESULT_BYTES)], timeout=60))
+                      for n in (0, 64, 80, 128, 192, 256, 1024)}
         # Cartridge RAM: on the card (default for 8 KiB) or in RAM, same
         # machine state; and a second run reads back what the first saved.
         ramb = build_host(tmp / "fast", "build-eram-ram", "-DGBL_ERAM_ON_SD=0")
@@ -477,6 +490,11 @@ def main() -> int:
             failures.append("wait-loop fast-forward changed the fast build's state")
         if any(results["packed"][k] != results["fast"][k] for k in ("run_hash", "wram_hash", "state_hash")):
             failures.append("the packed-ROM build differs from the flash build")
+        for n, r in stack_runs.items():
+            if r["run_hash"] != ref["run_hash"] or r["wram_hash"] != ref["wram_hash"]:
+                failures.append("a %d-byte C stack changes the frames or WRAM" % n)
+        if stack_runs[1024]["state_hash"] != results["packed"]["state_hash"]:
+            failures.append("a 1 KiB C stack changes the machine state")
         if "ROM packed:" not in pgen or not pm or int(pm.group(1)) == 0:
             failures.append("packed ROM not exercised: %s / %s" % (
                 re.findall(r"ROM packed:.*|--meta-pack:.*", pgen), pm.group(0) if pm else packed_out))

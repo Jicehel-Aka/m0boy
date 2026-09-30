@@ -172,6 +172,14 @@ recurses without returning (a crashed game looping on `RST $38`) therefore
 unwinds instead of overflowing the C stack. The check costs about 0.3%
 (SML).
 
+`gbl_exec` and `gbl_run` only call a compiled region when at least
+`GBL_EXEC_HEADROOM` (512) bytes remain above the limit, so the region's own
+guard always passes at least once. Without that margin a region entered
+just above the limit returned at once without progress and the dispatcher
+called it again forever (seen on R.C. Pro-Am with a packed ROM at frame 86).
+With no room at all, `gbl_run` interprets instead. The host takes
+`--stack-kib N` or `--stack-bytes N` to reproduce small budgets.
+
 ## ROMs larger than the flash (SD streaming)
 
 The whole ROM normally sits in the META's 240 KiB of application flash, next
@@ -444,7 +452,10 @@ ctest --test-dir build -R meta --output-on-failure
     build;
   - a packed build (`--meta-pack`, 4 KiB raw, 2-sector cache) to give the
     same state as the flash build, with sectors actually decoded (the data
-    tables are compressible, so back-references are exercised).
+    tables are compressible, so back-references are exercised);
+  - the packed build run with 0 to 1024 bytes of C stack (`--stack-bytes`)
+    to finish (60 s timeout, catches the dispatcher livelock) with the
+    interpreter's frames and WRAM, and 1 KiB to keep the full machine state.
 - `meta_fat_finds_streamed_rom` builds FAT16 and FAT32 images with
   `mkfs.fat` and mtools, in the root and in a directory, behind a partition
   table, with a lower-case name and a file in four pieces. It requires the

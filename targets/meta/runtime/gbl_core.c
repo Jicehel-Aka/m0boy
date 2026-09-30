@@ -765,9 +765,13 @@ gbl_fn gbl_lookup(uint16_t pc) {
  * region it calls always passes its own ENTER() check: otherwise a region
  * refused at entry would be called again forever without progress (seen
  * with deep call chains in R.C. Pro-Am under the META's 3 KiB budget). */
+#ifndef GBL_EXEC_HEADROOM
+#define GBL_EXEC_HEADROOM 512u
+#endif
+
 void gbl_exec(void) {
     char probe;
-    if ((uintptr_t)&probe < gbl_stack_limit) return; /* unwind: callers resume */
+    if ((uintptr_t)&probe < gbl_stack_limit + GBL_EXEC_HEADROOM) return; /* unwind: callers resume */
     uint16_t sp0 = gbr.sp;
     do {
         gbl_fn fn = gbl_interp_only ? 0 : gbl_lookup(gbr.pc);
@@ -776,8 +780,12 @@ void gbl_exec(void) {
 }
 
 void gbl_run(void) {
+    char probe;
+    /* Same margin as gbl_exec: a region called here must pass its guard,
+     * otherwise it returns without progress and this loop never ends. */
+    int room = (uintptr_t)&probe >= gbl_stack_limit + GBL_EXEC_HEADROOM;
     for (;;) {
-        gbl_fn fn = gbl_interp_only ? 0 : gbl_lookup(gbr.pc);
+        gbl_fn fn = (gbl_interp_only || !room) ? 0 : gbl_lookup(gbr.pc);
         if (fn) fn(); else gbl_interp_block();
     }
 }

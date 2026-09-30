@@ -6,7 +6,7 @@
  * interpreter, and capture frames.
  *
  *   gbl_host [--frames N] [--interp] [--input FILE] [--coverage FILE]
- *            [--dump-frame N FILE.ppm]... [--hash-every K] [--stack-kib N]
+ *            [--dump-frame N FILE.ppm]... [--hash-every K] [--stack-kib N | --stack-bytes N]
  *            [--wav FILE.wav] [--mute MASK] [--wram-hash-bytes N] [--dump-wram FILE]
  *            [--static-skip-check] [--max-seconds S] [--save FILE]
  *            [--trace FRAME COUNT (profile build)]
@@ -607,7 +607,7 @@ static void load_inputs(const char *path) {
 }
 
 int main(int argc, char **argv) {
-    unsigned stack_kib = 256;
+    unsigned stack_bytes = 256u * 1024u;
     clock_gettime(CLOCK_MONOTONIC, &run_start);
 #ifdef GBL_ROM_TRACE
     for (int i = 0; i < 256; i++) trace_tag[i] = -1;
@@ -658,7 +658,8 @@ int main(int argc, char **argv) {
             trace_left = atol(argv[++i]);
         }
 #endif
-        else if (!strcmp(argv[i], "--stack-kib") && i + 1 < argc) stack_kib = (unsigned)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--stack-kib") && i + 1 < argc) stack_bytes = (unsigned)atoi(argv[++i]) * 1024u;
+        else if (!strcmp(argv[i], "--stack-bytes") && i + 1 < argc) stack_bytes = (unsigned)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--dump-frame") && i + 2 < argc && dump_count < MAX_DUMPS) {
             dumps[dump_count].frame = (uint32_t)atoi(argv[++i]);
             dumps[dump_count].path = argv[++i];
@@ -672,7 +673,7 @@ int main(int argc, char **argv) {
     sdl_init();
 #endif
     char base;
-    gbl_stack_limit = (uintptr_t)&base - (uintptr_t)stack_kib * 1024u;
+    gbl_stack_limit = (uintptr_t)&base - (uintptr_t)stack_bytes;
     gbl_reset();
     gbl_apu_set_rate(WAV_RATE);
     gbl_run();
