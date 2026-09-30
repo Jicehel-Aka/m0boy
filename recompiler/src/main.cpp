@@ -145,6 +145,7 @@ void print_usage(const char* program) {
     std::cout << "  --meta-stream auto|on|off         Read the ROM from the SD card (auto: ROMs of 256 KiB or more)\n";
     std::cout << "  --rom-profile <file>              ROM data reads recorded by the host (--rom-profile-out)\n";
     std::cout << "  --meta-rom-resident-kib <n>       Streamed ROM kept in flash (default: up to half the free flash)\n";
+    std::cout << "  --meta-pack                       Streamed ROM LZSS-compressed in flash instead of the SD card\n";
     std::cout << "  --meta-dir <dir>      gbl target templates (normally auto-detected)\n";
     std::cout << "  --android             Also emit an Android project scaffold (single-ROM only)\n";
     std::cout << "  --android-package <p> Android Java package (default: io.gbrecompiled.<game>)\n";
@@ -1762,6 +1763,7 @@ static size_t g_meta_code_budget = 0;
 static int g_meta_stream = -1;                  /* --meta-stream auto|on|off */
 static std::vector<fs::path> g_rom_profiles;    /* --rom-profile FILE */
 static size_t g_meta_resident = 0;              /* --meta-rom-resident-kib */
+static bool g_meta_pack = false;                /* --meta-pack */
 
 static int run_meta_target(const char* argv0, const std::string& rom_path,
                            const std::string& output_dir, const std::string& output_prefix,
@@ -1792,6 +1794,7 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
     options.stream = g_meta_stream;
     options.rom_profile_files = g_rom_profiles;
     options.rom_resident_bytes = g_meta_resident;
+    options.pack = g_meta_pack;
     if (static_coverage) {
         /* Everything the control-flow analysis reaches, without the
          * aggressive data scan: a play-free profile that the emitter merges
@@ -1862,10 +1865,19 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
               << "  dispatch entries:   " << stats.dispatch_entries << "\n"
               << "  wait loops:         " << stats.spin_loops << " polling, " << stats.counted_loops
               << " delay (fast-forwarded)\n"
-              << (stats.stream ? "  ROM streaming:      " + std::to_string(stats.resident_chunks * 4) +
-                                     " KiB of banks 1+ in flash, " + std::to_string(stats.streamed_chunks * 4) +
-                                     " KiB read from the SD card as " + stats.stream_file + "\n"
-                               : std::string())
+              << (stats.stream && !stats.packed
+                      ? "  ROM streaming:      " + std::to_string(stats.resident_chunks * 4) +
+                            " KiB of banks 1+ in flash, " + std::to_string(stats.streamed_chunks * 4) +
+                            " KiB read from the SD card as " + stats.stream_file + "\n"
+                      : std::string())
+              << (stats.packed
+                      ? "  ROM packed:         " + std::to_string(stats.resident_chunks * 4) +
+                            " KiB of banks 1+ raw, " + std::to_string(stats.packed_raw_bytes / 1024) +
+                            " KiB LZSS-packed in flash into " + std::to_string((stats.packed_bytes + 1023) / 1024) +
+                            " KiB\n"
+                      : std::string())
+              << (!stats.pack_note.empty() ? "  --meta-pack:        not applied, " + stats.pack_note + "\n"
+                                           : std::string())
               << (precise ? "  mode:               precise (interrupt poll per instruction)\n" : "")
               << "Build firmware:  pio run -d " << options.output_dir.string() << "\n"
               << "Build host test: cmake -G Ninja -S " << (options.output_dir / "host").string()
@@ -2048,6 +2060,8 @@ int main(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 meta_bpi = std::stoul(argv[++i]);
             }
+        } else if (arg == "--meta-pack") {
+            g_meta_pack = true;
         } else if (arg == "--meta-stream") {
             if (i + 1 < argc) {
                 const std::string v = argv[++i];

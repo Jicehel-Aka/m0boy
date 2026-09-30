@@ -42,6 +42,11 @@ struct MetaTargetOptions {
     int stream = -1;
     std::vector<std::filesystem::path> rom_profile_files; ///< host --rom-profile-out
     size_t rom_resident_bytes = 0; ///< 0 = automatic (at most half the free flash)
+    /* Streamed part of the ROM kept in flash, LZSS-compressed per 512-byte
+     * sector, instead of on the SD card (GBL_ROM_PACKED).  Falls back to SD
+     * streaming (ROMs of 256 KiB or more) or to a plain build when the
+     * compressed ROM leaves too little flash for code. */
+    bool pack = false;
 };
 
 struct MetaTargetStats {
@@ -56,7 +61,11 @@ struct MetaTargetStats {
     bool stream = false;         ///< ROM streamed from the SD card
     std::string stream_file;     ///< its 8.3 name on the card
     size_t resident_chunks = 0;  ///< 4 KiB chunks kept in flash (bank 0 excluded)
-    size_t streamed_chunks = 0;  ///< chunks read from the card
+    size_t streamed_chunks = 0;  ///< chunks read from the card (or packed)
+    bool packed = false;         ///< streamed chunks compressed in flash
+    size_t packed_bytes = 0;     ///< their compressed size
+    size_t packed_raw_bytes = 0; ///< ... and their size before compression
+    std::string pack_note;       ///< why --meta-pack was not applied
     size_t spin_loops = 0;       ///< polling loops fast-forwarded to the next change
     size_t counted_loops = 0;    ///< DEC/JR NZ delay loops fast-forwarded
 };

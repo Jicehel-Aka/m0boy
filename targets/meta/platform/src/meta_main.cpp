@@ -30,6 +30,7 @@
 extern "C" {
 #include "gbl.h"
 #include "gbl_config.h"
+#include "gbl_options.h"
 }
 
 #ifndef META_MAX_SKIP
@@ -238,7 +239,7 @@ extern "C" void gbl_platform_vblank(void) {
             SerialUSB.print(", interp ");
 #if GBL_ROM_STREAM
             SerialUSB.print(gbl_interp_instrs);
-            SerialUSB.print(", SD sectors ");
+            SerialUSB.print(GBL_ROM_PACKED ? ", unpacked sectors " : ", SD sectors ");
             SerialUSB.print(gbl_stream_misses - stream_reported);
             SerialUSB.print(" (errors ");
             SerialUSB.print(meta_stream_errors);
@@ -301,7 +302,7 @@ static void __attribute__((unused)) boot_error(uint16_t colour_be, const char *t
     }
 }
 
-#if GBL_ROM_STREAM
+#if GBL_ROM_STREAM && !GBL_ROM_PACKED /* packed: the ROM is all in flash */
 static void stream_error_screen(int err) {
     static const uint16_t colour_be[] = {0, 0x1F00, 0x00F8, 0x00FD, 0x1FF8}; /* RGB565, byte-swapped */
     static const char *const text[] = {
@@ -323,7 +324,7 @@ void setup() {
     SerialUSB.begin(115200);
     /* Also keeps gbl_gen_version in the binary (compile.sh reads it there). */
     SerialUSB.println(gbl_gen_version);
-#if GBL_ROM_STREAM
+#if GBL_ROM_STREAM && !GBL_ROM_PACKED
     /* Before gbl_reset: the lookup borrows the stream cache. */
     int stream_err = meta_stream_init(card_ok);
     if (stream_err) stream_error_screen(stream_err);

@@ -186,3 +186,75 @@ gbl_pop:
     .size gbl_pop, . - gbl_pop
 
 #endif
+
+#if GBL_UNPACK_ASM && defined(__ARM_ARCH_6M__)
+
+    .syntax unified
+    .thumb
+
+/*
+ * void gbl_unpack512_asm(const uint8_t *src, uint8_t *dst)
+ *
+ * LZSS decoder for one 512-byte ROM sector of a --meta-pack build (the C
+ * reference is unpack512 in gbl_core.c).  Bits are kept left-aligned in r3,
+ * so shifting out the token's flag bit leaves it in the carry: one LSLS
+ * per token instead of shift, mask and test.  Refills a byte at a time to
+ * keep at least 13 bits (the longest token).
+ */
+#if GBL_PPU_RAMFUNC
+    .section .data.gbl_ramfunc.gbl_unpack512_asm, "ax", %progbits
+#else
+    .section .text.gbl_unpack512_asm, "ax", %progbits
+#endif
+    .align 2
+    .global gbl_unpack512_asm
+    .type gbl_unpack512_asm, %function
+    .thumb_func
+gbl_unpack512_asm:
+    push    {r4-r7, lr}
+    movs    r2, #2
+    lsls    r2, r2, #8
+    adds    r2, r2, r1             /* end of the sector */
+    movs    r3, #0                 /* bits, next one in bit 31 */
+    movs    r4, #0                 /* bits available */
+1:  cmp     r4, #13
+    bge     2f
+    ldrb    r5, [r0]
+    adds    r0, #1
+    movs    r6, #24
+    subs    r6, r6, r4
+    lsls    r5, r5, r6
+    orrs    r3, r5
+    adds    r4, #8
+    b       1b
+2:  lsls    r3, r3, #1             /* C = flag: 1 literal, 0 reference */
+    bcc     4f
+    lsrs    r5, r3, #24
+    strb    r5, [r1]
+    adds    r1, #1
+    lsls    r3, r3, #8
+    subs    r4, #9
+    cmp     r1, r2
+    blo     1b
+    pop     {r4-r7, pc}
+4:  lsrs    r5, r3, #24            /* offset - 1 */
+    lsls    r3, r3, #8
+    lsrs    r6, r3, #28            /* length - 2 */
+    lsls    r3, r3, #4
+    subs    r4, #13
+    mvns    r5, r5                 /* -offset */
+    adds    r5, r5, r1             /* source: dst - offset */
+    adds    r6, #2
+5:  ldrb    r7, [r5]
+    adds    r5, #1
+    strb    r7, [r1]
+    adds    r1, #1
+    cmp     r1, r2
+    bhs     6f
+    subs    r6, #1
+    bne     5b
+    b       1b
+6:  pop     {r4-r7, pc}
+    .size gbl_unpack512_asm, . - gbl_unpack512_asm
+
+#endif

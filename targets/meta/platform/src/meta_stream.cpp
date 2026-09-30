@@ -15,7 +15,9 @@ extern "C" {
 #include "gbl_options.h"
 }
 
-#if GBL_ROM_STREAM
+uint32_t meta_stream_errors; /* sectors that could not be read */
+
+#if GBL_ROM_STREAM && !GBL_ROM_PACKED
 
 #include <string.h>
 
@@ -26,7 +28,6 @@ extern "C" {
 
 static meta_extent extents[MAX_EXTENTS];
 static int n_extents;
-uint32_t meta_stream_errors;
 
 static int read_sector(uint32_t lba, uint8_t *buf) { return meta_sd_read(lba, buf); }
 

@@ -112,6 +112,7 @@ int gbl_platform_rom_read(uint32_t sector, uint8_t *dst);
  * (e.g. to locate the ROM file); gbl_reset() empties the cache. */
 uint8_t *gbl_stream_scratch(void);
 extern uint32_t gbl_stream_misses;  /* sectors read so far */
+extern uint32_t gbl_stream_unpacked; /* ... decoded from compressed flash */
 
 /* ---- cartridge RAM saves ------------------------------------------------- */
 /* Sector `sector` (512 bytes) of the cartridge RAM file; return 0 when there

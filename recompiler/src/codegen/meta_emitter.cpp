@@ -322,7 +322,8 @@ const char* kR16[4] = {"gbr.bc", "gbr.de", "gbr.hl", "gbr.sp"};
 class Generator {
 public:
     Generator(const ROM& rom, const MetaTargetOptions& opt) : rom_(rom), opt_(opt) {
-        stream_ = opt.stream == 1 || (opt.stream < 0 && rom.size() >= 0x40000);
+        stream_ = opt.stream == 1 || (opt.stream < 0 && rom.size() >= 0x40000) || opt.pack;
+        pack_ = opt.pack;
     }
 
     /* ROM streaming (see MetaTargetOptions::stream): plan_stream reads the
@@ -385,8 +386,9 @@ private:
     bool ei_pending_ = false;
     size_t spin_loops_ = 0, counted_loops_ = 0;
     bool replaying_ = false;
-    bool stream_ = false;
+    bool stream_ = false, pack_ = false;
     size_t stream_code_budget_ = 0, resident_budget_ = 0;
+    std::vector<std::vector<uint8_t>> packed_sector_; /* per ROM sector (banks 1+) */
     std::vector<uint64_t> chunk_weight_; /* per 4 KiB ROM chunk */
     std::vector<int> resident_index_;    /* per chunk: slot in flash, -1 on the card */
 
@@ -527,6 +529,54 @@ Ins* Generator::resolve(const Ins& from, uint16_t target, int& bank_check) {
     return found;
 }
 
+namespace {
+/* LZSS as decoded by gbl_core.c (unpack512 / gbl_unpack512_asm): per token
+ * a flag bit, 1 = literal byte, 0 = back-reference of 8-bit offset - 1 and
+ * 4-bit length - 2 into the bytes already produced; MSB-first bitstream.
+ * Greedy longest match (offsets 1-256, lengths 2-17). */
+std::vector<uint8_t> lzss_encode(const uint8_t* data, size_t n) {
+    std::vector<uint8_t> out;
+    uint32_t acc = 0;
+    int nbits = 0;
+    auto put = [&](uint32_t v, int bits) {
+        for (int b = bits - 1; b >= 0; b--) {
+            acc = (acc << 1) | ((v >> b) & 1u);
+            if (++nbits == 8) {
+                out.push_back(static_cast<uint8_t>(acc));
+                acc = 0;
+                nbits = 0;
+            }
+        }
+    };
+    size_t i = 0;
+    while (i < n) {
+        size_t best = 0, best_off = 0;
+        const size_t lo = i > 256 ? i - 256 : 0;
+        for (size_t p = i; p-- > lo;) {
+            size_t m = 0;
+            while (m < 17 && i + m < n && data[p + m] == data[i + m]) m++;
+            if (m > best) {
+                best = m;
+                best_off = i - p;
+                if (m == 17) break;
+            }
+        }
+        if (best >= 2) {
+            put(0, 1);
+            put(static_cast<uint32_t>(best_off - 1), 8);
+            put(static_cast<uint32_t>(best - 2), 4);
+            i += best;
+        } else {
+            put(1, 1);
+            put(data[i], 8);
+            i++;
+        }
+    }
+    if (nbits) out.push_back(static_cast<uint8_t>(acc << (8 - nbits)));
+    return out;
+}
+} // namespace
+
 bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
     const size_t chunks = (rom_.size() + 4095) / 4096;
     chunk_weight_.assign(chunks, 0);
@@ -546,14 +596,65 @@ bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
             if (page / 16 < chunks) chunk_weight_[page / 16] += count;
         }
     }
-    /* Flash: 240 KiB minus the runtime with the SD reader, bank 0 and the
-     * chunk map; the rest is shared between resident chunks and code. */
-    const size_t app = 245760, runtime = 45056;
-    const size_t fixed = runtime + 0x4000 + chunks;
-    const size_t available = app > fixed ? app - fixed : 0;
     size_t touched = 0;
     for (size_t c = 4; c < chunks; c++)
         if (chunk_weight_[c]) touched += 4096;
+    const size_t app = 245760;
+    if (pack_) {
+        /* Compressed flash: every sector of banks 1+ is packed now; the
+         * resident chunks (chosen later) stay raw instead.  Flash holds the
+         * runtime with the decoder, bank 0, the chunk map, the sector
+         * offsets, the resident chunks, the packed rest and the code. */
+        const size_t sectors = (rom_.size() + 511) / 512;
+        packed_sector_.assign(sectors, {});
+        size_t packed_total = 0, banked = 0;
+        for (size_t k = 32; k < sectors; k++) {
+            const size_t len = std::min<size_t>(512, rom_.size() - k * 512);
+            std::vector<uint8_t> c = lzss_encode(rom_.data() + k * 512, len);
+            if (c.size() >= len || len < 512) c.assign(rom_.data() + k * 512, rom_.data() + k * 512 + len);
+            packed_total += c.size();
+            banked += len;
+            packed_sector_[k] = std::move(c);
+        }
+        const size_t fixed = 40960 + 1024 + 0x4000 + chunks + 4 * (sectors + 1) + 4;
+        const size_t available = app > fixed ? app - fixed : 0;
+        /* Resident chunks cost their raw size minus what their compressed
+         * copy would have taken; favour code over raw data (a third). */
+        size_t resident = opt_.rom_resident_bytes ? opt_.rom_resident_bytes
+                                                  : std::min(touched, available / 3);
+        resident = resident / 4096 * 4096;
+        auto code_left = [&](size_t r) -> long long {
+            const double packed_rest = banked ? packed_total * double(banked - std::min(r, banked)) / banked : 0;
+            return static_cast<long long>(available) - static_cast<long long>(r) -
+                   static_cast<long long>(packed_rest);
+        };
+        const long long min_code = 16384;
+        if (code_left(resident) < min_code && code_left(0) >= min_code) resident = 0;
+        if (code_left(resident) < min_code) {
+            char note[160];
+            std::snprintf(note, sizeof(note),
+                          "compressed ROM (%zu KiB) leaves no room for code",
+                          (packed_total + 1023) / 1024);
+            stats.pack_note = note;
+            pack_ = false;
+            packed_sector_.clear();
+            if (rom_.size() < 0x40000 && opt_.stream != 1) {
+                stream_ = false; /* plain build: the ROM fits raw */
+                return true;
+            }
+        } else {
+            resident_budget_ = resident;
+            stream_code_budget_ = static_cast<size_t>(code_left(resident));
+            stats.stream = true;
+            stats.packed = true;
+            return true;
+        }
+    }
+    /* Flash: 240 KiB minus the runtime with the SD reader, bank 0 and the
+     * chunk map; the rest is shared between resident chunks and code. */
+    const size_t runtime = 45056;
+    const size_t fixed = runtime + 0x4000 + chunks;
+    const size_t available = app > fixed ? app - fixed : 0;
     resident_budget_ = opt_.rom_resident_bytes ? opt_.rom_resident_bytes
                                                : std::min(touched, available / 2);
     resident_budget_ = std::min(resident_budget_ / 4096 * 4096, available / 4096 * 4096);
@@ -573,6 +674,14 @@ void Generator::choose_resident(MetaTargetStats& stats) {
         resident_index_[order[k]] = slot++;
     stats.resident_chunks = static_cast<size_t>(slot);
     stats.streamed_chunks = chunk_weight_.size() > 4 ? chunk_weight_.size() - 4 - slot : 0;
+    if (pack_) {
+        stats.packed_bytes = stats.packed_raw_bytes = 0;
+        for (size_t k = 32; k < packed_sector_.size(); k++) {
+            if (resident_index_[k / 8] >= 0) continue;
+            stats.packed_bytes += packed_sector_[k].size();
+            stats.packed_raw_bytes += std::min<size_t>(512, rom_.size() - k * 512);
+        }
+    }
 }
 
 std::string Generator::region_name(int r) const {
@@ -1538,6 +1647,29 @@ std::string Generator::emit_rom() const {
             o << (c < 4 ? 0 : resident_index_[c] + 1) << ",";
         }
         o << "\n};\n";
+        if (pack_) {
+            /* Sectors of streamed chunks, LZSS-packed (512 bytes: stored). */
+            std::vector<uint8_t> blob;
+            std::vector<uint32_t> offs;
+            for (size_t k = 0; k < packed_sector_.size(); k++) {
+                offs.push_back(static_cast<uint32_t>(blob.size()));
+                const size_t c = k / 8;
+                if (k >= 32 && c < chunks && resident_index_[c] < 0)
+                    blob.insert(blob.end(), packed_sector_[k].begin(), packed_sector_[k].end());
+            }
+            offs.push_back(static_cast<uint32_t>(blob.size()));
+            blob.push_back(0);
+            blob.push_back(0); /* the decoders may read two bytes ahead */
+            o << "/* Streamed sectors, LZSS-packed in flash (GBL_ROM_PACKED). */\n"
+              << "const uint8_t gbl_rom_packed[" << blob.size() << "] = {";
+            emit_bytes(o, blob.data(), blob.size());
+            o << "\n};\nconst uint32_t gbl_rom_packed_off[" << offs.size() << "] = {";
+            for (size_t k = 0; k < offs.size(); k++) {
+                if (k % 12 == 0) o << "\n";
+                o << offs[k] << "u,";
+            }
+            o << "\n};\n";
+        }
         return o.str();
     }
     o << "/* ROM image for gbl (flash resident). */\n#include <stdint.h>\n\n"
@@ -1593,9 +1725,11 @@ std::string Generator::emit_config(std::string& error) const {
                      "SAV\"\n"
                : std::string())
       << (stream_ ? "#define GBL_ROM_STREAM 1\n#define GBL_ROM_CHUNKS " +
-                        std::to_string(chunk_weight_.size()) + "\n#define GBL_STREAM_NAME \"" +
-                        stream_name(opt_.name) + ".GB\"\n#define GBL_STREAM_NAME83 \"" +
-                        stream_name83(opt_.name) + "\"\n"
+                        std::to_string(chunk_weight_.size()) + "\n" +
+                        (pack_ ? std::string("#define GBL_ROM_PACKED 1\n")
+                               : "#define GBL_STREAM_NAME \"" + stream_name(opt_.name) +
+                                     ".GB\"\n#define GBL_STREAM_NAME83 \"" +
+                                     stream_name83(opt_.name) + "\"\n")
                   : std::string())
       << "#define GBL_TITLE \"" << [&] {
              std::string t;
@@ -1665,7 +1799,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     if (!gen.load_coverage(stats, error)) return false;
     if (gen.streaming()) {
         gen.choose_resident(stats);
-        stats.stream_file = stream_name(options.name) + ".GB";
+        if (!stats.packed) stats.stream_file = stream_name(options.name) + ".GB";
     }
     gen.build();
 

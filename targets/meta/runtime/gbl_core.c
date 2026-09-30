@@ -59,6 +59,59 @@ static void stream_reset(void) {
     stream_last = 0;
 }
 
+#if GBL_ROM_PACKED
+/* Compressed flash source: sector k of the ROM is gbl_rom_packed
+ * [off[k], off[k + 1]), LZSS-coded, or stored as is when that is 512
+ * bytes.  Only sectors outside bank 0 and the resident chunks are used. */
+extern const uint8_t gbl_rom_packed[];
+extern const uint32_t gbl_rom_packed_off[];
+
+/* Decode one 512-byte sector.  Bitstream MSB first; per token a flag bit:
+ * 1 = literal byte, 0 = back-reference (8-bit offset - 1, 4-bit length -
+ * 2) into the bytes already decoded, so no window beyond dst is needed.
+ * gbl_unpack512_asm (gbl_core_asm.S) is the same loop in Thumb-1. */
+#if GBL_UNPACK_ASM
+#if GBL_PPU_RAMFUNC
+__attribute__((long_call)) /* in SRAM, out of BL range from flash */
+#endif
+void gbl_unpack512_asm(const uint8_t *src, uint8_t *dst);
+#define unpack512 gbl_unpack512_asm
+#else
+static void unpack512(const uint8_t *src, uint8_t *dst) {
+    uint8_t *d = dst, *end = dst + 512;
+    uint32_t bits = 0; /* next bit in bit 31 */
+    int32_t count = 0;
+    while (d < end) {
+        while (count < 13) {
+            bits |= (uint32_t)*src++ << (24 - count);
+            count += 8;
+        }
+        uint32_t flag = bits >> 31;
+        bits <<= 1;
+        if (flag) {
+            *d++ = (uint8_t)(bits >> 24);
+            bits <<= 8;
+            count -= 9;
+        } else {
+            uint32_t off = (bits >> 24) + 1u, len = ((bits >> 20) & 15u) + 2u;
+            bits <<= 12;
+            count -= 13;
+            const uint8_t *s = d - off;
+            do { *d++ = *s++; } while (--len && d < end);
+        }
+    }
+}
+#endif
+
+static void rom_unpack(uint32_t sector, uint8_t *dst) {
+    uint32_t a = gbl_rom_packed_off[sector], n = gbl_rom_packed_off[sector + 1] - a;
+    if (n == 512) memcpy(dst, gbl_rom_packed + a, 512);
+    else unpack512(gbl_rom_packed + a, dst);
+    gbl_stream_unpacked++;
+}
+uint32_t gbl_stream_unpacked;
+#endif
+
 static uint8_t stream_read(uint32_t off) {
     int32_t sec = (int32_t)(off >> 9);
     if (stream_tag[stream_last] == sec) return stream_buf[stream_last][off & 511u];
@@ -67,8 +120,12 @@ static uint8_t stream_read(uint32_t off) {
         if (stream_tag[i] == sec) { slot = i; goto hit; }
         if (stream_age[i] < stream_age[slot]) slot = i;
     }
+#if GBL_ROM_PACKED
+    rom_unpack((uint32_t)sec, stream_buf[slot]);
+#else
     if (!gbl_platform_rom_read((uint32_t)sec, stream_buf[slot]))
         for (int i = 0; i < 512; i++) stream_buf[slot][i] = 0xFF;
+#endif
     stream_tag[slot] = sec;
     gbl_stream_misses++;
 hit:
@@ -704,6 +761,10 @@ gbl_fn gbl_lookup(uint16_t pc) {
 #endif
 }
 
+/* gbl_exec only runs with this much stack above gbl_stack_limit, so the
+ * region it calls always passes its own ENTER() check: otherwise a region
+ * refused at entry would be called again forever without progress (seen
+ * with deep call chains in R.C. Pro-Am under the META's 3 KiB budget). */
 void gbl_exec(void) {
     char probe;
     if ((uintptr_t)&probe < gbl_stack_limit) return; /* unwind: callers resume */

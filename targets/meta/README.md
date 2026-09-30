@@ -209,6 +209,51 @@ default; `on` / `off` force it):
 `compile.sh` records the profiles, regenerates with them, and copies the ROM
 next to the binary under its card name.
 
+## Compressed ROM in flash (`--meta-pack`, `PACK=1`)
+
+With `--meta-pack` (`PACK=1` for `compile.sh`), the streaming machinery
+reads from flash instead of the SD card (`GBL_ROM_PACKED`):
+- Bank 0 and the hot 4 KiB chunks stay raw and mapped directly. By default
+  they take at most a third of the free flash, so more of it goes to
+  compiled code.
+- Every other 512-byte sector is LZSS-compressed in flash (Heatshrink-style:
+  a flag bit per token, 8-bit offset, 4-bit length), or stored as is when
+  compression does not shrink it.
+- A cache miss decodes the sector into the same 512-byte slot the SD
+  reader would fill. It needs no card, no `.GB` file and no extra RAM:
+  back-references read the sector being decoded.
+- `gbl_unpack512_asm` (Thumb-1, in SRAM) decodes on Cortex-M0+
+  (`GBL_UNPACK_ASM`); the C version in `gbl_core.c` is the reference.
+- When the compressed ROM leaves less than 16 KiB for code, the generator
+  falls back to SD streaming (256 KiB or more) or to a plain build, and
+  says so.
+- The raw part is chosen from the data-read profiles (`--rom-profile`).
+  Without a profile nothing but bank 0 stays raw and every cache miss
+  decodes.
+
+R.C. Pro-Am, 600 frames, M0+ estimator (not a device measurement):
+
+| Build | Cycles/frame | `.text` |
+| --- | --- | --- |
+| plain (whole ROM in flash) | 359,596 | 218,780 |
+| packed, 60 KiB raw | 336,881 (−6.3%) | 218,076 |
+| packed, 4 KiB raw, asm decoder | 345,380 (−4.0%) | 210,352 |
+| packed, 4 KiB raw, C decoder | 354,050 (−1.5%) | 210,512 |
+
+The gain comes from the flash left to compiled code (68k instead of 188k
+interpreted instructions over 400 frames), not from the decoder. The asm
+and C decoders give the same pixel hash; with `--interp` all three builds
+give identical hashes (every ROM read goes through the decoder). In fast
+mode the frames differ slightly from the plain build, as with any change of
+compiled coverage.
+
+Measured compression (compressed size / original, 512-byte blocks,
+Heatshrink-style 256-byte window): SML 68%, Batman 63%, R.C. Pro-Am 78%,
+Tetris 73%, Mystic Quest 78%. FastLZ does 5 to 10 points worse on these
+ROMs; zlib does 10 points better, but it needs Huffman tables in RAM.
+Compressing ROM data meant for the SD card would not pay: decoding costs
+more than the transfer it saves.
+
 ## Batch conversion (`compile.sh`)
 
 - Precompute: 8 random-input runs per ROM in parallel (`AUTO_SEEDS`), one of
@@ -265,6 +310,8 @@ Pass these as `-D` flags (`build_flags` in `platformio.ini`, or
 | `GBL_LOOKUP_CACHE` | 16 | Entries of the dispatch cache (0 disables it) |
 | `GBL_STREAM_SECTORS` | 4 | Sector cache of a streamed ROM (512 bytes each) |
 | `GBL_ERAM_ON_SD` | 1 above 2 KiB of cartridge RAM | Cartridge RAM kept in the save file behind a 1 KiB cache |
+| `GBL_ROM_PACKED` | set by `--meta-pack` | Streamed ROM sectors LZSS-compressed in flash instead of on the SD card |
+| `GBL_UNPACK_ASM` | 1 on Cortex-M0+ | Thumb-1 decoder for those sectors |
 | `GBL_STACK_GUARD` | 1 | C stack check on entry to every compiled region |
 | `META_SWAP_AB` | 1 | META A = Game Boy B, META B = Game Boy A |
 | `META_SD_SPI_HZ` | 24000000 | SPI clock for SD sector reads |
@@ -394,7 +441,10 @@ ctest --test-dir build -R meta --output-on-failure
     and cycle counter at every VBlank) as the default build.
   - a streaming build of the same ROM (forced, with one data chunk in flash,
     one read through a 2-sector cache) to give the same state as the flash
-    build.
+    build;
+  - a packed build (`--meta-pack`, 4 KiB raw, 2-sector cache) to give the
+    same state as the flash build, with sectors actually decoded (the data
+    tables are compressible, so back-references are exercised).
 - `meta_fat_finds_streamed_rom` builds FAT16 and FAT32 images with
   `mkfs.fat` and mtools, in the root and in a directory, behind a partition
   table, with a lower-case name and a file in four pieces. It requires the

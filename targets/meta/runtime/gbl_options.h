@@ -38,6 +38,11 @@
  * GBL_ERAM_ON_SD          Cartridge RAM lives in the platform's save file
  *                         behind a 1 KiB cache instead of RAM; default for
  *                         cartridge RAM larger than 2 KiB.
+ * GBL_ROM_PACKED          The streamed part of the ROM comes from LZSS-
+ *                         compressed flash instead of the SD card (set by the
+ *                         generator: gbrecomp --meta-pack).
+ * GBL_UNPACK_ASM          Decode those sectors with the Thumb-1 decoder
+ *                         (gbl_core_asm.S); default on for Cortex-M0+.
  * GBL_STREAM_SECTORS      512-byte sectors cached for a streamed ROM
  *                         (GBL_ROM_STREAM projects only).
  */
@@ -73,6 +78,20 @@
 #endif
 #ifndef GBL_ROM_STREAM
 #define GBL_ROM_STREAM 0
+#endif
+#ifndef GBL_ROM_PACKED
+#define GBL_ROM_PACKED 0
+#endif
+#ifndef GBL_UNPACK_ASM
+#if defined(__ARM_ARCH_6M__)
+#define GBL_UNPACK_ASM 1
+#else
+#define GBL_UNPACK_ASM 0
+#endif
+#endif
+#if GBL_UNPACK_ASM && !defined(__ARM_ARCH_6M__)
+#undef GBL_UNPACK_ASM
+#define GBL_UNPACK_ASM 0
 #endif
 #ifndef GBL_STREAM_SECTORS
 #define GBL_STREAM_SECTORS 4

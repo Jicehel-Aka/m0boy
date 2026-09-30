@@ -17,8 +17,8 @@ profile build, regenerate compiled projects, then require that
   * fast-forwarding wait loops (polling, delay, HRAM DEC A) changes nothing:
     same frames, WRAM, registers and cycle counter as running every
     iteration, and
-  * reading the ROM through the SD streaming cache (forced on this ROM)
-    changes nothing either, and
+  * reading the ROM through the SD streaming cache (forced on this ROM), or
+    from LZSS-packed flash (--meta-pack), changes nothing either, and
   * battery RAM kept on the card or in RAM gives the same state, and a
     second run reads back what the first one saved.
 """
@@ -312,7 +312,10 @@ def make_rom(seed: int) -> bytes:
         table = bank * 0x4000 + 0x3000
         if any(rom[table:table + 256]):
             raise RuntimeError("bank %d code reaches the data table" % bank)
-        rom[table:table + 256] = bytes(rng.randrange(256) for _ in range(256))
+        # Compressible but not uniform (a 23-byte motif with variations), so
+        # a packed build decodes real back-references here.
+        motif = [rng.randrange(256) for _ in range(23)]
+        rom[table:table + 256] = bytes((motif[k % 23] + (k // 64) * bank) & 0xFF for k in range(256))
     rom[0x104:0x134] = NINTENDO_LOGO
     rom[0x134:0x143] = b"GBL META E2E   "
     rom[0x147] = 0x03   # MBC1 + RAM + battery
@@ -434,6 +437,15 @@ def main() -> int:
                           "--frames", str(FRAMES), "--wram-hash-bytes", str(RESULT_BYTES)])
         results["stream"] = parse(stream_out)
         sm = re.search(r"rom_stream sectors_read (\d+)", stream_out)
+        # Same, with the streamed sectors LZSS-packed in flash (--meta-pack).
+        s3 = tmp / "packed"
+        pgen = run([args.gbrecomp, str(rom), "--target", "meta", "--coverage", str(cov), "--meta-pack",
+                    "--rom-profile", str(prof), "--meta-rom-resident-kib", "4", "-o", str(s3)] + common)
+        packed_bin = str(build_host(s3, "build", "-DGBL_STREAM_SECTORS=2") / "e2e_host")
+        packed_out = run([packed_bin,
+                          "--frames", str(FRAMES), "--wram-hash-bytes", str(RESULT_BYTES)])
+        results["packed"] = parse(packed_out)
+        pm = re.search(r"rom_stream sectors_read (\d+)", packed_out)
         # Cartridge RAM: on the card (default for 8 KiB) or in RAM, same
         # machine state; and a second run reads back what the first saved.
         ramb = build_host(tmp / "fast", "build-eram-ram", "-DGBL_ERAM_ON_SD=0")
@@ -463,6 +475,11 @@ def main() -> int:
             failures.append("static-frame policy left a stale picture: %s" % (m.group(0) if m else static_out))
         if any(results["nospin"][k] != results["fast"][k] for k in ("run_hash", "wram_hash", "state_hash")):
             failures.append("wait-loop fast-forward changed the fast build's state")
+        if any(results["packed"][k] != results["fast"][k] for k in ("run_hash", "wram_hash", "state_hash")):
+            failures.append("the packed-ROM build differs from the flash build")
+        if "ROM packed:" not in pgen or not pm or int(pm.group(1)) == 0:
+            failures.append("packed ROM not exercised: %s / %s" % (
+                re.findall(r"ROM packed:.*|--meta-pack:.*", pgen), pm.group(0) if pm else packed_out))
         if any(results["stream"][k] != results["fast"][k] for k in ("run_hash", "wram_hash", "state_hash")):
             failures.append("the ROM streaming build differs from the flash build")
         if "ROM streaming:      4 KiB" not in gen or not sm or int(sm.group(1)) == 0:
