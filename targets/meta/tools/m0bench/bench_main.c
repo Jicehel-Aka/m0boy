@@ -111,9 +111,29 @@ int gbl_platform_rom_read(uint32_t sector, uint8_t *dst) {
 }
 #endif
 #if GBL_ERAM_SIZE > 0
-/* No storage in the benchmark: cartridge RAM starts erased. */
-int gbl_platform_save_read(uint32_t sector, uint8_t *dst) { (void)sector; (void)dst; return 0; }
-int gbl_platform_save_write(uint32_t sector, const uint8_t *src) { (void)sector; (void)src; return 1; }
+/* Save file like the host's in-memory one: sectors never written read as
+ * missing (the runtime then sees 0xFF), written ones keep their data.  The
+ * data lives in the stand-in SD region (m0_estimate.py maps it writable):
+ * cartridge RAM kept "on the card" (GBL_ERAM_ON_SD) can be 32 KiB.
+ * (Dropping the writes made Zelda and Donkey Kong Land read garbage back
+ * and crash.) */
+#define BENCH_SAVE_AREA ((uint8_t *)0x10380000u)
+static uint8_t save_valid[(GBL_ERAM_SIZE + 511) / 512];
+
+int gbl_platform_save_read(uint32_t sector, uint8_t *dst) {
+    if (sector * 512u >= GBL_ERAM_SIZE || !save_valid[sector]) return 0;
+    const uint8_t *s = BENCH_SAVE_AREA + sector * 512u;
+    for (int i = 0; i < 512; i++) dst[i] = s[i];
+    return 1;
+}
+
+int gbl_platform_save_write(uint32_t sector, const uint8_t *src) {
+    if (sector * 512u >= GBL_ERAM_SIZE) return 0;
+    uint8_t *d = BENCH_SAVE_AREA + sector * 512u;
+    for (int i = 0; i < 512; i++) d[i] = src[i];
+    save_valid[sector] = 1;
+    return 1;
+}
 #endif
 
 void gbl_platform_vblank(void) {

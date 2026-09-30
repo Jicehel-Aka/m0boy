@@ -122,6 +122,8 @@ def main():
     ap.add_argument("--top", type=int, default=15)
     ap.add_argument("--cflag", action="append", default=[], help="extra compiler flag")
     ap.add_argument("--hot-blocks", type=int, default=0, help="print the N most expensive basic blocks")
+    ap.add_argument("--dump", action="append", default=[], metavar="SYMBOL",
+                    help="write the final contents of a data symbol to <build-dir>/SYMBOL.bin")
     ap.add_argument("--heavy", type=int, default=0,
                     help="profile only the frames over the 60 Hz budget: print the N costliest functions")
     ap.add_argument("--func", action="append", default=[],
@@ -142,6 +144,8 @@ def main():
             if seg["p_type"] == "PT_LOAD" and seg["p_filesz"]:
                 uc.mem_write(seg["p_paddr"], seg.data())
         symtab = elf.get_section_by_name(".symtab")
+        data_syms = {s.name: (s["st_value"], s["st_size"]) for s in symtab.iter_symbols()
+                     if s["st_info"]["type"] == "STT_OBJECT"}
         done = None
         frame_fn = None
         pixel_hash_addr = None
@@ -232,6 +236,10 @@ def main():
         per_block[addr] = (cyc + ws) * n
         block_func[addr] = name
 
+    for name in args.dump:
+        addr, size = data_syms[name]
+        with open(os.path.join(out_dir, name + ".bin"), "wb") as f:
+            f.write(bytes(uc.mem_read(addr, size)))
     frames = args.frames
     if pixel_hash_addr is not None:
         print("pixel hash: %08x" % int.from_bytes(uc.mem_read(pixel_hash_addr, 4), "little"))

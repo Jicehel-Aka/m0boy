@@ -5,7 +5,7 @@ MEMORY
 {
   FLASH (rx) : ORIGIN = 0x4000, LENGTH = 0x7C000
   RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 0x8000
-  SDROM (r) : ORIGIN = 0x10000000, LENGTH = 0x400000 /* stand-in SD card */
+  SDROM (rw) : ORIGIN = 0x10000000, LENGTH = 0x400000 /* stand-in SD card: ROM, save file at 0x10380000 */
 }
 ENTRY(Reset_Handler)
 SECTIONS

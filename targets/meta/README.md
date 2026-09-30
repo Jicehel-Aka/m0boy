@@ -500,15 +500,24 @@ Each change below is measured against the step before it:
 
 Ten more games (`tools/m0bench/panel.txt`: SD streaming, MBC2, raster
 effects, many sprites, scrolling) give the same hashes with both runtimes.
-On all fifteen the change in average cycles per frame ranges from −11% to
-−52% (median −18%); the time freed is 4% to 9% of the 60 Hz frame budget
-(804k cycles at 48 MHz, emulation only). Heavy frames gain less (p99 −0%
-to −18%); frames over the budget go from 180 to 77 of 1,599 on
-Prehistorik Man, and barely move on Zelda (85 to 84) and Donkey Kong Land
-(24 to 23), where the interpreter, ROM bank switching and wait-loop
-divisions dominate. `m0_estimate.py` now prints these per-frame figures
-and runs streaming projects (the whole ROM stands in for the SD card; the
-SD transfer time is not modelled).
+With the direct bus paths below included, the change in average cycles
+per frame on all fifteen ranges from −14% to −53% (median −19%); the time
+freed is 3.9% to 11% of the 60 Hz frame budget (804k cycles at 48 MHz,
+emulation only). Heavy frames gain less (p99 −6% to −23%). Frames over
+the budget: Prehistorik Man 180 → 33 of 1,599, Donkey Kong Land 24 → 21,
+R.C. Pro-Am 16 → 14, Pinball Dreams 6 → 3; in what remains the
+interpreter dominates. `m0_estimate.py` prints these per-frame figures
+(`--heavy N` profiles the frames over the budget only) and runs streaming
+projects: the whole ROM stands in for the SD card (the SD transfer time is
+not modelled), and the save file is kept in that region like the host's
+in-memory one. (Earlier Zelda figures came from a benchmark that dropped
+save-RAM writes: the game crashed into an `RST 38` loop.)
+
+Unmapped accesses no longer go through `gbl_rd_slow`/`gbl_wr_slow`'s six
+range tests: the Thumb-1 `gbl_wr` jumps straight to the MBC write,
+`gbl_vram_wr` and `gbl_io_wr`, `gbl_rd` to `gbl_io_rd` and, for a streamed
+ROM chunk, reads the last sector used; `map_rom_bank` rebuilds the pages
+only when the bank changes. Zelda −7.8%, Prehistorik Man −4.3%.
 
 Every step keeps the pixel, signature and state hashes of the five games
 equal to the C runtime's (`BENCH_PIXEL_HASH`, `BENCH_STATE_HASH`; see
