@@ -40,6 +40,10 @@
  * GBL_TIMING_ASM          gbl_ppu_advance (the PPU line state machine),
  *                         gbl_update_evt and gbl_sync in Thumb-1
  *                         (gbl_timing_asm.S); default on for Cortex-M0+.
+ * GBL_INTERP_ASM          Interpreter loop and common opcodes in Thumb-1
+ *                         (gbl_interp_asm.S), the others through the C
+ *                         gbl_interp_op; default on for Cortex-M0+ (not in
+ *                         coverage or trace builds).
  * GBL_BATTERY             Cartridge RAM is saved (set by the generator for
  *                         battery-backed cartridges).
  * GBL_ERAM_ON_SD          Cartridge RAM lives in the platform's save file
@@ -129,6 +133,18 @@
 #if GBL_TIMING_ASM && !defined(__ARM_ARCH_6M__)
 #undef GBL_TIMING_ASM
 #define GBL_TIMING_ASM 0
+#endif
+#ifndef GBL_INTERP_ASM
+#if defined(__ARM_ARCH_6M__) && !defined(GBL_COVERAGE) && !defined(GBL_TRACE) && !defined(GBL_ROM_TRACE)
+#define GBL_INTERP_ASM 1
+#else
+#define GBL_INTERP_ASM 0
+#endif
+#endif
+#if GBL_INTERP_ASM && (!defined(__ARM_ARCH_6M__) || defined(GBL_COVERAGE) || defined(GBL_TRACE) || \
+                       defined(GBL_ROM_TRACE))
+#undef GBL_INTERP_ASM
+#define GBL_INTERP_ASM 0
 #endif
 #ifndef GBL_PPU_RAMFUNC
 #define GBL_PPU_RAMFUNC 1

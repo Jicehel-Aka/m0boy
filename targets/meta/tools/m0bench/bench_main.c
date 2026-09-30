@@ -153,6 +153,12 @@ void gbl_platform_vblank(void) {
          * line included: it is not visible in skipped frames. */
         extern const uint8_t gbl_ppu_state[];
         state_mix(gbl_ppu_state, 21);
+#ifdef BENCH_FRAME_HASHES
+        /* The running hash after every frame, in the stand-in SD region
+         * (m0_estimate.py --dump 0x10300000:<4 * frames>): finds the first
+         * frame where two builds part. */
+        if (f < 0x4000u) ((uint32_t *)0x10300000u)[f] = bench_state_hash;
+#endif
     }
 #endif
 #ifdef BENCH_STATIC_SKIP
@@ -202,8 +208,24 @@ int main(void) {
 #ifdef BENCH_ALU_CHECK
     alu_check();
 #endif
+#ifdef BENCH_BIG_STACK
+    /* m0_estimate.py maps 128 KiB of RAM and starts the stack at its top:
+     * the stack guard never unwinds.  With the META's 3 KiB, where the
+     * guard unwinds depends on every C frame size, and in fast builds the
+     * unwound code takes interrupts at other instruction boundaries: two
+     * correct builds can then end in different states.  Equivalence checks
+     * of runtime changes use this mode. */
+    (void)probe;
+    gbl_stack_limit = 0x20008000u;
+#else
     gbl_stack_limit = (uintptr_t)&probe - 3072u;
+#endif
     gbl_reset();
+#ifdef BENCH_INTERP_ONLY
+    /* Every instruction through the interpreter: compares interpreters
+     * (GBL_INTERP_ASM=0 vs 1) on the whole game. */
+    gbl_interp_only = 1;
+#endif
     gbl_run();
     return 0;
 }

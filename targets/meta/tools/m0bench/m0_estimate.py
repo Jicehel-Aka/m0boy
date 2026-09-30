@@ -123,7 +123,7 @@ def main():
     ap.add_argument("--cflag", action="append", default=[], help="extra compiler flag")
     ap.add_argument("--hot-blocks", type=int, default=0, help="print the N most expensive basic blocks")
     ap.add_argument("--dump", action="append", default=[], metavar="SYMBOL",
-                    help="write the final contents of a data symbol to <build-dir>/SYMBOL.bin")
+                    help="write the final contents of a data symbol (or ADDRESS:SIZE) to <build-dir>/<name>.bin")
     ap.add_argument("--heavy", type=int, default=0,
                     help="profile only the frames over the 60 Hz budget: print the N costliest functions")
     ap.add_argument("--func", action="append", default=[],
@@ -135,7 +135,8 @@ def main():
 
     uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
     uc.mem_map(0, 0x80000)
-    uc.mem_map(0x20000000, 0x8000)
+    big_stack = any(f == "-DBENCH_BIG_STACK" for f in args.cflag)
+    uc.mem_map(0x20000000, 0x20000 if big_stack else 0x8000)
     uc.mem_map(0x10000000, 0x400000)  # stand-in SD card (bench.ld SDROM)
     symbols = []
     with open(elf_path, "rb") as f:
@@ -170,6 +171,8 @@ def main():
     starts = [s[0] for s in symbols]
 
     sp = int.from_bytes(uc.mem_read(0x4000, 4), "little")
+    if big_stack:
+        sp = 0x20020000  # see bench_main.c
     pc = int.from_bytes(uc.mem_read(0x4004, 4), "little")
     uc.reg_write(UC_ARM_REG_SP, sp)
 
@@ -237,7 +240,11 @@ def main():
         block_func[addr] = name
 
     for name in args.dump:
-        addr, size = data_syms[name]
+        if ":" in name:  # ADDRESS:SIZE
+            a, n = name.split(":")
+            addr, size, name = int(a, 0), int(n, 0), a
+        else:
+            addr, size = data_syms[name]
         with open(os.path.join(out_dir, name + ".bin"), "wb") as f:
             f.write(bytes(uc.mem_read(addr, size)))
     frames = args.frames

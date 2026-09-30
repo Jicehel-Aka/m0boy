@@ -94,6 +94,16 @@ function is a livelock, not slowness.
 
 ## Open items
 
+- The C stack budget changes fast-build results: the stack guard's
+  unwinding depends on C frame sizes (Batman ends in four states with 256,
+  3, 2 and 1 KiB on the host). Valid states, but it makes host (large
+  stack) and device (3 KiB) runs differ; equivalence checks use the M0
+  benchmark's `BENCH_BIG_STACK`. The e2e test's "1 KiB keeps the full
+  machine state" holds for its synthetic ROM, not in general.
+
+- Frames still over the 60 Hz budget (estimator): Prehistorik Man 21,
+  Donkey Kong Land 14, R.C. Pro-Am 7 of 1,599, mostly interpreted code
+  (more coverage would help more than more assembly).
 - Remaining M0 profile after the fifth pass: `render_line` and the tile
   fetch/convert loops on games that redraw (SML ~35% together), the
   interpreter on R.C. Pro-Am (~14%, a coverage question), the next-event

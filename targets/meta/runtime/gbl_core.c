@@ -885,14 +885,25 @@ gbl_fn gbl_lookup(uint16_t pc) {
 #define GBL_EXEC_HEADROOM 512u
 #endif
 
+/* The innermost gbl_exec's entry SP, or no bound under gbl_run: the
+ * assembly interpreter continues across a transfer only while this loop
+ * would call it again (gbl_interp_asm.S). */
+uint16_t gbl_exec_sp0;
+uint8_t gbl_exec_bounded;
+
 void gbl_exec(void) {
     char probe;
     if ((uintptr_t)&probe < gbl_stack_limit + GBL_EXEC_HEADROOM) return; /* unwind: callers resume */
-    uint16_t sp0 = gbr.sp;
+    uint16_t sp0 = gbr.sp, outer_sp0 = gbl_exec_sp0;
+    uint8_t outer_bounded = gbl_exec_bounded;
+    gbl_exec_sp0 = sp0;
+    gbl_exec_bounded = 1;
     do {
         gbl_fn fn = gbl_interp_only ? 0 : gbl_lookup(gbr.pc);
         if (fn) fn(); else gbl_interp_block();
     } while ((int16_t)(gbr.sp - sp0) <= 0);
+    gbl_exec_sp0 = outer_sp0;
+    gbl_exec_bounded = outer_bounded;
 }
 
 void gbl_run(void) {
@@ -900,6 +911,7 @@ void gbl_run(void) {
     /* Same margin as gbl_exec: a region called here must pass its guard,
      * otherwise it returns without progress and this loop never ends. */
     int room = (uintptr_t)&probe >= gbl_stack_limit + GBL_EXEC_HEADROOM;
+    gbl_exec_bounded = 0;
     for (;;) {
         gbl_fn fn = (gbl_interp_only || !room) ? 0 : gbl_lookup(gbr.pc);
         if (fn) fn(); else gbl_interp_block();

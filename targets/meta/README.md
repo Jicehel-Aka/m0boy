@@ -357,6 +357,7 @@ Pass these as `-D` flags (`build_flags` in `platformio.ini`, or
 | `GBL_PPU_RAMFUNC` | 1 | Runs those loops from SRAM (about 220 bytes, copied with `.data`), with no flash wait state |
 | `GBL_CORE_ASM` | 1 on Cortex-M0+ | `gbl_rd`, `gbl_wr`, `gbl_push`, `gbl_pop`, `gbl_cp` and the OAM DMA copy in Thumb-1 (`gbl_core_asm.S`) |
 | `GBL_TIMING_ASM` | 1 on Cortex-M0+ | PPU line state machine (`gbl_ppu_advance`), next event (`gbl_update_evt`), `gbl_sync`, the PPU register paths of `gbl_io_rd`/`gbl_io_wr` and the dispatch-cache hit of `gbl_lookup` in Thumb-1 (`gbl_timing_asm.S`) |
+| `GBL_INTERP_ASM` | 1 on Cortex-M0+ (not in coverage or trace builds) | Interpreter loop and common opcodes in Thumb-1 (`gbl_interp_asm.S`); DAA, EI, RETI, HALT, STOP, PUSH/POP AF, SP arithmetic and `LD (nn),SP` go through the C `gbl_interp_op` |
 | `GBL_RENDER_LINE_ASM` | follows `GBL_PPU_ASM` | `render_line` (sprite selection, line signature, frontend calls) in Thumb-1 (`gbl_ppu_asm.S`); needs `GBL_LINE_SIGNATURE` |
 | `GBL_LOOKUP_CACHE` | 16 | Entries of the dispatch cache, a power of two (0 disables it) |
 | `GBL_STREAM_SECTORS` | 4 | Sector cache of a streamed ROM (512 bytes each) |
@@ -519,6 +520,54 @@ range tests: the Thumb-1 `gbl_wr` jumps straight to the MBC write,
 ROM chunk, reads the last sector used; `map_rom_bank` rebuilds the pages
 only when the bank changes. Zelda −7.8%, Prehistorik Man −4.3%.
 
+The frames still over the budget spent 40% to 60% of their time in the
+interpreter (code the recorded sessions never reached: loading,
+transitions). Its loop is now Thumb-1 (`gbl_interp_asm.S`): event check,
+fetch, cycles and a 256-entry table of halfword offsets, with the common
+opcodes and the CB prefix in assembly and the rest through the C
+`gbl_interp_op`, from which the assembly-handled cases are compiled out
+(the whole change costs about 0.2 KiB of flash). A transfer to code
+that is not compiled starts a new block in place instead of returning to
+the dispatcher, with the same block boundaries (the SP bound of the
+innermost `gbl_exec` is kept in `gbl_exec_sp0`). Interpreted blocks
+averaged three instructions, so the return, the dispatcher loop and the
+call cost as much as the loop itself. Every game run entirely
+interpreted (`BENCH_INTERP_ONLY`, 800 frames) is 10% to 24% faster with
+the same hashes; in normal runs R.C. Pro-Am −2.6%, F-1 Race −5.3%,
+Prehistorik Man −3.3%, Donkey Kong Land p99 −15%.
+
+All fifteen games against the C runtime of `c9e1bfb`:
+
+| Game | C runtime | Now | Change | p99 change | Frames over budget |
+| --- | --- | --- | --- | --- | --- |
+| Super Mario Land | 137,117 | 100,256 | −26.9% | −8.7% | 0 → 0 |
+| Super R.C. Pro-Am | 257,584 | 207,752 | −19.3% | −20.6% | 16 → 7 |
+| Batman | 272,918 | 212,739 | −22.1% | −14.0% | 0 → 0 |
+| Burai Fighter Deluxe | 77,235 | 36,483 | −52.8% | −10.7% | 0 → 0 |
+| Solar Striker | 222,186 | 186,201 | −16.2% | −6.9% | 0 → 0 |
+| Tetris | 88,966 | 52,037 | −41.5% | −21.1% | 0 → 0 |
+| Zelda: Link's Awakening | 296,849 | 244,204 | −17.7% | −11.5% | 1 → 0 |
+| Donkey Kong Land | 363,432 | 307,845 | −15.3% | −24.0% | 24 → 14 |
+| Mystic Quest | 148,991 | 104,404 | −29.9% | −16.6% | 1 → 1 |
+| F-1 Race | 130,285 | 85,964 | −34.0% | −6.1% | 3 → 2 |
+| Nemesis | 434,194 | 364,454 | −16.1% | −10.5% | 2 → 0 |
+| Prehistorik Man | 521,876 | 417,977 | −19.9% | −26.7% | 180 → 21 |
+| Ninja Gaiden Shadow | 180,462 | 138,512 | −23.2% | −14.2% | 0 → 0 |
+| Pinball Dreams | 321,150 | 261,718 | −18.5% | −17.2% | 6 → 1 |
+| Castlevania II | 192,351 | 160,186 | −16.7% | −9.6% | 1 → 0 |
+
+(Cycles per frame, 1,600 frames, 3 KiB of C stack as on the META; frames
+over budget out of 1,599.)
+
+The C stack budget changes results. With the META's 3 KiB the stack
+guard unwinds compiled calls, and where it does depends on every C
+frame size; in fast builds the unwound code then takes interrupts at
+other instruction boundaries, so two correct builds can end in different
+(valid) states. Batman on the host ends in four different states with
+256, 3, 2 and 1 KiB of stack. Equivalence checks of runtime changes
+therefore use `BENCH_BIG_STACK` (128 KiB of emulated RAM, no unwinding);
+the fifteen games give the C runtime's hashes there.
+
 Every step keeps the pixel, signature and state hashes of the five games
 equal to the C runtime's (`BENCH_PIXEL_HASH`, `BENCH_STATE_HASH`; see
 Validation). The firmware grows by about 1.2 KiB of flash (the three
@@ -571,6 +620,11 @@ WRAM, HRAM, IO and PPU timing state at every VBlank (compare with
 `--cflag=-DBENCH_ALU_CHECK` checks every (A, v) pair of `gbl_cp` against
 the C formulas (`alu errors: 0`). On five games (1,600 frames each,
 window and 8×16 sprites included), C and assembly print the same hashes.
+Compare runtimes with `--cflag=-DBENCH_BIG_STACK` (see above: with 3 KiB
+of stack the result depends on C frame sizes). `-DBENCH_INTERP_ONLY` runs
+every instruction through the interpreter (compare `GBL_INTERP_ASM=0` and
+1), and `-DBENCH_FRAME_HASHES` with `--dump 0x10300000:<4 * frames>` keeps
+the state hash of every frame to find where two builds part.
 `m0_estimate.py --func NAME` lists every executed block of a function with
 its cost.
 
