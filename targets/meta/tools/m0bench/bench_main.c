@@ -23,7 +23,16 @@ static uint32_t row_sig[144];
 static uint8_t row_valid[144];
 uint32_t bench_lines_skipped;
 
+#ifdef BENCH_PIXEL_HASH
+extern uint32_t bench_pixel_hash;
+#endif
+
 int gbl_platform_line_check(uint8_t ly, uint32_t sig) {
+#ifdef BENCH_PIXEL_HASH
+    /* The signatures too: C and assembly versions must agree line by line,
+     * not only on the lines they cause to be drawn. */
+    bench_pixel_hash = ((bench_pixel_hash ^ ly) * 16777619u ^ sig) * 16777619u;
+#endif
     if (ly >= 144 || ly - ((ly * 57u) >> 9) * 9u == 8u) return 0;
 #ifdef BENCH_LINE_SKIP
     if (row_valid[ly] && row_sig[ly] == sig) { bench_lines_skipped++; return 0; }

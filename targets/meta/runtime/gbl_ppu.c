@@ -73,6 +73,10 @@ GBL_CHECK_OFS(gbl_ppu_state_t, lcd_on, GBL_P_LCD_ON);
 GBL_CHECK_OFS(gbl_ppu_state_t, moved, GBL_P_MOVED);
 GBL_CHECK_OFS(gbl_ppu_state_t, stat_modes, GBL_P_STAT_MODES);
 GBL_CHECK_OFS(gbl_ppu_state_t, lyc_line, GBL_P_LYC_LINE);
+GBL_CHECK_OFS(gbl_ppu_state_t, spr_ly, GBL_P_SPR_LY);
+GBL_CHECK_OFS(gbl_ppu_state_t, spr_lo, GBL_P_SPR_LO);
+GBL_CHECK_OFS(gbl_ppu_state_t, spr_hi, GBL_P_SPR_HI);
+GBL_CHECK_OFS(gbl_ppu_state_t, spr_h, GBL_P_SPR_H);
 GBL_CHECK_OFS(gbl_ppu_state_t, evt_dirty, GBL_P_EVT_DIRTY);
 GBL_CHECK_OFS(gbl_ppu_state_t, dev_next, GBL_P_DEV_NEXT);
 GBL_CHECK_OFS(gbl_cpu_t, ime, GBL_GBR_IME);
@@ -90,8 +94,11 @@ GBL_CHECK_OFS(gbl_cpu_t, next_evt, GBL_GBR_NEXT_EVT);
 #define ppu_moved P.moved
 
 uint8_t gbl_oam_dirty = 1;
-static uint8_t oam_by_y[40];
-static uint8_t y_sorted[41]; /* OAM Y in oam_by_y order, then a 0xFF sentinel */
+/* Global for the assembly render_line (gbl_ppu_asm.S). */
+uint8_t gbl_ppu_oam_by_y[40];
+uint8_t gbl_ppu_y_sorted[41]; /* OAM Y in oam_by_y order, then a 0xFF sentinel */
+#define oam_by_y gbl_ppu_oam_by_y
+#define y_sorted gbl_ppu_y_sorted
 static uint16_t bg[20];      /* packed BG/window colour indices per 8-pixel group */
 static uint32_t bg_pairs[16]; /* two BGP-mapped pixels per 4-bit index */
 /* Sprite colours per palette (OBP0, OBP1), rebuilt when OBP0/OBP1 change
@@ -235,29 +242,50 @@ static __attribute__((noinline)) void refresh_obj_pal(void) {
 
 /* ---- sprite selection -------------------------------------------------- */
 
+/* OAM indices sorted by Y, redone only after OAM changes (the assembly
+ * render_line calls it too). */
+#if GBL_RENDER_LINE_ASM
+void gbl_ppu_sort_oam(void);
+#define sort_oam gbl_ppu_sort_oam
+#else
+static inline __attribute__((always_inline))
+#endif
+void sort_oam(void) {
+    /* Insertion sort.
+     * (Re-sorting the previous order was tried: on SML the OAM is nearly
+     * in Y order already and reloading the 40 values cost more.)
+     * y_sorted keeps the Y values alongside (one load per test). */
+    for (int i = 0; i < 40; i++) {
+        uint8_t y = gbl_oam[i * 4];
+        int j = i;
+        while (j > 0 && y_sorted[j - 1] > y) {
+            oam_by_y[j] = oam_by_y[j - 1];
+            y_sorted[j] = y_sorted[j - 1];
+            j--;
+        }
+        oam_by_y[j] = (uint8_t)i;
+        y_sorted[j] = y;
+    }
+    y_sorted[40] = 0xFF; /* sentinel: never <= ymax (at most 159 + 16) */
+    gbl_oam_dirty = 0;
+    P.spr_ly = 0xFF;
+}
+
+/* More than ten sprites on the line: the first ten in OAM order among the
+ * candidates ys[lo..hi), then sorted like select_sprites.  Rare; the
+ * assembly render_line calls it too. */
+#if GBL_RENDER_LINE_ASM
+int gbl_ppu_select_many(uint8_t *sel, uint32_t lo, uint32_t hi);
+#define select_many gbl_ppu_select_many
+#else
+static
+#endif
+__attribute__((noinline)) int select_many(uint8_t *sel, uint32_t lo, uint32_t hi);
+
 /* Sprites on line ly, highest priority first (lower X, then OAM index). */
 static int select_sprites(uint8_t *sel, uint32_t h) {
     int n = 0;
-    if (gbl_oam_dirty) {
-        /* Insertion sort of OAM indices by Y, redone only after OAM changes.
-         * (Re-sorting the previous order was tried: on SML the OAM is nearly
-         * in Y order already and reloading the 40 values cost more.)
-         * y_sorted keeps the Y values alongside (one load per test). */
-        for (int i = 0; i < 40; i++) {
-            uint8_t y = gbl_oam[i * 4];
-            int j = i;
-            while (j > 0 && y_sorted[j - 1] > y) {
-                oam_by_y[j] = oam_by_y[j - 1];
-                y_sorted[j] = y_sorted[j - 1];
-                j--;
-            }
-            oam_by_y[j] = (uint8_t)i;
-            y_sorted[j] = y;
-        }
-        y_sorted[40] = 0xFF; /* sentinel: never <= ymax (at most 159 + 16) */
-        gbl_oam_dirty = 0;
-        P.spr_ly = 0xFF;
-    }
+    if (gbl_oam_dirty) sort_oam();
     /* Visible sprites have OAM Y in [ly + 17 - h, ly + 16]: one run
      * [lo, hi) of the sorted order.  Lines come in order, so both ends only
      * move forward from the previous line's; otherwise start from 0. */
@@ -276,19 +304,34 @@ static int select_sprites(uint8_t *sel, uint32_t h) {
     P.spr_h = (uint8_t)h;
     P.spr_lo = (uint8_t)(lo - ys);
     P.spr_hi = (uint8_t)(hi - ys);
-    uint8_t cand[40];
-    int nc = 0;
-    for (const uint8_t *k = lo; k < hi; k++) cand[nc++] = oam_by_y[k - ys];
-    if (nc > 10) {
-        /* Hardware keeps the first ten in OAM order. */
-        for (int a = 1; a < nc; a++) {
-            uint8_t v = cand[a];
-            int b = a;
-            while (b > 0 && cand[b - 1] > v) { cand[b] = cand[b - 1]; b--; }
-            cand[b] = v;
+    if (hi - lo > 10) return select_many(sel, (uint32_t)(lo - ys), (uint32_t)(hi - ys));
+    int nc = (int)(hi - lo);
+    const uint8_t *cand = oam_by_y + (lo - ys);
+    for (int k = 0; k < nc; k++) {
+        uint8_t i = cand[k], x = gbl_oam[i * 4 + 1];
+        int j = n++;
+        while (j > 0 && (gbl_oam[sel[j - 1] * 4 + 1] > x ||
+                         (gbl_oam[sel[j - 1] * 4 + 1] == x && sel[j - 1] > i))) {
+            sel[j] = sel[j - 1];
+            j--;
         }
-        nc = 10;
+        sel[j] = i;
     }
+    return n;
+}
+
+int select_many(uint8_t *sel, uint32_t lo, uint32_t hi) {
+    uint8_t cand[40];
+    int nc = 0, n = 0;
+    for (uint32_t k = lo; k < hi; k++) cand[nc++] = oam_by_y[k];
+    /* Hardware keeps the first ten in OAM order. */
+    for (int a = 1; a < nc; a++) {
+        uint8_t v = cand[a];
+        int b = a;
+        while (b > 0 && cand[b - 1] > v) { cand[b] = cand[b - 1]; b--; }
+        cand[b] = v;
+    }
+    nc = 10;
     for (int k = 0; k < nc; k++) {
         uint8_t i = cand[k], x = gbl_oam[i * 4 + 1];
         int j = n++;
@@ -313,8 +356,9 @@ uint32_t gbl_sig_mul = 0x9E3779B1u;
 /* Everything render_line reads, summarized: registers, the map row version
  * and the version of every tile the line shows, and the selected sprites.
  * Versions only move when a VRAM write changes a byte. */
-static uint16_t tile_ver[384];
-static uint16_t map_ver[64];
+uint16_t gbl_ppu_tile_ver[384] __attribute__((aligned(4))); /* global and word-aligned for the assembly render_line (8x16 pairs) */
+uint16_t gbl_ppu_map_ver[64];
+#define tile_ver gbl_ppu_tile_ver
 
 static uint32_t tile_epoch; /* any tile data change */
 
@@ -323,7 +367,7 @@ static void vram_version_bump(uint16_t off) {
         tile_ver[off >> 4]++;
         tile_epoch++;
     } else {
-        map_ver[(off - 0x1800u) >> 5]++;
+        gbl_ppu_map_ver[(off - 0x1800u) >> 5]++;
     }
 }
 
@@ -338,7 +382,7 @@ static tile_cache_t bg_cache, win_cache;
 
 static uint32_t tiles_hash(tile_cache_t *c, uint32_t mrow, uint32_t col, uint32_t count, uint8_t lcdc) {
     uint32_t key = (mrow << 24) | (col << 16) | (count << 8) | (uint32_t)(lcdc & 0x10) | 1u;
-    if (c->key == key && c->map_ver == map_ver[mrow] && c->epoch == tile_epoch) return c->hash;
+    if (c->key == key && c->map_ver == gbl_ppu_map_ver[mrow] && c->epoch == tile_epoch) return c->hash;
     uint32_t tbase = (lcdc & 0x10) ? 0u : 128u, txor = (lcdc & 0x10) ? 0u : 0x80u;
     const uint8_t *map = gbl_vram + 0x1800u + mrow * 32u;
 #if GBL_PPU_ASM
@@ -351,11 +395,18 @@ static uint32_t tiles_hash(tile_cache_t *c, uint32_t mrow, uint32_t col, uint32_
     }
 #endif
     c->key = key;
-    c->map_ver = map_ver[mrow];
+    c->map_ver = gbl_ppu_map_ver[mrow];
     c->epoch = tile_epoch;
     c->hash = s;
     return s;
 }
+
+#if GBL_RENDER_LINE_ASM
+/* For the assembly render_line: which = lcdc | 0x100 for the window. */
+uint32_t gbl_ppu_tiles_hash(uint32_t mrow, uint32_t col, uint32_t count, uint32_t which) {
+    return tiles_hash(which & 0x100 ? &win_cache : &bg_cache, mrow, col, count, (uint8_t)which);
+}
+#endif
 
 /* Multiply-xorshift: the multiply only carries bits upward, so each step
  * folds the high half back down; otherwise a change confined to the top
@@ -378,7 +429,7 @@ static uint32_t line_signature(uint8_t lcdc, int window, const uint8_t *sel, int
         }
         if (nbg) {
             SIG(((uint32_t)BGP << 24) | ((uint32_t)SCX << 16) | (y << 8));
-            SIG(map_ver[mrow]);
+            SIG(gbl_ppu_map_ver[mrow]);
             SIG(tiles_hash(&bg_cache, mrow, (uint32_t)SCX >> 3, nbg + 1u, lcdc));
         } else {
             SIG((uint32_t)BGP << 24);
@@ -388,7 +439,7 @@ static uint32_t line_signature(uint8_t lcdc, int window, const uint8_t *sel, int
             uint32_t count = WX >= 7 ? (uint32_t)(167 - WX + 7) / 8u + 1u : 21u;
             if (count > 21) count = 21;
             SIG(((uint32_t)WX << 16) | ((uint32_t)win_line << 8));
-            SIG(map_ver[wrow]);
+            SIG(gbl_ppu_map_ver[wrow]);
             SIG(tiles_hash(&win_cache, wrow, 0u, count, lcdc));
         }
     }
@@ -418,8 +469,14 @@ static uint16_t pal32_key[4];
 uint8_t gbl_lcd_palette_primary = 1;
 
 /* Draw scanline ly into out: background, window, sprites. */
-static __attribute__((noinline)) void draw_line(uint16_t *out, uint8_t lcdc, int window, uint32_t h,
-                                                const uint8_t *sel, int n) {
+#if GBL_RENDER_LINE_ASM
+void gbl_ppu_draw_line(uint16_t *out, uint8_t lcdc, int window, uint32_t h, const uint8_t *sel, int n);
+#define draw_line gbl_ppu_draw_line
+#else
+static
+#endif
+__attribute__((noinline)) void draw_line(uint16_t *out, uint8_t lcdc, int window, uint32_t h,
+                                         const uint8_t *sel, int n) {
     /* Background groups (eight 2-bit pixels) come either from bg[] (window
      * lines, pal32, BG off) or straight from the fetched tile words t[],
      * shifted by the fine scroll as they are converted. */
@@ -613,12 +670,13 @@ static __attribute__((noinline)) void draw_line(uint16_t *out, uint8_t lcdc, int
 /* Most lines are skipped (unchanged signature, dropped row, skipped frame):
  * this light function decides, and only drawn lines pay for draw_line's
  * large frame (tile words, registers). */
-#if GBL_TIMING_ASM
+#if GBL_TIMING_ASM || GBL_RENDER_LINE_ASM
 void gbl_ppu_render_line(void); /* gbl_timing_asm.S calls it */
 #define render_line gbl_ppu_render_line
 #else
 static
 #endif
+#if !GBL_RENDER_LINE_ASM /* else gbl_ppu_asm.S */
 __attribute__((noinline)) void render_line(void) {
     uint8_t lcdc = LCDC;
     int window = (lcdc & 0x21) == 0x21 && ly >= WY && WX <= 166;
@@ -642,6 +700,7 @@ __attribute__((noinline)) void render_line(void) {
     }
     if (window) win_line++;
 }
+#endif
 
 
 void gbl_ppu_vram_changed(uint16_t off) {

@@ -1,5 +1,6 @@
 /*
- * Field offsets shared by the C runtime and gbl_timing_asm.S: the PPU state
+ * Field offsets shared by the C runtime and the assembly (gbl_timing_asm.S,
+ * gbl_ppu_asm.S): the PPU state
  * structure (gbl_ppu.c), the timer state (gbl_core.c) and gbl_cpu_t
  * (gbl.h).  Every one is checked with _Static_assert, so a layout change
  * fails to compile instead of breaking the assembly.
@@ -19,6 +20,10 @@
 #define GBL_P_MOVED 18
 #define GBL_P_STAT_MODES 19
 #define GBL_P_LYC_LINE 20
+#define GBL_P_SPR_LY 21
+#define GBL_P_SPR_LO 22
+#define GBL_P_SPR_HI 23
+#define GBL_P_SPR_H 24
 #define GBL_P_EVT_DIRTY 25
 #define GBL_P_DEV_NEXT 28
 

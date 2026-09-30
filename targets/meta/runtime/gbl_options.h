@@ -29,6 +29,10 @@
  * GBL_PPU_ASM             Tile fetch and colour conversion in hand-written
  *                         Thumb-1 (gbl_ppu_asm.S).  Default on for ARMv6-M
  *                         (Cortex-M0+); the C loops are used elsewhere.
+ * GBL_RENDER_LINE_ASM     render_line (sprite selection, line signature and
+ *                         the calls to the frontend and draw_line) in
+ *                         Thumb-1 (gbl_ppu_asm.S); follows GBL_PPU_ASM and
+ *                         needs GBL_LINE_SIGNATURE.
  * GBL_PPU_RAMFUNC         Run those loops from SRAM (about 150 bytes), out of
  *                         reach of flash wait states.
  * GBL_CORE_ASM            gbl_push / gbl_pop in Thumb-1 (gbl_core_asm.S) on
@@ -126,6 +130,13 @@
 #if GBL_PPU_ASM && !defined(__ARM_ARCH_6M__)
 #undef GBL_PPU_ASM
 #define GBL_PPU_ASM 0
+#endif
+#ifndef GBL_RENDER_LINE_ASM
+#define GBL_RENDER_LINE_ASM GBL_PPU_ASM
+#endif
+#if GBL_RENDER_LINE_ASM && !(GBL_PPU_ASM && GBL_LINE_SIGNATURE)
+#undef GBL_RENDER_LINE_ASM
+#define GBL_RENDER_LINE_ASM 0
 #endif
 #if GBL_PPU_BATCH > 1 || GBL_FRAME_SIGNATURE || GBL_LINE_SIGNATURE
 #undef GBL_VRAM_HOOK
