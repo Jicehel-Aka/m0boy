@@ -1,7 +1,7 @@
 /*
- * Thumb-1 (Cortex-M0+) versions of the two functions that run on every
- * device event: gbl_ppu_advance, the PPU line state machine, and
- * gbl_update_evt, the next-event computation.  Enabled by GBL_TIMING_ASM;
+ * Thumb-1 (Cortex-M0+) versions of the functions that run on every device
+ * event: gbl_ppu_advance, the PPU line state machine, gbl_update_evt, the
+ * next-event computation, and gbl_sync.  Enabled by GBL_TIMING_ASM;
  * the C versions in gbl_ppu.c stay the reference and are used elsewhere.
  * Both must leave the machine in exactly the state the C leaves: the M0
  * benchmark checks it with -DBENCH_STATE_HASH -DBENCH_PIXEL_HASH.
@@ -416,8 +416,10 @@ gbl_ppu_advance:
 /*
  * void gbl_update_evt(void)
  * Pending enabled interrupt: next_evt = cyc.  Otherwise the cached device
- * event bounded to one frame ahead; a dirty cache goes to the C
- * recomputation (gbl_update_evt_dirty).  No stack frame.
+ * event, recomputed when dirty (ppu_next_event of gbl_ppu.c, then the
+ * timer/serial cache of gbl_core_next_event, calling it only when that
+ * cache is dirty too), bounded to one frame ahead.  The usual case needs
+ * no stack frame.
  */
     .section .text.gbl_update_evt, "ax", %progbits
     .align 2
@@ -425,13 +427,13 @@ gbl_ppu_advance:
     .type gbl_update_evt, %function
     .thumb_func
 gbl_update_evt:
-    ldr     r3, 5f
+    ldr     r3, .Le_gbr
     ldrb    r0, [r3, #GBL_GBR_IME]
     cmp     r0, #0
     beq     1f
-    ldr     r1, 6f
+    ldr     r1, .Le_ie
     ldrb    r1, [r1]
-    ldr     r2, 7f
+    ldr     r2, .Le_io
     ldrb    r2, [r2, #0x0F]         /* IF */
     ands    r1, r2
     lsls    r1, r1, #27
@@ -440,13 +442,14 @@ gbl_update_evt:
     str     r0, [r3, #GBL_GBR_NEXT_EVT]
     bx      lr
 1:
-    ldr     r2, 8f
+    ldr     r2, .Le_state
     ldrb    r0, [r2, #GBL_P_EVT_DIRTY]
     cmp     r0, #0
-    bne     3f
+    bne     .Le_recompute
+.Le_bound:  /* r2 = PPU state, r3 = gbr */
     ldr     r0, [r2, #GBL_P_DEV_NEXT]
     ldr     r1, [r3, #GBL_GBR_CYC]
-    ldr     r2, 4f
+    ldr     r2, .Le_frame
     subs    r0, r0, r1
     cmp     r0, r2
     ble     2f
@@ -455,16 +458,169 @@ gbl_update_evt:
     adds    r0, r0, r1
     str     r0, [r3, #GBL_GBR_NEXT_EVT]
     bx      lr
+
+.Le_recompute:
+    push    {r4, r5, lr}
+    ldrb    r0, [r2, #GBL_P_LCD_ON]
+    cmp     r0, #0
+    bne     3f
+    ldr     r0, [r2, #GBL_P_OFF_START]  /* LCD off: next virtual frame */
+    ldr     r1, .Le_frame
+    adds    r0, r0, r1
+    b       .Le_core
 3:
-    ldr     r0, 9f
-    bx      r0
+    ldr     r4, .Le_io_ppu
+    ldrb    r1, [r4, #0x01]         /* STAT */
+    ldrb    r5, [r2, #GBL_P_LY]
+    ldr     r0, [r2, #GBL_P_LINE_START]
+    cmp     r5, #144
+    bhs     4f
+    ldrb    r3, [r2, #GBL_P_STAGE]
+    cmp     r3, #2
+    bhs     4f
+    lsls    r3, r1, #28
+    bpl     4f
+    adds    r0, #252                /* mode 0 interrupt: next HBlank */
+    b       .Le_core
+4:
+#if GBL_PPU_BATCH > 1
+    lsls    r3, r1, #26
+    bpl     5f
+#endif
+    ldr     r3, .Le_line
+    adds    r0, r0, r3              /* mode 2 interrupt: next line */
+    b       .Le_core
+#if GBL_PPU_BATCH > 1
+5:  /* batch end, VBlank, the LYC line or the next frame */
+    movs    r3, #154
+    cmp     r5, #144
+    bhs     6f
+    movs    r3, #(GBL_PPU_BATCH - 1)
+    orrs    r3, r5
+    adds    r3, #1
+    cmp     r3, #144
+    bls     6f
+    movs    r3, #144
+6:
+    lsls    r1, r1, #25
+    bpl     7f
+    ldrb    r1, [r4, #0x05]         /* LYC */
+    cmp     r1, r5
+    bls     7f
+    cmp     r1, r3
+    bhs     7f
+    mov     r3, r1
+7:
+    subs    r3, r3, r5
+    ldr     r1, .Le_line
+    muls    r3, r1, r3
+    adds    r0, r0, r3
+#endif
+.Le_core:  /* r0 = PPU event; the timer/serial event if it comes first */
+    ldr     r1, .Le_timer
+    ldrb    r3, [r1, #GBL_T_CORE_DIRTY]
+    cmp     r3, #0
+    bne     9f
+    ldrb    r3, [r1, #GBL_T_CORE_HAS_NEXT]
+    cmp     r3, #0
+    beq     8f
+    ldr     r3, [r1, #GBL_T_CORE_NEXT]
+    subs    r4, r3, r0
+    bpl     8f
+    mov     r0, r3
+    b       8f
+9:
+    bl      gbl_core_next_event
+8:
+    ldr     r2, .Le_state
+    str     r0, [r2, #GBL_P_DEV_NEXT]
+    movs    r1, #0
+    strb    r1, [r2, #GBL_P_EVT_DIRTY]
+    ldr     r3, .Le_gbr
+    pop     {r4, r5}
+    pop     {r1}
+    mov     lr, r1
+    b       .Le_bound
     .align 2
-4:  .word   70224
-5:  .word   gbr
-6:  .word   gbl_ie
-7:  .word   gbl_io
-8:  .word   gbl_ppu_state
-9:  .word   gbl_update_evt_dirty
+.Le_frame:  .word 70224
+.Le_line:   .word LINE_CYCLES
+.Le_gbr:    .word gbr
+.Le_ie:     .word gbl_ie
+.Le_io:     .word gbl_io
+.Le_io_ppu: .word gbl_io + 0x40
+.Le_state:  .word gbl_ppu_state
+.Le_timer:  .word gbl_timer_state
     .size gbl_update_evt, . - gbl_update_evt
+
+/*
+ * void gbl_sync(void)
+ * Devices to gbr.cyc: the PPU (when due), the timer, a serial transfer in
+ * progress, then the next event.  The timer is advanced here unless TIMA
+ * overflows (then the C loop, gbl_timer_sync); GCC's version saved nine
+ * registers before finding that nothing had ticked.
+ */
+    .section .text.gbl_sync, "ax", %progbits
+    .align 2
+    .global gbl_sync
+    .type gbl_sync, %function
+    .thumb_func
+gbl_sync:
+    push    {r4, r5, lr}
+    ldr     r3, 5f
+    ldr     r4, [r3, #GBL_GBR_CYC]  /* now */
+    ldr     r2, 6f
+    ldr     r2, [r2]
+    subs    r2, r4, r2
+    bmi     1f
+    movs    r0, r4
+    bl      gbl_ppu_advance
+1:
+    ldr     r3, 7f
+    ldrb    r0, [r3, #0x07]         /* TAC */
+    ldr     r2, 8f
+    lsls    r1, r0, #29
+    bpl     3f                      /* timer stopped: only tima_sync moves */
+    lsls    r0, r0, #30
+    lsrs    r0, r0, #30
+    ldr     r1, 9f
+    ldrb    r1, [r1, r0]            /* shift of the TAC clock */
+    ldr     r0, [r2, #GBL_T_DIV_BASE]
+    ldr     r5, [r2, #GBL_T_TIMA_SYNC]
+    subs    r5, r5, r0
+    lsrs    r5, r1
+    subs    r0, r4, r0
+    lsrs    r0, r1
+    subs    r0, r0, r5              /* ticks */
+    beq     3f
+    ldrb    r1, [r3, #0x05]         /* TIMA */
+    adds    r1, r1, r0
+    cmp     r1, #255
+    bhi     2f
+    strb    r1, [r3, #0x05]
+    b       3f
+2:
+    movs    r0, r4                  /* overflow: reload, IF, event */
+    bl      gbl_timer_sync
+    b       4f
+3:
+    str     r4, [r2, #GBL_T_TIMA_SYNC]
+4:
+    ldr     r2, 8f
+    ldrb    r0, [r2, #GBL_T_SERIAL_BUSY]
+    cmp     r0, #0
+    bne     10f
+    bl      gbl_update_evt
+    pop     {r4, r5, pc}
+10:
+    movs    r0, r4
+    bl      gbl_sync_serial
+    pop     {r4, r5, pc}
+    .align 2
+5:  .word   gbr
+6:  .word   gbl_ppu_due
+7:  .word   gbl_io
+8:  .word   gbl_timer_state
+9:  .word   gbl_tac_shift
+    .size gbl_sync, . - gbl_sync
 
 #endif

@@ -33,9 +33,9 @@
  *                         reach of flash wait states.
  * GBL_CORE_ASM            gbl_push / gbl_pop in Thumb-1 (gbl_core_asm.S) on
  *                         Cortex-M0+.
- * GBL_TIMING_ASM          gbl_ppu_advance (the PPU line state machine) and
- *                         gbl_update_evt in Thumb-1 (gbl_timing_asm.S);
- *                         default on for Cortex-M0+.
+ * GBL_TIMING_ASM          gbl_ppu_advance (the PPU line state machine),
+ *                         gbl_update_evt and gbl_sync in Thumb-1
+ *                         (gbl_timing_asm.S); default on for Cortex-M0+.
  * GBL_BATTERY             Cartridge RAM is saved (set by the generator for
  *                         battery-backed cartridges).
  * GBL_ERAM_ON_SD          Cartridge RAM lives in the platform's save file

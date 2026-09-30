@@ -5,7 +5,9 @@
 #include "gbl.h"
 #include "gbl_config.h"
 #include "gbl_internal.h"
+#include "gbl_timing_layout.h"
 
+#include <stddef.h>
 #include <string.h>
 
 gbl_cpu_t gbr;
@@ -354,9 +356,29 @@ static void mbc_write(uint16_t a, uint8_t v) {
 
 /* ---- timer ---------------------------------------------------------------- */
 
-static uint32_t div_base;   /* cycle at which the 16-bit divider was zero */
-static uint32_t tima_sync;  /* cycle the TIMA counter was last advanced to */
-static const uint8_t tac_shift[4] = {10, 4, 6, 8};
+/* Timer and serial state in one structure, for the assembly gbl_sync
+ * (gbl_timing_asm.S, offsets in gbl_timing_layout.h). */
+typedef struct {
+    uint32_t div_base;    /* cycle at which the 16-bit divider was zero */
+    uint32_t tima_sync;   /* cycle the TIMA counter was last advanced to */
+    uint32_t serial_done; /* end of the transfer in progress */
+    uint8_t serial_busy;
+    uint8_t core_has_next, core_dirty; /* gbl_core_next_event cache */
+    uint32_t core_next;
+} gbl_timer_state_t;
+gbl_timer_state_t gbl_timer_state = {.core_dirty = 1};
+_Static_assert(offsetof(gbl_timer_state_t, div_base) == GBL_T_DIV_BASE, "div_base");
+_Static_assert(offsetof(gbl_timer_state_t, tima_sync) == GBL_T_TIMA_SYNC, "tima_sync");
+_Static_assert(offsetof(gbl_timer_state_t, serial_busy) == GBL_T_SERIAL_BUSY, "serial_busy");
+_Static_assert(offsetof(gbl_timer_state_t, core_has_next) == GBL_T_CORE_HAS_NEXT, "core_has_next");
+_Static_assert(offsetof(gbl_timer_state_t, core_dirty) == GBL_T_CORE_DIRTY, "core_dirty");
+_Static_assert(offsetof(gbl_timer_state_t, core_next) == GBL_T_CORE_NEXT, "core_next");
+#define div_base gbl_timer_state.div_base
+#define tima_sync gbl_timer_state.tima_sync
+#define serial_done gbl_timer_state.serial_done
+#define serial_busy gbl_timer_state.serial_busy
+const uint8_t gbl_tac_shift[4] = {10, 4, 6, 8};
+#define tac_shift gbl_tac_shift
 
 #define TIMA gbl_io[0x05]
 #define TMA gbl_io[0x06]
@@ -365,7 +387,14 @@ static const uint8_t tac_shift[4] = {10, 4, 6, 8};
 
 static void core_invalidate(void);
 
-static void timer_sync(uint32_t now) {
+/* Also the slow path of the assembly gbl_sync (a TIMA overflow). */
+#if GBL_TIMING_ASM
+void gbl_timer_sync(uint32_t now);
+#define timer_sync gbl_timer_sync
+#else
+static
+#endif
+void timer_sync(uint32_t now) {
     if (TAC & 4) {
         uint32_t s = tac_shift[TAC & 3];
         uint32_t ticks = ((now - div_base) >> s) - ((tima_sync - div_base) >> s);
@@ -388,9 +417,7 @@ static uint32_t timer_next_event(void) {
 }
 
 /* ---- serial: internal-clock transfers complete with no partner ---------- */
-
-static uint32_t serial_done;
-static uint8_t serial_busy;
+/* (state in gbl_timer_state) */
 
 /* ---- events --------------------------------------------------------------- */
 
@@ -398,8 +425,10 @@ static uint8_t serial_busy;
  * and the event cache live in gbl_ppu.c: gbl_update_evt). */
 /* The timer/serial part is cached on its own: PPU transitions invalidate
  * the combined event far more often than the timer changes. */
-static uint32_t core_next;
-static uint8_t core_has_next, core_dirty = 1;
+/* (cache in gbl_timer_state) */
+#define core_next gbl_timer_state.core_next
+#define core_has_next gbl_timer_state.core_has_next
+#define core_dirty gbl_timer_state.core_dirty
 
 static void core_invalidate(void) {
     core_dirty = 1;
@@ -420,10 +449,14 @@ uint32_t gbl_core_next_event(uint32_t best) {
     return best;
 }
 
-void gbl_sync(void) {
-    uint32_t now = gbr.cyc;
-    gbl_ppu_sync(now);
-    timer_sync(now);
+/* The serial part of gbl_sync, then the next event (the assembly gbl_sync
+ * jumps here while a transfer is in progress). */
+#if GBL_TIMING_ASM
+void gbl_sync_serial(uint32_t now);
+#else
+static inline __attribute__((always_inline))
+#endif
+void gbl_sync_serial(uint32_t now) {
     if (serial_busy && (int32_t)(now - serial_done) >= 0) {
         serial_busy = 0;
         core_invalidate();
@@ -433,6 +466,15 @@ void gbl_sync(void) {
     }
     gbl_update_evt();
 }
+
+#if !GBL_TIMING_ASM /* else gbl_timing_asm.S */
+void gbl_sync(void) {
+    uint32_t now = gbr.cyc;
+    gbl_ppu_sync(now);
+    timer_sync(now);
+    gbl_sync_serial(now);
+}
+#endif
 
 /* ---- wait loops ------------------------------------------------------------ */
 

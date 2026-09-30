@@ -304,13 +304,15 @@ static int select_sprites(uint8_t *sel, uint32_t h) {
 
 /* ---- line signature ------------------------------------------------------ */
 
+/* FNV-1 style mixing.  The multiplier is read from a variable so GCC emits
+ * a single-cycle MULS instead of a long shift/add expansion on Cortex-M0+
+ * (the frame signature too: a register write paid 45 cycles for it). */
+uint32_t gbl_sig_mul = 0x9E3779B1u;
+
 #if GBL_LINE_SIGNATURE
 /* Everything render_line reads, summarized: registers, the map row version
  * and the version of every tile the line shows, and the selected sprites.
  * Versions only move when a VRAM write changes a byte. */
-/* FNV-1 style mixing.  The multiplier is read from a variable so GCC emits
- * a single-cycle MULS instead of a long shift/add expansion on Cortex-M0+. */
-uint32_t gbl_sig_mul = 0x9E3779B1u;
 static uint16_t tile_ver[384];
 static uint16_t map_ver[64];
 
@@ -655,7 +657,7 @@ void gbl_ppu_vram_changed(uint16_t off) {
 static uint32_t frame_sig, content_epoch;
 
 static void sig_mix(uint32_t v) {
-    frame_sig = (frame_sig ^ v) * 0x9E3779B1u;
+    frame_sig = (frame_sig ^ v) * gbl_sig_mul;
     frame_sig ^= frame_sig >> 15;
 }
 
@@ -810,14 +812,8 @@ void gbl_evt_invalidate(void) { P.evt_dirty = 1; }
 /* Next cycle at which the generated code or the interpreter must poll
  * devices: now when an enabled interrupt is pending, otherwise the earliest
  * device event (cached until a device changes state). */
-/* The recomputation and the bound; the assembly gbl_update_evt jumps here
- * when the cached event is dirty. */
-#if GBL_TIMING_ASM
-void gbl_update_evt_dirty(void);
-#else
-static inline __attribute__((always_inline))
-#endif
-void gbl_update_evt_dirty(void) {
+#if !GBL_TIMING_ASM /* else gbl_timing_asm.S, ppu_next_event included */
+static inline __attribute__((always_inline)) void gbl_update_evt_dirty(void) {
     if (P.evt_dirty) {
         P.dev_next = gbl_core_next_event(ppu_next_event());
         P.evt_dirty = 0;
@@ -828,7 +824,6 @@ void gbl_update_evt_dirty(void) {
     gbr.next_evt = best;
 }
 
-#if !GBL_TIMING_ASM /* else gbl_timing_asm.S */
 void gbl_update_evt(void) {
     if (gbr.ime && (gbl_ie & IF & 0x1F)) {
         gbr.next_evt = gbr.cyc;
