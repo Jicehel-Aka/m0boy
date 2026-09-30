@@ -44,6 +44,14 @@ extern "C" {
 #define FRAME_US 16743u   /* 70224 cycles at 4.194304 MHz */
 #define BTN_CS_MASK (1u << 3) /* PB03 */
 
+#ifndef GBL_GEN_VERSION
+#define GBL_GEN_VERSION "unknown"
+#endif
+/* One contiguous string, kept in flash: compile.sh reads it back from
+ * firmware.bin to tell which gbrecomp produced this firmware. */
+static const char gbl_gen_version[] __attribute__((used)) =
+    "gbrecomp-meta " GBL_GEN_VERSION;
+
 static uint8_t input_deferred;
 
 /* Hand the last strip to the DMA and, when the bus is free (or input was
@@ -313,6 +321,8 @@ void setup() {
      * the card being in SPI mode when HOME brings it back. */
     int card_ok = meta_sd_init();
     SerialUSB.begin(115200);
+    /* Also keeps gbl_gen_version in the binary (compile.sh reads it there). */
+    SerialUSB.println(gbl_gen_version);
 #if GBL_ROM_STREAM
     /* Before gbl_reset: the lookup borrows the stream cache. */
     int stream_err = meta_stream_init(card_ok);

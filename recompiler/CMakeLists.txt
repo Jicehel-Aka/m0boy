@@ -18,6 +18,12 @@ target_include_directories(gbrecomp_core
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+# The meta emitter stamps this into gbl_config.h so a firmware records which
+# gbrecomp produced it (compile.sh reads it back from firmware.bin).
+target_compile_definitions(gbrecomp_core PRIVATE
+    GBRECOMP_VERSION="${PROJECT_VERSION}"
+)
+
 # Enable position-independent code for shared library support
 set_target_properties(gbrecomp_core PROPERTIES
     POSITION_INDEPENDENT_CODE ON
