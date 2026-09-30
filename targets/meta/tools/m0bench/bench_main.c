@@ -45,6 +45,20 @@ uint16_t *gbl_platform_line_begin(uint8_t ly) {
 uint32_t bench_pixel_hash = 2166136261u;
 #endif
 
+#ifdef BENCH_STATE_HASH
+/* Machine state at every VBlank entry (registers, flags, cycle counter,
+ * WRAM, HRAM, IO), like the host's state_hash: proves that assembly
+ * versions of timing code (events, PPU transitions) behave like the C ones.
+ * Costs cycles: build it separately from timing runs. */
+uint32_t bench_state_hash = 2166136261u;
+
+static void state_mix(const uint8_t *p, uint32_t n) {
+    uint32_t h = bench_state_hash;
+    while (n--) h = (h ^ *p++) * 16777619u;
+    bench_state_hash = h;
+}
+#endif
+
 void gbl_platform_line_end(uint8_t ly) {
 #ifdef BENCH_PIXEL_HASH
     {
@@ -81,6 +95,22 @@ int gbl_platform_save_write(uint32_t sector, const uint8_t *src) { (void)sector;
 void gbl_platform_vblank(void) {
     uint32_t f = gbl_frame;
     bench_frame(f);
+#ifdef BENCH_STATE_HASH
+    {
+        uint16_t regs[6] = {gbr.bc, gbr.de, gbr.hl, gbr.sp, gbr.pc,
+                            (uint16_t)(gbr.a | gbl_getf() << 8)};
+        uint32_t cyc = gbr.cyc;
+        state_mix((const uint8_t *)regs, sizeof(regs));
+        state_mix((const uint8_t *)&cyc, sizeof(cyc));
+        state_mix(gbl_wram, sizeof(gbl_wram));
+        state_mix(gbl_hram, sizeof(gbl_hram));
+        state_mix(gbl_io, sizeof(gbl_io));
+        /* PPU timing state up to lyc_line (gbl_timing_layout.h), window
+         * line included: it is not visible in skipped frames. */
+        extern const uint8_t gbl_ppu_state[];
+        state_mix(gbl_ppu_state, 21);
+    }
+#endif
 #ifdef BENCH_STATIC_SKIP
     gbl_skip_render = (uint8_t)gbl_frame_unchanged_next(!gbl_skip_render);
 #endif

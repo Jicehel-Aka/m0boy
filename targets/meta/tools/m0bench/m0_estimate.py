@@ -117,6 +117,8 @@ def main():
     ap.add_argument("--top", type=int, default=15)
     ap.add_argument("--cflag", action="append", default=[], help="extra compiler flag")
     ap.add_argument("--hot-blocks", type=int, default=0, help="print the N most expensive basic blocks")
+    ap.add_argument("--func", action="append", default=[],
+                    help="print every executed block of this function, in address order")
     args = ap.parse_args()
 
     out_dir = args.build_dir or os.path.join(args.project, "m0bench")
@@ -134,6 +136,7 @@ def main():
         symtab = elf.get_section_by_name(".symtab")
         done = None
         pixel_hash_addr = None
+        state_hash_addr = None
         for s in symtab.iter_symbols():
             if s["st_info"]["type"] == "STT_FUNC" and s["st_size"]:
                 symbols.append((s["st_value"] & ~1, s["st_size"], s.name))
@@ -141,6 +144,8 @@ def main():
                 done = s["st_value"] & ~1
             if s.name == "bench_pixel_hash":
                 pixel_hash_addr = s["st_value"]
+            if s.name == "bench_state_hash":
+                state_hash_addr = s["st_value"]
         text = elf.get_section_by_name(".text")
         flash_used = text["sh_size"]
     symbols.sort()
@@ -165,6 +170,7 @@ def main():
     md = Cs(CS_ARCH_ARM, CS_MODE_THUMB | CS_MODE_MCLASS)
     per_func = collections.Counter()
     per_block = collections.Counter()
+    block_func = {}
     total_cyc = total_ws = total_ins = 0.0
     for addr, n in counts.items():
         code = bytes(uc.mem_read(addr, sizes[addr]))
@@ -182,10 +188,13 @@ def main():
         name = symbols[i][2] if i >= 0 and addr < symbols[i][0] + symbols[i][1] else "?"
         per_func[name] += (cyc + ws) * n
         per_block[addr] = (cyc + ws) * n
+        block_func[addr] = name
 
     frames = args.frames
     if pixel_hash_addr is not None:
         print("pixel hash: %08x" % int.from_bytes(uc.mem_read(pixel_hash_addr, 4), "little"))
+    if state_hash_addr is not None:
+        print("state hash: %08x" % int.from_bytes(uc.mem_read(state_hash_addr, 4), "little"))
     est = total_cyc + total_ws
     per_frame = est / frames
     print("image: %s (.text %d bytes), %d frames, emulated in %.1fs" % (elf_path, flash_used, frames, wall))
@@ -209,6 +218,15 @@ def main():
     print("\ntop functions:")
     for name, c in per_func.most_common(args.top):
         print("  %-28s %5.1f%%" % (name, 100 * c / est))
+    for fname in args.func:
+        print("\nfunction %s: %.1f%%" % (fname, 100 * per_func[fname] / est))
+        for addr in sorted(per_block):
+            if block_func[addr] != fname:
+                continue
+            print("  block %08x: %.2f%%, %d executions, %.1f cycles each" %
+                  (addr, 100 * per_block[addr] / est, counts[addr], per_block[addr] / counts[addr]))
+            for insn in md.disasm(bytes(uc.mem_read(addr, sizes[addr])), addr):
+                print("    %08x  %-8s %s" % (insn.address, insn.mnemonic, insn.op_str))
     for addr, c in per_block.most_common(args.hot_blocks):
         print("\nblock %08x: %.1f%%, %d executions" % (addr, 100 * c / est, counts[addr]))
         for insn in md.disasm(bytes(uc.mem_read(addr, sizes[addr])), addr):

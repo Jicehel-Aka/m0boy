@@ -163,4 +163,64 @@ gbl_ppu_convert_fine_asm:
     bx      lr
     .size gbl_ppu_convert_fine_asm, . - gbl_ppu_convert_fine_asm
 
+/*
+ * uint32_t gbl_ppu_tiles_hash_asm(const uint8_t *map_row, uint32_t col_xor,
+ *                                 uint32_t count, const uint16_t *ver)
+ *
+ * The line-signature loop of tiles_hash (gbl_ppu.c): for `count` entries
+ * of the 32-entry map row from column col_xor & 0xFF (wrapping),
+ * s = (s ^ ver[idx ^ (col_xor >> 8)]) * gbl_sig_mul; s ^= s >> 15, from
+ * the FNV offset basis.  The wrap splits the row into two pointer runs, so
+ * no index masking: 14 cycles per tile instead of 19, and a five-register
+ * frame instead of nine.
+ */
+    GBL_SECTION(gbl_ppu_tiles_hash_asm)
+    .align 2
+    .global gbl_ppu_tiles_hash_asm
+    .type gbl_ppu_tiles_hash_asm, %function
+    .thumb_func
+gbl_ppu_tiles_hash_asm:
+    push    {r4-r7, lr}
+    lsrs    r6, r1, #8             /* tile index xor */
+    uxtb    r1, r1
+    adds    r0, r0, r1             /* first entry */
+    movs    r5, #32
+    subs    r5, r5, r1             /* entries before the wrap */
+    subs    r2, r2, r5             /* entries after it */
+    bhi     1f
+    adds    r5, r5, r2             /* no wrap: all count entries */
+    movs    r2, #0
+1:
+    adds    r1, r0, r5             /* end of this run */
+    ldr     r4, 8f
+    ldr     r4, [r4]               /* gbl_sig_mul */
+    ldr     r7, 9f                 /* s */
+    b       3f
+2:
+    ldrb    r5, [r0]
+    adds    r0, #1
+    eors    r5, r6
+    lsls    r5, r5, #1
+    ldrh    r5, [r3, r5]
+    eors    r7, r5
+    muls    r7, r4, r7
+    lsrs    r5, r7, #15
+    eors    r7, r5
+3:
+    cmp     r0, r1
+    bne     2b
+    cmp     r2, #0
+    beq     4f
+    subs    r0, #32                /* wrap to column 0 */
+    adds    r1, r0, r2
+    movs    r2, #0
+    b       2b
+4:
+    movs    r0, r7
+    pop     {r4-r7, pc}
+    .align 2
+8:  .word   gbl_sig_mul
+9:  .word   2166136261
+    .size gbl_ppu_tiles_hash_asm, . - gbl_ppu_tiles_hash_asm
+
 #endif

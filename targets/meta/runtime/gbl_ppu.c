@@ -11,7 +11,9 @@
 #include "gbl.h"
 #include "gbl_config.h"
 #include "gbl_internal.h"
+#include "gbl_timing_layout.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #define LCDC gbl_io[0x40]
@@ -35,8 +37,10 @@ uint8_t gbl_skip_render;
 uint16_t gbl_lcd_palette[4] = {0, 1, 2, 3};
 
 /* PPU timing state in one structure: Thumb-1 reaches every field from one
- * base register instead of loading a literal address per variable. */
-static struct {
+ * base register instead of loading a literal address per variable.  The
+ * assembly state machine (gbl_timing_asm.S) uses the offsets of
+ * gbl_timing_layout.h, checked below. */
+typedef struct {
     uint32_t line_start;     /* LCD on: cycle the current line began */
     uint32_t off_start;      /* LCD off: start of the current virtual frame */
     uint32_t next_stage_off; /* offset in the line of the next transition */
@@ -52,7 +56,28 @@ static struct {
     uint8_t spr_ly, spr_lo, spr_hi, spr_h; /* select_sprites window, valid for spr_ly */
     uint8_t evt_dirty;       /* dev_next must be recomputed */
     uint32_t dev_next;       /* earliest device event (gbl_update_evt) */
-} P = {.next_stage_off = 80u, .evt_dirty = 1};
+} gbl_ppu_state_t;
+gbl_ppu_state_t gbl_ppu_state = {.next_stage_off = 80u, .evt_dirty = 1};
+#define P gbl_ppu_state
+
+#define GBL_CHECK_OFS(type, field, ofs) _Static_assert(offsetof(type, field) == ofs, #field)
+GBL_CHECK_OFS(gbl_ppu_state_t, line_start, GBL_P_LINE_START);
+GBL_CHECK_OFS(gbl_ppu_state_t, off_start, GBL_P_OFF_START);
+GBL_CHECK_OFS(gbl_ppu_state_t, next_stage_off, GBL_P_NEXT_STAGE_OFF);
+GBL_CHECK_OFS(gbl_ppu_state_t, ly, GBL_P_LY);
+GBL_CHECK_OFS(gbl_ppu_state_t, stage, GBL_P_STAGE);
+GBL_CHECK_OFS(gbl_ppu_state_t, mode, GBL_P_MODE);
+GBL_CHECK_OFS(gbl_ppu_state_t, stat_line, GBL_P_STAT_LINE);
+GBL_CHECK_OFS(gbl_ppu_state_t, win_line, GBL_P_WIN_LINE);
+GBL_CHECK_OFS(gbl_ppu_state_t, lcd_on, GBL_P_LCD_ON);
+GBL_CHECK_OFS(gbl_ppu_state_t, moved, GBL_P_MOVED);
+GBL_CHECK_OFS(gbl_ppu_state_t, stat_modes, GBL_P_STAT_MODES);
+GBL_CHECK_OFS(gbl_ppu_state_t, lyc_line, GBL_P_LYC_LINE);
+GBL_CHECK_OFS(gbl_ppu_state_t, evt_dirty, GBL_P_EVT_DIRTY);
+GBL_CHECK_OFS(gbl_ppu_state_t, dev_next, GBL_P_DEV_NEXT);
+GBL_CHECK_OFS(gbl_cpu_t, ime, GBL_GBR_IME);
+GBL_CHECK_OFS(gbl_cpu_t, cyc, GBL_GBR_CYC);
+GBL_CHECK_OFS(gbl_cpu_t, next_evt, GBL_GBR_NEXT_EVT);
 #define line_start P.line_start
 #define off_start P.off_start
 #define next_stage_off P.next_stage_off
@@ -177,6 +202,9 @@ GBL_ASM_CALL void gbl_ppu_convert4_asm(uint32_t *out, const uint16_t *bg,
                                        const uint32_t *pairs, uint32_t groups);
 GBL_ASM_CALL void gbl_ppu_convert_fine_asm(uint32_t *out, const uint32_t *t,
                                            const uint32_t *pairs, uint32_t shift);
+/* The tiles_hash loop: col_xor = first column | tile index xor << 8. */
+GBL_ASM_CALL uint32_t gbl_ppu_tiles_hash_asm(const uint8_t *map_row, uint32_t col_xor,
+                                             uint32_t count, const uint16_t *ver);
 #endif
 
 static inline uint32_t tile_row(const uint8_t *base, uint32_t idx_xor, uint8_t idx) {
@@ -309,13 +337,17 @@ static tile_cache_t bg_cache, win_cache;
 static uint32_t tiles_hash(tile_cache_t *c, uint32_t mrow, uint32_t col, uint32_t count, uint8_t lcdc) {
     uint32_t key = (mrow << 24) | (col << 16) | (count << 8) | (uint32_t)(lcdc & 0x10) | 1u;
     if (c->key == key && c->map_ver == map_ver[mrow] && c->epoch == tile_epoch) return c->hash;
-    uint32_t s = 2166136261u, k = gbl_sig_mul;
     uint32_t tbase = (lcdc & 0x10) ? 0u : 128u, txor = (lcdc & 0x10) ? 0u : 0x80u;
     const uint8_t *map = gbl_vram + 0x1800u + mrow * 32u;
+#if GBL_PPU_ASM
+    uint32_t s = gbl_ppu_tiles_hash_asm(map, col | txor << 8, count, tile_ver + tbase);
+#else
+    uint32_t s = 2166136261u, k = gbl_sig_mul;
     for (uint32_t i = 0; i < count; i++) {
         s = (s ^ tile_ver[tbase + (map[(col + i) & 31u] ^ txor)]) * k;
         s ^= s >> 15;
     }
+#endif
     c->key = key;
     c->map_ver = map_ver[mrow];
     c->epoch = tile_epoch;
@@ -579,7 +611,13 @@ static __attribute__((noinline)) void draw_line(uint16_t *out, uint8_t lcdc, int
 /* Most lines are skipped (unchanged signature, dropped row, skipped frame):
  * this light function decides, and only drawn lines pay for draw_line's
  * large frame (tile words, registers). */
-static __attribute__((noinline)) void render_line(void) {
+#if GBL_TIMING_ASM
+void gbl_ppu_render_line(void); /* gbl_timing_asm.S calls it */
+#define render_line gbl_ppu_render_line
+#else
+static
+#endif
+__attribute__((noinline)) void render_line(void) {
     uint8_t lcdc = LCDC;
     int window = (lcdc & 0x21) == 0x21 && ly >= WY && WX <= 166;
     uint32_t h = (lcdc & 0x04) ? 16u : 8u;
@@ -621,7 +659,13 @@ static void sig_mix(uint32_t v) {
     frame_sig ^= frame_sig >> 15;
 }
 
-static void sig_frame_start(void) {
+#if GBL_TIMING_ASM
+void gbl_ppu_frame_start(void); /* gbl_timing_asm.S calls it at line 0 */
+#define sig_frame_start gbl_ppu_frame_start
+#else
+static
+#endif
+void sig_frame_start(void) {
     frame_sig = 2166136261u;
     sig_mix(0x100u | lcd_on);
     for (uint8_t n = 0x40; n < 0x4C; n++)
@@ -670,16 +714,27 @@ static void update_due(void) {
     gbl_ppu_due = lcd_on ? line_start + next_stage_off : off_start + FRAME_CYCLES;
 }
 
+/* LCD off: a virtual frame clock (the assembly version jumps here too). */
+#if GBL_TIMING_ASM
+void gbl_ppu_advance_off(uint32_t now);
+#else
+static
+#endif
+void gbl_ppu_advance_off(uint32_t now) {
+    while (now - off_start >= FRAME_CYCLES) {
+        off_start += FRAME_CYCLES;
+        ppu_moved = 1;
+        P.evt_dirty = 1;
+        gbl_frame++;
+        gbl_platform_vblank();
+    }
+    update_due();
+}
+
+#if !GBL_TIMING_ASM /* else gbl_timing_asm.S */
 void gbl_ppu_advance(uint32_t now) {
     if (!lcd_on) {
-        while (now - off_start >= FRAME_CYCLES) {
-            off_start += FRAME_CYCLES;
-            ppu_moved = 1;
-            P.evt_dirty = 1;
-            gbl_frame++;
-            gbl_platform_vblank();
-        }
-        update_due();
+        gbl_ppu_advance_off(now);
         return;
     }
     for (;;) {
@@ -730,6 +785,7 @@ void gbl_ppu_advance(uint32_t now) {
     next_stage_off = ly >= 144 || stage == 2 ? LINE_CYCLES : stage == 0 ? MODE3_START : MODE0_START;
     update_due();
 }
+#endif
 
 uint32_t gbl_ppu_stable_until(void) {
     if (!lcd_on) return off_start + FRAME_CYCLES;
@@ -754,11 +810,14 @@ void gbl_evt_invalidate(void) { P.evt_dirty = 1; }
 /* Next cycle at which the generated code or the interpreter must poll
  * devices: now when an enabled interrupt is pending, otherwise the earliest
  * device event (cached until a device changes state). */
-void gbl_update_evt(void) {
-    if (gbr.ime && (gbl_ie & IF & 0x1F)) {
-        gbr.next_evt = gbr.cyc;
-        return;
-    }
+/* The recomputation and the bound; the assembly gbl_update_evt jumps here
+ * when the cached event is dirty. */
+#if GBL_TIMING_ASM
+void gbl_update_evt_dirty(void);
+#else
+static inline __attribute__((always_inline))
+#endif
+void gbl_update_evt_dirty(void) {
     if (P.evt_dirty) {
         P.dev_next = gbl_core_next_event(ppu_next_event());
         P.evt_dirty = 0;
@@ -768,6 +827,16 @@ void gbl_update_evt(void) {
     if ((int32_t)(best - now) > 70224) best = now + 70224;
     gbr.next_evt = best;
 }
+
+#if !GBL_TIMING_ASM /* else gbl_timing_asm.S */
+void gbl_update_evt(void) {
+    if (gbr.ime && (gbl_ie & IF & 0x1F)) {
+        gbr.next_evt = gbr.cyc;
+        return;
+    }
+    gbl_update_evt_dirty();
+}
+#endif
 
 uint8_t gbl_ppu_read(uint8_t n) {
     if (n == 0x41 || n == 0x44) {
