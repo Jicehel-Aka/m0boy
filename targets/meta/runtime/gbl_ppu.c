@@ -713,7 +713,9 @@ void gbl_ppu_vram_changed(uint16_t off) {
 }
 
 #if GBL_FRAME_SIGNATURE
-static uint32_t frame_sig, content_epoch;
+uint32_t gbl_ppu_frame_sig; /* global for the assembly gbl_io_wr */
+#define frame_sig gbl_ppu_frame_sig
+static uint32_t content_epoch;
 
 static void sig_mix(uint32_t v) {
     frame_sig = (frame_sig ^ v) * gbl_sig_mul;

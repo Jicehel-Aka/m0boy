@@ -576,6 +576,12 @@ uint8_t gbl_io_rd(uint8_t n) {
 #undef gbl_io_rd
 #endif
 
+/* Scroll, palette and window writes are handled by the assembly gbl_io_wr
+ * (gbl_timing_asm.S); it jumps here for the others. */
+#if GBL_TIMING_ASM
+void gbl_io_wr_c(uint8_t n, uint8_t v);
+#define gbl_io_wr gbl_io_wr_c
+#endif
 void gbl_io_wr(uint8_t n, uint8_t v) {
     switch (n) {
     case 0x00: gbl_io[0x00] = v & 0x30; return;
@@ -639,6 +645,9 @@ void gbl_io_wr(uint8_t n, uint8_t v) {
         return;
     }
 }
+#if GBL_TIMING_ASM
+#undef gbl_io_wr
+#endif
 
 /* ---- bus ---------------------------------------------------------------- */
 
@@ -791,14 +800,20 @@ int gbl_halt(uint16_t resume_pc) {
  * direct-mapped cache (interrupt returns and unwinds resume at the same few
  * addresses).  Misses, i.e. addresses left to the interpreter, are cached
  * too. */
-#ifndef GBL_LOOKUP_CACHE
-#define GBL_LOOKUP_CACHE 16
-#endif
 #if GBL_LOOKUP_CACHE
-static struct {
+/* Global for the assembly gbl_lookup (gbl_timing_asm.S), which handles
+ * hits and jumps to gbl_lookup_miss otherwise. */
+typedef struct {
     uint16_t pc, bank;
     gbl_fn fn;
-} lookup_cache[GBL_LOOKUP_CACHE];
+} gbl_lookup_entry_t;
+gbl_lookup_entry_t gbl_lookup_cache[GBL_LOOKUP_CACHE];
+#define lookup_cache gbl_lookup_cache
+#if GBL_TIMING_ASM /* 32-bit pointers */
+_Static_assert(sizeof(gbl_lookup_entry_t) == 8 && offsetof(gbl_lookup_entry_t, bank) == 2 &&
+               offsetof(gbl_lookup_entry_t, fn) == 4, "gbl_lookup_entry_t layout");
+#endif
+_Static_assert(offsetof(gbl_cpu_t, rom_bank) == GBL_GBR_ROM_BANK, "rom_bank");
 #endif
 
 static gbl_fn lookup_table(uint16_t pc) {
@@ -817,13 +832,19 @@ static gbl_fn lookup_table(uint16_t pc) {
     return 0;
 }
 
+#if GBL_TIMING_ASM && GBL_LOOKUP_CACHE
+gbl_fn gbl_lookup_miss(uint16_t pc);
+#define gbl_lookup gbl_lookup_miss
+#endif
 gbl_fn gbl_lookup(uint16_t pc) {
 #if GBL_LOOKUP_CACHE
     /* RAM code (pc >= 0x8000) is never compiled: no need to cache it. */
     if (pc >= 0x8000) return 0;
     uint16_t bank = pc < 0x4000 ? 0 : gbr.rom_bank;
     unsigned i = (pc ^ (pc >> 5)) & (GBL_LOOKUP_CACHE - 1);
+#if !GBL_TIMING_ASM /* the assembly gbl_lookup checked the entry already */
     if (lookup_cache[i].pc == pc && lookup_cache[i].bank == bank) return lookup_cache[i].fn;
+#endif
     gbl_fn fn = lookup_table(pc);
     lookup_cache[i].pc = pc;
     lookup_cache[i].bank = bank;
@@ -833,6 +854,9 @@ gbl_fn gbl_lookup(uint16_t pc) {
     return lookup_table(pc);
 #endif
 }
+#if GBL_TIMING_ASM && GBL_LOOKUP_CACHE
+#undef gbl_lookup
+#endif
 
 /* gbl_exec only runs with this much stack above gbl_stack_limit, so the
  * region it calls always passes its own ENTER() check: otherwise a region

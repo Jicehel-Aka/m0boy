@@ -35,6 +35,7 @@
 #define GBL_T_CORE_NEXT 16
 
 #define GBL_GBR_IME 15
+#define GBL_GBR_ROM_BANK 16
 #define GBL_GBR_CYC 20
 #define GBL_GBR_NEXT_EVT 24
 

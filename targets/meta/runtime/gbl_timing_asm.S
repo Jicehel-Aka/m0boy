@@ -1,7 +1,8 @@
 /*
  * Thumb-1 (Cortex-M0+) versions of the functions that run on every device
  * event: gbl_ppu_advance, the PPU line state machine, gbl_update_evt, the
- * next-event computation, gbl_sync, and the LY/STAT path of gbl_io_rd.  Enabled by GBL_TIMING_ASM;
+ * next-event computation, gbl_sync, and the PPU register paths of
+ * gbl_io_rd and gbl_io_wr, and the dispatch cache hit of gbl_lookup.  Enabled by GBL_TIMING_ASM;
  * the C versions in gbl_ppu.c stay the reference and are used elsewhere.
  * Both must leave the machine in exactly the state the C leaves: the M0
  * benchmark checks it with -DBENCH_STATE_HASH -DBENCH_PIXEL_HASH.
@@ -703,5 +704,129 @@ gbl_io_rd:
 .Lr_io_ppu: .word gbl_io + 0x40
 .Lr_io:     .word gbl_io
     .size gbl_io_rd, . - gbl_io_rd
+
+/*
+ * void gbl_io_wr(uint8_t n, uint8_t v)
+ * SCY, SCX, BGP, OBP0, OBP1, WY, WX (0x42, 0x43, 0x47-0x4B): what
+ * gbl_ppu_write does for them (raster effects write them every line):
+ * advance the PPU when due, mix a changed value into the frame signature,
+ * store.  They move no event.  Every other register goes to the C
+ * gbl_io_wr_c.
+ */
+    .section .text.gbl_io_wr, "ax", %progbits
+    .align 2
+    .global gbl_io_wr
+    .type gbl_io_wr, %function
+    .thumb_func
+gbl_io_wr:
+    movs    r2, r0
+    subs    r2, #0x42
+    cmp     r2, #1
+    bls     1f                      /* SCY, SCX */
+    subs    r2, #5
+    cmp     r2, #4
+    bls     1f                      /* BGP .. WX */
+    ldr     r2, .Lw_c
+    bx      r2
+1:
+    push    {r4, r5, r6, lr}
+    mov     r4, r0
+    mov     r5, r1
+    ldr     r2, .Lw_gbr
+    ldr     r0, [r2, #GBL_GBR_CYC]
+    ldr     r1, .Lw_due
+    ldr     r1, [r1]
+    subs    r1, r0, r1
+    bmi     2f
+    bl      gbl_ppu_advance
+2:
+    ldr     r6, .Lw_io
+#if GBL_FRAME_SIGNATURE
+    ldrb    r0, [r6, r4]
+    cmp     r0, r5
+    beq     3f
+    ldr     r3, .Lw_state           /* ly << 18 | stage << 16 | n << 8 | v */
+    ldrb    r0, [r3, #GBL_P_LY]
+    lsls    r0, r0, #2
+    ldrb    r1, [r3, #GBL_P_STAGE]
+    orrs    r0, r1
+    lsls    r0, r0, #8
+    orrs    r0, r4
+    lsls    r0, r0, #8
+    orrs    r0, r5
+    ldr     r3, .Lw_sig
+    ldr     r1, [r3]
+    eors    r1, r0
+    ldr     r2, .Lw_mul
+    ldr     r2, [r2]
+    muls    r1, r2, r1
+    lsrs    r0, r1, #15
+    eors    r1, r0
+    str     r1, [r3]
+3:
+#endif
+    strb    r5, [r6, r4]
+    pop     {r4, r5, r6, pc}
+    .align 2
+.Lw_c:      .word gbl_io_wr_c
+.Lw_gbr:    .word gbr
+.Lw_due:    .word gbl_ppu_due
+.Lw_io:     .word gbl_io
+.Lw_state:  .word gbl_ppu_state
+#if GBL_FRAME_SIGNATURE
+.Lw_sig:    .word gbl_ppu_frame_sig
+.Lw_mul:    .word gbl_sig_mul
+#endif
+    .size gbl_io_wr, . - gbl_io_wr
+
+#if GBL_LOOKUP_CACHE
+/*
+ * gbl_fn gbl_lookup(uint16_t pc)
+ * The dispatch cache hit, without a stack frame: RAM code (pc >= 0x8000)
+ * is never compiled, otherwise entry (pc ^ pc >> 5) & (size - 1) must
+ * match pc and the bank (0 below 0x4000).  A miss goes to the C
+ * gbl_lookup_miss, which searches the table and fills the entry.
+ */
+    .section .text.gbl_lookup, "ax", %progbits
+    .align 2
+    .global gbl_lookup
+    .type gbl_lookup, %function
+    .thumb_func
+gbl_lookup:
+    lsrs    r1, r0, #15
+    bne     3f
+    movs    r1, #0                  /* bank */
+    lsrs    r2, r0, #14
+    beq     1f
+    ldr     r1, .Ll_gbr
+    ldrh    r1, [r1, #GBL_GBR_ROM_BANK]
+1:
+    lsrs    r2, r0, #5
+    eors    r2, r0
+    movs    r3, #(GBL_LOOKUP_CACHE - 1)
+    ands    r2, r3
+    lsls    r2, r2, #3
+    ldr     r3, .Ll_cache
+    adds    r3, r3, r2
+    ldrh    r2, [r3]
+    cmp     r2, r0
+    bne     2f
+    ldrh    r2, [r3, #2]
+    cmp     r2, r1
+    bne     2f
+    ldr     r0, [r3, #4]
+    bx      lr
+2:
+    ldr     r3, .Ll_miss
+    bx      r3
+3:
+    movs    r0, #0
+    bx      lr
+    .align 2
+.Ll_gbr:    .word gbr
+.Ll_cache:  .word gbl_lookup_cache
+.Ll_miss:   .word gbl_lookup_miss
+    .size gbl_lookup, . - gbl_lookup
+#endif
 
 #endif
