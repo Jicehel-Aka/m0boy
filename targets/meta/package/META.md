@@ -199,7 +199,7 @@ unie ; HOME maintenu 3 s revient au loader.
 
 Pour ces jeux, une partie jouée sur PC (`PLAY=1 ./compile.sh`) aide
 beaucoup : elle indique les données à garder en flash, donc moins de
-lectures sur la carte en jeu. Les modes d'affichage BLEND et DARK sont
+lectures sur la carte en jeu. Les modes d'affichage BLEND, DARK et TBLEND sont
 retirés de ces firmwares pour faire de la place en RAM.
 
 Sur 5 jeux (SML, Batman, Burai Fighter, Solar Striker, R.C. Pro-Am), il ne
@@ -248,7 +248,7 @@ et la vitesse n'est pas celle de la console.
 | B | A |
 | MENU | Start |
 | HOME (appui court) | Select |
-| HOME maintenu 1 s | Mode d'affichage suivant : SMOOTH, TILE, BLEND, DARK, CROP, SKIP |
+| HOME maintenu 1 s | Mode d'affichage suivant : SMOOTH, TILE, BLEND, DARK, CROP, SKIP, TBLEND |
 | HOME maintenu 3 s | Retour au loader Gamebuino |
 
 Modes d'affichage (les 144 lignes Game Boy sur les 128 de la META) :
@@ -261,6 +261,7 @@ Modes d'affichage (les 144 lignes Game Boy sur les 128 de la META) :
 | DARK | Fusionne en gardant la teinte la plus sombre |
 | CROP | Pas de réduction : lignes 8 à 135 (le haut et le bas sont coupés) |
 | SKIP | Saute 1 ligne sur 9 |
+| TBLEND | Comme TILE, mais la dernière ligne de chaque rangée de tuiles est fusionnée (couleurs moyennées) avec la suivante au lieu d'être sautée : 7 lignes sur 8 restent nettes (repris du portage ESPboy de gm0) |
 
 Pour voir l'écran exact de la META sur PC :
 `out/<jeu>/host/build/<jeu>_metaview --mode tile --frames 300 --dump 200 ecran.ppm`.

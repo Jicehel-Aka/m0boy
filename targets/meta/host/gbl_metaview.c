@@ -3,7 +3,7 @@
  * display pipeline (meta_display.c) and a simulated 160x128 ST7735, and
  * writes the panel as it would appear on the console.
  *
- *   <name>_metaview [--frames N] [--input FILE] [--mode smooth|tile|blend|dark|crop|skip]
+ *   <name>_metaview [--frames N] [--input FILE] [--mode smooth|tile|tblend|blend|dark|crop|skip]
  *                   [--dump N file.ppm]...
  */
 #include "gbl.h"
@@ -87,7 +87,8 @@ int main(int argc, char **argv) {
             const char *m = argv[++i];
             mode = !strcmp(m, "skip") ? META_MODE_SKIP : !strcmp(m, "dark") ? META_MODE_DARK
                  : !strcmp(m, "crop") ? META_MODE_CROP : !strcmp(m, "blend") ? META_MODE_BLEND
-                 : !strcmp(m, "tile") ? META_MODE_TILE : META_MODE_SMOOTH;
+                 : !strcmp(m, "tile") ? META_MODE_TILE : !strcmp(m, "tblend") ? META_MODE_TBLEND
+                 : META_MODE_SMOOTH;
         } else if (!strcmp(argv[i], "--dump") && i + 2 < argc && ndumps < 256) {
             dumps[ndumps].frame = (uint32_t)atoi(argv[++i]);
             dumps[ndumps++].path = argv[++i];

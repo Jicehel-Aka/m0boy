@@ -71,6 +71,22 @@ static uint16_t expected_pixel(uint8_t mode, uint8_t ref[144][160], unsigned row
         }
         return 0;
     }
+    if (mode == META_MODE_TBLEND) {
+        /* TILE's rows; line 8k+7 (not 63, 95, 143) is averaged into the
+         * row of line 8k+8. */
+        unsigned r = 0;
+        for (unsigned ly = 0; ly < 143; ly++, r++) {
+            int held = (ly % 8) == 7 && ly != 63 && ly != 95;
+            if (r != row) { ly += held; continue; }
+            if (!held) return be565(rgb[ref[ly][x]]);
+            unsigned a = ref[ly][x], b = ref[ly + 1][x];
+            uint32_t c = 0;
+            for (int sh = 0; sh <= 16; sh += 8)
+                c |= ((((rgb[a] >> sh) & 255) + ((rgb[b] >> sh) & 255)) / 2) << sh;
+            return be565(c);
+        }
+        return 0;
+    }
     unsigned group = row / 8, k = row % 8, line = group * 9 + k;
     if (mode == META_MODE_SKIP || k != 7) return be565(rgb[ref[line][x]]);
     unsigned a = ref[line][x], b = ref[line + 1][x];
@@ -86,7 +102,7 @@ static uint32_t rnd(void) { rng = rng * 1103515245u + 12345u; return rng >> 8; }
 
 int main(void) {
     static uint8_t ref[144][160];
-    static const char *names[] = {"smooth", "tile", "blend", "dark", "crop", "skip"};
+    static const char *names[] = {"smooth", "tile", "blend", "dark", "crop", "skip", "tblend"};
     int failures = 0;
     /* The firmware's SMOOTH table against the formula. */
     extern const uint32_t meta_smooth_pairs[4][256];
@@ -100,7 +116,9 @@ int main(void) {
                 failures++;
             }
         }
-    for (uint8_t mode = 0; mode < META_MODE_COUNT; mode++) {
+    /* Every mode, then BLEND again: it shares its buffers with TBLEND. */
+    for (unsigned step = 0; step <= META_MODE_COUNT; step++) {
+        uint8_t mode = step < META_MODE_COUNT ? (uint8_t)step : (uint8_t)META_MODE_BLEND;
         gbl_reset();
         for (int i = 0; i < 0x2000; i++) gbl_vram[i] = (uint8_t)rnd();
         for (int i = 0; i < 0xA0; i++) gbl_oam[i] = (uint8_t)rnd();

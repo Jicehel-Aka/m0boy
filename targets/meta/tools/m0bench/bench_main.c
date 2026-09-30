@@ -20,7 +20,7 @@ volatile uint32_t bench_sink;
 
 #ifdef BENCH_META_DISPLAY
 /* The META's own display pipeline (platform/src/meta_display.c, mode
- * BENCH_META_DISPLAY: 0 SMOOTH, 1 TILE, ...) with an LCD that takes every
+ * BENCH_META_DISPLAY: 0 SMOOTH, 1 TILE, ..., 6 TBLEND) with an LCD that takes every
  * strip at once: the rendering, blending and row bookkeeping of the
  * console, without the SPI transfer. */
 #include "meta_display.h"

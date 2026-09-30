@@ -17,7 +17,11 @@
  * The other modes render rows straight to RGB565 into strips of META_STRIP_LINES rows;
  * in the merge modes the two lines being merged are rendered as shade
  * indices instead (the PPU palette is switched per line) and combined two
- * pixels per lookup in a 1 KiB table.  With META_LINE_SKIP a row whose
+ * pixels per lookup in a 1 KiB table.  TBLEND (gm0's ESPboy shrink) keeps
+ * TILE's rows but merges line 8k+7 into the next line: both are rendered
+ * packed, the held one kept across frames (600 bytes, sharing RAM with the
+ * BLEND/DARK buffers) so it is rendered only when it changes, and the pair
+ * is blended by SMOOTH's loop with a 1/2 table.  With META_LINE_SKIP a row whose
  * inputs did not change since it was drawn is neither rendered nor sent;
  * strips therefore hold runs of consecutive rows, each sent to its own
  * window.
@@ -60,7 +64,7 @@
 #ifndef META_SMOOTH_SPECULATE
 #define META_SMOOTH_SPECULATE 1
 #endif
-/* BLEND and DARK modes (1 KiB table and one spare line). */
+/* BLEND, DARK and TBLEND modes (1 KiB table and one spare line). */
 #ifndef META_MERGE_MODES
 #define META_MERGE_MODES (!META_STREAM_RAM)
 #endif
@@ -90,8 +94,24 @@ static uint8_t strip_cur, strip_fill, strip_row0;
 
 static uint8_t display_mode = META_MODE_SMOOTH;
 #if META_MERGE_MODES
-static uint16_t spare_line[160] __attribute__((aligned(4)));
-static uint32_t merge2[256]; /* a0 | a1 << 2 | b0 << 4 | b1 << 6 -> two merged pixels */
+/* Buffers of one mode at a time (meta_display_set_mode rebuilds them):
+ * BLEND and DARK keep their merged line and table, TBLEND the held lines. */
+static union {
+    struct {
+        uint16_t spare_line[160];
+        uint32_t merge2[256]; /* a0 | a1 << 2 | b0 << 4 | b1 << 6 -> two merged pixels */
+    } m;
+    struct {
+        /* Line 8k+7 of each merged pair, packed, kept across frames so that
+         * it is rendered only when it changes; the line merged into it. */
+        uint16_t hold[15][20];
+        uint16_t lower[20];
+    } t;
+} mode_ram __attribute__((aligned(4)));
+#define spare_line mode_ram.m.spare_line
+#define merge2 mode_ram.m.merge2
+#define tb_hold mode_ram.t.hold
+#define tb_lower mode_ram.t.lower
 #endif
 static uint8_t index_palette; /* PPU currently emits shade indices */
 
@@ -122,6 +142,24 @@ static uint32_t pending_sig; /* merge modes: signature of the held line 7 */
 #define SM_E64(k, i) SM_E16(k, i), SM_E16(k, (i) + 16u), SM_E16(k, (i) + 32u), SM_E16(k, (i) + 48u)
 #define SM_E256(k) {SM_E64(k, 0u), SM_E64(k, 64u), SM_E64(k, 128u), SM_E64(k, 192u)}
 const uint32_t meta_smooth_pairs[4][256] = {SM_E256(0u), SM_E256(1u), SM_E256(2u), SM_E256(3u)};
+
+#if META_MERGE_MODES
+/* TBLEND: the same layout of entries with both lines weighted 1/2 (per
+ * channel average rounded down, like BLEND), 1 KiB of flash. */
+#define HF_CH(a, b, sh) ((DMG_CH(a, sh) + DMG_CH(b, sh)) / 2u)
+#define HF_565(a, b) ((HF_CH(a, b, 16) >> 3) << 11 | (HF_CH(a, b, 8) >> 2) << 5 | HF_CH(a, b, 0) >> 3)
+#define HF_COL(a, b) ((HF_565(a, b) >> 8 | HF_565(a, b) << 8) & 0xFFFFu)
+#define HF_E(i) (HF_COL(((i) >> 2) & 3u, ((i) >> 6) & 3u) | HF_COL((i) & 3u, ((i) >> 4) & 3u) << 16)
+#define HF_E4(i) HF_E(i), HF_E((i) + 1u), HF_E((i) + 2u), HF_E((i) + 3u)
+#define HF_E16(i) HF_E4(i), HF_E4((i) + 4u), HF_E4((i) + 8u), HF_E4((i) + 12u)
+#define HF_E64(i) HF_E16(i), HF_E16((i) + 16u), HF_E16((i) + 32u), HF_E16((i) + 48u)
+const uint32_t meta_half_pairs[256] = {HF_E64(0u), HF_E64(64u), HF_E64(128u), HF_E64(192u)};
+
+/* TBLEND: the held line was rendered this frame. */
+static uint8_t tb_hold_fresh;
+/* Pair of held line ly (8k+7, not 63, 95 or 143). */
+#define TB_PAIR(ly) (((ly) >> 3) - ((ly) > 63) - ((ly) > 95))
+#endif
 
 /* SMOOTH state for the frame being drawn. */
 /* The packed lines (twenty 16-bit groups): the upper line of the next row
@@ -163,6 +201,7 @@ uint8_t meta_display_mode(void) { return display_mode; }
 void meta_display_set_mode(uint8_t mode) {
 #if !META_MERGE_MODES
     if (mode == META_MODE_BLEND || mode == META_MODE_DARK) mode = META_MODE_CROP;
+    if (mode == META_MODE_TBLEND) mode = META_MODE_TILE;
 #endif
     display_mode = mode < META_MODE_COUNT ? mode : META_MODE_SMOOTH;
     gbl_ppu_packed = display_mode == META_MODE_SMOOTH;
@@ -176,9 +215,10 @@ void meta_display_set_mode(uint8_t mode) {
     memset(smooth_force, 0, sizeof(smooth_force));
     memset(smooth_redo, 0, sizeof(smooth_redo));
 #if META_MERGE_MODES
-    for (unsigned k = 0; k < 256; k++)
-        merge2[k] = (uint32_t)merged_color(k & 3, (k >> 4) & 3) |
-                    ((uint32_t)merged_color((k >> 2) & 3, k >> 6) << 16);
+    if (display_mode == META_MODE_BLEND || display_mode == META_MODE_DARK)
+        for (unsigned k = 0; k < 256; k++)
+            merge2[k] = (uint32_t)merged_color(k & 3, (k >> 4) & 3) |
+                        ((uint32_t)merged_color((k >> 2) & 3, k >> 6) << 16);
 #endif
 }
 
@@ -198,6 +238,14 @@ static void build_layout(void) {
             /* gm0: drop the last line of each tile row (usually the blank
              * spacing line of fonts), except two to fill 128 rows. */
             kind = ((ly & 7) == 7 && ly != 63 && ly != 95) ? L_DROP : L_ROW;
+            break;
+        case META_MODE_TBLEND:
+            /* gm0 (ESPboy): TILE's layout, but the last line of each tile
+             * row is merged into the first line of the next one instead of
+             * dropped.  Line 143 has no next line and is dropped. */
+            kind = ly == 143 ? L_DROP
+                 : ((ly & 7) == 7 && ly != 63 && ly != 95) ? L_HOLD
+                 : ((ly & 7) == 0 && ly && ly != 64 && ly != 96) ? L_MERGE : L_ROW;
             break;
         case META_MODE_SMOOTH: kind = L_ROW; break; /* rows handled apart */
         default: kind = r9 == 7 ? L_HOLD : r9 == 8 ? L_MERGE : L_ROW; break;
@@ -275,6 +323,19 @@ static int smooth_check(uint8_t ly, uint32_t sig) {
 int gbl_platform_line_check(uint8_t ly, uint32_t sig) {
     if (ly >= 144 || line_kind[ly] == L_DROP) return 0;
     if (display_mode == META_MODE_SMOOTH) return smooth_check(ly, sig);
+#if META_LINE_SKIP && META_MERGE_MODES
+    if (display_mode == META_MODE_TBLEND && line_kind[ly] != L_ROW) {
+        /* The held line is rendered only when it changed (its packed copy
+         * stays valid); the merged row is redrawn when either line did. */
+        unsigned changed = !line_valid[ly] || line_sig[ly] != sig;
+        line_sig[ly] = sig;
+        line_valid[ly] = 1;
+        if (line_kind[ly] == L_HOLD) return (int)(tb_hold_fresh = (uint8_t)changed);
+        if (changed || tb_hold_fresh) return 1;
+        meta_display_rows_skipped++;
+        return 0;
+    }
+#endif
 #if META_LINE_SKIP
     if (line_kind[ly] == L_HOLD) { pending_sig = sig; return 1; } /* needed if its pair changed */
     if (line_kind[ly] == L_MERGE) sig = gbl_sig_combine(pending_sig, sig);
@@ -301,6 +362,15 @@ uint16_t *gbl_platform_line_begin(uint8_t ly) {
     if (ly >= 144 || line_kind[ly] == L_DROP) return 0;
     if (display_mode == META_MODE_SMOOTH) return smooth_lines[smooth_cur]; /* packed */
     uint8_t kind = line_kind[ly];
+#if META_MERGE_MODES
+    if (display_mode == META_MODE_TBLEND) {
+        /* The merged pair is rendered packed, every other line as colours. */
+        gbl_ppu_packed = kind != L_ROW;
+        if (kind == L_HOLD) return tb_hold[TB_PAIR(ly)];
+        if (kind == L_MERGE) return tb_lower;
+        return strip_slot(line_row[ly]);
+    }
+#endif
     /* The merged pair is rendered as shade indices, every other line as
      * final colours. */
     set_index_palette(kind == L_HOLD || kind == L_MERGE);
@@ -351,6 +421,22 @@ void gbl_platform_line_end(uint8_t ly) {
     }
     uint8_t kind = line_kind[ly];
     if (kind == L_HOLD) return; /* completed by the merged line */
+#if META_MERGE_MODES
+    if (display_mode == META_MODE_TBLEND && kind == L_MERGE) {
+        uint32_t *row = (uint32_t *)strip_slot(line_row[ly]);
+        const uint16_t *upper = tb_hold[TB_PAIR(ly - 1u)];
+#if META_SMOOTH_ASM
+        meta_smooth_blend_asm(row, upper, tb_lower, meta_half_pairs, 0);
+#else
+        for (unsigned g = 0; g < 20; g++) {
+            uint32_t u = upper[g], l = tb_lower[g];
+            for (int sh = 12; sh >= 0; sh -= 4) *row++ = meta_half_pairs[((u >> sh) & 15u) | ((l >> sh) & 15u) << 4];
+        }
+#endif
+        if (++strip_fill == META_STRIP_LINES) meta_display_flush();
+        return;
+    }
+#endif
 #if META_MERGE_MODES
     if (kind == L_MERGE) {
         uint32_t *d = (uint32_t *)&strip[strip_cur][strip_fill * 160];

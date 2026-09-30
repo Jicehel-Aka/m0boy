@@ -120,6 +120,7 @@ Display modes (144 DMG lines on 128 META lines), cycled with HOME held:
 | DARK | Same merge, keeping the darker shade |
 | CROP | No scaling: DMG lines 8–135 |
 | SKIP | Drops the 9th line of every 9 |
+| TBLEND | TILE's rows, but line 8k+7 is averaged into line 8k+8 instead of dropped: 7 rows of 8 stay sharp, only line 143 is lost (taken from gm0's ESPboy port). The two lines are rendered packed; the 15 held lines are kept across frames (600 bytes, in the RAM of the BLEND/DARK buffers) so a held line is rendered only when it changes, and the pair goes through SMOOTH's Thumb-1 loop with a 1 KiB flash table of ½ weights |
 
 SMOOTH and line skipping: a row needs both of its lines, but only the
 previous one is kept (keeping all 144 would take 5.6 KiB of RAM). When only
@@ -134,6 +135,16 @@ moving down in the test). M0 estimator, real display pipeline
 go up on Prehistorik Man (23 → 103 of 1,599) and Faceball 2000 (35 → 67).
 With the identity BGP (0xE4, most games) packed lines are the raw shades,
 copied without a table.
+
+TBLEND on the same 22 non-streaming games of the panel (estimator, real
+display pipeline, `-DBENCH_META_DISPLAY=6`, projects regenerated with the
+current runtime): +0.9% to +7.2% per frame over TILE (median +1.9%;
+Lemmings, non-identity BGP, is the +7.2%), against +9.5% to +32% for SMOOTH
+(median +15.3%) and +7.9% to +27.8% for BLEND. Frames over the budget stay
+at TILE's level (Prehistorik Man 29 against 25; SMOOTH 100). RAM is
+unchanged (Super Mario Land 29,784 bytes either way), flash +1.4 KiB. A
+first version that rendered the held line every frame through the palette
+switch of BLEND cost as much as SMOOTH (median +15.5%).
 
 `meta_display_panel_matches_reference` runs the real display pipeline
 against a simulated ST7735 (row windows included) and checks every mode
@@ -163,7 +174,7 @@ touches the FAT.
   Awakening, 32 KiB for Pokémon) lives only in the file, behind a two-sector
   write-back cache. Without that, those games did not fit in RAM (8 KiB on
   top of 29 KiB). Such builds, like streaming ones, keep two display strips
-  and drop the BLEND and DARK modes. Zerd no Densetsu (8 KiB) builds at
+  and drop the BLEND, DARK and TBLEND modes (TBLEND falls back to TILE). Zerd no Densetsu (8 KiB) builds at
   27.5 KiB of RAM.
 - Changed sectors are written back in three cases:
   - when the game disables cartridge RAM, which games do right after
@@ -229,7 +240,7 @@ default; `on` / `off` force it):
   fragmented) or magenta (a different ROM). The USB serial port explains
   the error, and holding HOME for 3 s returns to the loader.
 - To make room for the 2 KiB cache, streaming builds use two display strips
-  instead of three and drop the BLEND and DARK modes. RAM then stays at the
+  instead of three and drop the BLEND, DARK and TBLEND modes (TBLEND falls back to TILE). RAM then stays at the
   usual level: 28.9 KiB.
 
 `compile.sh` records the profiles, regenerates with them, and copies the
@@ -398,7 +409,7 @@ Pass these as `-D` flags (`build_flags` in `platformio.ini`, or
 | `GBL_STACK_GUARD` | 1 | C stack check on entry to every compiled region |
 | `META_SWAP_AB` | 1 | META A = Game Boy B, META B = Game Boy A |
 | `META_SD_SPI_HZ` | 24000000 | SPI clock for SD sector reads |
-| `META_MERGE_MODES` | 1 (0 when streaming) | BLEND and DARK display modes |
+| `META_MERGE_MODES` | 1 (0 when streaming) | BLEND, DARK and TBLEND display modes |
 | `META_LCD_DMA` | 1 | Strips are sent by DMA through a queue: the DMA-complete interrupt programs the next window and starts the next strip, so rendering waits only when every buffer is in flight. At VBlank, if the bus is still busy, the button read is postponed by one frame (never two in a row). 0 writes pixels from the CPU. |
 | `META_LCD_BUFFERS` | 3 | Strip buffers (triple buffering by default) |
 | `META_STRIP_LINES` | 4 | Rows per strip |
