@@ -18,10 +18,29 @@ static int strip_cur, strip_fill;
 static unsigned input_pos;
 volatile uint32_t bench_sink;
 
+#ifdef BENCH_META_DISPLAY
+/* The META's own display pipeline (platform/src/meta_display.c, mode
+ * BENCH_META_DISPLAY: 0 SMOOTH, 1 TILE, ...) with an LCD that takes every
+ * strip at once: the rendering, blending and row bookkeeping of the
+ * console, without the SPI transfer. */
+#include "meta_display.h"
+#include "meta_lcd.h"
+static uint32_t lcd_seq;
+uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
+    (void)row0; (void)rows;
+    bench_sink += *(const uint16_t *)buf;
+    return ++lcd_seq;
+}
+uint32_t meta_lcd_done_seq(void) { return lcd_seq; }
+#ifdef BENCH_PIXEL_HASH
+uint32_t bench_pixel_hash = 2166136261u;
+#endif
+#else
 /* Same row policy as the META SKIP mode: unchanged lines are not rendered. */
 static uint32_t row_sig[144];
 static uint8_t row_valid[144];
 uint32_t bench_lines_skipped;
+
 
 #ifdef BENCH_PIXEL_HASH
 extern uint32_t bench_pixel_hash;
@@ -85,6 +104,8 @@ void gbl_platform_line_end(uint8_t ly) {
         strip_cur ^= 1;
     }
 }
+
+#endif /* BENCH_META_DISPLAY */
 
 __attribute__((noinline)) void bench_done(void) {
     for (;;) __asm__ volatile("nop");
@@ -164,7 +185,11 @@ void gbl_platform_vblank(void) {
 #ifdef BENCH_STATIC_SKIP
     gbl_skip_render = (uint8_t)gbl_frame_unchanged_next(!gbl_skip_render);
 #endif
+#ifndef BENCH_META_DISPLAY
     strip_fill = 0;
+#else
+    meta_display_flush();
+#endif
     while (input_pos < sizeof(bench_inputs) / sizeof(bench_inputs[0]) &&
            bench_inputs[input_pos].frame <= f)
         gbl_set_buttons(bench_inputs[input_pos++].buttons);
@@ -221,6 +246,9 @@ int main(void) {
     gbl_stack_limit = (uintptr_t)&probe - 3072u;
 #endif
     gbl_reset();
+#ifdef BENCH_META_DISPLAY
+    meta_display_set_mode(BENCH_META_DISPLAY);
+#endif
 #ifdef BENCH_INTERP_ONLY
     /* Every instruction through the interpreter: compares interpreters
      * (GBL_INTERP_ASM=0 vs 1) on the whole game. */

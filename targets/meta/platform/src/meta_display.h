@@ -16,7 +16,8 @@ extern "C" {
 #endif
 
 enum {
-    META_MODE_TILE,  /* default: drop line 7 of each tile row (gm0), keep 63 and 95 */
+    META_MODE_SMOOTH, /* default: every row is two DMG lines weighted by area (9 -> 8) */
+    META_MODE_TILE,  /* drop line 7 of each tile row (gm0), keep 63 and 95 */
     META_MODE_BLEND, /* merge lines 8 and 9 of every nine, averaged colours */
     META_MODE_DARK,  /* same merge, darker shade wins */
     META_MODE_CROP,  /* no scaling: DMG lines 8..135 */

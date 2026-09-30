@@ -114,15 +114,29 @@ Display modes (144 DMG lines on 128 META lines), cycled with HOME held:
 
 | Mode | Method |
 | --- | --- |
-| TILE (default) | Drops the last line of each tile row (8k+7), keeping lines 63 and 95; fonts usually leave that line blank, so text stays intact (taken from gm0) |
+| SMOOTH (default) | Area resampling, 9 lines onto 8 rows: row k of each group is (8 − k)/9 of line k plus (k + 1)/9 of line k + 1, nothing dropped. Lines are rendered packed (2-bit shades, `gbl_ppu_packed`, no colour conversion in the PPU) and every row is blended from two of them, two pixels per lookup in 4 KiB of compile-time tables (Thumb-1 loop in `meta_display_asm.S`) |
+| TILE | Drops the last line of each tile row (8k+7), keeping lines 63 and 95; fonts usually leave that line blank, so text stays intact (taken from gm0) |
 | BLEND | Merges lines 8 and 9 of every 9 with averaged colours (1 KiB table) |
 | DARK | Same merge, keeping the darker shade |
 | CROP | No scaling: DMG lines 8–135 |
 | SKIP | Drops the 9th line of every 9 |
 
+SMOOTH and line skipping: a row needs both of its lines, but only the
+previous one is kept (keeping all 144 would take 5.6 KiB of RAM). When only
+the lower line of a row changed, the upper one was not rendered: that row
+is drawn from the lower line alone for one frame and blended on the next.
+Lines that changed are rendered again on the next frame, so things that
+keep moving find their upper line (0 late rows over 119 frames of sprites
+moving down in the test). M0 estimator, real display pipeline
+(`--cflag=-DBENCH_META_DISPLAY=0`, 1 for TILE): SMOOTH costs 6% to 29%
+more per frame than TILE on six games (Super Mario Land 107k → 139k cycles,
+Prehistorik Man 428k → 484k), mostly the blend of every row.
+
 `meta_display_panel_matches_reference` runs the real display pipeline
 against a simulated ST7735 (row windows included) and checks every mode
-pixel for pixel over 400 frames of random changes. `<name>_metaview
+pixel for pixel over 400 frames of random changes (SMOOTH: on the frames
+after an unchanged one, the late rows being counted), plus the SMOOTH
+tables against the formula and a run of sprites moving down. `<name>_metaview
 --mode … --dump N file.ppm` writes the exact META screen of a game on the
 host.
 
@@ -657,7 +671,9 @@ at slightly different instruction boundaries. `--dump-frame N file.ppm`,
 The firmware also runs in
 [gamebuino-emulator](https://github.com/aoneill01/gamebuino-emulator)
 (load `.pio/build/meta/firmware.bin` in its page; keys: arrows, J = A,
-K = B, U = MENU, I = HOME; no sound, TC4 and the DAC are not emulated).
+K = B, U = MENU, I = HOME; sound is emulated: TC4 interrupts and DAC
+writes are modelled and played through WebAudio; `headless.js` records
+them to a WAV with its 5th argument).
 Use the fork in `tools/gb-emu/` (from upstream `9631729`, MIT; see its
 `LISEZMOI.md`):
 upstream could not execute code from SRAM, where our firmware runs its

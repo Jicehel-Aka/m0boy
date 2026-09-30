@@ -229,6 +229,13 @@ void gbl_ppu_palette_changed(void) {
     obj_pal_key = 0xFFFFFFFFu;
 }
 
+/* Packed output (gbl_ppu_packed): sprite shades per palette, and BGP
+ * applied to four background pixels at a time. */
+uint8_t gbl_ppu_packed;
+static uint8_t obj_nibble[2][16]; /* two raw sprite pixels -> two shades, per OBP */
+static uint8_t bgp_byte[256]; /* four raw pixels -> four BGP shades */
+static int16_t bgp_byte_bgp = -1;
+
 static __attribute__((noinline)) void refresh_obj_pal(void) {
     for (int k = 0; k < 2; k++) {
         uint32_t obp = k ? OBP1 : OBP0;
@@ -236,6 +243,8 @@ static __attribute__((noinline)) void refresh_obj_pal(void) {
         obj_pal[k][1] = gbl_lcd_palette[(obp >> 2) & 3];
         obj_pal[k][2] = gbl_lcd_palette[(obp >> 4) & 3];
         obj_pal[k][3] = gbl_lcd_palette[obp >> 6];
+        for (unsigned n = 0; n < 16; n++)
+            obj_nibble[k][n] = (uint8_t)(((obp >> (2 * (n >> 2))) & 3u) << 2 | ((obp >> (2 * (n & 3))) & 3u));
     }
     obj_pal_key = (uint32_t)(OBP0 | OBP1 << 8);
 }
@@ -547,6 +556,28 @@ __attribute__((noinline)) void draw_line(uint16_t *out, uint8_t lcdc, int window
         }
 
         uint8_t bgp = BGP;
+        if (gbl_ppu_packed) {
+            /* Twenty groups of eight BGP-mapped 2-bit shades. */
+            if (bgp_byte_bgp != bgp) {
+                for (unsigned k = 0; k < 256; k++) {
+                    uint32_t m = 0;
+                    for (unsigned p = 0; p < 8; p += 2) m |= ((bgp >> (2 * ((k >> p) & 3u))) & 3u) << p;
+                    bgp_byte[k] = (uint8_t)m;
+                }
+                bgp_byte_bgp = bgp;
+            }
+            if (use_bg) {
+                for (int g = 0; g < 20; g++) out[g] = (uint16_t)(bgp_byte[bg[g] >> 8] << 8 | bgp_byte[bg[g] & 255u]);
+            } else if (!fine) {
+                for (int g = 0; g < 20; g++) out[g] = (uint16_t)(bgp_byte[(t[g] >> 8) & 255u] << 8 | bgp_byte[t[g] & 255u]);
+            } else {
+                uint32_t sh = 16u - 2u * fine;
+                for (int g = 0; g < 20; g++) {
+                    uint32_t v = (t[g] << 16 | t[g + 1]) >> sh;
+                    out[g] = (uint16_t)(bgp_byte[(v >> 8) & 255u] << 8 | bgp_byte[v & 255u]);
+                }
+            }
+        } else {
         if (bg_pairs_bgp != bgp) {
             uint16_t c[4] = {gbl_lcd_palette[bgp & 3], gbl_lcd_palette[(bgp >> 2) & 3],
                              gbl_lcd_palette[(bgp >> 4) & 3], gbl_lcd_palette[bgp >> 6]};
@@ -589,10 +620,11 @@ __attribute__((noinline)) void draw_line(uint16_t *out, uint8_t lcdc, int window
             o += 4;
         }
 #endif
+        }
     } else {
-        uint32_t white = (uint32_t)gbl_lcd_palette[0] * 0x10001u;
+        uint32_t white = gbl_ppu_packed ? 0u : (uint32_t)gbl_lcd_palette[0] * 0x10001u;
         uint32_t *o = (uint32_t *)out;
-        for (int i = 0; i < 80; i++) o[i] = white;
+        for (int i = 0; i < (gbl_ppu_packed ? 10 : 80); i++) o[i] = white;
         memset(bg, 0, sizeof(bg));
     }
 
@@ -630,6 +662,7 @@ __attribute__((noinline)) void draw_line(uint16_t *out, uint8_t lcdc, int window
             opaque = reverse8[opaque];
         }
         int x = (int)o[1] - 8;
+        if (x >= 160) continue; /* off screen (and a shift of 32 or more below) */
         if (x < 0) opaque &= 0xFFu >> -x;
         else if (x > 152) opaque &= (0xFFu << (x - 152)) & 0xFFu;
         uint32_t p = (uint32_t)(x + 8), b = p >> 3, sh = p & 7u;
@@ -654,6 +687,20 @@ __attribute__((noinline)) void draw_line(uint16_t *out, uint8_t lcdc, int window
             }
         }
         uint32_t bits = (uint32_t)spread[lo] | ((uint32_t)spread[hi] << 1);
+        if (gbl_ppu_packed) {
+            /* The eight OBP shades and a 2-bit mask of the drawn pixels, laid
+             * over the two groups the sprite spans at once. */
+            const uint8_t *nib = obj_nibble[(attr >> 4) & 1];
+            uint32_t v = (uint32_t)nib[bits >> 12] << 12 | (uint32_t)nib[(bits >> 8) & 15u] << 8 |
+                         (uint32_t)nib[(bits >> 4) & 15u] << 4 | nib[bits & 15u];
+            uint32_t m = (uint32_t)spread[draw] * 3u, shift = 16u - 2u * ((uint32_t)x & 7u);
+            int gl = x >> 3; /* -1 when the sprite starts left of the screen */
+            v <<= shift;
+            m <<= shift;
+            if (gl >= 0) out[gl] = (uint16_t)((out[gl] & ~(m >> 16)) | (v & m) >> 16);
+            if (gl < 19) out[gl + 1] = (uint16_t)((out[gl + 1] & ~m) | (v & m));
+            continue;
+        }
         const uint16_t *pal = obj_pal[(attr >> 4) & 1];
         uint16_t *d = out + x;
         if (draw & 0x80) d[0] = pal[(bits >> 14) & 3];

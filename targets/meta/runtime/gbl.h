@@ -78,6 +78,10 @@ void gbl_platform_line_end(uint8_t ly);
 /* With GBL_LINE_SIGNATURE: called before line_begin with a signature of all
  * inputs of line ly (not including gbl_lcd_palette); return 0 to skip it. */
 int gbl_platform_line_check(uint8_t ly, uint32_t sig);
+/* Nonzero: line_begin buffers receive 20 groups of eight BGP/OBP-mapped
+ * 2-bit shades (uint16, leftmost pixel in bits 15:14) instead of 160
+ * colours; gbl_lcd_palette is then not used for that line. */
+extern uint8_t gbl_ppu_packed;
 /* With GBL_PPU_PAL32: set to 0 while gbl_lcd_palette holds a temporary
  * palette so the 2 KiB table is not rebuilt for it. */
 extern uint8_t gbl_lcd_palette_primary;

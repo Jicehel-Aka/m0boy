@@ -47,7 +47,20 @@ static uint16_t be565(uint32_t c) {
     return (uint16_t)((v >> 8) | (v << 8));
 }
 
+/* SMOOTH: row k of each group of 9 lines is (8 - k)/9 of line k and
+ * (k + 1)/9 of line k + 1, rounded per channel. */
+static uint32_t smooth_rgb(unsigned k, unsigned a, unsigned b) {
+    uint32_t c = 0;
+    for (int sh = 0; sh <= 16; sh += 8)
+        c |= (((8 - k) * ((rgb[a] >> sh) & 255) + (k + 1) * ((rgb[b] >> sh) & 255) + 4) / 9) << sh;
+    return c;
+}
+
 static uint16_t expected_pixel(uint8_t mode, uint8_t ref[144][160], unsigned row, unsigned x) {
+    if (mode == META_MODE_SMOOTH) {
+        unsigned group = row / 8, k = row % 8, line = group * 9 + k;
+        return be565(smooth_rgb(k, ref[line][x], ref[line + 1][x]));
+    }
     if (mode == META_MODE_CROP) return be565(rgb[ref[row + 8][x]]);
     if (mode == META_MODE_TILE) {
         /* Rows are the lines left after removing 8k+7, except 63 and 95. */
@@ -73,8 +86,20 @@ static uint32_t rnd(void) { rng = rng * 1103515245u + 12345u; return rng >> 8; }
 
 int main(void) {
     static uint8_t ref[144][160];
-    static const char *names[] = {"tile", "blend", "dark", "crop", "skip"};
+    static const char *names[] = {"smooth", "tile", "blend", "dark", "crop", "skip"};
     int failures = 0;
+    /* The firmware's SMOOTH table against the formula. */
+    extern const uint32_t meta_smooth_pairs[4][256];
+    for (unsigned k = 0; k < 4; k++)
+        for (unsigned i = 0; i < 256; i++) {
+            /* upper group | lower group << 4, left pixel in bits 3:2 */
+            uint32_t want = be565(smooth_rgb(k, (i >> 2) & 3, (i >> 6) & 3)) |
+                            (uint32_t)be565(smooth_rgb(k, i & 3, (i >> 4) & 3)) << 16;
+            if (meta_smooth_pairs[k][i] != want) {
+                printf("smooth table entry %u/%u wrong\n", k, i);
+                failures++;
+            }
+        }
     for (uint8_t mode = 0; mode < META_MODE_COUNT; mode++) {
         gbl_reset();
         for (int i = 0; i < 0x2000; i++) gbl_vram[i] = (uint8_t)rnd();
@@ -85,9 +110,14 @@ int main(void) {
         gbl_io_wr(0x4B, 60);
         meta_display_set_mode(mode);
         memset(panel, 0, sizeof(panel));
-        uint32_t frames_bad = 0, rows_before = rows_sent;
+        uint32_t frames_bad = 0, frames_late = 0, rows_before = rows_sent;
         for (int frame = 0; frame < 400; frame++) {
-            if (frame) {
+            /* SMOOTH may show a row one frame late (drawn from its lower line
+             * alone when only that line changed): its state changes every
+             * other frame, and only the frames after an unchanged one must be
+             * exact (the late ones are counted). */
+            int settled = mode != META_MODE_SMOOTH || (frame & 1);
+            if (frame && (mode != META_MODE_SMOOTH || !(frame & 1))) {
                 /* Mostly small changes, sometimes none, sometimes a scroll. */
                 switch (rnd() % 6) {
                 case 0: break;
@@ -110,14 +140,37 @@ int main(void) {
                         bad_rows++;
                         break;
                     }
-            if (bad_rows) {
+            if (bad_rows && !settled) {
+                frames_late++;
+            } else if (bad_rows) {
                 if (frames_bad++ < 3)
                     printf("%s frame %d: %d rows wrong (first row %d)\n", names[mode], frame, bad_rows, first_bad);
             }
         }
-        printf("display_sim %-5s: %s, %u rows sent for 400 frames (%.0f%% of a full redraw)\n", names[mode],
+        printf("display_sim %-6s: %s, %u rows sent for 400 frames (%.0f%% of a full redraw)", names[mode],
                frames_bad ? "MISMATCH" : "panel exact", rows_sent - rows_before,
                100.0 * (rows_sent - rows_before) / (400.0 * 128));
+        if (mode == META_MODE_SMOOTH) printf(", %u of 200 changed frames with a late row", frames_late);
+        printf("\n");
+        if (mode == META_MODE_SMOOTH) {
+            /* Things that keep moving: sprites going down one line per frame
+             * must not leave late rows after the first frame. */
+            unsigned moving_late = 0;
+            for (int frame = 0; frame < 120; frame++) {
+                for (int i = 0; i < 40; i += 4) gbl_wr((uint16_t)(0xFE00 + i * 4), (uint8_t)(16 + (frame + i) % 150));
+                gbr.cyc += 70224u;
+                gbl_sync();
+                meta_display_flush();
+                reference(ref);
+                int bad = 0;
+                for (unsigned row = 0; row < 128 && !bad; row++)
+                    for (unsigned x = 0; x < 160; x++)
+                        if (panel[row][x] != expected_pixel(mode, ref, row, x)) { bad = 1; break; }
+                if (bad && frame > 0) moving_late++;
+            }
+            printf("display_sim smooth : sprites moving down, %u of 119 frames with a late row\n", moving_late);
+            if (moving_late) failures++;
+        }
         if (frames_bad) failures++;
     }
     return failures ? 1 : 0;

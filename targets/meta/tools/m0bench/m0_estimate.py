@@ -73,6 +73,12 @@ def build(project, out_dir, frames, opt, input_file, extra):
     sources = sorted(os.path.join(src, f) for f in os.listdir(src)
                      if (f.endswith(".c") or f.endswith(".S")) and (f.startswith("gbl_") or f.endswith("_gen.c") or f.endswith("_rom.c")))
     sources.append(os.path.join(HERE, "bench_main.c"))
+    # -DBENCH_META_DISPLAY=<mode>: the META display pipeline instead of the
+    # benchmark's simple row policy.
+    if any(f.startswith("-DBENCH_META_DISPLAY") for f in extra):
+        plat = os.path.normpath(os.path.join(HERE, "..", "..", "platform", "src"))
+        sources += [os.path.join(plat, "meta_display.c"), os.path.join(plat, "meta_display_asm.S")]
+        extra = extra + ["-I", plat]
     # Streaming projects: the whole ROM stands in for the SD card (placed in
     # its own region by bench.ld; the SD transfer time is not modelled).
     host = os.path.join(project, "host")
