@@ -533,3 +533,73 @@ if(TARGET gbrt)
 else()
     message(WARNING "Skipping generated runtime tests because gbrt is unavailable")
 endif()
+
+# gbl runtime and the compact --target meta backend (Gamebuino META).
+set(GBL_META_DIR "${PROJECT_SOURCE_DIR}/targets/meta")
+file(GLOB GBL_META_RUNTIME_SOURCES "${GBL_META_DIR}/runtime/gbl_*.c")
+
+add_executable(test_meta_ppu_reference
+    "${GBL_META_DIR}/tests/ppu_reference.c"
+    ${GBL_META_RUNTIME_SOURCES}
+)
+target_include_directories(test_meta_ppu_reference PRIVATE
+    "${GBL_META_DIR}/runtime"
+    "${GBL_META_DIR}/tests/config"
+)
+add_test(NAME meta_ppu_matches_per_pixel_reference COMMAND test_meta_ppu_reference)
+
+if(TARGET gbrt)
+    add_executable(test_meta_alu_oracle
+        "${GBL_META_DIR}/tests/alu_oracle.c"
+        "${GBL_META_DIR}/runtime/gbl_cpu.c"
+    )
+    target_include_directories(test_meta_alu_oracle PRIVATE
+        "${GBL_META_DIR}/runtime"
+        "${GBL_META_DIR}/tests/config"
+    )
+    target_link_libraries(test_meta_alu_oracle PRIVATE gbrt)
+    add_test(NAME meta_alu_helpers_match_desktop_runtime COMMAND test_meta_alu_oracle)
+endif()
+
+add_test(NAME meta_target_end_to_end
+    COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test_meta_target_e2e.py"
+        --gbrecomp "$<TARGET_FILE:gbrecomp>")
+set_tests_properties(meta_target_end_to_end PROPERTIES TIMEOUT 300)
+
+add_executable(test_meta_ppu_reference_pal32
+    "${GBL_META_DIR}/tests/ppu_reference.c"
+    ${GBL_META_RUNTIME_SOURCES}
+)
+target_include_directories(test_meta_ppu_reference_pal32 PRIVATE
+    "${GBL_META_DIR}/runtime"
+    "${GBL_META_DIR}/tests/config"
+)
+target_compile_definitions(test_meta_ppu_reference_pal32 PRIVATE GBL_PPU_PAL32=1 GBL_PPU_BATCH=1)
+add_test(NAME meta_ppu_pal32_matches_per_pixel_reference COMMAND test_meta_ppu_reference_pal32)
+
+add_executable(test_meta_lcd_queue "${GBL_META_DIR}/tests/lcd_queue.c")
+target_include_directories(test_meta_lcd_queue PRIVATE "${GBL_META_DIR}/platform/src")
+add_test(NAME meta_lcd_queue_is_fifo_and_lossless COMMAND test_meta_lcd_queue)
+
+add_executable(test_meta_display_sim
+    "${GBL_META_DIR}/tests/display_sim.c"
+    "${GBL_META_DIR}/platform/src/meta_display.c"
+    ${GBL_META_RUNTIME_SOURCES}
+)
+target_include_directories(test_meta_display_sim PRIVATE
+    "${GBL_META_DIR}/runtime"
+    "${GBL_META_DIR}/tests/config"
+    "${GBL_META_DIR}/platform/src"
+    "${GBL_META_DIR}/tests"
+)
+add_test(NAME meta_display_panel_matches_reference COMMAND test_meta_display_sim)
+
+add_executable(test_meta_fat_check
+    "${GBL_META_DIR}/tests/fat_check.c"
+    "${GBL_META_DIR}/platform/src/meta_fat.c"
+)
+target_include_directories(test_meta_fat_check PRIVATE "${GBL_META_DIR}/platform/src")
+add_test(NAME meta_fat_finds_streamed_rom
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_meta_fat.py"
+            --fat-check $<TARGET_FILE:test_meta_fat_check>)
