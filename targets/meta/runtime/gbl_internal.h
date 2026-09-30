@@ -1,0 +1,44 @@
+/* Private interfaces shared between gbl runtime modules. */
+#ifndef GBL_INTERNAL_H
+#define GBL_INTERNAL_H
+
+#include <stdint.h>
+
+#include "gbl_options.h"
+
+void gbl_ppu_reset(void);
+/* Advance the PPU to cycle now: inline check of the next transition, the
+ * work itself in gbl_ppu_advance. */
+extern uint32_t gbl_ppu_due;
+void gbl_ppu_advance(uint32_t now);
+static inline void gbl_ppu_sync(uint32_t now) {
+    if ((int32_t)(now - gbl_ppu_due) >= 0) gbl_ppu_advance(now);
+}
+/* Call whenever device state the next timer/serial event depends on
+ * changes; gbl_update_evt() then recomputes its cached earliest device
+ * event instead of reusing it (PPU transitions invalidate it themselves). */
+void gbl_evt_invalidate(void);
+uint32_t gbl_core_next_event(uint32_t best); /* timer and serial */
+uint32_t gbl_ppu_stable_until(void); /* next cycle LY or STAT can change */
+uint8_t gbl_ppu_read(uint8_t n);
+void gbl_ppu_write(uint8_t n, uint8_t v);
+extern uint8_t gbl_oam_dirty;
+void gbl_ppu_content_changed(void);       /* OAM bytes changed */
+void gbl_ppu_vram_changed(uint16_t off); /* VRAM byte at 0x8000 + off changed */
+/* OAM changed since the sprite index was built */
+
+void gbl_apu_reset(void);
+uint8_t gbl_apu_read(uint8_t n);
+void gbl_apu_write(uint8_t n, uint8_t v);
+
+uint8_t gbl_rd_slow(uint16_t a);         /* gbl_rd for unmapped pages */
+void gbl_wr_slow(uint16_t a, uint8_t v); /* gbl_wr for unmapped pages */
+
+int gbl_irq_enter(void);     /* push PC and vector if IME and pending */
+void gbl_halt_wait(void);    /* advance time until an interrupt is pending */
+
+#if GBL_ERAM_SIZE > 0 && !GBL_ERAM_ON_SD
+extern uint8_t gbl_eram[GBL_ERAM_SIZE];
+#endif
+
+#endif

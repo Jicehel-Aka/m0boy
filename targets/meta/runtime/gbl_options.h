@@ -1,0 +1,108 @@
+/*
+ * Build options for the gbl runtime.  Override with -D or in gbl_config.h.
+ *
+ * GBL_PPU_BATCH           Scanlines per PPU event when no per-line STAT
+ *                         interrupt (mode 0 / mode 2) is enabled; 1 restores
+ *                         one event per line.  Batching needs GBL_VRAM_HOOK so
+ *                         VRAM/OAM writes first render the lines they follow.
+ * GBL_FRAME_SIGNATURE     Track a per-frame signature of everything that
+ *                         affects the picture (PPU register timeline and a
+ *                         VRAM/OAM change counter), for static-frame skipping
+ *                         in the frontend.
+ * GBL_LINE_SIGNATURE      Before rendering each scanline, ask the frontend
+ *                         gbl_platform_line_check(ly, sig) with a signature
+ *                         of everything the line depends on (registers, the
+ *                         map row and tile versions, its sprites); returning
+ *                         0 skips rendering it.  Equal signatures mean equal
+ *                         pixels, so skipping unchanged lines is exact.
+ * GBL_PPU_PAL32           Convert background pixels four at a time with a
+ *                         2 KiB table (gm0's pal32) instead of two at a time.
+ * GBL_VRAM_HOOK           Route VRAM writes through gbl_vram_wr().  Forced on
+ *                         by the two options above.
+ * GBL_GEN_OPTIMIZE_SIZE   Compile generated code with -Os (it is a small part
+ *                         of the run time and the largest part of the flash).
+ * GBL_SPIN                Fast-forward wait loops recognised by the generator
+ *                         (gbl_spin); 0 runs every iteration.  The results are
+ *                         identical either way, only the time spent differs.
+ * GBL_INTERP_DELAY_LOOP   Interpreter shortcut for DEC A / JR NZ,-3 (the OAM
+ *                         DMA wait most games copy to HRAM).
+ * GBL_PPU_ASM             Tile fetch and colour conversion in hand-written
+ *                         Thumb-1 (gbl_ppu_asm.S).  Default on for ARMv6-M
+ *                         (Cortex-M0+); the C loops are used elsewhere.
+ * GBL_PPU_RAMFUNC         Run those loops from SRAM (about 150 bytes), out of
+ *                         reach of flash wait states.
+ * GBL_CORE_ASM            gbl_push / gbl_pop in Thumb-1 (gbl_core_asm.S) on
+ *                         Cortex-M0+.
+ * GBL_BATTERY             Cartridge RAM is saved (set by the generator for
+ *                         battery-backed cartridges).
+ * GBL_ERAM_ON_SD          Cartridge RAM lives in the platform's save file
+ *                         behind a 1 KiB cache instead of RAM; default for
+ *                         cartridge RAM larger than 2 KiB.
+ * GBL_STREAM_SECTORS      512-byte sectors cached for a streamed ROM
+ *                         (GBL_ROM_STREAM projects only).
+ */
+#ifndef GBL_OPTIONS_H
+#define GBL_OPTIONS_H
+
+#ifndef GBL_PPU_BATCH
+#define GBL_PPU_BATCH 8
+#endif
+#ifndef GBL_FRAME_SIGNATURE
+#define GBL_FRAME_SIGNATURE 1
+#endif
+#ifndef GBL_LINE_SIGNATURE
+#define GBL_LINE_SIGNATURE 1
+#endif
+#ifndef GBL_PPU_PAL32
+#define GBL_PPU_PAL32 0
+#endif
+#ifndef GBL_GEN_OPTIMIZE_SIZE
+#define GBL_GEN_OPTIMIZE_SIZE 1
+#endif
+#ifndef GBL_SPIN
+#define GBL_SPIN 1
+#endif
+#ifndef GBL_INTERP_DELAY_LOOP
+#define GBL_INTERP_DELAY_LOOP 1
+#endif
+#ifndef GBL_BATTERY
+#define GBL_BATTERY 0
+#endif
+#ifndef GBL_ERAM_ON_SD
+#define GBL_ERAM_ON_SD (GBL_ERAM_SIZE > 2048)
+#endif
+#ifndef GBL_ROM_STREAM
+#define GBL_ROM_STREAM 0
+#endif
+#ifndef GBL_STREAM_SECTORS
+#define GBL_STREAM_SECTORS 4
+#endif
+#ifndef GBL_PPU_ASM
+#if defined(__ARM_ARCH_6M__)
+#define GBL_PPU_ASM 1
+#else
+#define GBL_PPU_ASM 0
+#endif
+#endif
+#ifndef GBL_CORE_ASM
+#define GBL_CORE_ASM 1
+#endif
+#ifndef GBL_PPU_RAMFUNC
+#define GBL_PPU_RAMFUNC 1
+#endif
+#if GBL_PPU_ASM && !defined(__ARM_ARCH_6M__)
+#undef GBL_PPU_ASM
+#define GBL_PPU_ASM 0
+#endif
+#if GBL_PPU_BATCH > 1 || GBL_FRAME_SIGNATURE || GBL_LINE_SIGNATURE
+#undef GBL_VRAM_HOOK
+#define GBL_VRAM_HOOK 1
+#endif
+#ifndef GBL_VRAM_HOOK
+#define GBL_VRAM_HOOK 0
+#endif
+#if GBL_PPU_BATCH < 1 || (GBL_PPU_BATCH & (GBL_PPU_BATCH - 1))
+#error "GBL_PPU_BATCH must be a power of two"
+#endif
+
+#endif
