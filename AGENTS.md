@@ -22,6 +22,7 @@ Documentation roles:
 - `GBC.md`: CGB implementation and validation status
 - `ANDROID.md`: Android generation and APK workflow
 - `targets/meta/README.md`: Gamebuino META backend (`--target meta`), coverage workflow, and limits
+- `docs/META_STATUS_2026-09-30.md`: META branch state, evidence labels, local artifacts, and open items
 - `GROUND_TRUTH_WORKFLOW.md`: trace-assisted coverage, including its limits
 - `NATIVE_PATCHES.md`: exact-ROM native replacement manifest and callback ABI
 - `PORT_MODULES.md`: exact-ROM read-only port/frontend module ABI
@@ -203,6 +204,8 @@ ctest --test-dir build -R meta --output-on-failure
 ```
 
 For game-level changes, compare the host builds of a generated project: a `--meta-precise` project must print the same `run_hash` as `--interp` for the same input, and the PlatformIO build (`pio run -d <project>`) must still fit the RAM/Flash report. Label `m0_estimate.py` numbers as estimates, never as device measurements.
+
+Runtime changes that touch dispatch, streaming or `--meta-pack` rely on the e2e packed build and its C-stack sweep (`--stack-bytes`, livelock timeout). Assembly paths cannot run on the host: compare them against the C versions on the estimator with `--cflag=-DBENCH_PIXEL_HASH`, and use `targets/meta/tools/m0bench/where.py` when an estimator run never finishes.
 
 ## Multi-ROM, Android, and releases
 
