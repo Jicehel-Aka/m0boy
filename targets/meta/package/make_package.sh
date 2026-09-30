@@ -40,5 +40,6 @@ if find "$pkg" -type f \( -iname '*.gb' -o -iname '*.gbc' -o -iname '*.bin' -o -
 fi
 
 rm -f "$out"
-(cd "$stage" && zip -qr "$out" gbrecomp-meta)
+# Python's zipfile keeps the Unix modes (compile.sh stays executable).
+(cd "$stage" && python3 -m zipfile -c "$out" gbrecomp-meta)
 echo "$out ($(git -C "$root" rev-parse --short "$rev"), $(unzip -Z1 "$out" | grep -vc '/$') files)"
