@@ -135,9 +135,10 @@ order observed when reading at 24 MHz.
 Battery-backed cartridges (`GBL_BATTERY`, from header byte 0x147) keep
 their cartridge RAM in a file on the SD card, `GBL_SAVE_NAME` (e.g.
 `MQ.SAV`). `compile.sh` creates it at exactly the size of the RAM (filled
-with 0xFF, an erased cartridge) and never overwrites it. Copy it to the
-card once, in the root directory or one directory below: the console
-rewrites its 512-byte sectors in place and never touches the FAT.
+with 0xFF, an erased cartridge) and never overwrites it, inside the game's
+folder (see below). Copy the folder to the card once, in the root
+directory: the console rewrites its 512-byte sectors in place and never
+touches the FAT.
 
 - RAM up to 2 KiB (MBC2's 512 half-bytes, for instance) stays in RAM. It is
   loaded at boot; writes go through the slow path and mark sectors dirty.
@@ -214,8 +215,8 @@ default; `on` / `off` force it):
   instead of three and drop the BLEND and DARK modes. RAM then stays at the
   usual level: 28.9 KiB.
 
-`compile.sh` records the profiles, regenerates with them, and copies the ROM
-next to the binary under its card name.
+`compile.sh` records the profiles, regenerates with them, and copies the
+ROM into the game's folder under its card name.
 
 ## Compressed ROM in flash (`--meta-pack`, `PACK=1`)
 
@@ -237,7 +238,12 @@ reads from flash instead of the SD card (`GBL_ROM_PACKED`):
   says so.
 - The raw part is chosen from the data-read profiles (`--rom-profile`).
   Without a profile nothing but bank 0 stays raw and every cache miss
-  decodes.
+  decodes. `compile.sh` therefore replays the recorded inputs once with the
+  profile build when a streamed or packed project has no `romdata-*.prof`
+  (sessions recorded with a plain build have none), and keeps the result
+  with the sessions. `PACK` is stored in `.gbrmeta.json`; changing it
+  rebuilds the game. For a ROM that fits in flash (Tetris), everything
+  touched stays raw and packing changes nothing.
 
 R.C. Pro-Am, 600 frames, M0+ estimator (not a device measurement):
 
@@ -263,6 +269,41 @@ Compressing ROM data meant for the SD card would not pay: decoding costs
 more than the transfer it saves.
 
 ## Batch conversion (`compile.sh`)
+
+`./compile.sh [rom dir] [output dir]` turns every `.gb`/`.gbc` of the
+folder into games laid out the way the Gamebuino loader expects, one
+folder per game under the output directory (default `./roms/meta/`), each
+meant to be copied as is to the root of the SD card:
+
+| File | Role |
+| --- | --- |
+| `<Game>/<Game>.bin` | firmware, named after the ROM with tags stripped (`Zerd (J) [!].gb` → `Zerd`) |
+| `<Game>/ICON.BMP` | 32×32 menu icon |
+| `<Game>/TITLESCREEN.BMP` | 80×64 title screen |
+| `<Game>/<NAME>.SAV` | cartridge-RAM file, created once (battery or large RAM) |
+| `<Game>/<NAME>.GB` | streamed ROM file (ROMs of 256 KiB and more) |
+| `<Game>/.gbrmeta.json` | bookkeeping (ROM sha1, version, `PACK`); ignorable |
+
+The icons come from thumbnails.libretro.com (`Named_Titles`): the
+catalogue index is cached in `<output dir>/.cache/icons/`, region and
+revision tags are ignored for matching, `(World)` then `(USA, Europe)`
+are preferred. A local PNG (`<rom dir>/icons/<Game>.png`) takes
+precedence; a failure only means no icon. `NO_ICONS=1` disables
+downloads. ImageMagick or Pillow converts the PNG to 24-bit BMPs.
+
+There is no ROM size limit: ROMs that do not fit in flash stream from the
+card (see above).
+
+Every firmware embeds the gbrecomp version that produced it
+(`gbrecomp-meta x.y.z` string in the .bin, also printed on the USB serial
+port at boot). `compile.sh` reads it back: a firmware that is current
+(same version, same ROM sha1) is kept as is; one produced by another
+version is offered for rebuild. On a terminal the script is interactive:
+it lists the ROMs with their state (new, current, vX → vY, ROM changed,
+unknown version), asks which games to process (`1,3-5`, `a` = all), and
+confirms version updates. Otherwise it processes everything that needs
+work, keeping outdated firmwares unless `UPDATE=1` (`FORCE=1` redoes even
+current ones).
 
 - Precompute: 8 random-input runs per ROM in parallel (`AUTO_SEEDS`), one of
   30 minutes of game time and seven of 10 minutes, about 11 s on 8 cores.
