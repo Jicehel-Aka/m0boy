@@ -13,7 +13,7 @@ state, evidence and open items.
 | Area | Where |
 | --- | --- |
 | Generator | `recompiler/src/codegen/meta_emitter.cpp`, options in `recompiler/include/recompiler/codegen/meta_emitter.h`, CLI in `recompiler/src/main.cpp` (`--target meta`, `--meta-*`, `--rom-profile`) |
-| Runtime (gbl) | `targets/meta/runtime/` — `gbl_core.c` (bus, dispatch, streaming, packed ROM, saves), `gbl_cpu.c` (interpreter), `gbl_ppu.c`, `gbl_apu.c`, asm in `gbl_core_asm.S` / `gbl_ppu_asm.S`, every switch in `gbl_options.h` |
+| Runtime (gbl) | `targets/meta/runtime/` — `gbl_core.c` (bus, dispatch, streaming, packed ROM, saves), `gbl_cpu.c` (interpreter), `gbl_ppu.c`, `gbl_apu.c`, asm in `gbl_core_asm.S` / `gbl_ppu_asm.S` / `gbl_timing_asm.S` (field offsets in `gbl_timing_layout.h`), every switch in `gbl_options.h` |
 | META frontend | `targets/meta/platform/src/` (LCD DMA, audio, SD/FAT, saves, stream) |
 | Host harness | `targets/meta/host/gbl_host.c` (`_host`, `_profile`, `_play` targets) |
 | Tests | `ctest -R meta` (7 tests); `tests/test_meta_target_e2e.py` is the main gate |
@@ -36,6 +36,13 @@ state, evidence and open items.
   (`GBL_ROM_PACKED`, `GBL_UNPACK_ASM`).
 - Dispatcher livelock on a nearly exhausted C stack fixed
   (`GBL_EXEC_HEADROOM`), guarded by the e2e stack sweep.
+- Fifth optimisation pass, Thumb-1 (`GBL_TIMING_ASM`,
+  `GBL_RENDER_LINE_ASM`, more of `GBL_CORE_ASM`): PPU line state machine
+  unrolled per line with quiet / LYC-only / general copies and counted
+  skipped lines, `gbl_sync`, next-event recomputation, PPU register
+  reads/writes, dispatch-cache hit, `render_line`, page-resolved OAM DMA,
+  `gbl_cp`. Estimator: −16% to −52% cycles per frame on five games, same
+  hashes as the C runtime. Firmware +1.2 KiB flash, +56 B RAM.
 
 ## Evidence (label these correctly)
 
@@ -45,7 +52,12 @@ state, evidence and open items.
   match `--interp` frame for frame.
 - M0+ numbers come from `m0_estimate.py` (Unicorn + cycle model + flash wait
   states). They are estimates for comparing variants, never device
-  measurements. Asm vs C equivalence on M0 uses `--cflag=-DBENCH_PIXEL_HASH`.
+  measurements. Asm vs C equivalence on M0 uses `--cflag=-DBENCH_PIXEL_HASH`
+  (pixels and every line signature) and `--cflag=-DBENCH_STATE_HASH`
+  (machine and PPU timing state at every VBlank), plus
+  `--cflag=-DBENCH_ALU_CHECK` for the exhaustive `gbl_cp` check; build the
+  reference with the `GBL_*_ASM` switches at 0. The host tests only see
+  the C versions.
 - Nothing in this branch has been measured on a physical META. The SD reader,
   saves and streaming have run on the host and FAT images only; the firmware
   runs in gamebuino-emulator.
@@ -81,6 +93,11 @@ function is a livelock, not slowness.
   ROMs; never distribute).
 
 ## Open items
+
+- Remaining M0 profile after the fifth pass: `render_line` and the tile
+  fetch/convert loops on games that redraw (SML ~35% together), the
+  interpreter on R.C. Pro-Am (~14%, a coverage question), the next-event
+  recomputation on raster-heavy Batman (~11%), and generated code.
 
 - Run on hardware: SD streaming, saves, asm paths, frame pacing.
 - Packed builds have not run in gamebuino-emulator yet.

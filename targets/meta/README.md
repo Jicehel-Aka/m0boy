@@ -355,8 +355,10 @@ Pass these as `-D` flags (`build_flags` in `platformio.ini`, or
 | `GBL_INTERP_DELAY_LOOP` | 1 | Interpreter shortcut for `DEC A / JR NZ,-3` (not in coverage or trace builds) |
 | `GBL_PPU_ASM` | 1 on Cortex-M0+ | Tile fetch and colour conversion in hand-written Thumb-1 (`gbl_ppu_asm.S`); the C loops are used on other targets |
 | `GBL_PPU_RAMFUNC` | 1 | Runs those loops from SRAM (about 220 bytes, copied with `.data`), with no flash wait state |
-| `GBL_CORE_ASM` | 1 on Cortex-M0+ | `gbl_rd`, `gbl_wr`, `gbl_push`, `gbl_pop` in Thumb-1 (`gbl_core_asm.S`) |
-| `GBL_LOOKUP_CACHE` | 16 | Entries of the dispatch cache (0 disables it) |
+| `GBL_CORE_ASM` | 1 on Cortex-M0+ | `gbl_rd`, `gbl_wr`, `gbl_push`, `gbl_pop`, `gbl_cp` and the OAM DMA copy in Thumb-1 (`gbl_core_asm.S`) |
+| `GBL_TIMING_ASM` | 1 on Cortex-M0+ | PPU line state machine (`gbl_ppu_advance`), next event (`gbl_update_evt`), `gbl_sync`, the PPU register paths of `gbl_io_rd`/`gbl_io_wr` and the dispatch-cache hit of `gbl_lookup` in Thumb-1 (`gbl_timing_asm.S`) |
+| `GBL_RENDER_LINE_ASM` | follows `GBL_PPU_ASM` | `render_line` (sprite selection, line signature, frontend calls) in Thumb-1 (`gbl_ppu_asm.S`); needs `GBL_LINE_SIGNATURE` |
+| `GBL_LOOKUP_CACHE` | 16 | Entries of the dispatch cache, a power of two (0 disables it) |
 | `GBL_STREAM_SECTORS` | 4 | Sector cache of a streamed ROM (512 bytes each) |
 | `GBL_ERAM_ON_SD` | 1 above 2 KiB of cartridge RAM | Cartridge RAM kept in the save file behind a 1 KiB cache |
 | `GBL_ROM_PACKED` | set by `--meta-pack` | Streamed ROM sectors LZSS-compressed in flash instead of on the SD card |
@@ -470,6 +472,39 @@ of the time is spread across the runtime, the event machinery and the
 generated code, where removing work (wait loops, events, flushes) gains
 more.
 
+Fifth pass: the event machinery and the per-line code in Thumb-1, with
+the loops unrolled where the state allows it. Estimator, 1,600 frames,
+generated code and input from `compile.sh` (`coverage-auto1.input` or
+`auto.input`, the ROMs are not in the repository); the generated code is
+newer than in the tables above, so only the two columns compare.
+Each change below is measured against the step before it:
+
+| Game | C runtime (`c9e1bfb`) | Assembly | Change |
+| --- | --- | --- | --- |
+| Super Mario Land | 137,117 | 101,144 | −26.2% |
+| Super R.C. Pro-Am | 257,584 | 215,421 | −16.4% |
+| Batman: The Video Game | 272,918 | 218,423 | −20.0% |
+| Burai Fighter Deluxe | 77,235 | 37,069 | −52.0% |
+| Solar Striker | 222,186 | 185,326 | −16.6% |
+
+| Change | Main effect |
+| --- | --- |
+| `gbl_ppu_advance` in Thumb-1: a whole line is straight-line code; stage, mode and line start are stored once per call | SML −12.9%, Burai −28.8% |
+| The line loop instantiated three times for the STAT line: no source (updates omitted), LYC only (only line changes checked), general | SML −4.1%, Burai −9.0% |
+| Whole lines of a skipped frame only counted (about 9 cycles each), the window line moved once by the number of lines at or below WY | Burai −11.0%, SML −2.4% |
+| `gbl_sync` with the timer inline (GCC saved nine registers before finding nothing had ticked); `gbl_update_evt` recomputing a dirty event itself | Batman −4.8% |
+| The frame signature multiplies by `gbl_sig_mul` (the constant cost a 25-instruction shift/add chain per PPU register write) | Part of the line above |
+| OAM DMA resolves its source page once and copies 16 bytes per LDM/STM iteration instead of 160 `gbl_rd` calls (about 4,800 cycles per DMA) | Burai −11.2%, SML −4.4% |
+| `gbl_io_rd`/`gbl_io_wr` serve LY, STAT, scroll, palette and window registers in Thumb-1; `gbl_lookup` checks the dispatch cache without a frame | Batman −4.2%, R.C. Pro-Am −1.3% |
+| `render_line` in Thumb-1 (sprites sorted as 16-bit keys `x << 8 \| index`), tile-hash loop and `gbl_cp` | −1% to −3% |
+
+Every step keeps the pixel, signature and state hashes of the five games
+equal to the C runtime's (`BENCH_PIXEL_HASH`, `BENCH_STATE_HASH`; see
+Validation). The firmware grows by about 1.2 KiB of flash (the three
+copies of the line loop are 0.7 KiB) and 56 bytes of RAM; `compile.sh`
+fills the flash by bisection, so a game at the limit keeps slightly less
+cold compiled code. Nothing here has been measured on a device.
+
 ## Validation
 
 ```bash
@@ -506,10 +541,17 @@ ctest --test-dir build -R meta --output-on-failure
 The host prints `state_hash`, a hash of the registers, cycle counter, WRAM,
 HRAM and IO at every VBlank, next to `run_hash`, which covers the pictures.
 
-The assembly loops cannot run on the host. Build the estimator image with
+The assembly cannot run on the host. Build the estimator image with
 `--cflag=-DBENCH_PIXEL_HASH` (optionally with `--cflag=-DGBL_PPU_ASM=0`):
-it prints a hash of every rendered line. On five games (1,500 frames each,
-window and 8×16 sprites included), C and assembly print the same hash.
+it prints a hash of every rendered line and of every line signature.
+`--cflag=-DBENCH_STATE_HASH` adds a hash of the registers, cycle counter,
+WRAM, HRAM, IO and PPU timing state at every VBlank (compare with
+`GBL_TIMING_ASM=0`, `GBL_CORE_ASM=0`, `GBL_RENDER_LINE_ASM=0`), and
+`--cflag=-DBENCH_ALU_CHECK` checks every (A, v) pair of `gbl_cp` against
+the C formulas (`alu errors: 0`). On five games (1,600 frames each,
+window and 8×16 sprites included), C and assembly print the same hashes.
+`m0_estimate.py --func NAME` lists every executed block of a function with
+its cost.
 
 For a real game, compare the builds on the host with the same input:
 
