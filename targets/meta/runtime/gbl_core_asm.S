@@ -25,6 +25,7 @@
 #define GBR_CF 12
 #define GBR_HF 13
 #define GBR_NF 14
+#define GBR_ROM_BANK 16
 
 /*
  * uint8_t gbl_rd(uint16_t a) / void gbl_wr(uint16_t a, uint8_t v)
@@ -45,17 +46,57 @@ gbl_rd:
     beq     1f
     ldrb    r0, [r3, r0]
     bx      lr
-1:  /* HRAM (FF80-FFFE) without the C slow path: a + 0x80 is 0x1xxxx there. */
+1:
+#if GBL_ROM_STREAM
+    /* Streamed ROM chunk (4000-7FFF): the byte of the last sector used,
+     * like stream_read's first test, without the C call. */
+    lsrs    r2, r0, #14
+    cmp     r2, #1
+    bne     1f
+    mov     ip, r0
+    ldr     r2, 4f
+    ldrh    r2, [r2, #GBR_ROM_BANK]
+    subs    r2, #1
+    lsls    r2, r2, #14
+    adds    r2, r2, r0             /* ROM offset */
+    ldr     r3, 5f
+    ldrb    r3, [r3]               /* last slot */
+    ldr     r1, 6f
+    lsls    r0, r3, #2
+    ldr     r1, [r1, r0]           /* its sector */
+    lsrs    r0, r2, #9
+    cmp     r0, r1
+    bne     3f
+    lsls    r3, r3, #9
+    ldr     r1, 10f
+    adds    r1, r1, r3
+    lsls    r2, r2, #23
+    lsrs    r2, r2, #23
+    ldrb    r0, [r1, r2]
+    bx      lr
+3:
+    mov     r0, ip
+    b       2f
+#endif
+1:  /* HRAM (FF80-FFFE) without the C slow path: a + 0x80 is 0x1xxxx there;
+     * IO (FF00-FF7F) straight to gbl_io_rd. */
     movs    r3, #0x80
     adds    r3, r3, r0
     lsrs    r2, r3, #16
-    beq     2f
+    beq     11f
     uxtb    r3, r3
     cmp     r3, #0x7F              /* FFFF is IE */
     beq     2f
     ldr     r2, 7f
     ldrb    r0, [r2, r3]
     bx      lr
+11:
+    lsrs    r2, r0, #8
+    cmp     r2, #0xFF
+    bne     2f
+    uxtb    r0, r0
+    ldr     r3, 12f
+    bx      r3
 2:
     ldr     r3, 8f
     bx      r3
@@ -63,6 +104,13 @@ gbl_rd:
 7:  .word   gbl_hram
 8:  .word   gbl_rd_slow
 9:  .word   gbl_rmap
+12: .word   gbl_io_rd
+#if GBL_ROM_STREAM
+4:  .word   gbr
+5:  .word   gbl_stream_last
+6:  .word   gbl_stream_tag
+10: .word   gbl_stream_buf
+#endif
     .size gbl_rd, . - gbl_rd
 
     .section .text.gbl_wr, "ax", %progbits
@@ -79,21 +127,47 @@ gbl_wr:
     beq     1f
     strb    r1, [r3, r0]
     bx      lr
-1:  /* HRAM (FF80-FFFE) without the C slow path. */
+1:  /* MBC registers and VRAM straight to their handlers (gbl_wr_slow would
+     * test six ranges first; games switch banks around every banked call). */
+    lsrs    r2, r0, #15
+    beq     3f                     /* 0000-7FFF */
+    lsrs    r2, r0, #13
+    cmp     r2, #4
+    beq     4f                     /* 8000-9FFF */
+    /* HRAM (FF80-FFFE) without the C slow path, IO (FF00-FF7F) straight
+     * to gbl_io_wr. */
     movs    r3, #0x80
     adds    r3, r3, r0
     lsrs    r2, r3, #16
-    beq     2f
+    beq     10f
     uxtb    r3, r3
     cmp     r3, #0x7F              /* FFFF is IE */
     beq     2f
     ldr     r2, 7f
     strb    r1, [r2, r3]
     bx      lr
+10:
+    lsrs    r2, r0, #8
+    cmp     r2, #0xFF
+    bne     2f
+    uxtb    r0, r0
+    ldr     r3, 11f
+    bx      r3
 2:
     ldr     r3, 8f
     bx      r3
+3:
+    ldr     r3, 5f
+    bx      r3
+4:
+    lsls    r0, r0, #19
+    lsrs    r0, r0, #19            /* VRAM offset */
+    ldr     r3, 6f
+    bx      r3
     .align 2
+5:  .word   gbl_mbc_write
+6:  .word   gbl_vram_wr
+11: .word   gbl_io_wr
 7:  .word   gbl_hram
 8:  .word   gbl_wr_slow
 9:  .word   gbl_wmap

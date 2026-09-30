@@ -122,6 +122,8 @@ def main():
     ap.add_argument("--top", type=int, default=15)
     ap.add_argument("--cflag", action="append", default=[], help="extra compiler flag")
     ap.add_argument("--hot-blocks", type=int, default=0, help="print the N most expensive basic blocks")
+    ap.add_argument("--heavy", type=int, default=0,
+                    help="profile only the frames over the 60 Hz budget: print the N costliest functions")
     ap.add_argument("--func", action="append", default=[],
                     help="print every executed block of this function, in address order")
     args = ap.parse_args()
@@ -130,7 +132,7 @@ def main():
     elf_path = build(args.project, out_dir, args.frames, args.opt, args.input, args.cflag)
 
     uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
-    uc.mem_map(0, 0x40000)
+    uc.mem_map(0, 0x80000)
     uc.mem_map(0x20000000, 0x8000)
     uc.mem_map(0x10000000, 0x400000)  # stand-in SD card (bench.ld SDROM)
     symbols = []
@@ -175,6 +177,10 @@ def main():
     block_cost = {}
     running = [0.0]
     frame_marks = []
+    budget = 48e6 / 59.7275
+    frame_blocks = collections.Counter()  # blocks of the current frame (--heavy)
+    heavy_blocks = collections.Counter()
+    heavy_frames = [0]
 
     def on_block(uc_, addr, size, _data):
         counts[addr] += 1
@@ -187,8 +193,14 @@ def main():
                 c += cy + (0 if addr >= 0x20000000 else w)
             block_cost[(addr, size)] = c
         running[0] += c
+        if args.heavy:
+            frame_blocks[(addr, size)] += 1
 
     def on_frame(_uc, _addr, _size, _data):
+        if args.heavy and len(frame_marks) >= 1 and running[0] - frame_marks[-1] > budget:
+            heavy_blocks.update(frame_blocks)
+            heavy_frames[0] += 1
+        frame_blocks.clear()
         frame_marks.append(running[0])
 
     uc.hook_add(UC_HOOK_BLOCK, on_block)
@@ -238,7 +250,6 @@ def main():
         # Skip frame 0 (boot): costs of whole VBlank-to-VBlank frames.
         per = sorted(b - a for a, b in zip(frame_marks[1:], frame_marks[2:]))
         pick = lambda q: per[min(len(per) - 1, int(q * len(per)))]
-        budget = 48e6 / 59.7275
         print("frame cost: median %.0f, p95 %.0f, p99 %.0f, max %.0f cycles; "
               "%.1f%% of the 60 Hz budget on average, %d frames over %.0f%% of it" %
               (pick(0.5), pick(0.95), pick(0.99), per[-1], 100 * sum(per) / len(per) / budget,
@@ -261,6 +272,17 @@ def main():
     print("\ntop functions:")
     for name, c in per_func.most_common(args.top):
         print("  %-28s %5.1f%%" % (name, 100 * c / est))
+    if args.heavy and heavy_frames[0]:
+        hf = collections.Counter()
+        for (addr, size), n in heavy_blocks.items():
+            i = bisect.bisect_right(starts, addr) - 1
+            name = symbols[i][2] if i >= 0 and addr < symbols[i][0] + symbols[i][1] else "?"
+            hf[name] += block_cost[(addr, size)] * n
+        htot = sum(hf.values())
+        print("\nframes over the budget: %d, %.0f cycles each on average; top functions:" %
+              (heavy_frames[0], htot / heavy_frames[0]))
+        for name, c in hf.most_common(args.heavy):
+            print("  %-28s %5.1f%%" % (name, 100 * c / htot))
     for fname in args.func:
         print("\nfunction %s: %.1f%%" % (fname, 100 * per_func[fname] / est))
         for addr in sorted(per_block):

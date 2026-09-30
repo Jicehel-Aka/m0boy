@@ -48,10 +48,15 @@ static struct {
 extern const uint8_t gbl_rom_resident[][4096];
 extern const uint8_t gbl_rom_chunk_map[];
 
-static uint8_t stream_buf[GBL_STREAM_SECTORS][512] __attribute__((aligned(4)));
-static int32_t stream_tag[GBL_STREAM_SECTORS];
+/* Buffers, tags and the last slot are global: the assembly gbl_rd reads a
+ * byte of the last sector used without calling gbl_rd_slow. */
+uint8_t gbl_stream_buf[GBL_STREAM_SECTORS][512] __attribute__((aligned(4)));
+int32_t gbl_stream_tag[GBL_STREAM_SECTORS];
+uint8_t gbl_stream_last;
+#define stream_buf gbl_stream_buf
+#define stream_tag gbl_stream_tag
+#define stream_last gbl_stream_last
 static uint32_t stream_age[GBL_STREAM_SECTORS], stream_clock;
-static uint8_t stream_last;
 uint32_t gbl_stream_misses;
 
 uint8_t *gbl_stream_scratch(void) { return stream_buf[0]; }
@@ -137,6 +142,11 @@ hit:
 }
 #endif
 
+/* Bank whose pages gbl_rmap[4..7] hold; the pages are only rebuilt when
+ * the bank changes (games rewrite the bank register around every banked
+ * call).  gbl_reset voids it. */
+static uint16_t mapped_bank = 0xFFFF;
+
 static void map_rom_bank(void) {
     uint32_t bank;
 #if GBL_MBC == 1
@@ -156,14 +166,16 @@ static void map_rom_bank(void) {
 #endif
     bank &= (uint32_t)(GBL_ROM_BANKS - 1);
     gbr.rom_bank = (uint16_t)bank;
+    if (bank == mapped_bank) return;
+    mapped_bank = (uint16_t)bank;
 #if GBL_ROM_STREAM
-    for (uint32_t i = 0; i < 4; i++) {
-        uint32_t slot = gbl_rom_chunk_map[bank * 4u + i];
-        gbl_rmap[4 + i] = slot ? BIAS(gbl_rom_resident[slot - 1u], 0x4000u + i * 0x1000u) : 0;
-    }
+    const uint8_t *m = gbl_rom_chunk_map + bank * 4u;
+#define CHUNK(i) gbl_rmap[4 + i] = m[i] ? BIAS(gbl_rom_resident[m[i] - 1u], 0x4000u + i * 0x1000u) : 0
+    CHUNK(0); CHUNK(1); CHUNK(2); CHUNK(3);
+#undef CHUNK
 #else
     const uint8_t *base = BIAS(gbl_rom + bank * 0x4000u, 0x4000u);
-    for (int i = 4; i < 8; i++) gbl_rmap[i] = base;
+    gbl_rmap[4] = gbl_rmap[5] = gbl_rmap[6] = gbl_rmap[7] = base;
 #endif
 #ifdef GBL_ROM_TRACE
     /* host study of ROM reads: every banked read is observed */
@@ -324,7 +336,14 @@ static void map_eram(void) {
 #endif
 }
 
-static void mbc_write(uint16_t a, uint8_t v) {
+/* The assembly gbl_wr calls it directly for 0000-7FFF. */
+#if GBL_CORE_ASM && defined(__ARM_ARCH_6M__)
+void gbl_mbc_write(uint16_t a, uint8_t v);
+#define mbc_write gbl_mbc_write
+#else
+static
+#endif
+void mbc_write(uint16_t a, uint8_t v) {
 #if GBL_MBC == 1
     switch (a >> 13) {
     case 0: set_ram_enable(v); map_eram(); break;
@@ -924,6 +943,7 @@ void gbl_reset(void) {
 
     for (int i = 0; i < 16; i++) { gbl_rmap[i] = 0; gbl_wmap[i] = 0; }
     for (int i = 0; i < 4; i++) gbl_rmap[i] = gbl_rom;
+    mapped_bank = 0xFFFF;
     map_rom_bank();
     gbl_rmap[0x8] = gbl_rmap[0x9] = BIAS(gbl_vram, 0x8000u);
 #if !GBL_VRAM_HOOK

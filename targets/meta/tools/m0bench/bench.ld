@@ -1,7 +1,9 @@
-/* META memory map: application flash after the 16 KiB loader, 32 KiB RAM. */
+/* META memory map: application flash after the 16 KiB loader, 32 KiB RAM.
+ * The flash is twice the META's so instrumented builds (hashes, checks) of
+ * projects at the limit still link; PlatformIO checks the real size. */
 MEMORY
 {
-  FLASH (rx) : ORIGIN = 0x4000, LENGTH = 0x3C000
+  FLASH (rx) : ORIGIN = 0x4000, LENGTH = 0x7C000
   RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 0x8000
   SDROM (r) : ORIGIN = 0x10000000, LENGTH = 0x400000 /* stand-in SD card */
 }
