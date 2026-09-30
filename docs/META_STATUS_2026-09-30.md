@@ -86,7 +86,10 @@ function is a livelock, not slowness.
   (`coverage-*.cov`, `coverage-*.input`, `romdata-*.prof`).
 - `roms/bin/`: 235 firmwares from an older runtime and the older flat layout;
   current `compile.sh` writes `roms/meta/<Game>/`.
-- `output/gbrecomp-meta.zip`: source package for testers (no ROMs, no
+- `output/gbrecomp-meta.zip`: built by `targets/meta/package/make_package.sh
+  <profiles_dir>` from a git revision (its CMakeLists.txt, META.md and
+  LISEZMOI.txt live in that folder; the version there, 0.2.0, is stamped
+  into firmwares). Source package for testers (no ROMs, no
   binaries; built from a copy of the tree, validated by extracting it,
   building, running its tests and `compile.sh` on Tetris with and without
   `PACK=1`). `output/meta-sd-complete.zip`: personal SD image (contains

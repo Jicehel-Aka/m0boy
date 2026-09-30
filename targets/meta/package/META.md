@@ -1,0 +1,294 @@
+# gbrecomp pour Gamebuino META
+
+`gbrecomp` transforme une ROM Game Boy (DMG) en firmware natif pour la
+Gamebuino META. Le code du jeu est recompilé en C puis compilé pour la
+console : ce n'est ni un JIT ni un émulateur classique. Le code déjà vu
+pendant une partie de profilage est traduit, et un petit interpréteur
+exécute le reste.
+
+## Nouveautés de la version 0.2.0
+
+- Runtime plus rapide : les parties critiques (machine à états des lignes
+  du PPU, calcul du prochain événement, accès mémoire et registres,
+  rendu des lignes, OAM DMA, interpréteur) sont réécrites en assembleur
+  Thumb-1 pour le Cortex-M0+ de la META. Sur 15 jeux, le temps
+  d'émulation par image baisse de 15 % à 53 % (médiane −19 %), et les
+  images trop lentes pour 60 Hz passent par exemple de 180 à 21 sur 1 600
+  pour Prehistorik Man. Ce sont des **estimations** (modèle de cycles du
+  M0+ sous émulateur), pas des mesures sur la console : dis-moi ce que tu
+  observes.
+- Le résultat de l'émulation est identique à la version 0.1.0 (vérifié
+  image par image sur ces 15 jeux) ; la taille du firmware ne change
+  presque pas (+0,2 Ko).
+- Les firmwares faits avec la 0.1.0 sont proposés à la reconstruction par
+  `compile.sh` (la version est inscrite dans chaque `.bin`).
+
+## Prérequis
+
+- CMake 3.20 ou plus récent, Ninja, un compilateur C11/C++20 (gcc, clang)
+- [PlatformIO](https://platformio.org) : `pipx install platformio` ou
+  `uv tool install platformio`. La plateforme `atmelsam` s'installe toute
+  seule à la première compilation.
+- SDL2 (paquet de développement), pour jouer sur PC pendant le profilage.
+  Optionnel, mais c'est la façon pratique de couvrir tout le jeu.
+- Python 3, seulement pour les tests.
+
+## 1. Compiler l'outil (une seule fois)
+
+```bash
+cmake -G Ninja -B build .
+ninja -C build
+```
+
+## 2. Transformer une ROM
+
+Dans les exemples, remplace `tetris` et `roms/gb/tetris.gb` par ton jeu.
+
+```bash
+# Tout en une commande : ./compile.sh  (voir plus bas)
+# a) Projet interpréteur seul et outils PC
+./build/bin/gbrecomp roms/gb/tetris.gb --target meta --output-prefix tetris -o out/tetris
+cmake -G Ninja -S out/tetris/host -B out/tetris/host/build
+ninja -C out/tetris/host/build
+
+# b) Jouer sur PC pour enregistrer le code réellement exécuté
+#    Flèches, X = A, Z = B, Entrée = Start, Retour arrière = Select,
+#    Échap = sauvegarder et quitter
+./out/tetris/host/build/tetris_play --interp \
+    --coverage out/tetris.cov --record-input out/tetris.input
+
+# c) Régénérer avec la couverture (autant de --coverage que de parties)
+./build/bin/gbrecomp roms/gb/tetris.gb --target meta --output-prefix tetris \
+    --coverage out/tetris.cov -o out/tetris
+
+# d) Compiler le firmware (vérifie les lignes RAM et Flash du rapport)
+pio run -d out/tetris
+```
+
+Plus la partie de profilage explore le jeu (menus, niveaux, boss), plus le
+jeu tourne en code compilé. Le reste passe par l'interpréteur, qui est plus
+lent mais correct.
+
+Sans SDL, rejoue un script d'entrées à la place de l'étape b). Chaque ligne
+a la forme `<frame> <boutons>`, avec les boutons joints par `+` : `a`, `b`,
+`select`, `start`, `right`, `left`, `up`, `down`, ou `none`.
+
+```bash
+./out/tetris/host/build/tetris_profile --interp --frames 3000 \
+    --input mon_script.input --coverage out/tetris.cov
+```
+
+## Conversion en lot : `compile.sh`
+
+```bash
+./compile.sh                        # ROMs de roms/gb/ -> roms/meta/<Jeu>/
+./compile.sh mes_roms/ sortie/      # autres dossiers
+PLAY=1 ./compile.sh                 # ouvre aussi une fenêtre pour jouer soi-même
+PACK=1 ./compile.sh                 # ROM compressée en flash plutôt que sur la carte
+AUTO_SECONDS=60 AUTO_REDO=1 ./compile.sh   # refaire une partie automatique plus longue
+REPLAY=1 ./compile.sh               # rejouer les parties à la main enregistrées
+```
+
+Dans un terminal, le script affiche la liste des ROMs avec leur état
+(nouvelle, à jour, faite par une autre version, ROM modifiée) et te laisse
+choisir les jeux. Hors terminal, il traite tout ce qui est à faire ;
+`ALL=1`, `UPDATE=1` (reconstruit les firmwares d'une autre version) et
+`FORCE=1` (refait tout) règlent ce choix.
+
+Chaque jeu devient un dossier à copier tel quel à la racine de la carte SD :
+
+| Fichier | Contenu |
+|---|---|
+| `<Jeu>/<Jeu>.bin` | le firmware (c'est ce nom que montre le loader) |
+| `<Jeu>/ICON.BMP`, `<Jeu>/TITLESCREEN.BMP` | icône et écran titre du menu, tirés de thumbnails.libretro.com (`NO_ICONS=1` pour s'en passer) |
+| `<Jeu>/<NOM>.SAV` | sauvegarde (jeux à pile ou à grande RAM de cartouche) |
+| `<Jeu>/<NOM>.GB` | la ROM, pour les ROMs de 256 Ko et plus lues sur la carte |
+
+Le `.elf` de débogage reste dans `out/<jeu>/.pio/build/meta/`.
+
+Le script utilise tous les cœurs :
+- 8 parties automatiques en parallèle par ROM (une de 30 min de jeu, sept de
+  10 min), soit environ 11 s ;
+- plusieurs ROMs à la fois (`JOBS`, par défaut cœurs / 4), chacune avec son
+  journal dans `out/<jeu>/compile.log`.
+
+Pour chaque ROM `.gb`/`.gbc` du dossier (sans limite de taille), le
+script enchaîne les étapes a) à d) :
+
+- une **partie automatique**, sans fenêtre ni son : touches aléatoires,
+  Start de temps en temps ;
+- l'**analyse statique** de la ROM (`--meta-static`) complète la couverture.
+  Le code est gardé du plus exécuté au moins exécuté jusqu'à remplir la
+  flash ;
+- chaque partie est cumulée aux précédentes : rejouer un jeu (`PLAY=1`)
+  étend le code compilé ;
+- une ROM refusée (CGB seulement, mapper non géré) n'arrête pas le lot, et
+  le bilan s'affiche à la fin.
+
+### Parties enregistrées et réutilisées
+
+Chaque partie, automatique ou jouée à la main (`PLAY=1`), est sauvée dans
+`roms/gb/profiles/<sha1 de la ROM>/` : touches (`.input`), code exécuté (`.cov`)
+et lectures de données (`.prof`). Les lancements suivants les réutilisent
+sans rejouer, et chaque partie à la main s'ajoute aux précédentes. Garde
+ce dossier : il vaut toutes tes parties.
+
+### Sauvegardes
+
+Pour les jeux à pile (sauvegarde) et ceux à grande RAM de cartouche, le
+script crée un fichier `.SAV` dans le dossier du jeu (ex. `roms/meta/Mystic Quest/MQ.SAV`).
+**Copie-le sur la carte une seule fois**, avec le `.bin`, puis ne l'écrase
+plus : la console y écrit la progression.
+
+La console écrit la sauvegarde sur la carte quand le jeu a fini de
+sauvegarder, 2 s après la dernière modification, et en revenant au loader
+(HOME maintenu 3 s).
+
+Si le `.SAV` manque :
+- le jeu tourne quand même, mais sans garder la progression ;
+- pour les jeux à grande RAM (8 Ko et plus, comme Zelda), l'écran reste
+  jaune.
+
+### Profils fournis
+
+Le dossier `profiles/` contient des parties déjà enregistrées (adresses du
+code exécuté, lectures de données ; aucun contenu de jeu), rangées par SHA-1
+de la ROM. Si ton dump est identique, `compile.sh` les reprend
+automatiquement (« Profils fournis utilisés ») et produit le même firmware
+que celui testé par l'auteur :
+
+| Jeu | SHA-1 |
+|---|---|
+| Batman - The Video Game (World) | `ef7d6684a0f737c01a1f2cc2c6609e0f3ac1310e` |
+| Burai Fighter Deluxe (USA, Europe) | `178e18b7e6e65e726b4e06f80d89c55332ea868b` |
+| Dr. Mario (World) (Rev A) | `d31d67d0682515c7c85deaa1752b02231150e5bf` |
+| Mystic Quest (World) (Fr) (Collection of Mana) | `d6265d74e0380a1656ad9b14971d5040c4cc20c5` |
+| SolarStriker (World) | `a8d6acb026b0d0a8a2bcaea094951e915a3deb80` |
+| Super Mario Land (World) (Rev 0) | `3a4ddb39b234a67ffb361ee7abc3d23e0a8b1c89` |
+| Super Mario Land (World) (Rev A) | `418203621b887caa090215d97e3f509b79affd3e` |
+| Super R.C. Pro-Am (USA, Europe) | `37c0a74532ed283f56e940bb5c38e757a0eee6e0` |
+| Tetris (World) (Rev A) | `74591cc9501af93873f9a5d3eb12da12c0723bbc` |
+| Tetris 2 (USA, Europe) (SGB Enhanced) | `1f88be9dea864eaa74c3b5ce3488e61139818e8d` |
+Vérifie ton dump avec `sha1sum roms/gb/*.gb`. Une autre version (autre
+révision, autre région) marche aussi, avec seulement la partie automatique.
+
+### ROMs de 256 Ko et plus : lecture depuis la carte SD
+
+Elles ne tiennent pas dans la flash (240 Ko, runtime compris). Le firmware
+garde alors en flash la banque 0 et les données les plus lues pendant les
+parties sur PC, et lit le reste sur la carte SD, par secteurs de 512 octets,
+avec un petit cache. Le script copie la ROM à côté du binaire sous un nom
+court affiché à la fin, par exemple `roms/meta/Mystic Quest/MYSTICQU.GB`.
+
+**Copie sur la carte SD le dossier entier du jeu**, `.bin` et `.GB`
+compris, sans renommer le `.GB`.
+
+Si le fichier manque ou ne correspond pas, l'écran reste d'une couleur
+unie ; HOME maintenu 3 s revient au loader.
+
+| Couleur | Problème |
+|---|---|
+| Rouge | fichier introuvable |
+| Bleu | carte illisible (FAT16/FAT32 attendu) |
+| Orange | fichier trop fragmenté : recopie-le |
+| Magenta | ce n'est pas la ROM de ce firmware |
+| Jaune | fichier `.SAV` introuvable (jeu à grande RAM de cartouche) |
+
+Pour ces jeux, une partie jouée sur PC (`PLAY=1 ./compile.sh`) aide
+beaucoup : elle indique les données à garder en flash, donc moins de
+lectures sur la carte en jeu. Les modes d'affichage BLEND et DARK sont
+retirés de ces firmwares pour faire de la place en RAM.
+
+Sur 5 jeux (SML, Batman, Burai Fighter, Solar Striker, R.C. Pro-Am), il ne
+reste que 1 à 15 % d'instructions interprétées, mesuré avec d'autres entrées
+que celles de la partie automatique. Une partie jouée à la main améliore
+encore les niveaux que la partie automatique n'atteint pas.
+
+## 3. Mettre le jeu sur la META
+
+- Par USB : `pio run -d out/tetris -t upload`.
+- Par carte SD : copie `out/tetris/.pio/build/meta/firmware.bin` sur la carte
+  (renomme-le, par exemple `TETRIS.BIN`), puis lance-le depuis le loader.
+
+## Commandes sur la META
+
+| Bouton | Game Boy |
+|---|---|
+| Croix | Croix |
+| A | B |
+| B | A |
+| MENU | Start |
+| HOME (appui court) | Select |
+| HOME maintenu 1 s | Mode d'affichage suivant : TILE, BLEND, DARK, CROP, SKIP |
+| HOME maintenu 3 s | Retour au loader Gamebuino |
+
+Modes d'affichage (les 144 lignes Game Boy sur les 128 de la META) :
+
+| Mode | Méthode |
+|---|---|
+| TILE (défaut) | Retire la dernière ligne de chaque rangée de tuiles (souvent vide dans les polices) : le texte reste net |
+| BLEND | Fusionne 2 lignes sur 9 avec des couleurs moyennées |
+| DARK | Fusionne en gardant la teinte la plus sombre |
+| CROP | Pas de réduction : lignes 8 à 135 (le haut et le bas sont coupés) |
+| SKIP | Saute 1 ligne sur 9 |
+
+Pour voir l'écran exact de la META sur PC :
+`out/<jeu>/host/build/<jeu>_metaview --mode tile --frames 300 --dump 200 ecran.ppm`.
+
+Chaque seconde, le port série USB affiche les FPS émulés et affichés, les
+lignes non redessinées, les attentes DMA et les instructions interprétées.
+Ce dernier chiffre indique s'il faut enregistrer plus de couverture.
+
+## Limites
+
+- Game Boy DMG uniquement. Les ROM réservées à la Game Boy Color sont
+  refusées.
+- Cartouches acceptées : sans MBC, MBC1, MBC2, MBC3 (sans horloge) et MBC5.
+- La ROM est copiée dans la flash, ce qui laisse environ 210 Ko pour la ROM
+  et le code compilé. Jusqu'à 128 Ko de ROM, ça passe. 256 Ko ne rentrent
+  pas.
+- La RAM de la cartouche occupe la RAM de la META (32 Ko au total). Une
+  cartouche avec 8 Ko de RAM est très juste. Pas de sauvegarde sur la SD
+  pour l'instant.
+
+## Options de compilation
+
+Ajoute-les dans `build_flags` du `platformio.ini` généré, par exemple
+`build_flags = -O2 -Wno-unused-label -DMETA_LCD_BUFFERS=2`.
+
+| Define | Défaut | Rôle |
+|---|---|---|
+| `GBL_PPU_BATCH` | 8 | Lignes rendues par paquet quand aucune interruption par ligne n'est active |
+| `GBL_LINE_SIGNATURE` / `META_LINE_SKIP` | 1 / 1 | Ne redessine ni ne renvoie les lignes inchangées (exact) |
+| `GBL_FRAME_SIGNATURE` / `META_STATIC_SKIP` | 1 / 1 | Saute les frames identiques ; un changement s'affiche avec une frame de retard |
+| `GBL_PPU_PAL32` | 0 | Table de 4 pixels (2 Ko de RAM), sans gain mesuré |
+| `GBL_GEN_OPTIMIZE_SIZE` | 1 | Code généré en `-Os` |
+| `GBL_SPIN` | 1 | Avance d'un coup le temps des boucles d'attente (LY/STAT, drapeau en RAM, temporisations) ; résultat identique, 0 pour vérifier |
+| `GBL_INTERP_DELAY_LOOP` | 1 | Raccourci de l'interpréteur pour l'attente DMA `DEC A / JR NZ` en HRAM |
+| `GBL_PPU_ASM` | 1 sur M0+ | Chargement des tuiles et conversion des couleurs en assembleur Thumb-1 (`gbl_ppu_asm.S`) |
+| `GBL_PPU_RAMFUNC` | 1 | Ces deux boucles tournent depuis la SRAM (≈150 octets), sans état d'attente de la flash |
+| `META_LCD_DMA` | 1 | Écran en DMA avec file de transferts ; 0 = envoi par le CPU |
+| `META_LCD_BUFFERS` / `META_STRIP_LINES` | 3 / 4 | Buffers d'écran et lignes par buffer |
+| `META_MAX_SKIP` | 3 | Frames consécutives sautées au maximum en cas de retard |
+| `META_BUTTONS_LAPINOU_ORDER` | off | Autre ordre des bits des boutons (lecture à 24 MHz, avec `-DMETA_BUTTONS_SPI_HZ=24000000`) |
+
+## Vérifier sur PC
+
+```bash
+# Référence (interpréteur) contre le code compilé, avec les mêmes entrées
+./out/tetris/host/build/tetris_host --interp --frames 3000 --input out/tetris.input
+./out/tetris/host/build/tetris_host --frames 3000 --input out/tetris.input
+```
+
+Autres options utiles : `--dump-frame N image.ppm`, `--wav son.wav`,
+`--hash-every 1`, `--static-skip-check`.
+
+Tests de l'outil :
+
+```bash
+cmake -G Ninja -B build . -DBUILD_TESTS=ON && ninja -C build
+ctest --test-dir build --output-on-failure
+```
+
+Le fonctionnement détaillé, les mesures et les limites techniques sont dans
+`targets/meta/README.md`.
