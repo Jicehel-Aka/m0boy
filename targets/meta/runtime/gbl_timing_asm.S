@@ -1,7 +1,7 @@
 /*
  * Thumb-1 (Cortex-M0+) versions of the functions that run on every device
  * event: gbl_ppu_advance, the PPU line state machine, gbl_update_evt, the
- * next-event computation, and gbl_sync.  Enabled by GBL_TIMING_ASM;
+ * next-event computation, gbl_sync, and the LY/STAT path of gbl_io_rd.  Enabled by GBL_TIMING_ASM;
  * the C versions in gbl_ppu.c stay the reference and are used elsewhere.
  * Both must leave the machine in exactly the state the C leaves: the M0
  * benchmark checks it with -DBENCH_STATE_HASH -DBENCH_PIXEL_HASH.
@@ -622,5 +622,86 @@ gbl_sync:
 8:  .word   gbl_timer_state
 9:  .word   gbl_tac_shift
     .size gbl_sync, . - gbl_sync
+
+/*
+ * uint8_t gbl_io_rd(uint8_t n)
+ * PPU registers like gbl_ppu_read: for LY and STAT the PPU is advanced
+ * when a transition is due (then the next event) and the value is built
+ * here; the others read back as written.  Other registers go to the C
+ * gbl_io_rd_c.
+ */
+    .section .text.gbl_io_rd, "ax", %progbits
+    .align 2
+    .global gbl_io_rd
+    .type gbl_io_rd, %function
+    .thumb_func
+gbl_io_rd:
+    movs    r1, r0
+    subs    r1, #0x40
+    cmp     r1, #0x0B
+    bhi     4f                      /* not a PPU register: C */
+    cmp     r0, #0x44
+    beq     1f
+    cmp     r0, #0x41
+    beq     1f
+    ldr     r1, .Lr_io              /* other PPU registers read back as written */
+    ldrb    r0, [r1, r0]
+    bx      lr
+4:
+    ldr     r1, .Lr_c
+    bx      r1
+1:
+    push    {r4, lr}
+    mov     r4, r0
+    ldr     r3, .Lr_state
+    movs    r1, #0
+    strb    r1, [r3, #GBL_P_MOVED]
+    ldr     r2, .Lr_gbr
+    ldr     r0, [r2, #GBL_GBR_CYC]
+    ldr     r1, .Lr_due
+    ldr     r1, [r1]
+    subs    r1, r0, r1
+    bmi     2f
+    bl      gbl_ppu_advance
+    ldr     r3, .Lr_state
+    ldrb    r0, [r3, #GBL_P_MOVED]
+    cmp     r0, #0
+    beq     2f
+    bl      gbl_update_evt
+2:
+    ldr     r3, .Lr_state
+    ldrb    r1, [r3, #GBL_P_LCD_ON]
+    cmp     r4, #0x44
+    bne     3f
+    movs    r0, #0                  /* LY reads 0 while the LCD is off */
+    cmp     r1, #0
+    beq     9f
+    ldrb    r0, [r3, #GBL_P_LY]
+    pop     {r4, pc}
+3:  /* STAT: bit 7, the sources, and with the LCD on the coincidence and mode */
+    ldr     r2, .Lr_io_ppu
+    ldrb    r0, [r2, #0x01]
+    movs    r4, #0x78
+    ands    r0, r4
+    adds    r0, #0x80
+    cmp     r1, #0
+    beq     9f
+    ldrb    r4, [r3, #GBL_P_MODE]
+    orrs    r0, r4
+    ldrb    r4, [r3, #GBL_P_LY]
+    ldrb    r1, [r2, #0x05]         /* LYC */
+    cmp     r4, r1
+    bne     9f
+    adds    r0, #4
+9:
+    pop     {r4, pc}
+    .align 2
+.Lr_c:      .word gbl_io_rd_c
+.Lr_state:  .word gbl_ppu_state
+.Lr_gbr:    .word gbr
+.Lr_due:    .word gbl_ppu_due
+.Lr_io_ppu: .word gbl_io + 0x40
+.Lr_io:     .word gbl_io
+    .size gbl_io_rd, . - gbl_io_rd
 
 #endif

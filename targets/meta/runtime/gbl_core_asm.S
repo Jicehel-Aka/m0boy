@@ -185,6 +185,78 @@ gbl_pop:
 9:  .word   gbr
     .size gbl_pop, . - gbl_pop
 
+/*
+ * uint32_t gbl_oam_dma_asm(uint8_t *oam, const uint8_t *src)
+ * OAM DMA from a mapped page: copies 160 bytes into the word-aligned OAM
+ * and returns the OR of old ^ new (nonzero when anything changed).  A
+ * word-aligned source goes 16 bytes per iteration with LDM/STM (about 28
+ * cycles); otherwise 4 bytes per iteration.
+ */
+    .section .text.gbl_oam_dma_asm, "ax", %progbits
+    .align 2
+    .global gbl_oam_dma_asm
+    .type gbl_oam_dma_asm, %function
+    .thumb_func
+gbl_oam_dma_asm:
+    push    {r4-r7}
+    movs    r3, #0                 /* old ^ new, accumulated */
+    movs    r2, #3
+    tst     r1, r2
+    bne     2f
+    movs    r2, #10                /* 10 x 16 bytes */
+1:
+    ldm     r1!, {r4, r5}
+    ldr     r6, [r0]
+    ldr     r7, [r0, #4]
+    eors    r6, r4
+    eors    r7, r5
+    orrs    r3, r6
+    orrs    r3, r7
+    stm     r0!, {r4, r5}
+    ldm     r1!, {r4, r5}
+    ldr     r6, [r0]
+    ldr     r7, [r0, #4]
+    eors    r6, r4
+    eors    r7, r5
+    orrs    r3, r6
+    orrs    r3, r7
+    stm     r0!, {r4, r5}
+    subs    r2, #1
+    bne     1b
+    b       4f
+2:
+    movs    r2, #40                /* 40 x 4 bytes */
+3:
+    ldrb    r4, [r1]
+    ldrb    r5, [r0]
+    eors    r5, r4
+    orrs    r3, r5
+    strb    r4, [r0]
+    ldrb    r4, [r1, #1]
+    ldrb    r5, [r0, #1]
+    eors    r5, r4
+    orrs    r3, r5
+    strb    r4, [r0, #1]
+    ldrb    r4, [r1, #2]
+    ldrb    r5, [r0, #2]
+    eors    r5, r4
+    orrs    r3, r5
+    strb    r4, [r0, #2]
+    ldrb    r4, [r1, #3]
+    ldrb    r5, [r0, #3]
+    eors    r5, r4
+    orrs    r3, r5
+    strb    r4, [r0, #3]
+    adds    r0, #4
+    adds    r1, #4
+    subs    r2, #1
+    bne     3b
+4:
+    movs    r0, r3
+    pop     {r4-r7}
+    bx      lr
+    .size gbl_oam_dma_asm, . - gbl_oam_dma_asm
+
 #endif
 
 #if GBL_UNPACK_ASM && defined(__ARM_ARCH_6M__)

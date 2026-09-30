@@ -13,7 +13,7 @@
 gbl_cpu_t gbr;
 uint8_t gbl_wram[0x2000];
 uint8_t gbl_vram[0x2000];
-uint8_t gbl_oam[0xA0];
+uint8_t gbl_oam[0xA0] __attribute__((aligned(4))); /* word copies (OAM DMA) */
 uint8_t gbl_hram[0x80];
 uint8_t gbl_io[0x80];
 uint8_t gbl_ie;
@@ -354,6 +354,12 @@ static void mbc_write(uint16_t a, uint8_t v) {
 #endif
 }
 
+#if GBL_CORE_ASM && defined(__ARM_ARCH_6M__)
+/* gbl_core_asm.S: copy 160 bytes into the (word-aligned) OAM, return
+ * nonzero when any byte changed. */
+uint32_t gbl_oam_dma_asm(uint8_t *oam, const uint8_t *src);
+#endif
+
 /* ---- timer ---------------------------------------------------------------- */
 
 /* Timer and serial state in one structure, for the assembly gbl_sync
@@ -546,6 +552,12 @@ static uint8_t joypad_read(void) {
 
 /* ---- IO ----------------------------------------------------------------- */
 
+/* LY and STAT (0x44, 0x41), polled in wait loops, are read by the
+ * assembly gbl_io_rd (gbl_timing_asm.S); it jumps here for the others. */
+#if GBL_TIMING_ASM
+uint8_t gbl_io_rd_c(uint8_t n);
+#define gbl_io_rd gbl_io_rd_c
+#endif
 uint8_t gbl_io_rd(uint8_t n) {
     switch (n) {
     case 0x00: return joypad_read();
@@ -560,6 +572,9 @@ uint8_t gbl_io_rd(uint8_t n) {
         return gbl_io[n];
     }
 }
+#if GBL_TIMING_ASM
+#undef gbl_io_rd
+#endif
 
 void gbl_io_wr(uint8_t n, uint8_t v) {
     switch (n) {
@@ -587,12 +602,28 @@ void gbl_io_wr(uint8_t n, uint8_t v) {
     case 0x46: {
         /* OAM DMA completes instantly; games wait it out in HRAM anyway. */
         uint16_t src = (uint16_t)(v << 8);
-        uint8_t changed = 0;
+        uint32_t changed = 0;
         gbl_ppu_sync(gbr.cyc);
-        for (int i = 0; i < 0xA0; i++) {
-            uint8_t b = gbl_rd((uint16_t)(src + i));
-            changed |= (uint8_t)(b ^ gbl_oam[i]);
-            gbl_oam[i] = b;
+        /* XX00-XX9F never leaves its 4 KiB page: a mapped page is copied
+         * straight, without a gbl_rd call per byte (about 30 cycles each
+         * on the M0+, 4,800 per DMA). */
+        const uint8_t *page = gbl_rmap[src >> 12];
+        if (page) {
+#if GBL_CORE_ASM && defined(__ARM_ARCH_6M__)
+            changed = gbl_oam_dma_asm(gbl_oam, page + src);
+#else
+            const uint8_t *p = page + src;
+            for (int i = 0; i < 0xA0; i++) {
+                changed |= (uint32_t)(p[i] ^ gbl_oam[i]);
+                gbl_oam[i] = p[i];
+            }
+#endif
+        } else {
+            for (int i = 0; i < 0xA0; i++) {
+                uint8_t b = gbl_rd((uint16_t)(src + i));
+                changed |= (uint32_t)(b ^ gbl_oam[i]);
+                gbl_oam[i] = b;
+            }
         }
         if (changed) {
             gbl_oam_dirty = 1;
