@@ -446,12 +446,11 @@ uint32_t gbl_interp_op(uint32_t op, uint32_t n16) {
 static uint16_t cov_next = 0xFFFF;
 #endif
 
-/* Execute until a control transfer, an interrupt entry, or a bounded number
- * of instructions, then return to the dispatcher so compiled code can take
- * over as soon as possible. */
+/* Execute until a control transfer or an interrupt entry, then return to
+ * the dispatcher so compiled code can take over as soon as possible. */
 void gbl_interp_block(void) {
     int ei_delay = 0;
-    for (int n = 0; n < 64 || ei_delay; n++) {
+    for (;;) {
         /* EI takes effect after the following instruction. */
         if (!ei_delay && (int32_t)(gbr.cyc - gbr.next_evt) >= 0) {
             gbl_sync();

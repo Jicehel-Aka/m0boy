@@ -583,6 +583,25 @@ interpreted (`BENCH_INTERP_ONLY`, 800 frames) is 10% to 24% faster with
 the same hashes; in normal runs R.C. Pro-Am −2.6%, F-1 Race −5.3%,
 Prehistorik Man −3.3%, Donkey Kong Land p99 −15%.
 
+The loop itself (event check, fetch, dispatch) then still took about two
+thirds of the interpreter's time, some 66 cycles per instruction against
+29 in the handlers (R.C. Pro-Am, `BENCH_INTERP_ONLY`). Now the cycle table
+lives in a register, `gbr.cyc` is loaded once, operands are read only by
+the handlers that need them, EI branches past the next event check
+instead of a flag tested every instruction, and the 64-instruction block
+limit is gone (blocks end at a transfer or an interrupt, the C loop too;
+the instruction count is published at each event). The dispatch table
+also decodes what handlers used to test: one handler per condition
+(JR/JP/CALL/RET cc), per ALU operation and operand kind (register, (HL),
+immediate, flags inline), register or (HL) for LD, INC, DEC and CB, and
+LDH / LD (C) go straight to HRAM or `gbl_io_rd`/`gbl_io_wr`. Flash +0.4
+KiB, RAM +4 bytes. Same pixel and state hashes on twelve games;
+entirely interpreted (400 frames) −7% to −27% (R.C. Pro-Am, Faceball,
+Prehistorik Man, DKL −23%); normal runs −0.1% to −3.9%, p99 up to −8%,
+frames over the budget Prehistorik Man 537 → 398, R.C. Pro-Am 42 → 31,
+Altered Space 45 → 29, Faceball 113 → 98 (estimator, `BENCH_LINE_SKIP`
+and `BENCH_STATIC_SKIP`, 1,600 frames).
+
 Ten more games (`panel.txt`: software 3D, isometric, non-identity BGP,
 RPG menus, beat 'em up) found three more things: the ALU helpers called by
 generated code (`gbl_add`, `gbl_adc`, `gbl_sub`, `gbl_sbc`, `gbl_inc`,
