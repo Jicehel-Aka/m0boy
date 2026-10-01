@@ -406,7 +406,7 @@ Pass these as `-D` flags (`build_flags` in `platformio.ini`, or
 | `GBL_TIMING_ASM` | 1 on Cortex-M0+ | PPU line state machine (`gbl_ppu_advance`), next event (`gbl_update_evt`), `gbl_sync`, the PPU register paths of `gbl_io_rd`/`gbl_io_wr` and the dispatch-cache hit of `gbl_lookup` in Thumb-1 (`gbl_timing_asm.S`) |
 | `GBL_INTERP_ASM` | 1 on Cortex-M0+ (not in coverage or trace builds) | Interpreter loop and common opcodes in Thumb-1 (`gbl_interp_asm.S`); DAA, EI, RETI, HALT, STOP, PUSH/POP AF, SP arithmetic and `LD (nn),SP` go through the C `gbl_interp_op` |
 | `GBL_RENDER_LINE_ASM` | follows `GBL_PPU_ASM` | `render_line` (sprite selection, line signature, frontend calls) in Thumb-1 (`gbl_ppu_asm.S`); needs `GBL_LINE_SIGNATURE` |
-| `GBL_LOOKUP_CACHE` | 16 | Entries of the dispatch cache, a power of two (0 disables it) |
+| `GBL_LOOKUP_CACHE` | 64 | Entries of the dispatch cache, a power of two (0 disables it) |
 | `GBL_STREAM_SECTORS` | 4 | Sector cache of a streamed ROM (512 bytes each) |
 | `GBL_ERAM_ON_SD` | 1 above 2 KiB of cartridge RAM | Cartridge RAM kept in the save file behind a 1 KiB cache |
 | `GBL_ROM_PACKED` | set by `--meta-pack` | Streamed ROM sectors LZSS-compressed in flash instead of on the SD card |
@@ -597,23 +597,88 @@ immediate, flags inline), register or (HL) for LD, INC, DEC and CB, and
 LDH / LD (C) go straight to HRAM or `gbl_io_rd`/`gbl_io_wr`. Flash +0.4
 KiB, RAM +4 bytes. Same pixel and state hashes on twelve games;
 entirely interpreted (400 frames) −7% to −27% (R.C. Pro-Am, Faceball,
-Prehistorik Man, DKL −23%); normal runs −0.1% to −3.9%, p99 up to −8%,
-frames over the budget Prehistorik Man 537 → 398, R.C. Pro-Am 42 → 31,
-Altered Space 45 → 29, Faceball 113 → 98 (estimator, `BENCH_LINE_SKIP`
-and `BENCH_STATIC_SKIP`, 1,600 frames). The register offsets and
+Prehistorik Man, DKL −23%); normal runs −0.1% to −3.9%, p99 up to −8%.
+The register offsets and
 `gbl_exec`'s bound now share one RAM structure (`gbl_interp_ctx`) that
 `r8` points to, which removes two flash literal loads per transfer
 (−0.1% to −0.6%).
 
 Tried and dropped, on the same panel: remembering the address range
 around the last transfer target with no compiled entry, to skip
-`gbl_lookup` (±0.3% in normal runs, +2% interpreted: the lookups of the
-heavy frames come from the dispatcher, not the interpreter); the whole
+`gbl_lookup` (±0.3% in normal runs, +2% interpreted: the range test on
+every transfer cost about what it saved); the whole
 interpreter in SRAM (no gain, 2.4 KiB of RAM); fast-forwarding interpreted
 wait loops (traced on the host: the hottest interpreted loops are the OAM
 DMA delay loop in HRAM, which the `DEC A / JR NZ` shortcut already skips,
 and memory fills; the one real wait, Altered Space's LY loop, runs about
 five iterations per frame).
+
+Measure these with `BENCH_PIXEL_HASH` and `BENCH_STATE_HASH` off: hashing
+every line and the machine state costs about 200k cycles per frame in the
+benchmark and inflates the frames over the budget (R.C. Pro-Am 31 with
+hashing, 1 without). Use the hashes for equivalence, a run without them
+for cost. `--callers FUNC` counts a function's calls by caller (also in
+the frames over the budget) and `--waits N` lists the functions with the
+most flash wait cycles.
+
+Without hashing, the dispatcher (`gbl_lookup`, its miss path and
+`gbl_exec`) took 3% to 8% of the frame, mostly binary searches after
+cache misses: the 32-entry cache missed 24% (R.C. Pro-Am) to 61% (Zelda)
+of the lookups, by capacity (other hash functions and 2- or 4-way sets
+simulated on recorded lookup streams did not help; size did). Each
+bank's dispatch table now carries an index (`gbl_bank_table.idx`, 50
+bytes of flash per bank with code): the first entry of each 1 KiB block,
+and a bit per 128-byte page holding an entry. A lookup in a page with
+nothing compiled, typically the interpreter's transfers inside
+uncompiled code, returns at once and is not cached, so it no longer
+evicts entries (Faceball's misses drop by 90%); a miss searches one
+1 KiB block (about 5 steps instead of 9). The cache has 64 entries
+(+256 bytes; 128 entries gain another 0.5 point for 512 more bytes).
+
+The generated PlatformIO project builds with its own copy of the Arduino
+Zero variant (`platform/variants/gbl_meta`, LGPL like the original)
+without the hardware UART objects `Serial` and `Serial1`, which the META
+never uses: −1,160 bytes of RAM and −1.8 KiB of flash. The firmware draws
+the same screens in gamebuino-emulator. Most games had less free RAM
+than the 3 KiB C stack budget plus the 768-byte interrupt headroom, so
+the stack was getting less than 3 KiB.
+
+Since the commit before the interpreter work (`c7fd04d`), same pixel and
+state hashes on twelve games; per frame without hashing:
+
+| Game | Before | Now | Change | p99 | Frames over the budget |
+| --- | --- | --- | --- | --- | --- |
+| Faceball 2000 | 178,042 | 162,808 | −8.6% | −15.4% | 32 → 7 |
+| F-1 Race | 83,967 | 77,119 | −8.2% | −0.2% | 2 → 1 |
+| Altered Space | 68,642 | 63,894 | −6.9% | −18.0% | 8 → 5 |
+| Prehistorik Man | 417,143 | 391,875 | −6.1% | −10.8% | 21 → 5 |
+| Double Dragon | 167,104 | 157,590 | −5.7% | −6.1% | 14 → 9 |
+| Zelda | 250,420 | 236,620 | −5.5% | −4.3% | 0 → 0 |
+| R.C. Pro-Am | 204,756 | 195,785 | −4.4% | −11.9% | 7 → 1 |
+| Donkey Kong Land | 308,111 | 300,266 | −2.5% | −12.9% | 13 → 5 |
+| Mystic Quest | 103,712 | 101,225 | −2.4% | −4.4% | 1 → 1 |
+| Batman | 212,085 | 209,939 | −1.0% | −0.3% | 0 → 0 |
+| Kid Icarus | 149,687 | 149,155 | −0.4% | −0.1% | 0 → 0 |
+| Super Mario Land | 100,272 | 100,038 | −0.2% | −0.1% | 0 → 0 |
+
+(Estimator cycles, 1,600 frames, `BENCH_LINE_SKIP` and
+`BENCH_STATIC_SKIP`.)
+
+More runtime code in SRAM does not pay: `gbl_rd`, `gbl_wr`, `gbl_push`
+and `gbl_pop` there cost +2% to +4%, because generated code in flash
+reaches them through long-branch veneers; the event and IO functions
+(`gbl_update_evt`, `gbl_sync`, `gbl_io_rd`/`gbl_io_wr`, `gbl_lookup`)
+gain nothing (±0.5%). The PPU loops gain because they run long without
+calls back to flash.
+
+The OAM DMA copy (`gbl_oam_dma_asm`, once a frame, about 400 cycles) has
+nothing to gain from the SAMD21 DMAC. The audio interrupt does: TC4
+interrupts 22,049 times a second and its handler, entry and exit cost
+about 65 cycles, some 3% of the CPU, which the estimator does not model.
+A DMAC channel triggered by TC4 could feed the DAC from the ring instead
+(not done: it needs the ring as 16-bit DAC values or a byte-wide DAC
+mode, a shared descriptor table with the display's channel 0, and a
+hardware test; gamebuino-emulator does not model it).
 
 Ten more games (`panel.txt`: software 3D, isometric, non-identity BGP,
 RPG menus, beat 'em up) found three more things: the ALU helpers called by

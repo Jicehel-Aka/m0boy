@@ -104,9 +104,13 @@ function is a livelock, not slowness.
   benchmark's `BENCH_BIG_STACK`. The e2e test's "1 KiB keeps the full
   machine state" holds for its synthetic ROM, not in general.
 
-- Frames still over the 60 Hz budget (estimator): Prehistorik Man 21,
-  Donkey Kong Land 14, R.C. Pro-Am 7 of 1,599, mostly interpreted code
-  (more coverage would help more than more assembly).
+- Frames still over the 60 Hz budget (estimator, without bench hashing,
+  2026-10-01): Faceball 7, Double Dragon 9, Prehistorik Man 5, Donkey
+  Kong Land 5, Altered Space 5, R.C. Pro-Am 1 of 1,599, mostly interpreted
+  code (more coverage would help more than more assembly).
+- Audio by DMA (TC4-triggered DMAC channel feeding the DAC) would save
+  about 3% of the CPU spent in the TC4 interrupt; needs a hardware test
+  (see the README, interpreter and dispatcher section).
 - Remaining M0 profile after the fifth pass: `render_line` and the tile
   fetch/convert loops on games that redraw (SML ~35% together), the
   interpreter on R.C. Pro-Am (~14%, a coverage question), the next-event

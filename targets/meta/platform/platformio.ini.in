@@ -9,5 +9,8 @@ platform = atmelsam
 board = gamebuino_meta
 framework = arduino
 board_build.ldscript = gamebuino_meta.ld
+; The Arduino Zero variant without the unused hardware UART objects.
+board_build.variants_dir = variants
+board_build.variant = gbl_meta
 build_unflags = -Os
 build_flags = -O2 -Wno-unused-label

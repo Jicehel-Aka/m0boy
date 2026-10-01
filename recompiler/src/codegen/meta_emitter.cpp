@@ -1826,6 +1826,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     fs::create_directories(src, ec);
     fs::create_directories(out / "host", ec);
     fs::create_directories(out / "boards", ec);
+    fs::create_directories(out / "variants" / "gbl_meta", ec);
     fs::create_directories(out / "coverage", ec);
     if (ec) {
         error = "cannot create " + out.string() + ": " + ec.message();
@@ -1834,7 +1835,8 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
 
     if (!copy_dir_files(tpl / "runtime", src, error) ||
         !copy_dir_files(tpl / "platform" / "src", src, error) ||
-        !copy_dir_files(tpl / "platform" / "boards", out / "boards", error))
+        !copy_dir_files(tpl / "platform" / "boards", out / "boards", error) ||
+        !copy_dir_files(tpl / "platform" / "variants" / "gbl_meta", out / "variants" / "gbl_meta", error))
         return false;
     fs::copy_file(tpl / "host" / "gbl_host.c", out / "host" / "gbl_host.c",
                   fs::copy_options::overwrite_existing, ec);
