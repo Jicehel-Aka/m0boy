@@ -6,6 +6,21 @@ console : ce n'est ni un JIT ni un émulateur classique. Le code déjà vu
 pendant une partie de profilage est traduit, et un petit interpréteur
 exécute le reste.
 
+## Nouveautés de la version 0.3.0
+
+- Nouvel affichage par défaut, TBLEND : la dernière ligne de chaque rangée
+  de tuiles est fusionnée avec la suivante au lieu d'être sautée, donc plus
+  de texte coupé, pour quasiment le coût de l'ancien mode (+2 % par image
+  en médiane, estimation). L'ancien mode (TILE) et SMOOTH (réduction
+  complète, environ 15 % plus cher) restent disponibles avec HOME maintenu
+  1 s. Les firmwares qui lisent le jeu sur la carte SD gardent TILE.
+- Opérations arithmétiques du code recompilé et cache de dispatch en
+  assembleur Thumb-1 : quelques pour cent de plus sur les jeux qui en
+  dépendent (estimations), émulation identique.
+- Les firmwares faits avec la 0.2.0 sont proposés à la reconstruction par
+  `compile.sh` et le convertisseur Node (`gbrecomp --meta-version` donne
+  la version courante).
+
 ## Nouveautés de la version 0.2.0
 
 - Runtime plus rapide : les parties critiques (machine à états des lignes
@@ -20,12 +35,6 @@ exécute le reste.
 - Le résultat de l'émulation est identique à la version 0.1.0 (vérifié
   image par image sur ces 15 jeux) ; la taille du firmware ne change
   presque pas (+0,2 Ko).
-- Nouvel affichage par défaut, TBLEND : la dernière ligne de chaque rangée
-  de tuiles est fusionnée avec la suivante au lieu d'être sautée, donc plus
-  de texte coupé, pour quasiment le coût de l'ancien mode (+2 % par image
-  en médiane, estimation). L'ancien mode (TILE) et SMOOTH (réduction
-  complète, environ 15 % plus cher) restent disponibles avec HOME maintenu
-  1 s.
 - Les firmwares faits avec la 0.1.0 sont proposés à la reconstruction par
   `compile.sh` (la version est inscrite dans chaque `.bin`).
 

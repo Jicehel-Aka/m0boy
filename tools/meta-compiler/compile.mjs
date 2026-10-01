@@ -312,7 +312,12 @@ function killActiveChildren() {
 /* Instance ink active, pour désinstaller l'interface même en cas d'erreur. */
 let instance = null;
 
+/* Version de l'édition META (targets/meta/VERSION), celle inscrite dans les
+ * firmwares ; un gbrecomp plus ancien ne connaît que --version-json. */
 async function gbrecompVersion() {
+  const m = await runTool(GBRECOMP, ['--meta-version']);
+  const v = (m.out || '').trim().split(/\r?\n/)[0];
+  if (m.code === 0 && /^[0-9][0-9A-Za-z._+-]*$/.test(v)) return v;
   const r = await runTool(GBRECOMP, ['--version-json']);
   try {
     return JSON.parse(r.out).version || 'inconnue';

@@ -111,7 +111,13 @@ if [ ! -x "$GBRECOMP" ]; then
   echo "gbrecomp introuvable : compile d'abord l'outil (cmake -G Ninja -B build . && ninja -C build)."
   exit 1
 fi
-CUR_VERSION=$("$GBRECOMP" --version-json | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')
+# Version de l'édition META (targets/meta/VERSION), celle inscrite dans les
+# firmwares ; un gbrecomp plus ancien ne connaît que --version-json.
+CUR_VERSION=$("$GBRECOMP" --meta-version 2>/dev/null | head -n1)
+case "$CUR_VERSION" in
+  [0-9]*) ;;
+  *) CUR_VERSION=$("$GBRECOMP" --version-json | sed -n 's/.*"version":"\([^"]*\)".*/\1/p') ;;
+esac
 [ -n "$CUR_VERSION" ] || CUR_VERSION="inconnue"
 mkdir -p "$DEST_DIR"
 
@@ -641,7 +647,7 @@ else
     case "${R_status[i]}" in
       1) SEL+=("$i") ;;
       2) if [ "$UPDATE" = 1 ]; then SEL+=("$i"); else KEPT+=("$i"); fi ;;
-      0) [ "$FORCE" = 1 ] && SEL+=("$i") ;;
+      0) SEL+=("$i") ;; # déjà à jour : icônes complétées sans recompiler (FORCE=1 refait)
     esac
   done
 fi

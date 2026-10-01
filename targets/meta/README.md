@@ -323,16 +323,21 @@ downloads. ImageMagick or Pillow converts the PNG to 24-bit BMPs.
 There is no ROM size limit: ROMs that do not fit in flash stream from the
 card (see above).
 
-Every firmware embeds the gbrecomp version that produced it
+Every firmware embeds the version of the META edition that produced it
 (`gbrecomp-meta x.y.z` string in the .bin, also printed on the USB serial
-port at boot). `compile.sh` reads it back: a firmware that is current
+port at boot). The version lives in `targets/meta/VERSION` only: the
+recompiler stamps it (`GBL_GEN_VERSION`), `gbrecomp --meta-version` prints
+it, the release archive's CMake project and zip name take it. Bump it when
+the runtime, the frontend or the generated code change what a firmware
+does. `compile.sh` and `tools/meta-compiler` compare it with the string
+read back from each .bin (or `.gbrmeta.json` when the .bin has none): a firmware that is current
 (same version, same ROM sha1) is kept as is; one produced by another
 version is offered for rebuild. On a terminal the script is interactive:
 it lists the ROMs with their state (new, current, vX → vY, ROM changed,
 unknown version), asks which games to process (`1,3-5`, `a` = all), and
 confirms version updates. Otherwise it processes everything that needs
 work, keeping outdated firmwares unless `UPDATE=1` (`FORCE=1` redoes even
-current ones).
+current ones; current ones only get missing icons).
 
 - Precompute: 8 random-input runs per ROM in parallel (`AUTO_SEEDS`), one of
   30 minutes of game time and seven of 10 minutes, about 11 s on 8 cores.

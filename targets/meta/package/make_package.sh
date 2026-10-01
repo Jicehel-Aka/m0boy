@@ -3,6 +3,8 @@
 #
 #   targets/meta/package/make_package.sh <profiles_dir> [output.zip] [revision]
 #
+# The default output is output/gbrecomp-meta-<targets/meta/VERSION>.zip.
+#
 # <profiles_dir> holds recorded sessions keyed by ROM SHA-1
 # (<sha1>/coverage-*.cov|.input, JEU.txt): addresses and inputs only.  The
 # archive never contains ROMs or built firmwares.  Validate the result by
@@ -12,8 +14,9 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(git -C "$here" rev-parse --show-toplevel)
 profiles=${1:?usage: make_package.sh <profiles_dir> [output.zip] [revision]}
-out=${2:-$root/output/gbrecomp-meta.zip}
 rev=${3:-HEAD}
+version=$(git -C "$root" show "$rev:targets/meta/VERSION" | head -n1)
+out=${2:-$root/output/gbrecomp-meta-$version.zip}
 profiles=$(cd "$profiles" && pwd)
 case "$out" in /*) ;; *) out=$PWD/$out ;; esac
 
@@ -47,4 +50,4 @@ fi
 rm -f "$out"
 # Python's zipfile keeps the Unix modes (compile.sh stays executable).
 (cd "$stage" && python3 -m zipfile -c "$out" gbrecomp-meta)
-echo "$out ($(git -C "$root" rev-parse --short "$rev"), $(unzip -Z1 "$out" | grep -vc '/$') files)"
+echo "$out (v$version, $(git -C "$root" rev-parse --short "$rev"), $(unzip -Z1 "$out" | grep -vc '/$') files)"

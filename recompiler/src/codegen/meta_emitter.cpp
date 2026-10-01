@@ -29,10 +29,10 @@
 #include <sstream>
 #include <unordered_map>
 
-/* Set by recompiler/CMakeLists.txt; emitted into gbl_config.h so a firmware
- * records which gbrecomp produced it. */
-#ifndef GBRECOMP_VERSION
-#define GBRECOMP_VERSION "unknown"
+/* Set by recompiler/CMakeLists.txt from targets/meta/VERSION; emitted into
+ * gbl_config.h so a firmware records which gbrecomp produced it. */
+#ifndef GBRECOMP_META_VERSION
+#define GBRECOMP_META_VERSION "unknown"
 #endif
 
 namespace gbrecomp {
@@ -1737,7 +1737,7 @@ std::string Generator::emit_config(std::string& error) const {
                  if (c >= 0x20 && c < 0x7F && c != '"' && c != '\\') t += c;
              return t;
          }() << "\"\n"
-      << "#define GBL_GEN_VERSION \"" << GBRECOMP_VERSION << "\"\n"
+      << "#define GBL_GEN_VERSION \"" << GBRECOMP_META_VERSION << "\"\n"
       << "#endif\n";
     return o.str();
 }

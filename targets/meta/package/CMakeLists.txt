@@ -3,9 +3,11 @@
 # make_package.sh puts it at the top); the repository's own root builds
 # the desktop runtime and every test.
 cmake_minimum_required(VERSION 3.20)
-# The version is stamped into every firmware ("gbrecomp-meta x.y.z");
-# compile.sh offers to rebuild firmwares made by another version.
-project(gbrecomp-meta VERSION 0.2.0 LANGUAGES C CXX)
+# The version (targets/meta/VERSION) is stamped into every firmware
+# ("gbrecomp-meta x.y.z"); compile.sh offers to rebuild firmwares made by
+# another version.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/targets/meta/VERSION" GBRECOMP_META_VERSION_FILE LIMIT_COUNT 1)
+project(gbrecomp-meta VERSION ${GBRECOMP_META_VERSION_FILE} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
