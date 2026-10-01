@@ -507,8 +507,16 @@ void gbl_sync(void) {
  * a change `room` cycles from now (ceil(room / period)). */
 static uint32_t spin_iters(uint32_t period, int32_t room) {
     if (room <= 0) return 0;
-    if ((uint32_t)room <= period) return 1;
-    return ((uint32_t)room + period - 1u) / period;
+    uint32_t r = (uint32_t)room;
+    if (r > 8u * period) return (r + period - 1u) / period;
+    /* Usually a few periods (until the next PPU mode change): subtracting
+     * is cheaper than the M0+'s software division. */
+    uint32_t k = 1;
+    while (r > period) {
+        r -= period;
+        k++;
+    }
+    return k;
 }
 
 void gbl_spin(uint32_t period, uint32_t read_ofs, uint32_t kind) {

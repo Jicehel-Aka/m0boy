@@ -1179,16 +1179,25 @@ void Generator::emit_call(std::ostringstream& o, const Ins& in) {
 void Generator::emit_alu(std::ostringstream& o, unsigned grp, const std::string& src, bool mem,
                          bool src_is_a, uint8_t live) {
     const bool z = live & FZ, n = live & FN, h = live & FH, c = live & FC;
-    static const char* helper[8] = {"gbl_add", "gbl_adc", "gbl_sub", "gbl_sbc",
-                                    nullptr, nullptr, nullptr, "gbl_cp"};
     std::string s = "    ";
     switch (grp) {
     case 0: case 1: case 2: case 3: {
+        const bool sub = grp >= 2;
         if (h) {
-            o << "    " << helper[grp] << "(" << src << ");\n";
+            /* Half carry inline: bit 4 of a ^ v ^ result is the carry (or
+             * borrow) into bit 4, carry in included.  A call to the helper
+             * cost more than the computation. */
+            const char* carry = (grp == 1) ? " + gbr.cf" : (grp == 3) ? " - gbr.cf" : "";
+            s += "{ uint32_t v = " + src + ", t = (uint32_t)gbr.a " + (sub ? "- " : "+ ") + "v" + carry +
+                 "; gbr.hf = (uint8_t)(((gbr.a ^ v ^ t) >> 4) & 1);";
+            if (c) s += sub ? " gbr.cf = (uint8_t)((t >> 8) & 1);" : " gbr.cf = (uint8_t)(t >> 8);";
+            s += " gbr.a = (uint8_t)t;";
+            if (z) s += " gbr.zr = gbr.a;";
+            s += " }";
+            if (n) s += sub ? " gbr.nf = 1;" : " gbr.nf = 0;";
+            o << s << "\n";
             return;
         }
-        const bool sub = grp >= 2;
         const char* carry_in = (grp == 1) ? " + gbr.cf" : (grp == 3) ? " - gbr.cf" : "";
         if (z || c) {
             s += "{ uint32_t t = (uint32_t)gbr.a " + std::string(sub ? "- " : "+ ") + "(uint32_t)" +
@@ -1217,7 +1226,12 @@ void Generator::emit_alu(std::ostringstream& o, unsigned grp, const std::string&
     }
     default: {
         if (h) {
-            o << "    gbl_cp(" << src << ");\n";
+            s += "{ uint32_t v = " + src + ", t = (uint32_t)gbr.a - v; gbr.hf = (uint8_t)(((gbr.a ^ v ^ t) >> 4) & 1);";
+            if (z) s += " gbr.zr = (uint8_t)t;";
+            if (c) s += " gbr.cf = (uint8_t)((t >> 8) & 1);";
+            s += " }";
+            if (n) s += " gbr.nf = 1;";
+            o << s << "\n";
             return;
         }
         if (z || c) {
@@ -1333,7 +1347,11 @@ void Generator::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
         case 0x09: case 0x19: case 0x29: case 0x39: {
             const char* rr = kR16[op >> 4];
             if (live & FH) {
-                o << "    gbl_addhl(" << rr << ");\n";
+                o << "    { uint32_t v = " << rr << ", t = (uint32_t)gbr.hl + v; gbr.hf = (uint8_t)(((gbr.hl ^ v ^ t) >> 12) & 1);";
+                if (live & FC) o << " gbr.cf = (uint8_t)(t >> 16);";
+                o << " gbr.hl = (uint16_t)t; }";
+                if (live & FN) o << " gbr.nf = 0;";
+                o << "\n";
             } else {
                 if (live & FC)
                     o << "    { uint32_t t = (uint32_t)gbr.hl + " << rr
@@ -1348,15 +1366,13 @@ void Generator::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
         case 0x05: case 0x0D: case 0x15: case 0x1D: case 0x25: case 0x2D: case 0x35: case 0x3D: {
             const unsigned r = (op >> 3) & 7;
             const bool inc = (op & 1) == 0;
-            if (live & FH) {
-                const std::string call = std::string(inc ? "gbl_inc(" : "gbl_dec(") + rd(r) + ")";
-                if (r == 6) o << "    gbl_wr(gbr.hl, " << call << ");\n";
-                else o << "    " << kR8[r] << " = " << call << ";\n";
-            } else {
+            {
+                /* H inline too: the result's low nibble wrapped. */
                 const std::string expr = "(uint8_t)(" + rd(r) + (inc ? " + 1)" : " - 1)");
                 std::string s = "    { uint8_t t = " + expr + ";";
                 s += r == 6 ? " gbl_wr(gbr.hl, t);" : std::string(" ") + kR8[r] + " = t;";
                 if (live & FZ) s += " gbr.zr = t;";
+                if (live & FH) s += inc ? " gbr.hf = (t & 0x0F) == 0;" : " gbr.hf = (t & 0x0F) == 0x0F;";
                 s += " }";
                 if (live & FN) s += inc ? " gbr.nf = 0;" : " gbr.nf = 1;";
                 o << s << "\n";

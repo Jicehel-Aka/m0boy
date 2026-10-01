@@ -694,6 +694,25 @@ only been exercised on hardware by the display so far: if the sound is
 wrong on a META, build with `-DMETA_AUDIO_DMA=0` (in `build_flags`) to get
 the interrupt back.
 
+Divisions and ALU helpers (25 games, same hashes, −0.2% to −5.6% per
+frame, Kid Icarus −5.6%, Adventure Island −3.5%, Tetris −3.3%):
+
+- `gbl_spin` divided once per skipped wait (285 times a frame on DKL);
+  the skip is usually a few periods (to the next PPU mode change), now
+  counted by subtraction up to eight periods.
+- The APU computed its phase increments with a 64-bit division (about
+  1,000 cycles on the M0+) on every frequency write. `gbl_apu_set_rate`
+  now keeps `floor(K / rate)`, and an increment is one or two 32-bit
+  divisions: `floor(floor(K / rate) / d)` equals `floor(K / (d * rate))`
+  (checked for every frequency and NR43 value at seven rates).
+- Generated code called `gbl_add` .. `gbl_cp`, `gbl_inc`/`gbl_dec` and
+  `gbl_addhl` whenever H was live, which liveness assumes at every region
+  exit (a `DEC B / JR NZ` loop computed H each iteration). H is now
+  inline: bit 4 (12 for `ADD HL`) of `a ^ v ^ result`, and the result's low
+  nibble for INC/DEC (checked against the helpers for every input). About
+  +2.7 KiB of generated code on R.C. Pro-Am, which `compile.sh` takes back
+  from the least-run regions.
+
 Ten more games (`panel.txt`: software 3D, isometric, non-identity BGP,
 RPG menus, beat 'em up) found three more things: the ALU helpers called by
 generated code (`gbl_add`, `gbl_adc`, `gbl_sub`, `gbl_sbc`, `gbl_inc`,

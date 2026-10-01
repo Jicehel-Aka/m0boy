@@ -45,21 +45,26 @@ static const uint8_t read_mask[0x20] = {
     0xFF, 0xFF,
 };
 
-/* Phase increments: a full 2^32 phase is one waveform period. */
-static uint32_t square_inc(uint16_t f) {
-    /* 8 duty steps at 1048576 / (2048 - f) Hz. */
-    return (uint32_t)(((uint64_t)131072u << 32) / ((uint64_t)(2048u - f) * rate));
+/* Phase increments: a full 2^32 phase is one waveform period.  Each is
+ * floor(K / (d * rate)) = floor(floor(K / rate) / d): the numerators over
+ * rate are set by gbl_apu_set_rate, so a register write costs one or two
+ * 32-bit divisions instead of a 64-bit one (about 1,000 cycles on the M0+).
+ * square: 8 duty steps at 1048576 / (2048 - f) Hz, K = 2^49;
+ * wave: 32 samples at 2097152 / (2048 - f) Hz, K = 2^48;
+ * noise: LFSR clocks per sample in 16.16, 2^36 / (2 * rate * 2^s * div). */
+static uint32_t square_hi, wave_hi, noise_num;
+static uint16_t square_lo, wave_lo;
+
+/* (hi * 65536 + lo) / d for d < 65536, the quotient fitting in 32 bits. */
+static uint32_t div48(uint32_t hi, uint16_t lo, uint32_t d) {
+    uint32_t q = hi / d, r = hi - q * d;
+    return (q << 16) + (((r << 16) | lo) / d);
 }
-static uint32_t wave_inc(uint16_t f) {
-    /* 32 samples at 2097152 / (2048 - f) Hz. */
-    return (uint32_t)(((uint64_t)65536u << 32) / ((uint64_t)(2048u - f) * rate));
-}
+static uint32_t square_inc(uint16_t f) { return div48(square_hi, square_lo, 2048u - f); }
+static uint32_t wave_inc(uint16_t f) { return div48(wave_hi, wave_lo, 2048u - f); }
 static uint32_t noise_inc(uint8_t nr43) {
-    /* LFSR clocks per sample in 16.16 fixed point. */
     uint32_t r = nr43 & 7, s = nr43 >> 4;
-    uint64_t hz2 = (uint64_t)1048576u >> s;         /* 2 * 524288 / 2^s */
-    uint64_t div = r ? 2u * r : 1u;                 /* r = 0 counts as 0.5 */
-    return (uint32_t)((hz2 << 16) / (div * 2u * rate));
+    return (noise_num >> s) / (r ? 2u * r : 1u); /* r = 0 counts as 0.5 */
 }
 
 static void update_freq(int c) {
@@ -131,6 +136,13 @@ static void clock_sweep(void) {
 
 void gbl_apu_set_rate(uint32_t hz) {
     rate = hz;
+    uint64_t k = ((uint64_t)1 << 49) / hz;
+    square_hi = (uint32_t)(k >> 16);
+    square_lo = (uint16_t)k;
+    k = ((uint64_t)1 << 48) / hz;
+    wave_hi = (uint32_t)(k >> 16);
+    wave_lo = (uint16_t)k;
+    noise_num = (uint32_t)(((uint64_t)1 << 36) / (2u * hz));
     seq_step_samples = (hz << 8) / 512u; /* samples per sequencer step, 24.8 */
     for (int c = 0; c < 3; c++) update_freq(c);
     ch[3].inc = noise_inc(NR(0x22));
