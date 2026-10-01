@@ -6,14 +6,31 @@ console : ce n'est ni un JIT ni un émulateur classique. Le code déjà vu
 pendant une partie de profilage est traduit, et un petit interpréteur
 exécute le reste.
 
+## Nouveautés de la version 0.4.0
+
+- Menu d'options : HOME maintenu une demi-seconde (le jeu est en pause).
+  Reprendre, Redémarrer, sauvegardes d'état, Volume, Écran (mode
+  d'affichage), Palette (Vert, Gris, Pocket, Ambre, Bleu), Images (saut
+  d'images automatique, aucun, 1 sur 2/3/4), Vitesse (normale ou sans
+  limite), Processeur (48 MHz, ou 72 MHz surcadencé : à essayer), Quitter
+  vers le loader. Les choix ne sont pas gardés à l'extinction.
+- Sauvegardes d'état : 10 emplacements dans le fichier `<NOM>.STA` que le
+  convertisseur crée à côté du `.bin` ; copie-le sur la carte avec le jeu.
+- Plus rapide : de 1 % à 10 % environ de temps en moins par image selon les jeux
+  (interpréteur, dispatch du code compilé, divisions, drapeaux du code
+  recompilé, joypad ; estimations), émulation identique. Le son passe par
+  DMA (environ 3 % du processeur libérés ; `-DMETA_AUDIO_DMA=0` rend
+  l'ancienne méthode si le son est faux sur ta console).
+- 1,1 Ko de RAM rendus au firmware (objets série Arduino inutilisés).
+
 ## Nouveautés de la version 0.3.0
 
 - Nouvel affichage par défaut, TBLEND : la dernière ligne de chaque rangée
   de tuiles est fusionnée avec la suivante au lieu d'être sautée, donc plus
   de texte coupé, pour quasiment le coût de l'ancien mode (+2 % par image
   en médiane, estimation). L'ancien mode (TILE) et SMOOTH (réduction
-  complète, environ 15 % plus cher) restent disponibles dans le menu
-  d'options (HOME maintenu une demi-seconde). Les firmwares qui lisent le jeu sur la carte SD gardent TILE.
+  complète, environ 15 % plus cher) restent disponibles avec HOME maintenu
+  1 s (remplacé en 0.4.0 par le menu d'options). Les firmwares qui lisent le jeu sur la carte SD gardent TILE.
 - Opérations arithmétiques du code recompilé et cache de dispatch en
   assembleur Thumb-1 : quelques pour cent de plus sur les jeux qui en
   dépendent (estimations), émulation identique.
