@@ -134,48 +134,27 @@
 83:
 .endm
 
-    .section .text.gbl_interp_block, "ax", %progbits
-    .align 2
-    .global gbl_interp_block
-    .type gbl_interp_block, %function
-    .thumb_func
-gbl_interp_block:
-    push    {r4-r7, lr}
-    mov     r4, r8
-    mov     r5, r9
-    mov     r6, r10
-    mov     r7, r11
-    push    {r4-r7}
-    ldr     r4, .Lgbr
-    ldr     r0, .Lregofs
-    mov     r8, r0
-    ldr     r0, .Lcyc
-    mov     r9, r0
-    ldr     r0, .Lrmap
-    mov     r10, r0
-    ldr     r0, .Ltable
-    mov     r11, r0
-    movs    r5, #0
-.Ltop:
+
+/* The loop top (.Ltop .. dispatch) inline at the end of the hottest
+ * handlers: saves the branch back to .Ltop. */
+.macro NEXT
     ldr     r1, [r4, #R_CYC]
     ldr     r0, [r4, #R_NEXT]
     subs    r0, r1, r0
-    bpl     .Levent
-.Lfetch_cyc:  /* r1 = gbr.cyc */
+    bpl     97f
     ldrh    r0, [r4, #R_PC]
     lsrs    r2, r0, #12
     lsls    r2, r2, #2
     mov     r3, r10
     ldr     r3, [r3, r2]
     cmp     r3, #0
-    beq     .Lslow_fetch
-    lsls    r2, r0, #20            /* opcode and operands in one page? */
-    asrs    r2, r2, #21            /* -1 when pc & 0xFFE == 0xFFE */
+    beq     98f
+    lsls    r2, r0, #20
+    asrs    r2, r2, #21
     adds    r2, #1
-    beq     .Lslow_fetch
+    beq     98f
     adds    r6, r3, r0
     ldrb    r7, [r6]
-.Lfetched:  /* r0 = pc, r1 = gbr.cyc */
     adds    r0, #1
     strh    r0, [r4, #R_PC]
     mov     r2, r9
@@ -185,450 +164,22 @@ gbl_interp_block:
     adds    r5, #1
     lsls    r0, r7, #1
     mov     r1, r11
-    ldrsh   r0, [r1, r0]           /* handlers precede the table */
+    ldrsh   r0, [r1, r0]
     lsls    r0, r0, #1
     adds    r0, r0, r1
     mov     pc, r0
-
-.Levent:
-    ldr     r0, .Linstrs           /* the frontend reads it during gbl_sync */
-    ldr     r1, [r0]
-    adds    r1, r1, r5
-    str     r1, [r0]
-    movs    r5, #0
-    bl      gbl_sync
-    bl      gbl_irq_enter
-    cmp     r0, #0
-    bne     .Lret
-.Lfetch:  /* also after EI: the next instruction runs before any interrupt */
-    ldr     r1, [r4, #R_CYC]
-    b       .Lfetch_cyc
-
-.Lslow_fetch:  /* same reads as the C loop, in the same order */
-    ldr     r6, .Lbuf
-    mov     r7, r0
-    bl      gbl_rd
-    strb    r0, [r6]
-    adds    r0, r7, #1
-    uxth    r0, r0
-    bl      gbl_rd
-    strb    r0, [r6, #1]
-    adds    r0, r7, #2
-    uxth    r0, r0
-    bl      gbl_rd
-    strb    r0, [r6, #2]
-    mov     r0, r7
-    ldrb    r7, [r6]
-    ldr     r1, [r4, #R_CYC]
-    b       .Lfetched
-
-.Ljump:  /* after a control transfer */
-    /* Start a new block here when the dispatcher would call this function
-     * again: gbl_exec's frame not left (its SP bound), and no compiled code
-     * at the target.  Same block boundaries, without the return, the
-     * dispatcher loop and the call. */
-    mov     r3, r8
-    ldrb    r0, [r3, #BOUNDED]
-    cmp     r0, #0
-    beq     1f
-    ldrh    r0, [r3, #SP0]
-    ldrh    r1, [r4, #R_SP]
-    subs    r1, r1, r0
-    sxth    r1, r1
-    cmp     r1, #0
-    bgt     .Lret
-1:
-    ldr     r0, .Linterp_only
-    ldrb    r0, [r0]
-    cmp     r0, #0
-    bne     2f
-    ldrh    r0, [r4, #R_PC]
-    bl      gbl_lookup
-    cmp     r0, #0
-    bne     .Lret
-2:
-    b       .Ltop
-.Lret:  /* gbl_interp_instrs += instructions since the last event */
-    ldr     r0, .Linstrs
-    ldr     r1, [r0]
-    adds    r1, r1, r5
-    str     r1, [r0]
-    pop     {r4-r7}
-    mov     r8, r4
-    mov     r9, r5
-    mov     r10, r6
-    mov     r11, r7
-    pop     {r4-r7, pc}
-
-    .align 2
-.Lgbr:      .word gbr
-.Lregofs:   .word gbl_interp_ctx
-.Lrmap:     .word gbl_rmap
-.Ltable:    .word .Lt
-.Lcyc:      .word gbl_cyc_main
-.Linstrs:   .word gbl_interp_instrs
-.Lbuf:      .word gbl_interp_fetch_buf
-.Linterp_only: .word gbl_interp_only
-
-/* ---- handlers (offsets from the dispatch table at the end) ---- */
-
-H_C:  /* the other opcodes: C, one instruction */
-    N16     r1, r2
-    mov     r0, r7
-    bl      gbl_interp_op
-    lsrs    r1, r0, #1             /* C = control transfer, r1 = EI */
-    bcs     1f
-    cmp     r1, #0
-    bne     2f
-H_NOP:
-    b       .Ltop
-1:
-    b       .Ljump
-2:
-    b       .Lfetch
-
-/* -- 8-bit loads -- */
-
-H_LDRR:  /* LD r, r' */
-    REGOFS  0
-    ldrb    r2, [r4, r0]
-    REGOFS  3
-    strb    r2, [r4, r0]
-    b       .Ltop
-
-H_LDR_HL:  /* LD r, (HL) */
-    ldrh    r0, [r4, #R_HL]
-    bl      gbl_rd
-    mov     r2, r0
-    REGOFS  3
-    strb    r2, [r4, r0]
-    b       .Ltop
-
-H_LDHL_R:  /* LD (HL), r */
-    REGOFS  0
-    ldrb    r1, [r4, r0]
-    ldrh    r0, [r4, #R_HL]
-    bl      gbl_wr
-    b       .Ltop
-
-H_LDRN:  /* LD r, n */
-    ldrb    r2, [r6, #1]
-    REGOFS_LO
-    strb    r2, [r4, r0]
-    PC_ADD  1
-    b       .Ltop
-
-H_LDRN_HL:  /* LD (HL), n */
-    ldrb    r1, [r6, #1]
-    ldrh    r0, [r4, #R_HL]
-    bl      gbl_wr
-    PC_ADD  1
-    b       .Ltop
-
-H_ST_BC:
-    ldrh    r0, [r4, #R_BC]
-    b       1f
-H_ST_DE:
-    ldrh    r0, [r4, #R_DE]
-1:
-    ldrb    r1, [r4, #R_A]
-    bl      gbl_wr
-    b       .Ltop
-
-H_LD_BC:
-    ldrh    r0, [r4, #R_BC]
-    b       1f
-H_LD_DE:
-    ldrh    r0, [r4, #R_DE]
-1:
-    bl      gbl_rd
-    strb    r0, [r4, #R_A]
-    b       .Ltop
-
-H_LDI_ST:
-    ldrh    r0, [r4, #R_HL]
-    ldrb    r1, [r4, #R_A]
-    bl      gbl_wr
-    ldrh    r0, [r4, #R_HL]
-    adds    r0, #1
-    strh    r0, [r4, #R_HL]
-    b       .Ltop
-
-H_LDD_ST:
-    ldrh    r0, [r4, #R_HL]
-    ldrb    r1, [r4, #R_A]
-    bl      gbl_wr
-    ldrh    r0, [r4, #R_HL]
-    subs    r0, #1
-    strh    r0, [r4, #R_HL]
-    b       .Ltop
-
-H_LDI_LD:
-    ldrh    r0, [r4, #R_HL]
-    bl      gbl_rd
-    strb    r0, [r4, #R_A]
-    ldrh    r0, [r4, #R_HL]
-    adds    r0, #1
-    strh    r0, [r4, #R_HL]
-    b       .Ltop
-
-H_LDD_LD:
-    ldrh    r0, [r4, #R_HL]
-    bl      gbl_rd
-    strb    r0, [r4, #R_A]
-    ldrh    r0, [r4, #R_HL]
-    subs    r0, #1
-    strh    r0, [r4, #R_HL]
-    b       .Ltop
-
-H_LDH_ST:  /* LDH (n), A */
-    ldrb    r0, [r6, #1]
-    ldrb    r1, [r4, #R_A]
-    WR_FF
-    PC_ADD  1
-    b       .Ltop
-
-H_LDH_LD:  /* LDH A, (n) */
-    ldrb    r0, [r6, #1]
-    RD_FF
-    strb    r0, [r4, #R_A]
-    PC_ADD  1
-    b       .Ltop
-
-H_LDC_ST:  /* LD (C), A */
-    ldrb    r0, [r4, #R_BC]
-    ldrb    r1, [r4, #R_A]
-    WR_FF
-    b       .Ltop
-
-H_LDC_LD:  /* LD A, (C) */
-    ldrb    r0, [r4, #R_BC]
-    RD_FF
-    strb    r0, [r4, #R_A]
-    b       .Ltop
-    .ltorg
-
-H_ST_NN:
-    N16     r0, r1
-    ldrb    r1, [r4, #R_A]
-    bl      gbl_wr
-    PC_ADD  2
-    b       .Ltop
-
-H_LD_NN:
-    N16     r0, r1
-    bl      gbl_rd
-    strb    r0, [r4, #R_A]
-    PC_ADD  2
-    b       .Ltop
-
-/* -- ALU: an entry per operand kind, r2 = operand -- */
-
-.macro ALU_SRC op
-H_ALUR_\op:
-    REGOFS  0
-    ldrb    r2, [r4, r0]
-    b       1f
-H_ALUHL_\op:
-    ldrh    r0, [r4, #R_HL]
-    bl      gbl_rd
-    mov     r2, r0
-    b       1f
-H_ALUN_\op:
-    ldrb    r2, [r6, #1]
-    PC_ADD  1
-1:
+97:
+    b       .Levent
+98:
+    b       .Lslow_fetch
 .endm
 
-/* Flags as gbl_add .. gbl_cp of gbl_core_asm.S (every input checked there
- * by BENCH_ALU_CHECK), inline. */
-    ALU_SRC ADD
-    ldrb    r1, [r4, #R_A]
-    lsls    r3, r1, #28
-    lsrs    r3, r3, #28
-    adds    r1, r1, r2             /* a + v */
-    lsls    r2, r2, #28
-    lsrs    r2, r2, #28
-    adds    r3, r3, r2
-    lsrs    r3, r3, #4             /* half carry */
-    strb    r3, [r4, #R_HF]
-    lsrs    r3, r1, #8             /* carry */
-    strb    r3, [r4, #R_CF]
-    strb    r1, [r4, #R_A]
-    strb    r1, [r4, #R_ZR]
-    movs    r3, #0
-    strb    r3, [r4, #R_NF]
-    b       .Ltop
-
-    ALU_SRC ADC
-    ldrb    r1, [r4, #R_A]
-    ldrb    r0, [r4, #R_CF]
-    lsls    r3, r1, #28
-    lsrs    r3, r3, #28
-    adds    r3, r3, r0
-    adds    r1, r1, r0
-    adds    r1, r1, r2             /* a + v + c */
-    lsls    r2, r2, #28
-    lsrs    r2, r2, #28
-    adds    r3, r3, r2
-    lsrs    r3, r3, #4
-    strb    r3, [r4, #R_HF]
-    lsrs    r3, r1, #8
-    strb    r3, [r4, #R_CF]
-    strb    r1, [r4, #R_A]
-    strb    r1, [r4, #R_ZR]
-    movs    r3, #0
-    strb    r3, [r4, #R_NF]
-    b       .Ltop
-
-    ALU_SRC SUB
-    ldrb    r1, [r4, #R_A]
-    lsls    r3, r1, #28
-    lsrs    r3, r3, #28
-    subs    r1, r1, r2             /* a - v */
-    lsls    r2, r2, #28
-    lsrs    r2, r2, #28
-    subs    r3, r3, r2
-    lsrs    r3, r3, #31            /* half borrow */
-    strb    r3, [r4, #R_HF]
-    lsrs    r3, r1, #31            /* borrow */
-    strb    r3, [r4, #R_CF]
-    strb    r1, [r4, #R_A]
-    strb    r1, [r4, #R_ZR]
-    movs    r3, #1
-    strb    r3, [r4, #R_NF]
-    b       .Ltop
-
-    ALU_SRC SBC
-    ldrb    r1, [r4, #R_A]
-    ldrb    r0, [r4, #R_CF]
-    lsls    r3, r1, #28
-    lsrs    r3, r3, #28
-    subs    r3, r3, r0
-    subs    r1, r1, r0
-    subs    r1, r1, r2             /* a - v - c */
-    lsls    r2, r2, #28
-    lsrs    r2, r2, #28
-    subs    r3, r3, r2
-    lsrs    r3, r3, #31
-    strb    r3, [r4, #R_HF]
-    lsrs    r3, r1, #31
-    strb    r3, [r4, #R_CF]
-    strb    r1, [r4, #R_A]
-    strb    r1, [r4, #R_ZR]
-    movs    r3, #1
-    strb    r3, [r4, #R_NF]
-    b       .Ltop
-
-    ALU_SRC AND
-    ldrb    r0, [r4, #R_A]
-    ands    r0, r2
-    strb    r0, [r4, #R_A]
-    strb    r0, [r4, #R_ZR]
-    movs    r0, #0
-    strb    r0, [r4, #R_NF]
-    strb    r0, [r4, #R_CF]
-    movs    r0, #1
-    strb    r0, [r4, #R_HF]
-    b       .Ltop
-
-    ALU_SRC XOR
-    ldrb    r0, [r4, #R_A]
-    eors    r0, r2
-    b       .Llogic
-
-    ALU_SRC OR
-    ldrb    r0, [r4, #R_A]
-    orrs    r0, r2
-.Llogic:  /* XOR, OR */
-    strb    r0, [r4, #R_A]
-    strb    r0, [r4, #R_ZR]
-    movs    r0, #0
-    strb    r0, [r4, #R_NF]
-    strb    r0, [r4, #R_HF]
-    strb    r0, [r4, #R_CF]
-    b       .Ltop
-
-    ALU_SRC CP
-    ldrb    r1, [r4, #R_A]
-    subs    r3, r1, r2
-    strb    r3, [r4, #R_ZR]
-    sbcs    r3, r3                 /* -1 on borrow */
-    negs    r3, r3
-    strb    r3, [r4, #R_CF]
-    lsls    r1, r1, #28
-    lsls    r2, r2, #28
-    subs    r1, r1, r2             /* low nibbles */
-    sbcs    r3, r3
-    negs    r3, r3
-    strb    r3, [r4, #R_HF]
-    movs    r3, #1
-    strb    r3, [r4, #R_NF]
-    b       .Ltop
-
-/* -- INC / DEC -- */
-
-H_INC_R:
-    REGOFS_LO
-    ldrb    r2, [r4, r0]
-    lsls    r1, r2, #28
-    lsrs    r1, r1, #28
-    adds    r1, #1
-    lsrs    r1, r1, #4             /* (v & 15) == 15 */
-    strb    r1, [r4, #R_HF]
-    movs    r1, #0
-    strb    r1, [r4, #R_NF]
-    adds    r2, #1
-    strb    r2, [r4, r0]
-    strb    r2, [r4, #R_ZR]
-    b       .Ltop
-
-H_DEC_R:
-    REGOFS_LO
-    ldrb    r2, [r4, r0]
-    lsls    r1, r2, #28
-    lsrs    r1, r1, #28
-    subs    r1, #1
-    lsrs    r1, r1, #31            /* (v & 15) == 0 */
-    strb    r1, [r4, #R_HF]
-    movs    r1, #1
-    strb    r1, [r4, #R_NF]
-    subs    r2, #1
-    strb    r2, [r4, r0]
-    strb    r2, [r4, #R_ZR]
-    b       .Ltop
-
-H_INC_HL:
-    ldrh    r0, [r4, #R_HL]
-    bl      gbl_rd
-    lsls    r1, r0, #28
-    lsrs    r1, r1, #28
-    adds    r1, #1
-    lsrs    r1, r1, #4
-    strb    r1, [r4, #R_HF]
-    movs    r1, #0
-    strb    r1, [r4, #R_NF]
-    adds    r1, r0, #1
-    b       1f
-
-H_DEC_HL:
-    ldrh    r0, [r4, #R_HL]
-    bl      gbl_rd
-    lsls    r1, r0, #28
-    lsrs    r1, r1, #28
-    subs    r1, #1
-    lsrs    r1, r1, #31
-    strb    r1, [r4, #R_HF]
-    movs    r1, #1
-    strb    r1, [r4, #R_NF]
-    subs    r1, r0, #1
-1:
-    uxtb    r1, r1
-    strb    r1, [r4, #R_ZR]
-    ldrh    r0, [r4, #R_HL]
-    bl      gbl_wr
-    b       .Ltop
-
+    .section .text.gbl_interp_block, "ax", %progbits
+    .align 2
+/* Handlers placed before the loop, so that every handler stays within
+ * branch range of .Ltop (the hot ones follow the loop). */
+    .type gbl_interp_handlers, %function
+gbl_interp_handlers:
 /* -- 16-bit -- */
 
 H_LDRRNN:
@@ -712,7 +263,7 @@ H_JRC:
     bne     .Ljr_take
 .Ljr_skip:
     PC_ADD  1
-    b       .Ltop
+    NEXT
 H_JRNZ:
     ldrb    r0, [r4, #R_ZR]
     cmp     r0, #0
@@ -894,7 +445,7 @@ H_CB:
     strb    r0, [r4, #R_NF]
     movs    r0, #1
     strb    r0, [r4, #R_HF]
-    b       .Ltop
+    NEXT
 .Lcb_hl:  /* extra cycles: 12, BIT n,(HL) 8 */
     movs    r1, #12
     lsrs    r2, r7, #6
@@ -978,6 +529,502 @@ H_CCF:
     movs    r0, #0
     strb    r0, [r4, #R_NF]
     strb    r0, [r4, #R_HF]
+    b       .Ltop
+
+    .size gbl_interp_handlers, . - gbl_interp_handlers
+
+    .align 2
+    .global gbl_interp_block
+    .type gbl_interp_block, %function
+    .thumb_func
+gbl_interp_block:
+    push    {r4-r7, lr}
+    mov     r4, r8
+    mov     r5, r9
+    mov     r6, r10
+    mov     r7, r11
+    push    {r4-r7}
+    ldr     r4, .Lgbr
+    ldr     r0, .Lregofs
+    mov     r8, r0
+    ldr     r0, .Lcyc
+    mov     r9, r0
+    ldr     r0, .Lrmap
+    mov     r10, r0
+    ldr     r0, .Ltable
+    mov     r11, r0
+    movs    r5, #0
+.Ltop:
+    ldr     r1, [r4, #R_CYC]
+    ldr     r0, [r4, #R_NEXT]
+    subs    r0, r1, r0
+    bpl     .Levent
+.Lfetch_cyc:  /* r1 = gbr.cyc */
+    ldrh    r0, [r4, #R_PC]
+    lsrs    r2, r0, #12
+    lsls    r2, r2, #2
+    mov     r3, r10
+    ldr     r3, [r3, r2]
+    cmp     r3, #0
+    beq     .Lslow_fetch
+    lsls    r2, r0, #20            /* opcode and operands in one page? */
+    asrs    r2, r2, #21            /* -1 when pc & 0xFFE == 0xFFE */
+    adds    r2, #1
+    beq     .Lslow_fetch
+    adds    r6, r3, r0
+    ldrb    r7, [r6]
+.Lfetched:  /* r0 = pc, r1 = gbr.cyc */
+    adds    r0, #1
+    strh    r0, [r4, #R_PC]
+    mov     r2, r9
+    ldrb    r2, [r2, r7]
+    adds    r1, r1, r2
+    str     r1, [r4, #R_CYC]
+    adds    r5, #1
+    lsls    r0, r7, #1
+    mov     r1, r11
+    ldrsh   r0, [r1, r0]           /* handlers precede the table */
+    lsls    r0, r0, #1
+    adds    r0, r0, r1
+    mov     pc, r0
+
+.Levent:
+    ldr     r0, .Linstrs           /* the frontend reads it during gbl_sync */
+    ldr     r1, [r0]
+    adds    r1, r1, r5
+    str     r1, [r0]
+    movs    r5, #0
+    bl      gbl_sync
+    bl      gbl_irq_enter
+    cmp     r0, #0
+    bne     .Lret
+.Lfetch:  /* also after EI: the next instruction runs before any interrupt */
+    ldr     r1, [r4, #R_CYC]
+    b       .Lfetch_cyc
+
+.Lslow_fetch:  /* same reads as the C loop, in the same order */
+    ldr     r6, .Lbuf
+    mov     r7, r0
+    bl      gbl_rd
+    strb    r0, [r6]
+    adds    r0, r7, #1
+    uxth    r0, r0
+    bl      gbl_rd
+    strb    r0, [r6, #1]
+    adds    r0, r7, #2
+    uxth    r0, r0
+    bl      gbl_rd
+    strb    r0, [r6, #2]
+    mov     r0, r7
+    ldrb    r7, [r6]
+    ldr     r1, [r4, #R_CYC]
+    b       .Lfetched
+
+.Ljump:  /* after a control transfer */
+    /* Start a new block here when the dispatcher would call this function
+     * again: gbl_exec's frame not left (its SP bound), and no compiled code
+     * at the target.  Same block boundaries, without the return, the
+     * dispatcher loop and the call. */
+    mov     r3, r8
+    ldrb    r0, [r3, #BOUNDED]
+    cmp     r0, #0
+    beq     1f
+    ldrh    r0, [r3, #SP0]
+    ldrh    r1, [r4, #R_SP]
+    subs    r1, r1, r0
+    sxth    r1, r1
+    cmp     r1, #0
+    bgt     .Lret
+1:
+    ldr     r0, .Linterp_only
+    ldrb    r0, [r0]
+    cmp     r0, #0
+    bne     2f
+    ldrh    r0, [r4, #R_PC]
+    bl      gbl_lookup
+    cmp     r0, #0
+    bne     .Lret
+2:
+    b       .Ltop
+.Lret:  /* gbl_interp_instrs += instructions since the last event */
+    ldr     r0, .Linstrs
+    ldr     r1, [r0]
+    adds    r1, r1, r5
+    str     r1, [r0]
+    pop     {r4-r7}
+    mov     r8, r4
+    mov     r9, r5
+    mov     r10, r6
+    mov     r11, r7
+    pop     {r4-r7, pc}
+
+    .align 2
+.Lgbr:      .word gbr
+.Lregofs:   .word gbl_interp_ctx
+.Lrmap:     .word gbl_rmap
+.Ltable:    .word .Lt
+.Lcyc:      .word gbl_cyc_main
+.Linstrs:   .word gbl_interp_instrs
+.Lbuf:      .word gbl_interp_fetch_buf
+.Linterp_only: .word gbl_interp_only
+
+/* ---- handlers (offsets from the dispatch table at the end) ---- */
+
+H_C:  /* the other opcodes: C, one instruction */
+    N16     r1, r2
+    mov     r0, r7
+    bl      gbl_interp_op
+    lsrs    r1, r0, #1             /* C = control transfer, r1 = EI */
+    bcs     1f
+    cmp     r1, #0
+    bne     2f
+H_NOP:
+    b       .Ltop
+1:
+    b       .Ljump
+2:
+    b       .Lfetch
+
+/* -- 8-bit loads -- */
+
+H_LDRR:  /* LD r, r' */
+    REGOFS  0
+    ldrb    r2, [r4, r0]
+    REGOFS  3
+    strb    r2, [r4, r0]
+    NEXT
+
+H_LDR_HL:  /* LD r, (HL) */
+    ldrh    r0, [r4, #R_HL]
+    bl      gbl_rd
+    mov     r2, r0
+    REGOFS  3
+    strb    r2, [r4, r0]
+    NEXT
+
+H_LDHL_R:  /* LD (HL), r */
+    REGOFS  0
+    ldrb    r1, [r4, r0]
+    ldrh    r0, [r4, #R_HL]
+    bl      gbl_wr
+    b       .Ltop
+
+H_LDRN:  /* LD r, n */
+    ldrb    r2, [r6, #1]
+    REGOFS_LO
+    strb    r2, [r4, r0]
+    PC_ADD  1
+    NEXT
+
+H_LDRN_HL:  /* LD (HL), n */
+    ldrb    r1, [r6, #1]
+    ldrh    r0, [r4, #R_HL]
+    bl      gbl_wr
+    PC_ADD  1
+    b       .Ltop
+
+H_ST_BC:
+    ldrh    r0, [r4, #R_BC]
+    b       1f
+H_ST_DE:
+    ldrh    r0, [r4, #R_DE]
+1:
+    ldrb    r1, [r4, #R_A]
+    bl      gbl_wr
+    b       .Ltop
+
+H_LD_BC:
+    ldrh    r0, [r4, #R_BC]
+    b       1f
+H_LD_DE:
+    ldrh    r0, [r4, #R_DE]
+1:
+    bl      gbl_rd
+    strb    r0, [r4, #R_A]
+    b       .Ltop
+
+H_LDI_ST:
+    ldrh    r0, [r4, #R_HL]
+    ldrb    r1, [r4, #R_A]
+    bl      gbl_wr
+    ldrh    r0, [r4, #R_HL]
+    adds    r0, #1
+    strh    r0, [r4, #R_HL]
+    b       .Ltop
+
+H_LDD_ST:
+    ldrh    r0, [r4, #R_HL]
+    ldrb    r1, [r4, #R_A]
+    bl      gbl_wr
+    ldrh    r0, [r4, #R_HL]
+    subs    r0, #1
+    strh    r0, [r4, #R_HL]
+    b       .Ltop
+
+H_LDI_LD:
+    ldrh    r0, [r4, #R_HL]
+    bl      gbl_rd
+    strb    r0, [r4, #R_A]
+    ldrh    r0, [r4, #R_HL]
+    adds    r0, #1
+    strh    r0, [r4, #R_HL]
+    NEXT
+
+H_LDD_LD:
+    ldrh    r0, [r4, #R_HL]
+    bl      gbl_rd
+    strb    r0, [r4, #R_A]
+    ldrh    r0, [r4, #R_HL]
+    subs    r0, #1
+    strh    r0, [r4, #R_HL]
+    b       .Ltop
+
+H_LDH_ST:  /* LDH (n), A */
+    ldrb    r0, [r6, #1]
+    ldrb    r1, [r4, #R_A]
+    WR_FF
+    PC_ADD  1
+    b       .Ltop
+
+H_LDH_LD:  /* LDH A, (n) */
+    ldrb    r0, [r6, #1]
+    RD_FF
+    strb    r0, [r4, #R_A]
+    PC_ADD  1
+    NEXT
+
+H_LDC_ST:  /* LD (C), A */
+    ldrb    r0, [r4, #R_BC]
+    ldrb    r1, [r4, #R_A]
+    WR_FF
+    b       .Ltop
+
+H_LDC_LD:  /* LD A, (C) */
+    ldrb    r0, [r4, #R_BC]
+    RD_FF
+    strb    r0, [r4, #R_A]
+    b       .Ltop
+    .ltorg
+
+H_ST_NN:
+    N16     r0, r1
+    ldrb    r1, [r4, #R_A]
+    bl      gbl_wr
+    PC_ADD  2
+    b       .Ltop
+
+H_LD_NN:
+    N16     r0, r1
+    bl      gbl_rd
+    strb    r0, [r4, #R_A]
+    PC_ADD  2
+    b       .Ltop
+
+/* -- ALU: an entry per operand kind, r2 = operand -- */
+
+.macro ALU_SRC op
+H_ALUR_\op:
+    REGOFS  0
+    ldrb    r2, [r4, r0]
+    b       1f
+H_ALUHL_\op:
+    ldrh    r0, [r4, #R_HL]
+    bl      gbl_rd
+    mov     r2, r0
+    b       1f
+H_ALUN_\op:
+    ldrb    r2, [r6, #1]
+    PC_ADD  1
+1:
+.endm
+
+/* Flags as gbl_add .. gbl_cp of gbl_core_asm.S (every input checked there
+ * by BENCH_ALU_CHECK), inline. */
+    ALU_SRC ADD
+    ldrb    r1, [r4, #R_A]
+    lsls    r3, r1, #28
+    lsrs    r3, r3, #28
+    adds    r1, r1, r2             /* a + v */
+    lsls    r2, r2, #28
+    lsrs    r2, r2, #28
+    adds    r3, r3, r2
+    lsrs    r3, r3, #4             /* half carry */
+    strb    r3, [r4, #R_HF]
+    lsrs    r3, r1, #8             /* carry */
+    strb    r3, [r4, #R_CF]
+    strb    r1, [r4, #R_A]
+    strb    r1, [r4, #R_ZR]
+    movs    r3, #0
+    strb    r3, [r4, #R_NF]
+    NEXT
+
+    ALU_SRC ADC
+    ldrb    r1, [r4, #R_A]
+    ldrb    r0, [r4, #R_CF]
+    lsls    r3, r1, #28
+    lsrs    r3, r3, #28
+    adds    r3, r3, r0
+    adds    r1, r1, r0
+    adds    r1, r1, r2             /* a + v + c */
+    lsls    r2, r2, #28
+    lsrs    r2, r2, #28
+    adds    r3, r3, r2
+    lsrs    r3, r3, #4
+    strb    r3, [r4, #R_HF]
+    lsrs    r3, r1, #8
+    strb    r3, [r4, #R_CF]
+    strb    r1, [r4, #R_A]
+    strb    r1, [r4, #R_ZR]
+    movs    r3, #0
+    strb    r3, [r4, #R_NF]
+    b       .Ltop
+
+    ALU_SRC SUB
+    ldrb    r1, [r4, #R_A]
+    lsls    r3, r1, #28
+    lsrs    r3, r3, #28
+    subs    r1, r1, r2             /* a - v */
+    lsls    r2, r2, #28
+    lsrs    r2, r2, #28
+    subs    r3, r3, r2
+    lsrs    r3, r3, #31            /* half borrow */
+    strb    r3, [r4, #R_HF]
+    lsrs    r3, r1, #31            /* borrow */
+    strb    r3, [r4, #R_CF]
+    strb    r1, [r4, #R_A]
+    strb    r1, [r4, #R_ZR]
+    movs    r3, #1
+    strb    r3, [r4, #R_NF]
+    NEXT
+
+    ALU_SRC SBC
+    ldrb    r1, [r4, #R_A]
+    ldrb    r0, [r4, #R_CF]
+    lsls    r3, r1, #28
+    lsrs    r3, r3, #28
+    subs    r3, r3, r0
+    subs    r1, r1, r0
+    subs    r1, r1, r2             /* a - v - c */
+    lsls    r2, r2, #28
+    lsrs    r2, r2, #28
+    subs    r3, r3, r2
+    lsrs    r3, r3, #31
+    strb    r3, [r4, #R_HF]
+    lsrs    r3, r1, #31
+    strb    r3, [r4, #R_CF]
+    strb    r1, [r4, #R_A]
+    strb    r1, [r4, #R_ZR]
+    movs    r3, #1
+    strb    r3, [r4, #R_NF]
+    b       .Ltop
+
+    ALU_SRC AND
+    ldrb    r0, [r4, #R_A]
+    ands    r0, r2
+    strb    r0, [r4, #R_A]
+    strb    r0, [r4, #R_ZR]
+    movs    r0, #0
+    strb    r0, [r4, #R_NF]
+    strb    r0, [r4, #R_CF]
+    movs    r0, #1
+    strb    r0, [r4, #R_HF]
+    NEXT
+
+    ALU_SRC XOR
+    ldrb    r0, [r4, #R_A]
+    eors    r0, r2
+    b       .Llogic
+
+    ALU_SRC OR
+    ldrb    r0, [r4, #R_A]
+    orrs    r0, r2
+.Llogic:  /* XOR, OR */
+    strb    r0, [r4, #R_A]
+    strb    r0, [r4, #R_ZR]
+    movs    r0, #0
+    strb    r0, [r4, #R_NF]
+    strb    r0, [r4, #R_HF]
+    strb    r0, [r4, #R_CF]
+    NEXT
+
+    ALU_SRC CP
+    ldrb    r1, [r4, #R_A]
+    subs    r3, r1, r2
+    strb    r3, [r4, #R_ZR]
+    sbcs    r3, r3                 /* -1 on borrow */
+    negs    r3, r3
+    strb    r3, [r4, #R_CF]
+    lsls    r1, r1, #28
+    lsls    r2, r2, #28
+    subs    r1, r1, r2             /* low nibbles */
+    sbcs    r3, r3
+    negs    r3, r3
+    strb    r3, [r4, #R_HF]
+    movs    r3, #1
+    strb    r3, [r4, #R_NF]
+    NEXT
+
+/* -- INC / DEC -- */
+
+H_INC_R:
+    REGOFS_LO
+    ldrb    r2, [r4, r0]
+    lsls    r1, r2, #28
+    lsrs    r1, r1, #28
+    adds    r1, #1
+    lsrs    r1, r1, #4             /* (v & 15) == 15 */
+    strb    r1, [r4, #R_HF]
+    movs    r1, #0
+    strb    r1, [r4, #R_NF]
+    adds    r2, #1
+    strb    r2, [r4, r0]
+    strb    r2, [r4, #R_ZR]
+    NEXT
+
+H_DEC_R:
+    REGOFS_LO
+    ldrb    r2, [r4, r0]
+    lsls    r1, r2, #28
+    lsrs    r1, r1, #28
+    subs    r1, #1
+    lsrs    r1, r1, #31            /* (v & 15) == 0 */
+    strb    r1, [r4, #R_HF]
+    movs    r1, #1
+    strb    r1, [r4, #R_NF]
+    subs    r2, #1
+    strb    r2, [r4, r0]
+    strb    r2, [r4, #R_ZR]
+    NEXT
+
+H_INC_HL:
+    ldrh    r0, [r4, #R_HL]
+    bl      gbl_rd
+    lsls    r1, r0, #28
+    lsrs    r1, r1, #28
+    adds    r1, #1
+    lsrs    r1, r1, #4
+    strb    r1, [r4, #R_HF]
+    movs    r1, #0
+    strb    r1, [r4, #R_NF]
+    adds    r1, r0, #1
+    b       1f
+
+H_DEC_HL:
+    ldrh    r0, [r4, #R_HL]
+    bl      gbl_rd
+    lsls    r1, r0, #28
+    lsrs    r1, r1, #28
+    subs    r1, #1
+    lsrs    r1, r1, #31
+    strb    r1, [r4, #R_HF]
+    movs    r1, #1
+    strb    r1, [r4, #R_NF]
+    subs    r1, r0, #1
+1:
+    uxtb    r1, r1
+    strb    r1, [r4, #R_ZR]
+    ldrh    r0, [r4, #R_HL]
+    bl      gbl_wr
     b       .Ltop
 
     .align 2

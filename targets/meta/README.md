@@ -721,6 +721,13 @@ address before the entry `switch` (±0.5%); `gbl_ppu_advance` is a large
 share only of light games (Burai Fighter 17% of 35k cycles a frame, under
 1% of the budget).
 
+The hottest interpreter handlers (LD r,r', LD r,(HL), LDH A,(n), LD r,n,
+LD A,(HL+), INC/DEC r, JR cc not taken, ADD/SUB/AND/OR/XOR/CP, BIT) end
+with a copy of the loop top instead of a branch to it; the colder
+handlers sit before the loop so that all stay in branch range. +0.8 KiB
+of flash; entirely interpreted −1.3% to −2.2%, normal runs −0.1% to
+−0.4% (p99 up to −1.3%), same hashes.
+
 Ten more games (`panel.txt`: software 3D, isometric, non-identity BGP,
 RPG menus, beat 'em up) found three more things: the ALU helpers called by
 generated code (`gbl_add`, `gbl_adc`, `gbl_sub`, `gbl_sbc`, `gbl_inc`,
