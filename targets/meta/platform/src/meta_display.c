@@ -78,12 +78,23 @@
 #define RGB565(rgb) ((uint16_t)((((rgb) >> 8) & 0xF800) | (((rgb) >> 5) & 0x07E0) | (((rgb) >> 3) & 0x001F)))
 #define SWAP16(v) ((uint16_t)(((v) >> 8) | ((v) << 8)))
 
-const uint16_t meta_dmg_palette[4] = {
+/* Palettes of the option menu, lightest shade first (0xRRGGBB).  SMOOTH's
+ * colour tables are generated at compile time and keep the first one. */
+const uint32_t meta_palettes[META_PALETTE_COUNT][4] = {
+    {0xE0F8D0, 0x88C070, 0x346856, 0x081820}, /* green (DMG-like) */
+    {0xFFFFFF, 0xAAAAAA, 0x555555, 0x000000}, /* grey */
+    {0xC4CFA1, 0x8B956D, 0x4D533C, 0x1F1F1F}, /* Pocket */
+    {0xF8E8C8, 0xD8A060, 0x985020, 0x301808}, /* amber */
+    {0xE0F0FF, 0x80A8E0, 0x3050A0, 0x101830}, /* blue */
+};
+const char *const meta_palette_names[META_PALETTE_COUNT] = {"Vert", "Gris", "Pocket", "Ambre", "Bleu"};
+static uint8_t palette_index;
+uint16_t meta_dmg_palette[4] = {
     SWAP16(RGB565(0xE0F8D0)), SWAP16(RGB565(0x88C070)),
     SWAP16(RGB565(0x346856)), SWAP16(RGB565(0x081820)),
 };
 #if META_MERGE_MODES
-static const uint32_t dmg_rgb[4] = {0xE0F8D0, 0x88C070, 0x346856, 0x081820};
+static uint32_t dmg_rgb[4] = {0xE0F8D0, 0x88C070, 0x346856, 0x081820};
 #endif
 
 uint16_t meta_display_lcd_waits;
@@ -107,12 +118,16 @@ static union {
          * it is rendered only when it changes; the line merged into it. */
         uint16_t hold[15][20];
         uint16_t lower[20];
+        /* Two merged pixels per entry, in the layout of meta_smooth_pairs
+         * (built from the palette by meta_display_set_mode). */
+        uint32_t half[256];
     } t;
 } mode_ram __attribute__((aligned(4)));
 #define spare_line mode_ram.m.spare_line
 #define merge2 mode_ram.m.merge2
 #define tb_hold mode_ram.t.hold
 #define tb_lower mode_ram.t.lower
+#define tb_half mode_ram.t.half
 #endif
 static uint8_t index_palette; /* PPU currently emits shade indices */
 
@@ -145,16 +160,6 @@ static uint32_t pending_sig; /* merge modes: signature of the held line 7 */
 const uint32_t meta_smooth_pairs[4][256] = {SM_E256(0u), SM_E256(1u), SM_E256(2u), SM_E256(3u)};
 
 #if META_MERGE_MODES
-/* TBLEND: the same layout of entries with both lines weighted 1/2 (per
- * channel average rounded down, like BLEND), 1 KiB of flash. */
-#define HF_CH(a, b, sh) ((DMG_CH(a, sh) + DMG_CH(b, sh)) / 2u)
-#define HF_565(a, b) ((HF_CH(a, b, 16) >> 3) << 11 | (HF_CH(a, b, 8) >> 2) << 5 | HF_CH(a, b, 0) >> 3)
-#define HF_COL(a, b) ((HF_565(a, b) >> 8 | HF_565(a, b) << 8) & 0xFFFFu)
-#define HF_E(i) (HF_COL(((i) >> 2) & 3u, ((i) >> 6) & 3u) | HF_COL((i) & 3u, ((i) >> 4) & 3u) << 16)
-#define HF_E4(i) HF_E(i), HF_E((i) + 1u), HF_E((i) + 2u), HF_E((i) + 3u)
-#define HF_E16(i) HF_E4(i), HF_E4((i) + 4u), HF_E4((i) + 8u), HF_E4((i) + 12u)
-#define HF_E64(i) HF_E16(i), HF_E16((i) + 16u), HF_E16((i) + 32u), HF_E16((i) + 48u)
-const uint32_t meta_half_pairs[256] = {HF_E64(0u), HF_E64(64u), HF_E64(128u), HF_E64(192u)};
 
 /* TBLEND: the held line was rendered this frame. */
 static uint8_t tb_hold_fresh;
@@ -179,13 +184,18 @@ static uint8_t smooth_redo[16];    /* rows drawn from their lower line alone: re
 static void build_layout(void);
 
 #if META_MERGE_MODES
-static uint16_t merged_color(unsigned a, unsigned b) {
-    if (display_mode == META_MODE_DARK) return meta_dmg_palette[a > b ? a : b];
+/* Shades a and b averaged per channel, rounded down. */
+static uint16_t average_color(unsigned a, unsigned b) {
     uint32_t x = dmg_rgb[a], y = dmg_rgb[b];
     uint32_t avg = (((x >> 16) + (y >> 16)) / 2) << 16 |
                    ((((x >> 8) & 255) + ((y >> 8) & 255)) / 2) << 8 |
                    (((x & 255) + (y & 255)) / 2);
     return SWAP16(RGB565(avg));
+}
+
+static uint16_t merged_color(unsigned a, unsigned b) {
+    if (display_mode == META_MODE_DARK) return meta_dmg_palette[a > b ? a : b];
+    return average_color(a, b);
 }
 #endif
 
@@ -221,7 +231,32 @@ void meta_display_set_mode(uint8_t mode) {
         for (unsigned k = 0; k < 256; k++)
             merge2[k] = (uint32_t)merged_color(k & 3, (k >> 4) & 3) |
                         ((uint32_t)merged_color((k >> 2) & 3, k >> 6) << 16);
+    if (display_mode == META_MODE_TBLEND) /* packed index: a0 a1 a2 a3 | b0 b1 b2 b3 << 4 */
+        for (unsigned k = 0; k < 256; k++)
+            tb_half[k] = (uint32_t)average_color((k >> 2) & 3, (k >> 6) & 3) |
+                         ((uint32_t)average_color(k & 3, (k >> 4) & 3) << 16);
 #endif
+}
+
+uint8_t meta_display_palette(void) { return palette_index; }
+
+void meta_display_set_palette(uint8_t index) {
+    if (index >= META_PALETTE_COUNT) index = 0;
+    palette_index = index;
+    for (unsigned i = 0; i < 4; i++) {
+        uint32_t rgb = meta_palettes[index][i];
+        meta_dmg_palette[i] = SWAP16(RGB565(rgb));
+#if META_MERGE_MODES
+        dmg_rgb[i] = rgb;
+#endif
+    }
+    meta_display_set_mode(display_mode); /* tables, the PPU's colours, a full redraw */
+}
+
+uint16_t *meta_display_scratch(unsigned *rows) {
+    meta_display_flush(); /* the caller waits for the display (meta_lcd_wait) */
+    *rows = META_LCD_BUFFERS * META_STRIP_LINES;
+    return strip[0];
 }
 
 /* Per-line layout of the current mode: what each DMG line becomes. */
@@ -428,11 +463,11 @@ void gbl_platform_line_end(uint8_t ly) {
         uint32_t *row = (uint32_t *)strip_slot(line_row[ly]);
         const uint16_t *upper = tb_hold[TB_PAIR(ly - 1u)];
 #if META_SMOOTH_ASM
-        meta_smooth_blend_asm(row, upper, tb_lower, meta_half_pairs, 0);
+        meta_smooth_blend_asm(row, upper, tb_lower, tb_half, 0);
 #else
         for (unsigned g = 0; g < 20; g++) {
             uint32_t u = upper[g], l = tb_lower[g];
-            for (int sh = 12; sh >= 0; sh -= 4) *row++ = meta_half_pairs[((u >> sh) & 15u) | ((l >> sh) & 15u) << 4];
+            for (int sh = 12; sh >= 0; sh -= 4) *row++ = tb_half[((u >> sh) & 15u) | ((l >> sh) & 15u) << 4];
         }
 #endif
         if (++strip_fill == META_STRIP_LINES) meta_display_flush();

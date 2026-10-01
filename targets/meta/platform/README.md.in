@@ -18,8 +18,8 @@ host/build/@NAME@_host --frames 3000 --input more.input            # META build
 Regenerate with every coverage file in `coverage/` plus new ones, e.g.
 `gbrecomp game.gb --target meta --coverage coverage/a.cov --coverage more.cov -o <this dir>`.
 
-META controls: D-pad, A, B; MENU = Start; HOME tap = Select; HOME held 1 s
-cycles the display mode (BLEND by default, then DARK, CROP, SKIP); held 3 s returns to the
-Gamebuino loader. Once per second the firmware
+META controls: D-pad, A, B; MENU = Start; HOME tap = Select; HOME held half
+a second opens the option menu (display mode, palette, frame skip, 48/72 MHz,
+back to the Gamebuino loader). Once per second the firmware
 prints emulated/shown FPS, idle time and interpreted instructions on the USB
 serial port.

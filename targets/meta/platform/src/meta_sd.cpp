@@ -9,6 +9,7 @@
  * 74+ clocks with CS high, CMD0, CMD8, ACMD41 until ready, CMD58.
  */
 #include "meta_sd.h"
+#include "meta_clock.h"
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -47,7 +48,7 @@ static uint8_t command(uint8_t cmd, uint32_t arg, uint8_t crc) {
 
 int meta_sd_init(void) {
     meta_sd_deselect();
-    SPI.beginTransaction(SPISettings(250000, MSBFIRST, SPI_MODE0));
+    SPI.beginTransaction(SPISettings(meta_spi_hz(250000), MSBFIRST, SPI_MODE0));
     for (int i = 0; i < 10; i++) SPI.transfer(0xFF); /* >= 74 clocks, CS high */
 
     int ok = 0;
@@ -89,7 +90,7 @@ done:
  * drained and the bus released first; the next strip reopens it. */
 int meta_sd_read(uint32_t lba, uint8_t *dst) {
     meta_lcd_end_frame();
-    SPI.beginTransaction(SPISettings(META_SD_SPI_HZ, MSBFIRST, SPI_MODE0));
+    SPI.beginTransaction(SPISettings(meta_spi_hz(META_SD_SPI_HZ), MSBFIRST, SPI_MODE0));
     /* Drop bytes left in the receive FIFO by display writes. */
     for (int i = 0; i < 2 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
         (void)SERCOM4->SPI.DATA.reg;
@@ -121,7 +122,7 @@ int meta_sd_read(uint32_t lba, uint8_t *dst) {
  * it; returns 1 on success.  Same bus sharing as meta_sd_read. */
 int meta_sd_write(uint32_t lba, const uint8_t *src) {
     meta_lcd_end_frame();
-    SPI.beginTransaction(SPISettings(META_SD_SPI_HZ, MSBFIRST, SPI_MODE0));
+    SPI.beginTransaction(SPISettings(meta_spi_hz(META_SD_SPI_HZ), MSBFIRST, SPI_MODE0));
     for (int i = 0; i < 2 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
         (void)SERCOM4->SPI.DATA.reg;
     SERCOM4->SPI.STATUS.reg = SERCOM_SPI_STATUS_BUFOVF;

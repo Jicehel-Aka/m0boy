@@ -1,8 +1,9 @@
 /*
  * Gamebuino META audio: gbl APU samples played through the DAC (PA02).
  *
- * TC4 runs from the 48 MHz GCLK0 and wraps at 48 MHz / 2177 (about
- * 22049 Hz).  The ring is refilled once per emulated frame.
+ * TC4 runs from generator 4, 48 MHz at either CPU clock (meta_clock.cpp),
+ * and wraps at 48 MHz / 2177 (about 22049 Hz).  The ring is refilled once
+ * per emulated frame.
  *
  * META_AUDIO_DMA=1 (default): each wrap triggers one DMAC beat (channel 1)
  * that copies the next ring entry, already a DAC value, to the DAC, with no
@@ -13,14 +14,15 @@
  * and the DAC holds the last sample, as the interrupt did; the next frame
  * sees the channel stopped and restarts it after LATENCY samples.  The
  * DMAC position is not readable reliably, so the samples played while the
- * channel runs are derived from micros(), which counts the same 48 MHz
- * clock; they only bound how much can be queued.
+ * channel runs are derived from meta_micros() and only bound how much can
+ * be queued.
  *
  * META_AUDIO_DMA=0: the TC4 interrupt writes the next sample to the DAC.
  * On underrun the last sample is held; on overrun the newest samples are
  * dropped.
  */
 #include "meta_audio.h"
+#include "meta_clock.h"
 #include "meta_dma.h"
 
 #include <Arduino.h>
@@ -61,7 +63,7 @@ static void drop_samples(unsigned n) {
 }
 
 static void timer_start(bool irq) {
-    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN | GCLK_CLKCTRL_GEN_GCLK0 | GCLK_CLKCTRL_ID_TC4_TC5;
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN | GCLK_CLKCTRL_GEN_GCLK4 | GCLK_CLKCTRL_ID_TC4_TC5;
     while (GCLK->STATUS.bit.SYNCBUSY) {}
     TC4->COUNT16.CTRLA.reg &= (uint16_t)~TC_CTRLA_ENABLE;
     while (TC4->COUNT16.STATUS.bit.SYNCBUSY) {}
@@ -142,12 +144,12 @@ void meta_audio_init(void) {
     gbl_apu_set_rate(AUDIO_RATE);
     meta_dma_init();
     timer_start(false); /* the channel starts with the first frame */
-    last_us = micros();
+    last_us = meta_micros();
 }
 
 void meta_audio_frame(void) {
     unsigned n = frame_samples();
-    uint32_t now = micros(), dt = now - last_us;
+    uint32_t now = meta_micros(), dt = now - last_us;
     last_us = now;
     unsigned prefix = 0;
     if (!channel_running()) {
@@ -157,8 +159,7 @@ void meta_audio_frame(void) {
         cycles = 0;
         prefix = LATENCY;
     } else {
-        /* Samples taken since the last call: TC4 and micros() count the same
-         * 48 MHz clock. */
+        /* Samples taken since the last call (TC4 counts 48 MHz). */
         if (dt > 1000000u) dt = 1000000u;
         cycles += dt * 48u;
         played += cycles / AUDIO_TOP;

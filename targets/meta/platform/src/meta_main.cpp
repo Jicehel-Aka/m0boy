@@ -10,12 +10,16 @@
  * CROP, SKIP.
  *
  * Input:  D-pad, A = Game Boy B and B = Game Boy A (META_SWAP_AB), MENU =
- *         Start, HOME tap = Select,
- *         HOME held 1 s = next display mode, held 3 s = Gamebuino loader.
+ *         Start, HOME tap = Select, HOME held half a second = option menu
+ *         (display mode, palette, frame skip, CPU clock, back to the
+ *         Gamebuino loader).
  *
- * Pacing: 59.73 Hz; when emulation falls behind, rendering of up to
- * META_MAX_SKIP consecutive frames is skipped.  Frames whose picture cannot
- * differ from the one on screen are not rendered at all (META_STATIC_SKIP).  Once per second a status
+ * Pacing: 59.73 Hz, kept by an accumulator of elapsed time against emulated
+ * frames (Gdl's rate).  Frame skip: automatic (when emulation falls behind
+ * by a frame, rendering of up to META_MAX_SKIP consecutive frames is
+ * skipped), none, or one frame drawn in two, three or four.  Frames whose
+ * picture cannot differ from the one on screen are not rendered at all
+ * (META_STATIC_SKIP).  Once per second a status
  * line is printed on the USB serial port (never on Serial: its pins drive
  * the display).
  */
@@ -23,8 +27,10 @@
 #include <SPI.h>
 
 #include "meta_audio.h"
+#include "meta_clock.h"
 #include "meta_display.h"
 #include "meta_lcd.h"
+#include "meta_menu.h"
 #include "meta_sd.h"
 #include "meta_save.h"
 #include "meta_stream.h"
@@ -90,7 +96,7 @@ static uint8_t buttons_raw = 0xFF; /* last shift-register byte (active low) */
 #endif
 
 static uint8_t read_buttons_raw(void) {
-    SPI.beginTransaction(SPISettings(META_BUTTONS_SPI_HZ, MSBFIRST, SPI_MODE0));
+    SPI.beginTransaction(SPISettings(meta_spi_hz(META_BUTTONS_SPI_HZ), MSBFIRST, SPI_MODE0));
     /* Drop bytes left by display writes (the receive FIFO holds two). */
     for (int i = 0; i < 2 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
         (void)SERCOM4->SPI.DATA.reg;
@@ -110,6 +116,7 @@ static uint8_t read_buttons_raw(void) {
  * display idle, our audio and DMA interrupts off, SD card deselected and in
  * SPI mode. */
 static void enter_loader(void) {
+    meta_clock_set(48); /* the loader expects the core's clocks */
     gbl_save_flush(); /* unsaved cartridge RAM changes */
     meta_lcd_end_frame();
     meta_audio_stop();
@@ -118,32 +125,39 @@ static void enter_loader(void) {
     ((void (*)(void))(*((uint32_t *)0x3FF4)))();
 }
 
-static uint32_t home_since;
-static uint8_t home_held, home_stage, select_frames;
-
-static void poll_input(void) {
+/* Pressed buttons in the Gamebuino library order (META_MB_*): 0 down,
+ * 1 left, 2 right, 3 up, 4 A, 5 B, 6 MENU, 7 HOME. */
+static uint8_t meta_buttons(void) {
     uint8_t m = read_buttons_raw();
-    uint8_t gb = 0;
 #ifdef META_BUTTONS_LAPINOU_ORDER
     /* 0 left, 1 right, 2 up, 3 A, 4 B, 5 MENU, 6 down, 7 HOME */
-    if (m & 0x08) gb |= 0x01;
-    if (m & 0x10) gb |= 0x02;
-    if (m & 0x20) gb |= 0x08;
-    if (m & 0x02) gb |= 0x10;
-    if (m & 0x01) gb |= 0x20;
-    if (m & 0x04) gb |= 0x40;
-    if (m & 0x40) gb |= 0x80;
+    uint8_t b = (uint8_t)(m & 0x80);
+    if (m & 0x01) b |= META_MB_LEFT;
+    if (m & 0x02) b |= META_MB_RIGHT;
+    if (m & 0x04) b |= META_MB_UP;
+    if (m & 0x08) b |= META_MB_A;
+    if (m & 0x10) b |= META_MB_B;
+    if (m & 0x20) b |= META_MB_MENU;
+    if (m & 0x40) b |= META_MB_DOWN;
+    return b;
 #else
-    /* Gamebuino library order: 0 down, 1 left, 2 right, 3 up, 4 A, 5 B,
-     * 6 MENU, 7 HOME. */
-    if (m & 0x10) gb |= 0x01; /* A */
-    if (m & 0x20) gb |= 0x02; /* B */
-    if (m & 0x40) gb |= 0x08; /* MENU -> Start */
-    if (m & 0x04) gb |= 0x10; /* right */
-    if (m & 0x02) gb |= 0x20; /* left */
-    if (m & 0x08) gb |= 0x40; /* up */
-    if (m & 0x01) gb |= 0x80; /* down */
+    return m;
 #endif
+}
+
+static uint32_t home_since;
+static uint8_t home_held, home_stage, select_frames, menu_request;
+
+static void poll_input(void) {
+    uint8_t m = meta_buttons();
+    uint8_t gb = 0;
+    if (m & META_MB_A) gb |= 0x01;
+    if (m & META_MB_B) gb |= 0x02;
+    if (m & META_MB_MENU) gb |= 0x08; /* Start */
+    if (m & META_MB_RIGHT) gb |= 0x10;
+    if (m & META_MB_LEFT) gb |= 0x20;
+    if (m & META_MB_UP) gb |= 0x40;
+    if (m & META_MB_DOWN) gb |= 0x80;
 
 #if META_SWAP_AB
     /* The META's A is the right-hand button: Game Boy B, and vice versa. */
@@ -151,16 +165,14 @@ static void poll_input(void) {
 #endif
 
     uint32_t now = millis();
-    if (m & 0x80) {
+    if (m & META_MB_HOME) {
         if (!home_held) {
             home_held = 1;
             home_stage = 0;
             home_since = now;
-        } else if (now - home_since > 3000) {
-            enter_loader();
-        } else if (now - home_since > 1000 && home_stage == 0) {
-            home_stage = 1;
-            meta_display_set_mode((uint8_t)((meta_display_mode() + 1) % META_MODE_COUNT));
+        } else if (now - home_since >= 500 && home_stage == 0) {
+            home_stage = 1; /* no Select tap on release */
+            menu_request = 1;
         }
     } else if (home_held) {
         home_held = 0;
@@ -170,14 +182,76 @@ static void poll_input(void) {
     gbl_set_buttons(gb);
 }
 
-/* ---- pacing and statistics ------------------------------------------------ */
+/* ---- pacing, frame skip and options --------------------------------------- */
 
-static uint32_t next_frame_us, stat_start_ms, idle_us;
+/* Frame skip of the option menu: automatic, none, or one frame drawn in
+ * 2, 3 or 4. */
+enum { FSKIP_AUTO, FSKIP_NONE, FSKIP_HALF, FSKIP_THIRD, FSKIP_QUARTER, FSKIP_MODES };
+static uint8_t skip_mode = FSKIP_AUTO;
+
+static uint32_t stat_start_ms, idle_us;
 static int save_state;
 #if GBL_ROM_STREAM
 static uint32_t stream_reported;
 #endif
 static uint16_t frames, shown, unchanged, skipped_run;
+
+/* Time owed to the emulation, like Gdl's rate: elapsed time comes in, each
+ * emulated frame takes FRAME_US out.  Below zero the frame was early and
+ * pacing waits; a frame or more ahead, the automatic frame skip renders
+ * nothing until it has caught up. */
+static uint32_t pace_last;
+static int32_t pace_owed;
+
+static void pace_reset(void) {
+    pace_last = meta_micros();
+    pace_owed = 0;
+}
+
+static void pace_frame(void) {
+    uint32_t now = meta_micros();
+    pace_owed += (int32_t)(now - pace_last);
+    pace_last = now;
+    pace_owed -= (int32_t)FRAME_US;
+    if (pace_owed < 0) {
+        uint32_t until = now + (uint32_t)-pace_owed;
+        idle_us += (uint32_t)-pace_owed;
+        while ((int32_t)(meta_micros() - until) < 0) meta_audio_idle();
+        now = meta_micros();
+        pace_owed += (int32_t)(now - pace_last);
+        pace_last = now;
+    }
+    /* Long stall (LCD off loops, USB, the menu), or no catching up wanted:
+     * forget the debt. */
+    if (pace_owed > 200000 || (skip_mode != FSKIP_AUTO && pace_owed > (int32_t)FRAME_US))
+        pace_owed = (int32_t)FRAME_US;
+}
+
+static const char *const mode_names[META_MODE_COUNT] = {"SMOOTH", "TILE", "BLEND", "DARK",
+                                                        "CROP", "SKIP", "TBLEND"};
+static const char *const skip_names[FSKIP_MODES] = {"Auto", "Aucun", "1 sur 2", "1 sur 3", "1 sur 4"};
+static const char *const clock_names[2] = {"48 MHz", "72 MHz"};
+
+static void option_menu(void) {
+    uint8_t mode = meta_display_mode(), pal = meta_display_palette(), skip = skip_mode;
+    uint8_t mhz = meta_clock_mhz() == 72;
+    const meta_menu_item items[] = {
+        {"Reprendre", META_MENU_ACTION, 0, 0, 0},
+        {"Ecran", META_MENU_CHOICE, &mode, META_MODE_COUNT, mode_names},
+        {"Palette", META_MENU_CHOICE, &pal, META_PALETTE_COUNT, meta_palette_names},
+        {"Images", META_MENU_CHOICE, &skip, FSKIP_MODES, skip_names},
+        {"Processeur", META_MENU_CHOICE, &mhz, 2, clock_names},
+        {"Quitter", META_MENU_ACTION, 0, 0, 0},
+    };
+    int action = meta_menu_run(GBL_TITLE, items, sizeof(items) / sizeof(items[0]), meta_buttons);
+    if (action == 5) enter_loader();
+    skip_mode = skip;
+    meta_clock_set(mhz ? 72 : 48);
+    if (pal != meta_display_palette()) meta_display_set_palette(pal);
+    meta_display_set_mode(mode); /* also redraws the whole picture */
+    skipped_run = 0;
+    pace_reset();
+}
 
 extern "C" void gbl_platform_vblank(void) {
     /* If the loader locked the watchdog on (ALWAYSON), initVariant could not
@@ -189,27 +263,28 @@ extern "C" void gbl_platform_vblank(void) {
     frames++;
     int static_next = META_STATIC_SKIP ? gbl_frame_unchanged_next(was_shown) : 0;
     if (bus_free) poll_input(); /* else keep last frame's buttons */
+    if (menu_request) {
+        menu_request = 0;
+        option_menu();
+        static_next = 0;
+    }
     /* Audio first: a save flush can block on the SD card, and the DMA then
      * plays from a full ring (meta_audio.cpp). */
     meta_audio_frame();
     meta_save_tick();
+    pace_frame();
 
-    uint32_t now = micros();
-    int32_t late = (int32_t)(now - next_frame_us);
-    if (late < 0) {
-        idle_us += (uint32_t)-late;
-        while ((int32_t)(micros() - next_frame_us) < 0) meta_audio_idle();
-        late = 0;
-    } else if (late > 200000) {
-        next_frame_us = now; /* long stall (LCD off loops, USB...): resync */
-        late = 0;
-    }
-    next_frame_us += FRAME_US;
-
+    static uint8_t phase;
+    int skip = 0;
+    if (skip_mode == FSKIP_AUTO)
+        skip = pace_owed >= (int32_t)FRAME_US && skipped_run < META_MAX_SKIP;
+    else if (skip_mode != FSKIP_NONE)
+        skip = phase != 0; /* draw one frame in skip_mode (2, 3 or 4) */
+    if (skip_mode >= FSKIP_HALF) phase = (uint8_t)(phase + 1 < skip_mode ? phase + 1 : 0);
     if (static_next) {
         gbl_skip_render = 1;
         unchanged++;
-    } else if (late > (int32_t)FRAME_US && skipped_run < META_MAX_SKIP) {
+    } else if (skip) {
         gbl_skip_render = 1;
         skipped_run++;
     } else {
@@ -341,6 +416,7 @@ void setup() {
                    "fichier " GBL_SAVE_NAME " introuvable : copie-le a cote de la ROM (compile.sh le cree)");
 #endif
     meta_lcd_fill(meta_dmg_palette[0]);
+    meta_clock_init(); /* after SerialUSB.begin: USB moves to generator 4 */
     meta_audio_init();
 
     meta_display_set_mode(META_MODE_TBLEND); /* TILE when streaming */
@@ -352,7 +428,7 @@ void setup() {
     gbl_stack_limit = limit > floor_addr ? limit : floor_addr;
 
     gbl_reset();
-    next_frame_us = micros();
+    pace_reset();
     stat_start_ms = millis();
     gbl_run();
 }

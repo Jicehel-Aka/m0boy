@@ -26,7 +26,17 @@ enum {
     META_MODE_COUNT
 };
 
-extern const uint16_t meta_dmg_palette[4]; /* byte-swapped RGB565 */
+#define META_PALETTE_COUNT 5
+extern const uint32_t meta_palettes[META_PALETTE_COUNT][4]; /* 0xRRGGBB, lightest first */
+extern const char *const meta_palette_names[META_PALETTE_COUNT];
+extern uint16_t meta_dmg_palette[4]; /* current palette, byte-swapped RGB565 */
+/* Palette of every mode but SMOOTH (compile-time tables, first palette). */
+void meta_display_set_palette(uint8_t index);
+uint8_t meta_display_palette(void);
+/* The strip buffers, free while emulation is stopped (the option menu):
+ * flushes and returns 160-pixel rows of scratch, usable once the display
+ * is idle (meta_lcd_wait). */
+uint16_t *meta_display_scratch(unsigned *rows);
 
 void meta_display_set_mode(uint8_t mode); /* call at VBlank */
 uint8_t meta_display_mode(void);

@@ -107,10 +107,43 @@ On the META:
 | B | A |
 | MENU | Start |
 | HOME (tap) | Select |
-| HOME (hold 1 s) | Next display mode |
-| HOME (hold 3 s) | Back to the Gamebuino loader |
+| HOME (hold ½ s) | Option menu |
 
-Display modes (144 DMG lines on 128 META lines), cycled with HOME held:
+The option menu (`meta_menu.cpp`, after the menus of fgb, the GP32 port of
+gnuboy) pauses the game: up/down pick a line, left/right (or A) change its
+value, A runs an action, B or HOME closes it. Its text uses a Gdl font in
+the 4-bit agf format (`meta_font.h`, made from dstar's greenfont by
+`tools/font/agf2meta.py`, 6.2 KiB of flash), drawn through the strip
+buffers of the display pipeline. Options (not kept across power-off):
+
+| Line | Values |
+| --- | --- |
+| Reprendre | back to the game |
+| Ecran | display mode (below) |
+| Palette | Vert (default), Gris, Pocket, Ambre, Bleu: every mode but SMOOTH, whose 4 KiB colour tables are built at compile time for the first one. TBLEND's ½-weight table is built from the palette in RAM (1 KiB, in the union of mode buffers) |
+| Images | frame skip: Auto (default: when emulation falls a frame behind, up to `META_MAX_SKIP` frames in a row are not rendered), Aucun, 1 sur 2/3/4 (one frame rendered in two, three, four) |
+| Processeur | 48 MHz (default) or 72 MHz (below) |
+| Quitter | back to the Gamebuino loader |
+
+Pacing keeps the 59.73 Hz rate with an accumulator of elapsed time against
+emulated frames (Gdl's `rate`): an early frame waits, and the automatic
+frame skip renders nothing while a frame or more is owed.
+
+72 MHz (`meta_clock.cpp`) is past the SAMD21's 48 MHz rating. Generator 5
+divides the DFLL48M to 1 MHz, the FDPLL96M multiplies it by 72 and
+generator 0 (CPU, SERCOMs) switches to it with two flash wait states;
+USB, TC4/TC5 and the DAC run from generator 4 (DFLL48M) at either clock,
+SysTick is reloaded for 1 ms and `meta_micros()` replaces the core's
+`micros()` (which assumes 48 MHz). The core's SPI puts SERCOM4 back on
+generator 0 at every reconfiguration: the display keeps the fastest
+setting (36 MHz at 72 MHz; the ST7735 took it in gm0's overclocked META
+port), the card and buttons ask `meta_spi_hz()` for rates within theirs.
+When the PLL does not lock the menu stays at 48 MHz, and the loader is
+always entered at 48 MHz. Not yet run on a META: on the M0 estimator a
+frame at 72 MHz (two wait states) costs about 1.35 times less of its
+budget than at 48 MHz.
+
+Display modes (144 DMG lines on 128 META lines), chosen in the menu:
 
 | Mode | Method |
 | --- | --- |
@@ -120,7 +153,7 @@ Display modes (144 DMG lines on 128 META lines), cycled with HOME held:
 | DARK | Same merge, keeping the darker shade |
 | CROP | No scaling: DMG lines 8–135 |
 | SKIP | Drops the 9th line of every 9 |
-| TBLEND (default) | TILE's rows, but line 8k+7 is averaged into line 8k+8 instead of dropped: 7 rows of 8 stay sharp, only line 143 is lost (taken from gm0's ESPboy port). The two lines are rendered packed; the 15 held lines are kept across frames (600 bytes, in the RAM of the BLEND/DARK buffers) so a held line is rendered only when it changes, and the pair goes through SMOOTH's Thumb-1 loop with a 1 KiB flash table of ½ weights |
+| TBLEND (default) | TILE's rows, but line 8k+7 is averaged into line 8k+8 instead of dropped: 7 rows of 8 stay sharp, only line 143 is lost (taken from gm0's ESPboy port). The two lines are rendered packed; the 15 held lines are kept across frames (600 bytes, in the RAM of the BLEND/DARK buffers) so a held line is rendered only when it changes, and the pair goes through SMOOTH's Thumb-1 loop with a 1 KiB table of ½ weights |
 
 SMOOTH and line skipping: a row needs both of its lines, but only the
 previous one is kept (keeping all 144 would take 5.6 KiB of RAM). When only
@@ -180,7 +213,7 @@ touches the FAT.
   - when the game disables cartridge RAM, which games do right after
     saving;
   - two seconds after the last change;
-  - before returning to the loader (HOME held 3 s).
+  - before returning to the loader (menu, Quitter).
 
   Switching the console off during the two seconds that follow a save
   without RAM disable can lose it.

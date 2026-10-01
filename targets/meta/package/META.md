@@ -12,8 +12,8 @@ exécute le reste.
   de tuiles est fusionnée avec la suivante au lieu d'être sautée, donc plus
   de texte coupé, pour quasiment le coût de l'ancien mode (+2 % par image
   en médiane, estimation). L'ancien mode (TILE) et SMOOTH (réduction
-  complète, environ 15 % plus cher) restent disponibles avec HOME maintenu
-  1 s. Les firmwares qui lisent le jeu sur la carte SD gardent TILE.
+  complète, environ 15 % plus cher) restent disponibles dans le menu
+  d'options (HOME maintenu une demi-seconde). Les firmwares qui lisent le jeu sur la carte SD gardent TILE.
 - Opérations arithmétiques du code recompilé et cache de dispatch en
   assembleur Thumb-1 : quelques pour cent de plus sur les jeux qui en
   dépendent (estimations), émulation identique.
@@ -157,7 +157,7 @@ plus : la console y écrit la progression.
 
 La console écrit la sauvegarde sur la carte quand le jeu a fini de
 sauvegarder, 2 s après la dernière modification, et en revenant au loader
-(HOME maintenu 3 s).
+(menu d'options, « Quitter »).
 
 Si le `.SAV` manque :
 - le jeu tourne quand même, mais sans garder la progression ;
@@ -260,8 +260,21 @@ et la vitesse n'est pas celle de la console.
 | B | A |
 | MENU | Start |
 | HOME (appui court) | Select |
-| HOME maintenu 1 s | Mode d'affichage suivant : TBLEND, SMOOTH, TILE, BLEND, DARK, CROP, SKIP |
-| HOME maintenu 3 s | Retour au loader Gamebuino |
+| HOME maintenu ½ s | Menu d'options |
+
+Le menu d'options met le jeu en pause : haut/bas choisit une ligne,
+gauche/droite (ou A) change la valeur, B ou HOME referme.
+
+| Ligne | Choix |
+|---|---|
+| Reprendre | retour au jeu |
+| Ecran | mode d'affichage (ci-dessous) |
+| Palette | Vert, Gris, Pocket, Ambre, Bleu (SMOOTH reste en vert) |
+| Images | saut d'images : Auto (n'affiche pas les images en retard), Aucun, 1 sur 2, 1 sur 3, 1 sur 4 |
+| Processeur | 48 MHz ou 72 MHz (surcadencé, hors spécification du SAMD21 : à essayer, retour à 48 MHz si instable) |
+| Quitter | retour au loader Gamebuino |
+
+Les choix ne sont pas gardés à l'extinction.
 
 Modes d'affichage (les 144 lignes Game Boy sur les 128 de la META) :
 
