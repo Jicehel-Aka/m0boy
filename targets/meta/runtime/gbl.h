@@ -111,6 +111,7 @@ extern uint8_t gbl_skip_render;
 /* Joypad state, 1 = pressed.  bit0 A, 1 B, 2 Select, 3 Start,
  * 4 Right, 5 Left, 6 Up, 7 Down. */
 void gbl_set_buttons(uint8_t pressed);
+extern uint8_t gbl_joyp;           /* P1 (0xFF00) as read */
 
 /* ---- ROM streaming (projects generated with GBL_ROM_STREAM) ------------- */
 /* Read 512-byte sector `sector` of the ROM (byte offset sector * 512) into

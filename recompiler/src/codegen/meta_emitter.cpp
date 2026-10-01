@@ -1106,6 +1106,7 @@ std::string Generator::const_read(std::ostringstream& o, uint16_t a) {
     if (a < 0xE000) return "gbl_wram[" + hex(a - 0xC000, 4) + "]";
     if (a < 0xFE00) return "gbl_wram[" + hex(a - 0xE000, 4) + "]";
     if (a < 0xFF00) return "gbl_rd(" + hex(a, 4) + ")";
+    if (a == 0xFF00) return "gbl_joyp"; /* P1: no device to advance */
     if (a < 0xFF80) {
         flush(o);
         return "gbl_io_rd(" + hex(a & 0xFF, 2) + ")";

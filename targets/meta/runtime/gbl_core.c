@@ -563,18 +563,23 @@ uint32_t gbl_spin_kind(uint16_t a) {
 /* ---- joypad ------------------------------------------------------------- */
 
 static uint8_t buttons;
+/* P1 as read, kept current by P1 writes and gbl_set_buttons: generated code
+ * reads it directly (games read P1 several times in a row to let it
+ * settle, Pinball Dreams some 700 times a frame). */
+uint8_t gbl_joyp;
 
-void gbl_set_buttons(uint8_t pressed) {
-    if (pressed & ~buttons) IF |= 0x10;
-    buttons = pressed;
-}
-
-static uint8_t joypad_read(void) {
+static void joypad_update(void) {
     uint8_t sel = gbl_io[0x00];
     uint8_t v = 0x0F;
     if (!(sel & 0x10)) v &= (uint8_t)~(buttons >> 4);
     if (!(sel & 0x20)) v &= (uint8_t)~(buttons & 0x0F);
-    return (uint8_t)(0xC0 | (sel & 0x30) | (v & 0x0F));
+    gbl_joyp = (uint8_t)(0xC0 | (sel & 0x30) | (v & 0x0F));
+}
+
+void gbl_set_buttons(uint8_t pressed) {
+    if (pressed & ~buttons) IF |= 0x10;
+    buttons = pressed;
+    joypad_update();
 }
 
 /* ---- IO ----------------------------------------------------------------- */
@@ -587,7 +592,7 @@ uint8_t gbl_io_rd_c(uint8_t n);
 #endif
 uint8_t gbl_io_rd(uint8_t n) {
     switch (n) {
-    case 0x00: return joypad_read();
+    case 0x00: return gbl_joyp;
     case 0x02: return gbl_io[0x02] | 0x7E;
     case 0x04: return (uint8_t)((gbr.cyc - div_base) >> 8);
     case 0x05: timer_sync(gbr.cyc); return TIMA;
@@ -611,7 +616,7 @@ void gbl_io_wr_c(uint8_t n, uint8_t v);
 #endif
 void gbl_io_wr(uint8_t n, uint8_t v) {
     switch (n) {
-    case 0x00: gbl_io[0x00] = v & 0x30; return;
+    case 0x00: gbl_io[0x00] = v & 0x30; joypad_update(); return;
     case 0x02:
         gbl_io[0x02] = v;
         if ((v & 0x81) == 0x81) {
@@ -972,6 +977,7 @@ void gbl_reset(void) {
     gbr.sp = 0xFFFE; gbr.pc = 0x0100;
     gbl_ie = 0;
     gbl_io[0x00] = 0x30;
+    joypad_update();
     IF = 0x01;
     TAC = 0; TIMA = 0; TMA = 0;
     div_base = (uint32_t)0 - 0xABCCu;
