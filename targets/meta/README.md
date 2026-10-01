@@ -713,6 +713,14 @@ frame, Kid Icarus −5.6%, Adventure Island −3.5%, Tetris −3.3%):
   +2.7 KiB of generated code on R.C. Pro-Am, which `compile.sh` takes back
   from the least-run regions.
 
+P1 (`0xFF00`) is kept as read in `gbl_joyp`, updated on P1 writes and
+`gbl_set_buttons`; generated code reads that byte instead of calling
+`gbl_io_rd` (games read P1 several times in a row to let it settle):
+−0% to −1.7%, same hashes. Tried and dropped: testing the region's first
+address before the entry `switch` (±0.5%); `gbl_ppu_advance` is a large
+share only of light games (Burai Fighter 17% of 35k cycles a frame, under
+1% of the budget).
+
 Ten more games (`panel.txt`: software 3D, isometric, non-identity BGP,
 RPG menus, beat 'em up) found three more things: the ALU helpers called by
 generated code (`gbl_add`, `gbl_adc`, `gbl_sub`, `gbl_sbc`, `gbl_inc`,
