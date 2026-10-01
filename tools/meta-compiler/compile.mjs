@@ -271,6 +271,9 @@ function gblDefines(outDir) {
     eram: num('GBL_ERAM_SIZE'),
     battery: /^#define GBL_BATTERY 1$/m.test(text),
     streamName: val('GBL_STREAM_NAME'),
+    stateName: val('GBL_STATE_NAME'),
+    stateSlots: num('GBL_STATE_SLOTS'),
+    stateSectors: num('GBL_STATE_SLOT_SECTORS'),
   };
 }
 
@@ -802,6 +805,14 @@ async function buildGame(game, cfg, curVersion, log) {
     const sav = path.join(gameDir, def.saveName);
     if (!fs.existsSync(sav)) fs.writeFileSync(sav, Buffer.alloc(def.eram, 0xff));
     log(`[i] Sauvegarde : ${def.saveName} (déjà sur la carte : ne plus y toucher)`);
+  }
+  /* États sauvegardés : un fichier de stateSlots emplacements, créé une fois
+   * (jamais écrasé) ; sans lui, le menu n'offre pas Sauver/Charger l'état. */
+  if (def.stateName && def.stateSlots && def.stateSectors) {
+    const sta = path.join(gameDir, def.stateName);
+    const bytes = def.stateSlots * def.stateSectors * 512;
+    if (!fs.existsSync(sta) || fs.statSync(sta).size < bytes) fs.writeFileSync(sta, Buffer.alloc(bytes, 0));
+    log(`[i] États : ${def.stateName} (${def.stateSlots} emplacements, ${Math.round(bytes / 1024)} Kio)`);
   }
   /* ROM trop grosse pour la flash : le firmware la lit sur la carte SD. */
   if (def.streamName) {

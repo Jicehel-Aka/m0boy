@@ -475,9 +475,22 @@ def main() -> int:
         saved = save.read_bytes()
         static_out = run([str(tmp / "fast" / "host" / "build" / "e2e_host"), "--frames", str(FRAMES),
                           "--static-skip-check"])
+        # Save states: save after frame N, play M frames, load, play them
+        # again: the same machine at the end (cartridge RAM on the card and
+        # in RAM, interpreted and compiled).
+        state_runs = {}
+        for label, binary, extra in (("card interp", fast_host, ["--interp"]),
+                                     ("card fast", fast_host, []),
+                                     ("ram interp", str(ramb / "e2e_host"), ["--interp"])):
+            for n, m in ((40, 90), (150, 60)):
+                out = run([binary] + extra + ["--state-test", str(n), str(m)], timeout=60)
+                state_runs["%s %d+%d" % (label, n, m)] = "state_test ok" in out
         m = re.search(r"static_skip skipped (\d+) stale (\d+) stale_run_max (\d+)", static_out)
 
         failures = []
+        for name, ok in state_runs.items():
+            if not ok:
+                failures.append("save state not restored exactly (%s)" % name)
         if results["plain"]["run_hash"] != results["fast"]["run_hash"] or \
                 results["plain"]["wram_hash"] != results["fast"]["wram_hash"]:
             failures.append("disabling the runtime options changed the fast build's output")

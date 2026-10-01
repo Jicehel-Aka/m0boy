@@ -63,17 +63,17 @@ static void draw_text(uint16_t *band, int x, const char *s) {
     }
 }
 
-/* Bands of 8 rows: the title on band 0, item i on band 2 + i, the
- * information line on band 13, the hint on band 15. */
+/* Bands of 8 rows: the title on band 0, item i on band 1 + i, the
+ * information line on band 14, the hint on band 15. */
 static void draw(uint16_t *buf, const char *title, const meta_menu_item *items, unsigned n,
                  unsigned sel, const char *info) {
     for (int b = 0; b < 16; b++) {
-        int item = b - 2;
+        int item = b - 1;
         if (item >= (int)n) item = -1;
         uint16_t fill = b == 0 ? title_bg : (item >= 0 && (unsigned)item == sel) ? bar : bg;
         for (int i = 0; i < 160 * 8; i++) buf[i] = fill;
         if (b == 0) draw_text(buf, (160 - text_width(title)) / 2, title);
-        if (b == 13 && info) draw_text(buf, (160 - text_width(info)) / 2, info);
+        if (b == 14 && info) draw_text(buf, (160 - text_width(info)) / 2, info);
         if (b == 15) draw_text(buf, 4, "A:ok   B:retour");
         if (item >= 0) {
             const meta_menu_item *it = &items[item];

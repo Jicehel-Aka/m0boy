@@ -122,6 +122,8 @@ kept across power-off), from fgb's menu where they apply on the META:
 | --- | --- |
 | Reprendre | back to the game |
 | Redemarrer | writes the save, then `gbl_reset()` and `gbl_run()` again (a `longjmp` back to `setup()`) |
+| Etat, Sauver l'etat, Charger l'etat | save states, slot 1 to 10 (shown only when the state file is on the card, see below) |
+| Volume | 0 to 8; 4 (default) is the former level, half the DAC's range, 8 the whole range |
 | Ecran | display mode (below) |
 | Palette | Vert (default), Gris, Pocket, Ambre, Bleu: every mode but SMOOTH, whose 4 KiB colour tables are built at compile time for the first one. TBLEND's ½-weight table is built from the palette in RAM (1 KiB, in the union of mode buffers) |
 | Images | frame skip: Auto (default: when emulation falls a frame behind, up to `META_MAX_SKIP` frames in a row are not rendered), Aucun, 1 sur 2/3/4 (one frame rendered in two, three, four) |
@@ -129,9 +131,32 @@ kept across power-off), from fgb's menu where they apply on the META:
 | Processeur | 48 MHz (default) or 72 MHz (below) |
 | Quitter | back to the Gamebuino loader |
 
-Not taken from fgb: save states (they need new files on the card, which
-the FAT code does not create), gamma (the palettes cover it), double
-buffering and the CGB/debug switches (no use here).
+Not taken from fgb: gamma (the palettes cover it), double buffering and
+the CGB/debug switches (no use here).
+
+Save states: the converters (`compile.sh`, `tools/meta-compiler`) create
+`<NAME>.STA` next to the game, `GBL_STATE_SLOTS` (10) slots of
+`GBL_STATE_SLOT_SECTORS` sectors (a header, the machine within 18 KiB, the
+cartridge RAM: 190 KiB in all for a game without it, 270 KiB with 8 KiB).
+The firmware finds it at boot like the save file and only then shows the
+three lines; it never resizes it. `gbl_state_io` (runtime) streams the
+machine in a fixed order: CPU, WRAM, VRAM, OAM, HRAM, IO, mapper, timer,
+buttons, frame counter, cartridge RAM (copied from the save file when it
+lives there), PPU and APU state; a load rebuilds what is derived (page
+pointers, dispatch cache, sprite order, tile versions, events). The menu
+runs inside a frame, possibly mid-instruction, so the operation waits for
+the next interrupt check (`gbl_safe_request`, tested in `gbl_irq_enter`,
+whose callers are all between two instructions with `gbr.pc` exact); a
+load then restarts `gbl_run` from the loaded `gbr.pc`, dropping the C
+frames of the code that was running. Each slot's header (written last)
+holds the generator version and state size, the title, the size and a
+checksum; a load reads the slot once to check it before applying it, so
+a state cut short by a power loss or from another firmware is refused.
+The host harness checks it: `--state-test N M` saves after frame N, plays
+M frames, loads and plays them again, and compares the whole state (in the
+e2e test: cartridge RAM on the card and in RAM, interpreted and compiled).
+In fast builds, restarting from `gbr.pc` can move an interrupt by a few
+instructions compared with running on: both are valid executions.
 
 Pacing keeps the 59.73 Hz rate with an accumulator of elapsed time against
 emulated frames (Gdl's `rate`): an early frame waits, and the automatic

@@ -280,3 +280,15 @@ void gbl_apu_render(uint8_t *out, unsigned n) {
         out[i] = (uint8_t)(s < 0 ? 0 : s > 255 ? 255 : s);
     }
 }
+
+/* Save states (gbl_state_io of gbl_core.c); the registers are in gbl_io. */
+void gbl_apu_state_io(gbl_state_fn io, void *ctx, int load) {
+    (void)load;
+    io(ch, sizeof(ch), ctx);
+    io(&sweep_timer, sizeof(sweep_timer), ctx);
+    io(&sweep_on, sizeof(sweep_on), ctx);
+    io(&sweep_shadow, sizeof(sweep_shadow), ctx);
+    io(&lfsr, sizeof(lfsr), ctx);
+    io(&seq_acc, sizeof(seq_acc), ctx);
+    io(&seq_step, sizeof(seq_step), ctx);
+}

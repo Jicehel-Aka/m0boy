@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 
+#include "gbl.h"
 #include "gbl_options.h"
 
 void gbl_ppu_reset(void);
@@ -41,6 +42,10 @@ typedef struct {
     uint8_t bounded; /* 0 under gbl_run */
 } gbl_interp_ctx_t;
 extern gbl_interp_ctx_t gbl_interp_ctx;
+
+/* Save states: each module streams its state through io (gbl_state_io). */
+void gbl_ppu_state_io(gbl_state_fn io, void *ctx, int load);
+void gbl_apu_state_io(gbl_state_fn io, void *ctx, int load);
 
 int gbl_irq_enter(void);     /* push PC and vector if IME and pending */
 void gbl_halt_wait(void);    /* advance time until an interrupt is pending */

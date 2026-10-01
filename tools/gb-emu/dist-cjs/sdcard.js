@@ -42,10 +42,12 @@ class SdCard {
         this._out.length = 0;
         this._cmdIdx = 0;
         this._writing = false;
-        this._sercom.data = 0xff;
     }
     byteReceived(value) {
         if ((this._portA.getOut() & (1 << 27)) !== 0) { // not selected
+            // A deselected card does not drive MISO: the byte belongs to
+            // whoever is selected (the buttons' shift register, read on the
+            // same SERCOM, answered before this listener runs).
             this.resetState();
             return;
         }

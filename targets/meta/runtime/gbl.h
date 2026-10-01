@@ -184,6 +184,20 @@ uint8_t gbl_cbop(uint8_t op, uint8_t v); /* CB 00-3F rotate/shift group */
 uint8_t gbl_getf(void);
 void gbl_setf(uint8_t f);
 
+/* ---- save states ------------------------------------------------------- */
+/* The machine (CPU, memories, mapper, timer, PPU, APU and the cartridge RAM,
+ * also when it lives in the save file) is streamed through io: the same
+ * order for saving and loading.  Call them at an instruction boundary,
+ * i.e. from gbl_platform_safe_point; after gbl_state_io(.., 1) execution
+ * must start over from gbr.pc (gbl_run again, the C stack dropped). */
+typedef void (*gbl_state_fn)(void *data, uint32_t bytes, void *ctx);
+void gbl_state_io(gbl_state_fn io, void *ctx, int load);
+uint32_t gbl_state_bytes(void);
+/* Set by the frontend: gbl_platform_safe_point() is called at the next
+ * interrupt check, between two instructions with gbr.pc exact. */
+extern uint8_t gbl_safe_request;
+void gbl_platform_safe_point(void); /* weak default: nothing */
+
 /* ---- diagnostics -------------------------------------------------------- */
 extern uint8_t gbl_interp_only;     /* ignore compiled code (reference mode) */
 extern uint32_t gbl_frame;

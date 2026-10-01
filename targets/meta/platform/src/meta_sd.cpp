@@ -134,7 +134,10 @@ int meta_sd_write(uint32_t lba, const uint8_t *src) {
         for (int i = 0; i < 512; i++) SPI.transfer(src[i]);
         SPI.transfer(0xFF); /* CRC (ignored in SPI mode) */
         SPI.transfer(0xFF);
-        uint8_t resp = SPI.transfer(0xFF);
+        /* The data response token follows the CRC, possibly a byte or
+         * more later (gamebuino-emulator answers one byte late). */
+        uint8_t resp = 0xFF;
+        for (int i = 0; i < 8 && resp == 0xFF; i++) resp = SPI.transfer(0xFF);
         if ((resp & 0x1F) == 0x05) { /* data accepted: wait while busy */
             uint32_t start = millis();
             while (SPI.transfer(0xFF) != 0xFF && millis() - start < 500) {}

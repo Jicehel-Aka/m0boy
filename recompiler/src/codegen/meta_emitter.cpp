@@ -1754,6 +1754,13 @@ std::string Generator::emit_config(std::string& error) const {
                      stream_name(opt_.name).append(8 - std::min<size_t>(8, stream_name(opt_.name).size()), ' ') +
                      "SAV\"\n"
                : std::string())
+      /* Save states: GBL_STATE_SLOTS slots of GBL_STATE_SLOT_SECTORS sectors
+       * (a header, the machine within 18 KiB, the cartridge RAM) in a file
+       * the converters create; the firmware offers them when it is there. */
+      << "#define GBL_STATE_NAME \"" + stream_name(opt_.name) + ".STA\"\n#define GBL_STATE_NAME83 \"" +
+             stream_name(opt_.name).append(8 - std::min<size_t>(8, stream_name(opt_.name).size()), ' ') +
+             "STA\"\n#define GBL_STATE_SLOTS 10\n#define GBL_STATE_SLOT_SECTORS " +
+             std::to_string(1 + (18432 + eram + 511) / 512) + "\n"
       << (stream_ ? "#define GBL_ROM_STREAM 1\n#define GBL_ROM_CHUNKS " +
                         std::to_string(chunk_weight_.size()) + "\n" +
                         (pack_ ? std::string("#define GBL_ROM_PACKED 1\n")

@@ -26,6 +26,7 @@
 #include "gbl.h"
 #include "gbl_config.h"
 
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -523,8 +524,73 @@ static void sdl_frame(void) {
 }
 #endif
 
+/* --state-test N M: save a state just after frame N, play M frames, load
+ * it, play the same M frames again; both runs must end in the same state
+ * (compare in --interp or --meta-precise builds: the fast build may take an
+ * interrupt a few instructions apart after the restart). */
+static uint32_t st_frame, st_len, st_end;
+static int st_input_pos;
+static int st_phase; /* 0 off, 1 save requested, 2 saved, 3 load requested, 4 loaded */
+static uint8_t *st_buf;
+static uint32_t st_size, st_pos;
+static uint64_t st_hash1;
+static jmp_buf st_restart;
+
+static void st_write(void *data, uint32_t n, void *ctx) {
+    (void)ctx;
+    st_buf = realloc(st_buf, st_pos + n);
+    memcpy(st_buf + st_pos, data, n);
+    st_pos += n;
+}
+static void st_read(void *data, uint32_t n, void *ctx) {
+    (void)ctx;
+    memcpy(data, st_buf + st_pos, n);
+    st_pos += n;
+}
+static void st_hash_fn(void *data, uint32_t n, void *ctx) {
+    uint64_t *h = ctx;
+    const uint8_t *b = data;
+    for (uint32_t i = 0; i < n; i++) { *h ^= b[i]; *h *= 1099511628211ull; }
+}
+static uint64_t st_machine_hash(void) {
+    uint64_t h = 1469598103934665603ull;
+    gbl_state_io(st_hash_fn, &h, 0);
+    return h;
+}
+
+void gbl_platform_safe_point(void) {
+    if (st_phase == 1) {
+        st_pos = 0;
+        gbl_state_io(st_write, 0, 0);
+        st_size = st_pos;
+        st_input_pos = input_pos;
+        st_phase = 2;
+        printf("state_test saved %u bytes at frame %u pc %04x\n", st_size, gbl_frame, gbr.pc);
+    } else if (st_phase == 3) {
+        st_pos = 0;
+        gbl_state_io(st_read, 0, 1);
+        input_pos = st_input_pos;
+        st_phase = 4;
+        longjmp(st_restart, 1);
+    }
+}
+
 void gbl_platform_vblank(void) {
     uint32_t f = gbl_frame;
+    if (st_len && st_phase == 0 && f == st_frame) {
+        st_phase = 1;
+        gbl_safe_request = 1;
+    } else if (st_phase == 2 && f == st_end) {
+        st_hash1 = st_machine_hash();
+        st_phase = 3;
+        gbl_safe_request = 1;
+    } else if (st_phase == 4 && f == st_end) {
+        uint64_t h2 = st_machine_hash();
+        printf("state_test %s %016llx %016llx\n", h2 == st_hash1 ? "ok" : "FAIL",
+               (unsigned long long)st_hash1, (unsigned long long)h2);
+        fflush(stdout);
+        exit(h2 == st_hash1 ? 0 : 1);
+    }
 #ifdef GBL_ROM_TRACE
     trace_frame();
 #endif
@@ -614,6 +680,12 @@ int main(int argc, char **argv) {
 #endif
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) max_frames = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--state-test") && i + 2 < argc) {
+            st_frame = (uint32_t)atoi(argv[++i]);
+            st_len = (uint32_t)atoi(argv[++i]);
+            st_end = st_frame + st_len;
+            max_frames = 0;
+        }
         else if (!strcmp(argv[i], "--max-seconds") && i + 1 < argc) max_seconds = atof(argv[++i]);
 #if GBL_ERAM_SIZE > 0
         else if (!strcmp(argv[i], "--save") && i + 1 < argc) save_path = argv[++i];
@@ -676,6 +748,7 @@ int main(int argc, char **argv) {
     gbl_stack_limit = (uintptr_t)&base - (uintptr_t)stack_bytes;
     gbl_reset();
     gbl_apu_set_rate(WAV_RATE);
+    setjmp(st_restart); /* a loaded state starts over from gbr.pc */
     gbl_run();
     return 0;
 }

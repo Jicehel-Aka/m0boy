@@ -38,8 +38,13 @@ extern "C" {
 #define AUDIO_TOP 2177u
 #define AUDIO_RATE (48000000u / AUDIO_TOP)
 #define DAC_MID 512u
-/* 8-bit APU sample (128 = silence) to DAC value, half scale around mid. */
-#define DAC_VALUE(s) ((uint16_t)(256u + ((uint16_t)(s) << 1)))
+/* 8-bit APU sample (128 = silence) to DAC value around mid: volume 4 (the
+ * default) is half scale, 8 the DAC's whole range, 0 silence. */
+static uint8_t volume = 4;
+#define DAC_VALUE(s) ((uint16_t)(DAC_MID + ((((int32_t)(s) - 128) * (int32_t)volume) >> 1)))
+
+void meta_audio_set_volume(uint8_t v) { volume = v > 8 ? 8 : v; }
+uint8_t meta_audio_volume(void) { return volume; }
 
 static uint32_t frac;
 

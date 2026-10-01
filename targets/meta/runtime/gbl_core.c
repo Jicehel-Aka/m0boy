@@ -787,7 +787,15 @@ uint16_t gbl_pop(void) {
 
 /* ---- interrupts and execution ------------------------------------------- */
 
+uint8_t gbl_safe_request;
+__attribute__((weak)) void gbl_platform_safe_point(void) {}
+
 int gbl_irq_enter(void) {
+    /* Every caller is between two instructions, gbr.pc exact. */
+    if (gbl_safe_request) {
+        gbl_safe_request = 0;
+        gbl_platform_safe_point();
+    }
     uint8_t pending = gbl_ie & IF & 0x1F;
     if (!gbr.ime || !pending) return 0;
     int bit = 0;
@@ -951,6 +959,24 @@ void gbl_run(void) {
 
 /* ---- reset ---------------------------------------------------------------- */
 
+/* Every page pointer, from the mapper registers. */
+static void map_pages(void) {
+    for (int i = 0; i < 16; i++) { gbl_rmap[i] = 0; gbl_wmap[i] = 0; }
+    for (int i = 0; i < 4; i++) gbl_rmap[i] = gbl_rom;
+    mapped_bank = 0xFFFF;
+    map_rom_bank();
+    gbl_rmap[0x8] = gbl_rmap[0x9] = BIAS(gbl_vram, 0x8000u);
+#if !GBL_VRAM_HOOK
+    gbl_wmap[0x8] = gbl_wmap[0x9] = BIAS(gbl_vram, 0x8000u);
+#endif
+    gbl_rmap[0xC] = gbl_rmap[0xD] = BIAS(gbl_wram, 0xC000u);
+    gbl_wmap[0xC] = gbl_wmap[0xD] = BIAS(gbl_wram, 0xC000u);
+    /* E000-EFFF echoes C000-CFFF (F000-FDFF shares a page with OAM, IO
+     * and HRAM and stays on the slow path). */
+    gbl_rmap[0xE] = gbl_wmap[0xE] = BIAS(gbl_wram, 0xE000u);
+    map_eram();
+}
+
 void gbl_reset(void) {
     memset(&gbr, 0, sizeof(gbr));
     memset(gbl_wram, 0, sizeof(gbl_wram));
@@ -985,22 +1011,82 @@ void gbl_reset(void) {
     serial_busy = 0;
     core_invalidate();
 
-    for (int i = 0; i < 16; i++) { gbl_rmap[i] = 0; gbl_wmap[i] = 0; }
-    for (int i = 0; i < 4; i++) gbl_rmap[i] = gbl_rom;
-    mapped_bank = 0xFFFF;
-    map_rom_bank();
-    gbl_rmap[0x8] = gbl_rmap[0x9] = BIAS(gbl_vram, 0x8000u);
-#if !GBL_VRAM_HOOK
-    gbl_wmap[0x8] = gbl_wmap[0x9] = BIAS(gbl_vram, 0x8000u);
-#endif
-    gbl_rmap[0xC] = gbl_rmap[0xD] = BIAS(gbl_wram, 0xC000u);
-    gbl_wmap[0xC] = gbl_wmap[0xD] = BIAS(gbl_wram, 0xC000u);
-    /* E000-EFFF echoes C000-CFFF (F000-FDFF shares a page with OAM, IO
-     * and HRAM and stays on the slow path). */
-    gbl_rmap[0xE] = gbl_wmap[0xE] = BIAS(gbl_wram, 0xE000u);
-    map_eram();
+    map_pages();
 
     gbl_apu_reset();
     gbl_ppu_reset();
     gbl_update_evt();
+}
+
+/* ---- save states ------------------------------------------------------------ */
+
+static uint8_t io_counting; /* gbl_state_bytes: no card access */
+
+static void state_mem(gbl_state_fn io, void *ctx, int load) {
+    io(&gbr, sizeof(gbr), ctx);
+    io(gbl_wram, sizeof(gbl_wram), ctx);
+    io(gbl_vram, sizeof(gbl_vram), ctx);
+    io(gbl_oam, sizeof(gbl_oam), ctx);
+    io(gbl_hram, sizeof(gbl_hram), ctx);
+    io(gbl_io, sizeof(gbl_io), ctx);
+    io(&gbl_ie, sizeof(gbl_ie), ctx);
+    io(&mbc, sizeof(mbc), ctx);
+    io(&gbl_timer_state, sizeof(gbl_timer_state), ctx);
+    io(&buttons, sizeof(buttons), ctx);
+    io(&gbl_frame, sizeof(gbl_frame), ctx);
+#if GBL_ERAM_SIZE > 0 && GBL_ERAM_ON_SD
+    /* The cartridge RAM is the save file: copied through the sector cache's
+     * first buffer, whose contents were written back first. */
+    if (!io_counting) gbl_save_flush();
+    for (uint32_t sec = 0; sec * 512u < GBL_ERAM_SIZE; sec++) {
+        if (io_counting) {
+            io(eram_buf[0], 512, ctx);
+        } else if (load) {
+            io(eram_buf[0], 512, ctx);
+            gbl_platform_save_write(sec, eram_buf[0]);
+        } else {
+            if (!gbl_platform_save_read(sec, eram_buf[0])) memset(eram_buf[0], 0xFF, 512);
+            io(eram_buf[0], 512, ctx);
+        }
+    }
+    if (!io_counting) eram_reset();
+#elif GBL_ERAM_SIZE > 0
+    io(gbl_eram, GBL_ERAM_SIZE, ctx);
+#if GBL_BATTERY
+    if (load) { /* the save file follows the loaded RAM (meta_save_tick) */
+        eram_dirty_mask = 0xFFFFFFFFu >> (32u - (GBL_ERAM_SIZE + 511u) / 512u);
+        save_pending = 1;
+        gbl_save_last_change = gbl_frame;
+    }
+#endif
+#endif
+    (void)load;
+}
+
+void gbl_state_io(gbl_state_fn io, void *ctx, int load) {
+    state_mem(io, ctx, load);
+    gbl_ppu_state_io(io, ctx, load);
+    gbl_apu_state_io(io, ctx, load);
+    if (!load) return;
+    map_pages();
+#if GBL_LOOKUP_CACHE
+    for (int i = 0; i < GBL_LOOKUP_CACHE; i++) lookup_cache[i].pc = 0xFFFF;
+#endif
+    joypad_update();
+    core_invalidate();
+    gbl_update_evt();
+}
+
+static void count_bytes(void *data, uint32_t bytes, void *ctx) {
+    (void)data;
+    *(uint32_t *)ctx += bytes;
+}
+
+/* Size of a state (nothing is read or written: counting only). */
+uint32_t gbl_state_bytes(void) {
+    uint32_t n = 0;
+    io_counting = 1;
+    gbl_state_io(count_bytes, &n, 0);
+    io_counting = 0;
+    return n;
 }

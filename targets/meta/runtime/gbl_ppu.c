@@ -1025,3 +1025,28 @@ void gbl_ppu_reset(void) {
     sig_frame_start();
 #endif
 }
+
+/* Save states (gbl_state_io of gbl_core.c): the line state machine; after
+ * a load, everything derived from VRAM, OAM and the registers is voided. */
+void gbl_ppu_state_io(gbl_state_fn io, void *ctx, int load) {
+    io(&gbl_ppu_state, sizeof(gbl_ppu_state), ctx);
+    if (!load) return;
+    P.evt_dirty = 1;
+    P.moved = 1;
+    P.spr_ly = 0xFF;
+    gbl_oam_dirty = 1;
+    gbl_ppu_palette_changed();
+    bgp_byte_bgp = -1;
+#if GBL_PPU_PAL32
+    pal32_bgp = -1;
+#endif
+#if GBL_LINE_SIGNATURE
+    for (unsigned i = 0; i < 384; i++) tile_ver[i]++;
+    for (unsigned i = 0; i < 64; i++) gbl_ppu_map_ver[i]++;
+    tile_epoch++;
+#endif
+#if GBL_FRAME_SIGNATURE
+    content_epoch++;
+#endif
+    update_due();
+}

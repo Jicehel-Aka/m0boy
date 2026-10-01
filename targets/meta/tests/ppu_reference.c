@@ -14,7 +14,7 @@
 
 const uint8_t gbl_rom[0x8000];
 const uint32_t gbl_rom_size = sizeof(gbl_rom);
-const gbl_bank_table gbl_tables[2] = {{0, 0, 0}, {0, 0, 0}};
+const gbl_bank_table gbl_tables[2] = {{0, 0, 0, 0}, {0, 0, 0, 0}};
 const uint16_t gbl_table_count = 2;
 
 static uint16_t line[160] __attribute__((aligned(4)));

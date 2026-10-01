@@ -15,7 +15,10 @@ Deux ajouts, sans lesquels les firmwares gbrecomp ne tournent pas :
 Pas de son (TC4 et le DAC ne sont pas émulés). Le DMAC n'émule que le
 canal de l'écran (déclencheur SERCOM4 TX), en copie instantanée ; les
 canaux à un autre déclencheur (l'audio des firmwares, TC4 vers le DAC)
-sont ignorés, et chaque canal garde sa propre chaîne de descripteurs. Le temps suit le modèle de
+sont ignorés, et chaque canal garde sa propre chaîne de descripteurs.
+La carte SD non sélectionnée ne pilote plus le bus : avant, elle écrasait
+la réponse des boutons (lus sur le même SERCOM) et aucun bouton ne
+marchait dès qu'une carte était chargée. Le temps suit le modèle de
 l'original (20 MIPS), pas la vitesse réelle de la console.
 
 ## Dans le navigateur

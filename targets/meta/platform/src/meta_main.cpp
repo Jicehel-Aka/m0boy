@@ -34,6 +34,7 @@
 #include "meta_menu.h"
 #include "meta_sd.h"
 #include "meta_save.h"
+#include "meta_state.h"
 #include "meta_stream.h"
 
 extern "C" {
@@ -191,7 +192,12 @@ enum { FSKIP_AUTO, FSKIP_NONE, FSKIP_HALF, FSKIP_THIRD, FSKIP_QUARTER, FSKIP_MOD
 static uint8_t skip_mode = FSKIP_AUTO;
 static uint8_t fast_mode; /* menu "Vitesse": no frame limit */
 static uint16_t last_frames, last_shown; /* previous second, for the menu */
-static jmp_buf restart_point;             /* menu "Redemarrer" */
+static jmp_buf restart_point;             /* menu "Redemarrer", loaded states */
+#ifdef GBL_STATE_SLOTS
+#define GBL_STATE_SLOTS_OR_1 GBL_STATE_SLOTS
+#else
+#define GBL_STATE_SLOTS_OR_1 1
+#endif
 
 static uint32_t stat_start_ms, idle_us;
 static int save_state;
@@ -250,39 +256,110 @@ static char *put_uint(char *p, unsigned v) {
     return p;
 }
 
-enum { M_RESUME, M_RESTART, M_SCREEN, M_PALETTE, M_SKIP, M_SPEED, M_CLOCK, M_QUIT };
+/* Save states: the menu picks the slot and the operation, which runs at
+ * the next instruction boundary (gbl_platform_safe_point). */
+enum { STATE_NONE, STATE_SAVE, STATE_LOAD };
+static uint8_t state_slot, state_op;
+static const char *state_msg; /* result, shown once by the next menu */
+static char slot_text[GBL_STATE_SLOTS_OR_1][8];
+static const char *slot_names[GBL_STATE_SLOTS_OR_1];
+static const char *const volume_names[9] = {"0", "1", "2", "3", "4", "5", "6", "7", "8"};
+
+static void name_slots(void) {
+    uint16_t used = meta_state_used();
+    for (unsigned i = 0; i < GBL_STATE_SLOTS_OR_1; i++) {
+        char *p = put_uint(slot_text[i], i + 1u);
+        if (!(used >> i & 1u)) memcpy(p, " vide", 6);
+        else *p = 0;
+        slot_names[i] = slot_text[i];
+    }
+}
+
+enum { M_RESUME, M_RESTART, M_SLOT, M_SAVE, M_LOAD, M_VOLUME, M_SCREEN, M_PALETTE, M_SKIP,
+       M_SPEED, M_CLOCK, M_QUIT };
 
 static void option_menu(void) {
     uint8_t mode = meta_display_mode(), pal = meta_display_palette(), skip = skip_mode;
-    uint8_t fast = fast_mode, mhz = meta_clock_mhz() == 72;
-    const meta_menu_item items[] = {
-        {"Reprendre", META_MENU_ACTION, 0, 0, 0},
-        {"Redemarrer", META_MENU_ACTION, 0, 0, 0},
-        {"Ecran", META_MENU_CHOICE, &mode, META_MODE_COUNT, mode_names},
-        {"Palette", META_MENU_CHOICE, &pal, META_PALETTE_COUNT, meta_palette_names},
-        {"Images", META_MENU_CHOICE, &skip, FSKIP_MODES, skip_names},
-        {"Vitesse", META_MENU_CHOICE, &fast, 2, speed_names},
-        {"Processeur", META_MENU_CHOICE, &mhz, 2, clock_names},
-        {"Quitter", META_MENU_ACTION, 0, 0, 0},
-    };
-    /* "59 ips, 41 vues": emulated and drawn frames of the last second. */
-    char info[32], *p = put_uint(info, last_frames);
-    memcpy(p, " ips, ", 6);
-    p = put_uint(p + 6, last_shown);
-    memcpy(p, " vues", 6);
-    int action = meta_menu_run(GBL_TITLE, items, sizeof(items) / sizeof(items[0]), meta_buttons, info);
+    uint8_t fast = fast_mode, mhz = meta_clock_mhz() == 72, vol = meta_audio_volume();
+    uint8_t slot = state_slot;
+    meta_menu_item items[13];
+    uint8_t ids[13];
+    unsigned n = 0;
+#define ADD(id, label, type, value, count, names) \
+    (ids[n] = (id), items[n++] = (meta_menu_item){label, type, value, count, names})
+    ADD(M_RESUME, "Reprendre", META_MENU_ACTION, 0, 0, 0);
+    ADD(M_RESTART, "Redemarrer", META_MENU_ACTION, 0, 0, 0);
+    if (meta_state_available()) {
+        name_slots();
+        ADD(M_SLOT, "Etat", META_MENU_CHOICE, &slot, GBL_STATE_SLOTS_OR_1, slot_names);
+        ADD(M_SAVE, "Sauver l'etat", META_MENU_ACTION, 0, 0, 0);
+        ADD(M_LOAD, "Charger l'etat", META_MENU_ACTION, 0, 0, 0);
+    }
+    ADD(M_VOLUME, "Volume", META_MENU_CHOICE, &vol, 9, volume_names);
+    ADD(M_SCREEN, "Ecran", META_MENU_CHOICE, &mode, META_MODE_COUNT, mode_names);
+    ADD(M_PALETTE, "Palette", META_MENU_CHOICE, &pal, META_PALETTE_COUNT, meta_palette_names);
+    ADD(M_SKIP, "Images", META_MENU_CHOICE, &skip, FSKIP_MODES, skip_names);
+    ADD(M_SPEED, "Vitesse", META_MENU_CHOICE, &fast, 2, speed_names);
+    ADD(M_CLOCK, "Processeur", META_MENU_CHOICE, &mhz, 2, clock_names);
+    ADD(M_QUIT, "Quitter", META_MENU_ACTION, 0, 0, 0);
+#undef ADD
+    /* "59 ips, 41 vues": emulated and drawn frames of the last second, or
+     * the result of the last save state operation. */
+    char info[32];
+    if (state_msg) {
+        strcpy(info, state_msg);
+        state_msg = 0;
+    } else {
+        char *p = put_uint(info, last_frames);
+        memcpy(p, " ips, ", 6);
+        p = put_uint(p + 6, last_shown);
+        memcpy(p, " vues", 6);
+    }
+    int line = meta_menu_run(GBL_TITLE, items, n, meta_buttons, info);
+    int action = line >= 0 ? ids[line] : -1;
     if (action == M_QUIT) enter_loader();
     skip_mode = skip;
     fast_mode = fast;
+    state_slot = slot;
+    meta_audio_set_volume(vol);
     meta_clock_set(mhz ? 72 : 48);
     if (pal != meta_display_palette()) meta_display_set_palette(pal);
     meta_display_set_mode(mode); /* also redraws the whole picture */
     skipped_run = 0;
     pace_reset();
+    if (action == M_SAVE || action == M_LOAD) {
+        state_op = action == M_SAVE ? STATE_SAVE : STATE_LOAD;
+        gbl_safe_request = 1;
+        gbr.next_evt = gbr.cyc; /* reach an interrupt check soon */
+    }
     if (action == M_RESTART) {
         gbl_save_flush(); /* gbl_reset reads the cartridge RAM back */
         longjmp(restart_point, 1);
     }
+}
+
+/* Between two instructions (gbl_irq_enter): run the menu's save state
+ * operation.  The strip buffers serve as the sector buffer. */
+extern "C" void gbl_platform_safe_point(void) {
+    uint8_t op = state_op;
+    state_op = STATE_NONE;
+    if (op == STATE_NONE) return;
+    unsigned rows;
+    uint8_t *buf = (uint8_t *)meta_display_scratch(&rows);
+    meta_lcd_wait();
+    meta_lcd_end_frame();
+    if (op == STATE_SAVE) {
+        state_msg = meta_state_save(state_slot, buf) ? "Etat sauve" : "Echec sauvegarde";
+        return;
+    }
+    if (!meta_state_load(state_slot, buf)) {
+        state_msg = "Echec chargement";
+        return;
+    }
+    state_msg = "Etat charge";
+    meta_display_set_mode(meta_display_mode());
+    pace_reset();
+    longjmp(restart_point, 2); /* the machine as loaded: start over from gbr.pc */
 }
 
 extern "C" void gbl_platform_vblank(void) {
@@ -444,6 +521,10 @@ void setup() {
 #endif
     /* Also before gbl_reset, which loads the saved cartridge RAM. */
     save_state = meta_save_init(card_ok);
+    {
+        unsigned rows;
+        meta_state_init(card_ok, (uint8_t *)meta_display_scratch(&rows));
+    }
 #if GBL_ERAM_SIZE > 0 && GBL_ERAM_ON_SD
     if (save_state == META_SAVE_MISSING)
         boot_error(0xE0FF, /* yellow */
@@ -463,8 +544,7 @@ void setup() {
 
     /* The menu's "Redemarrer" comes back here (from inside the emulation:
      * longjmp drops its C frames). */
-    setjmp(restart_point);
-    gbl_reset();
+    if (setjmp(restart_point) != 2) gbl_reset(); /* 2: a state was loaded */
     gbl_skip_render = 0;
     pace_reset();
     stat_start_ms = millis();

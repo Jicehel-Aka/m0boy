@@ -508,6 +508,20 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
     fi
     echo "[i] Sauvegarde : $game_name/$save_name (déjà sur la carte : ne plus y toucher)"
   fi
+  # États sauvegardés : un fichier de GBL_STATE_SLOTS emplacements, créé une
+  # fois (jamais écrasé : il contient les états) ; sans lui, le menu de la
+  # console n'offre pas Sauver/Charger l'état.
+  local state_name state_slots state_sectors
+  state_name=$(sed -n 's/^#define GBL_STATE_NAME "\(.*\)"$/\1/p' "$out_dir/src/gbl_config.h")
+  state_slots=$(sed -n 's/^#define GBL_STATE_SLOTS \([0-9]*\)$/\1/p' "$out_dir/src/gbl_config.h")
+  state_sectors=$(sed -n 's/^#define GBL_STATE_SLOT_SECTORS \([0-9]*\)$/\1/p' "$out_dir/src/gbl_config.h")
+  if [ -n "$state_name" ] && [ -n "$state_slots" ] && [ -n "$state_sectors" ]; then
+    local state_bytes=$((state_slots * state_sectors * 512))
+    if [ ! -f "$game_dir/$state_name" ] || [ "$(stat -c %s "$game_dir/$state_name")" -lt "$state_bytes" ]; then
+      head -c "$state_bytes" /dev/zero > "$game_dir/$state_name"
+    fi
+    echo "[i] États : $game_name/$state_name ($state_slots emplacements, $((state_bytes / 1024)) Kio)"
+  fi
   # ROM trop grosse pour la flash : le firmware la lit sur la carte SD.
   local stream_name
   stream_name=$(sed -n 's/^#define GBL_STREAM_NAME "\(.*\)"$/\1/p' "$out_dir/src/gbl_config.h")

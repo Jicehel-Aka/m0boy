@@ -118,6 +118,9 @@ function is a livelock, not slowness.
   recomputation on raster-heavy Batman (~11%), and generated code.
 
 - Run on hardware: SD streaming, saves, asm paths, frame pacing.
+- Option menu (HOME held ½ s, 2026-10-01): save states in `<NAME>.STA`,
+  volume, palettes, frame skip, speed, 72 MHz (untested on a META), restart;
+  checked in gamebuino-emulator and by the host `--state-test`.
 - Packed builds have not run in gamebuino-emulator yet.
 - Decide whether `PACK=1` should become the default for ROMs under 256 KiB
   whose code does not fit (measure more games than R.C. Pro-Am).

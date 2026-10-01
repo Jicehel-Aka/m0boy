@@ -269,6 +269,9 @@ gauche/droite (ou A) change la valeur, B ou HOME referme.
 |---|---|
 | Reprendre | retour au jeu |
 | Redemarrer | relance le jeu (la sauvegarde est écrite avant) |
+| Etat | emplacement 1 à 10 (« vide » s'il n'a pas d'état) |
+| Sauver l'etat / Charger l'etat | sauve ou recharge l'état de l'emplacement choisi |
+| Volume | 0 à 8 (4 par défaut) |
 | Ecran | mode d'affichage (ci-dessous) |
 | Palette | Vert, Gris, Pocket, Ambre, Bleu (SMOOTH reste en vert) |
 | Images | saut d'images : Auto (n'affiche pas les images en retard), Aucun, 1 sur 2, 1 sur 3, 1 sur 4 |
@@ -276,7 +279,13 @@ gauche/droite (ou A) change la valeur, B ou HOME referme.
 | Processeur | 48 MHz ou 72 MHz (surcadencé, hors spécification du SAMD21 : à essayer, retour à 48 MHz si instable) |
 | Quitter | retour au loader Gamebuino |
 
-Sous les lignes : images émulées et affichées pendant la dernière seconde.
+Sous les lignes : images émulées et affichées pendant la dernière seconde,
+ou le résultat de la dernière sauvegarde d'état.
+
+Les états sont dans le fichier `<NOM>.STA` que le convertisseur crée à côté
+du `.bin` (10 emplacements) : copie-le sur la carte avec le jeu. Sans lui,
+les lignes d'état n'apparaissent pas. Un état ne se recharge qu'avec le
+firmware qui l'a écrit (une nouvelle version de gbrecomp le refuse).
 Les choix ne sont pas gardés à l'extinction.
 
 Modes d'affichage (les 144 lignes Game Boy sur les 128 de la META) :
