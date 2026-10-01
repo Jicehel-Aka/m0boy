@@ -600,7 +600,20 @@ entirely interpreted (400 frames) −7% to −27% (R.C. Pro-Am, Faceball,
 Prehistorik Man, DKL −23%); normal runs −0.1% to −3.9%, p99 up to −8%,
 frames over the budget Prehistorik Man 537 → 398, R.C. Pro-Am 42 → 31,
 Altered Space 45 → 29, Faceball 113 → 98 (estimator, `BENCH_LINE_SKIP`
-and `BENCH_STATIC_SKIP`, 1,600 frames).
+and `BENCH_STATIC_SKIP`, 1,600 frames). The register offsets and
+`gbl_exec`'s bound now share one RAM structure (`gbl_interp_ctx`) that
+`r8` points to, which removes two flash literal loads per transfer
+(−0.1% to −0.6%).
+
+Tried and dropped, on the same panel: remembering the address range
+around the last transfer target with no compiled entry, to skip
+`gbl_lookup` (±0.3% in normal runs, +2% interpreted: the lookups of the
+heavy frames come from the dispatcher, not the interpreter); the whole
+interpreter in SRAM (no gain, 2.4 KiB of RAM); fast-forwarding interpreted
+wait loops (traced on the host: the hottest interpreted loops are the OAM
+DMA delay loop in HRAM, which the `DEC A / JR NZ` shortcut already skips,
+and memory fills; the one real wait, Altered Space's LY loop, runs about
+five iterations per frame).
 
 Ten more games (`panel.txt`: software 3D, isometric, non-identity BGP,
 RPG menus, beat 'em up) found three more things: the ALU helpers called by

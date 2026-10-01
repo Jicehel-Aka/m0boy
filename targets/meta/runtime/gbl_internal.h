@@ -34,6 +34,14 @@ void gbl_apu_write(uint8_t n, uint8_t v);
 uint8_t gbl_rd_slow(uint16_t a);         /* gbl_rd for unmapped pages */
 void gbl_wr_slow(uint16_t a, uint8_t v); /* gbl_wr for unmapped pages */
 
+/* Interpreter state kept in RAM for gbl_interp_asm.S (gbl_core.c). */
+typedef struct {
+    uint8_t regofs[8];
+    uint16_t sp0;    /* innermost gbl_exec's entry SP */
+    uint8_t bounded; /* 0 under gbl_run */
+} gbl_interp_ctx_t;
+extern gbl_interp_ctx_t gbl_interp_ctx;
+
 int gbl_irq_enter(void);     /* push PC and vector if IME and pending */
 void gbl_halt_wait(void);    /* advance time until an interrupt is pending */
 

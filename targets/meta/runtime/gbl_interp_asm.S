@@ -41,9 +41,14 @@
 #define R_CYC 20
 #define R_NEXT 24
 
+/* gbl_interp_ctx_t (gbl_internal.h): register offsets, then the innermost
+ * gbl_exec's bound */
+#define SP0 8
+#define BOUNDED 10
+
 /* r4 = gbr, r5 = instructions not yet added to gbl_interp_instrs,
  * r6 = address of the opcode (operands at r6 + 1, r6 + 2; a copy when the
- * fetch went through gbl_rd), r7 = opcode, r8 = register offsets,
+ * fetch went through gbl_rd), r7 = opcode, r8 = gbl_interp_ctx (register offsets first),
  * r9 = gbl_cyc_main, r10 = gbl_rmap, r11 = dispatch table.  r0-r3 are
  * scratch and do not survive calls. */
 
@@ -222,12 +227,11 @@ gbl_interp_block:
      * again: gbl_exec's frame not left (its SP bound), and no compiled code
      * at the target.  Same block boundaries, without the return, the
      * dispatcher loop and the call. */
-    ldr     r0, .Lbounded
-    ldrb    r0, [r0]
+    mov     r3, r8
+    ldrb    r0, [r3, #BOUNDED]
     cmp     r0, #0
     beq     1f
-    ldr     r0, .Lsp0
-    ldrh    r0, [r0]
+    ldrh    r0, [r3, #SP0]
     ldrh    r1, [r4, #R_SP]
     subs    r1, r1, r0
     sxth    r1, r1
@@ -258,15 +262,13 @@ gbl_interp_block:
 
     .align 2
 .Lgbr:      .word gbr
-.Lregofs:   .word .Lreg_offsets
+.Lregofs:   .word gbl_interp_ctx
 .Lrmap:     .word gbl_rmap
 .Ltable:    .word .Lt
 .Lcyc:      .word gbl_cyc_main
 .Linstrs:   .word gbl_interp_instrs
-.Lbounded:  .word gbl_exec_bounded
-.Lsp0:      .word gbl_exec_sp0
-.Linterp_only: .word gbl_interp_only
 .Lbuf:      .word gbl_interp_fetch_buf
+.Linterp_only: .word gbl_interp_only
 
 /* ---- handlers (offsets from the dispatch table at the end) ---- */
 
@@ -1012,8 +1014,6 @@ H_CCF:
     .hword (H_C - .Lt) / 2, (H_JPHL - .Lt) / 2, (H_ST_NN - .Lt) / 2, (H_C - .Lt) / 2, (H_C - .Lt) / 2, (H_C - .Lt) / 2, (H_ALUN_XOR - .Lt) / 2, (H_RST - .Lt) / 2
     .hword (H_LDH_LD - .Lt) / 2, (H_C - .Lt) / 2, (H_LDC_LD - .Lt) / 2, (H_DI - .Lt) / 2, (H_C - .Lt) / 2, (H_C - .Lt) / 2, (H_ALUN_OR - .Lt) / 2, (H_RST - .Lt) / 2
     .hword (H_C - .Lt) / 2, (H_LDSPHL - .Lt) / 2, (H_LD_NN - .Lt) / 2, (H_C - .Lt) / 2, (H_C - .Lt) / 2, (H_C - .Lt) / 2, (H_ALUN_CP - .Lt) / 2, (H_RST - .Lt) / 2
-.Lreg_offsets:
-    .byte   1, 0, 3, 2, 5, 4, 0xFF, R_A   /* B C D E H L (HL) A */
     .size gbl_interp_block, . - gbl_interp_block
 
     .section .bss.gbl_interp_fetch_buf, "aw", %nobits

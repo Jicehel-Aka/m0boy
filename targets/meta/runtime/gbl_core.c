@@ -877,6 +877,12 @@ gbl_fn gbl_lookup(uint16_t pc) {
 #undef gbl_lookup
 #endif
 
+/* The assembly interpreter's register offsets (B C D E H L - A) and the
+ * innermost gbl_exec's bound (see gbl_exec), in RAM next to each other. */
+gbl_interp_ctx_t gbl_interp_ctx = {{1, 0, 3, 2, 5, 4, 0xFF, 10}, 0, 0};
+_Static_assert(offsetof(gbl_interp_ctx_t, sp0) == 8 && offsetof(gbl_interp_ctx_t, bounded) == 10,
+               "gbl_interp_ctx_t layout");
+
 /* gbl_exec only runs with this much stack above gbl_stack_limit, so the
  * region it calls always passes its own ENTER() check: otherwise a region
  * refused at entry would be called again forever without progress (seen
@@ -888,8 +894,8 @@ gbl_fn gbl_lookup(uint16_t pc) {
 /* The innermost gbl_exec's entry SP, or no bound under gbl_run: the
  * assembly interpreter continues across a transfer only while this loop
  * would call it again (gbl_interp_asm.S). */
-uint16_t gbl_exec_sp0;
-uint8_t gbl_exec_bounded;
+#define gbl_exec_sp0 gbl_interp_ctx.sp0
+#define gbl_exec_bounded gbl_interp_ctx.bounded
 
 void gbl_exec(void) {
     char probe;

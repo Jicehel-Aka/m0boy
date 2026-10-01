@@ -43,7 +43,7 @@ def find_gcc():
     sys.exit("arm-none-eabi-gcc not found (install PlatformIO's atmelsam platform)")
 
 
-def write_inputs(path, input_file):
+def write_inputs(path, input_file, frames):
     rows = []
     if input_file:
         for line in open(input_file):
@@ -56,11 +56,12 @@ def write_inputs(path, input_file):
                 for tok in btn.split("+"):
                     if tok != "none":
                         mask |= BUTTONS[tok]
-            rows.append((int(frame), mask))
+            if int(frame) <= frames:  # later rows are never reached
+                rows.append((int(frame), mask))
     if not rows:
         rows = [(0xFFFF, 0)]
     with open(path, "w") as f:
-        f.write("static const struct { uint16_t frame; uint8_t buttons; } bench_inputs[] = {\n")
+        f.write("static const struct { uint32_t frame; uint8_t buttons; } bench_inputs[] = {\n")
         for fr, m in rows:
             f.write("    {%d, %d},\n" % (fr, m))
         f.write("};\n")
@@ -69,7 +70,7 @@ def write_inputs(path, input_file):
 def build(project, out_dir, frames, opt, input_file, extra):
     src = os.path.join(project, "src")
     os.makedirs(out_dir, exist_ok=True)
-    write_inputs(os.path.join(out_dir, "bench_input.h"), input_file)
+    write_inputs(os.path.join(out_dir, "bench_input.h"), input_file, frames)
     sources = sorted(os.path.join(src, f) for f in os.listdir(src)
                      if (f.endswith(".c") or f.endswith(".S")) and (f.startswith("gbl_") or f.endswith("_gen.c") or f.endswith("_rom.c")))
     sources.append(os.path.join(HERE, "bench_main.c"))
