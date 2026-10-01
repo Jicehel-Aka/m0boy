@@ -111,19 +111,27 @@ On the META:
 
 The option menu (`meta_menu.cpp`, after the menus of fgb, the GP32 port of
 gnuboy) pauses the game: up/down pick a line, left/right (or A) change its
-value, A runs an action, B or HOME closes it. Its text uses a Gdl font in
-the 4-bit agf format (`meta_font.h`, made from dstar's greenfont by
-`tools/font/agf2meta.py`, 6.2 KiB of flash), drawn through the strip
-buffers of the display pipeline. Options (not kept across power-off):
+value, A runs an action, B or HOME closes it. Its text uses dstar's
+greenfont, converted from Gdl's agf format to 2 bits a pixel by
+`tools/font/agf2meta.py` (`meta_font.h`, 1.5 KiB of flash instead of 6.6 KiB
+as agf), drawn through the strip buffers of the display pipeline. Under
+the lines, the emulated and drawn frames of the last second. Options (not
+kept across power-off), from fgb's menu where they apply on the META:
 
 | Line | Values |
 | --- | --- |
 | Reprendre | back to the game |
+| Redemarrer | writes the save, then `gbl_reset()` and `gbl_run()` again (a `longjmp` back to `setup()`) |
 | Ecran | display mode (below) |
 | Palette | Vert (default), Gris, Pocket, Ambre, Bleu: every mode but SMOOTH, whose 4 KiB colour tables are built at compile time for the first one. TBLEND's ½-weight table is built from the palette in RAM (1 KiB, in the union of mode buffers) |
 | Images | frame skip: Auto (default: when emulation falls a frame behind, up to `META_MAX_SKIP` frames in a row are not rendered), Aucun, 1 sur 2/3/4 (one frame rendered in two, three, four) |
+| Vitesse | Normale, or Rapide: no frame limit (fgb's Synchronization off) |
 | Processeur | 48 MHz (default) or 72 MHz (below) |
 | Quitter | back to the Gamebuino loader |
+
+Not taken from fgb: save states (they need new files on the card, which
+the FAT code does not create), gamma (the palettes cover it), double
+buffering and the CGB/debug switches (no use here).
 
 Pacing keeps the 59.73 Hz rate with an accumulator of elapsed time against
 emulated frames (Gdl's `rate`): an early frame waits, and the automatic

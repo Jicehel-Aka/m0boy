@@ -1,7 +1,7 @@
 /*
  * Option menu: fgb's menu model (typed lines, a cursor, left/right to change
- * a value) drawn with a Gdl font in its 4-bit agf format (meta_font.h, from
- * the greenfont of dstar).  The screen is drawn in 8-pixel bands through the
+ * a value) drawn with dstar's greenfont, converted from Gdl's agf format to
+ * 2 bits a pixel by tools/font/agf2meta.py (meta_font.h).  The screen is drawn in 8-pixel bands through the
  * display's strip buffers, redrawn only when something changes.
  */
 #include "meta_menu.h"
@@ -30,87 +30,74 @@ static void wait_ms(uint32_t ms) {
 
 static uint16_t to565(uint32_t rgb) { return (uint16_t)RGB565_BE(rgb); }
 
-/* One agf glyph (Gdl's 4-bit RLE: "agf", colours, sx, sy, palette, then per
- * line a run count and runs of jump, size, two pixels a byte), clipped to
- * the band [band_y, band_y + 8). */
-static void draw_glyph(uint16_t *band, int band_y, int x, int y, const uint8_t *g) {
-    unsigned colours = g[3];
-    unsigned sy = g[10] | g[11] << 8;
-    const uint8_t *p = g + 16;
-    uint16_t pal[16];
-    for (unsigned i = 0; i < colours && i < 16; i++, p += 4)
-        pal[i] = to565((uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16);
-    for (unsigned l = 0; l < sy; l++) {
-        unsigned runs = *p++;
-        int row = y + (int)l - band_y;
-        int px = x;
-        while (runs--) {
-            unsigned jump = p[0], size = p[1];
-            p += 2;
-            px += (int)jump;
-            for (unsigned i = 0; i < size; i++) {
-                unsigned c = (i & 1) ? (p[i >> 1] & 15u) : (p[i >> 1] >> 4);
-                if (row >= 0 && row < 8 && px + (int)i >= 0 && px + (int)i < 160 && c < colours)
-                    band[row * 160 + px + (int)i] = pal[c];
-            }
-            p += (size + 1) >> 1;
-            px += (int)size;
+static uint16_t font_colour[3];
+
+/* One glyph of meta_font.h (2 bits a pixel, 0 transparent) at band row 0. */
+static void draw_glyph(uint16_t *band, int x, unsigned c) {
+    for (unsigned r = 0; r < META_FONT_HEIGHT; r++) {
+        uint32_t bits = meta_font_rows[c][r];
+        uint16_t *d = band + r * 160 + x;
+        for (int i = 0; bits; i++, bits = (bits << 2) & 0xFFFFu) {
+            unsigned v = bits >> 14;
+            if (v && x + i >= 0 && x + i < 160) d[i] = font_colour[v - 1];
         }
     }
+}
+
+static unsigned glyph(char ch) {
+    unsigned c = (uint8_t)ch - META_FONT_FIRST;
+    return c < META_FONT_COUNT ? c : (unsigned)('*' - META_FONT_FIRST);
 }
 
 static int text_width(const char *s) {
     int w = 0;
-    for (; *s; s++) {
-        unsigned c = (uint8_t)*s - META_FONT_FIRST;
-        w += c < META_FONT_COUNT ? meta_font[c][8] : 8;
-    }
+    for (; *s; s++) w += meta_font_width[glyph(*s)];
     return w;
 }
 
-static void draw_text(uint16_t *band, int band_y, int x, int y, const char *s) {
+static void draw_text(uint16_t *band, int x, const char *s) {
     for (; *s; s++) {
-        unsigned c = (uint8_t)*s - META_FONT_FIRST;
-        if (c >= META_FONT_COUNT) c = '*' - META_FONT_FIRST;
-        draw_glyph(band, band_y, x, y, meta_font[c]);
-        x += meta_font[c][8];
+        unsigned c = glyph(*s);
+        draw_glyph(band, x, c);
+        x += meta_font_width[c];
     }
 }
 
-/* Lines: the title on band 0, item i on band 2 + 2i, the hint on band 15. */
+/* Bands of 8 rows: the title on band 0, item i on band 2 + i, the
+ * information line on band 13, the hint on band 15. */
 static void draw(uint16_t *buf, const char *title, const meta_menu_item *items, unsigned n,
-                 unsigned sel) {
+                 unsigned sel, const char *info) {
     for (int b = 0; b < 16; b++) {
-        int y = b * 8;
-        uint16_t fill = b == 0 ? title_bg : bg;
-        int item = (b >= 2 && !(b & 1)) ? (b - 2) / 2 : -1;
+        int item = b - 2;
         if (item >= (int)n) item = -1;
-        if (item >= 0 && (unsigned)item == sel) fill = bar;
+        uint16_t fill = b == 0 ? title_bg : (item >= 0 && (unsigned)item == sel) ? bar : bg;
         for (int i = 0; i < 160 * 8; i++) buf[i] = fill;
-        if (b == 0) draw_text(buf, y, (160 - text_width(title)) / 2, y, title);
-        if (b == 15) draw_text(buf, y, 4, y, "A:ok   B:retour");
+        if (b == 0) draw_text(buf, (160 - text_width(title)) / 2, title);
+        if (b == 13 && info) draw_text(buf, (160 - text_width(info)) / 2, info);
+        if (b == 15) draw_text(buf, 4, "A:ok   B:retour");
         if (item >= 0) {
             const meta_menu_item *it = &items[item];
-            draw_text(buf, y, 4, y, it->label);
+            draw_text(buf, 4, it->label);
             if (it->type == META_MENU_CHOICE) {
                 const char *v = it->choices[*it->value];
                 int w = text_width(v);
                 if ((unsigned)item == sel) {
-                    draw_text(buf, y, 160 - 4 - w - 16, y, "<");
-                    draw_text(buf, y, 160 - 4 - 8, y, ">");
+                    draw_text(buf, 160 - 4 - w - 16, "<");
+                    draw_text(buf, 160 - 4 - 8, ">");
                 }
-                draw_text(buf, y, 160 - 4 - 8 - 4 - w, y, v);
+                draw_text(buf, 160 - 4 - 8 - 4 - w, v);
             }
         }
-        meta_lcd_send_rows(buf, (uint8_t)y, 8);
+        meta_lcd_send_rows(buf, (uint8_t)(b * 8), 8);
         meta_lcd_wait(); /* the buffer is reused for the next band */
     }
     meta_lcd_end_frame();
 }
 
 int meta_menu_run(const char *title, const meta_menu_item *items, unsigned n,
-                  uint8_t (*buttons)(void)) {
+                  uint8_t (*buttons)(void), const char *info) {
     unsigned rows;
+    for (unsigned i = 0; i < 3; i++) font_colour[i] = to565(meta_font_colours[i]);
     uint16_t *buf = meta_display_scratch(&rows);
     meta_lcd_wait();
     if (rows < 8) return -1;
@@ -120,7 +107,7 @@ int meta_menu_run(const char *title, const meta_menu_item *items, unsigned n,
     for (;;) {
         if (WDT->CTRL.reg & WDT_CTRL_ENABLE) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
         if (redraw) {
-            draw(buf, title, items, n, sel);
+            draw(buf, title, items, n, sel, info);
             redraw = 0;
         }
         wait_ms(15);

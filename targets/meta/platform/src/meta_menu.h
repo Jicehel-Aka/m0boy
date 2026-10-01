@@ -24,8 +24,9 @@ enum {
 
 /* Runs the menu until B or HOME closes it (returns -1) or A picks an
  * action (returns its line).  Draws over the whole screen with the strip
- * buffers of the display pipeline: emulation must be stopped. */
+ * buffers of the display pipeline: emulation must be stopped.  Up to
+ * eleven lines; info (may be NULL) is shown under them. */
 int meta_menu_run(const char *title, const meta_menu_item *items, unsigned n,
-                  uint8_t (*buttons)(void));
+                  uint8_t (*buttons)(void), const char *info);
 
 #endif

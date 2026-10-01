@@ -268,12 +268,15 @@ gauche/droite (ou A) change la valeur, B ou HOME referme.
 | Ligne | Choix |
 |---|---|
 | Reprendre | retour au jeu |
+| Redemarrer | relance le jeu (la sauvegarde est écrite avant) |
 | Ecran | mode d'affichage (ci-dessous) |
 | Palette | Vert, Gris, Pocket, Ambre, Bleu (SMOOTH reste en vert) |
 | Images | saut d'images : Auto (n'affiche pas les images en retard), Aucun, 1 sur 2, 1 sur 3, 1 sur 4 |
+| Vitesse | Normale, ou Rapide (sans limite d'images par seconde) |
 | Processeur | 48 MHz ou 72 MHz (surcadencé, hors spécification du SAMD21 : à essayer, retour à 48 MHz si instable) |
 | Quitter | retour au loader Gamebuino |
 
+Sous les lignes : images émulées et affichées pendant la dernière seconde.
 Les choix ne sont pas gardés à l'extinction.
 
 Modes d'affichage (les 144 lignes Game Boy sur les 128 de la META) :
