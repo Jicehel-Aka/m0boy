@@ -57,8 +57,12 @@ extern uint8_t *gbl_wmap[16];
 typedef void (*gbl_fn)(void);
 typedef struct {
     uint16_t count;
-    const uint16_t *addr;
+    const uint16_t *addr; /* sorted */
     const gbl_fn *fn;
+    /* Within the bank's 16 KiB: idx[i] (i <= 16) is the first entry at or
+     * above offset 0x400 * i, and bit p % 16 of idx[17 + p / 16] is set when
+     * 128-byte page p holds an entry. */
+    const uint16_t *idx;
 } gbl_bank_table;
 extern const gbl_bank_table gbl_tables[];
 extern const uint16_t gbl_table_count;

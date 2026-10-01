@@ -1586,13 +1586,26 @@ std::string Generator::emit_code() {
         o << "\n};\nstatic const gbl_fn t" << b << "_fn[] = {";
         for (size_t i = 0; i < per_bank[b].size(); i++)
             o << (i % 6 ? " " : "\n    ") << region_name(per_bank[b][i]->region) << ",";
+        /* gbl_lookup's index (gbl.h): first entry of each 1 KiB block, then
+         * a bit per 128-byte page that holds an entry. */
+        uint16_t idx[17 + 8] = {};
+        for (unsigned k = 0, i = 0; k <= 16; k++) {
+            while (i < per_bank[b].size() && (per_bank[b][i]->addr & 0x3FFFu) < k * 0x400u) i++;
+            idx[k] = static_cast<uint16_t>(k == 16 ? per_bank[b].size() : i);
+        }
+        for (const Ins* in : per_bank[b]) {
+            const unsigned page = (in->addr & 0x3FFFu) >> 7;
+            idx[17 + page / 16] = static_cast<uint16_t>(idx[17 + page / 16] | (1u << (page % 16)));
+        }
+        o << "\n};\nstatic const uint16_t t" << b << "_idx[] = {";
+        for (unsigned k = 0; k < 17 + 8; k++) o << (k % 12 ? " " : "\n    ") << hex(idx[k], 4) << ",";
         o << "\n};\n";
     }
     o << "const gbl_bank_table gbl_tables[" << banks << "] = {\n";
     for (unsigned b = 0; b < banks; b++) {
-        if (per_bank[b].empty()) o << "    {0, 0, 0},\n";
+        if (per_bank[b].empty()) o << "    {0, 0, 0, 0},\n";
         else
-            o << "    {" << per_bank[b].size() << ", t" << b << "_addr, t" << b << "_fn},\n";
+            o << "    {" << per_bank[b].size() << ", t" << b << "_addr, t" << b << "_fn, t" << b << "_idx},\n";
     }
     o << "};\nconst uint16_t gbl_table_count = " << banks << ";\n";
     return o.str();

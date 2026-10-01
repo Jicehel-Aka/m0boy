@@ -27,7 +27,7 @@ import time
 from capstone import CS_ARCH_ARM, CS_MODE_MCLASS, CS_MODE_THUMB, Cs
 from elftools.elf.elffile import ELFFile
 from unicorn import UC_ARCH_ARM, UC_HOOK_BLOCK, UC_HOOK_CODE, UC_MODE_MCLASS, UC_MODE_THUMB, Uc
-from unicorn.arm_const import UC_ARM_REG_SP
+from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_SP
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BUTTONS = {"a": 1, "b": 2, "select": 4, "start": 8, "right": 16, "left": 32, "up": 64, "down": 128}
@@ -135,6 +135,11 @@ def main():
                     help="profile only the frames over the 60 Hz budget: print the N costliest functions")
     ap.add_argument("--func", action="append", default=[],
                     help="print every executed block of this function, in address order")
+    ap.add_argument("--waits", type=int, default=0, metavar="N",
+                    help="print the N functions with the most flash wait cycles (candidates for SRAM)")
+    ap.add_argument("--callers", action="append", default=[], metavar="FUNC",
+                    help="count the calls of FUNC by calling function (all frames and, with --heavy, "
+                         "the frames over the budget)")
     args = ap.parse_args()
 
     out_dir = args.build_dir or os.path.join(args.project, "m0bench")
@@ -214,8 +219,32 @@ def main():
         if args.heavy and len(frame_marks) >= 1 and running[0] - frame_marks[-1] > budget:
             heavy_blocks.update(frame_blocks)
             heavy_frames[0] += 1
+            for f in args.callers:
+                heavy_callers[f].update(frame_callers[f])
         frame_blocks.clear()
+        for f in args.callers:
+            frame_callers[f].clear()
         frame_marks.append(running[0])
+
+    func_addr = {name: a for a, _, name in symbols}
+    callers = {f: collections.Counter() for f in args.callers}
+    frame_callers = {f: collections.Counter() for f in args.callers}
+    heavy_callers = {f: collections.Counter() for f in args.callers}
+
+    def caller_name(lr):
+        i = bisect.bisect_right(starts, lr & ~1) - 1
+        return symbols[i][2] if i >= 0 and (lr & ~1) < symbols[i][0] + symbols[i][1] else "%08x" % lr
+
+    def on_call(uc_, addr, _size, fname):
+        lr = uc_.reg_read(UC_ARM_REG_LR)
+        name = caller_name(lr)
+        callers[fname][name] += 1
+        frame_callers[fname][name] += 1
+
+    for f in args.callers:
+        if f not in func_addr:
+            sys.exit("--callers: no function %s" % f)
+        uc.hook_add(UC_HOOK_CODE, on_call, f, begin=func_addr[f], end=func_addr[f])
 
     uc.hook_add(UC_HOOK_BLOCK, on_block)
     if frame_fn is not None:
@@ -225,6 +254,7 @@ def main():
     wall = time.time() - t0
 
     per_func = collections.Counter()
+    func_ws = collections.Counter()
     per_block = collections.Counter()
     block_func = {}
     total_cyc = total_ws = total_ins = 0.0
@@ -243,6 +273,7 @@ def main():
         i = bisect.bisect_right(starts, addr) - 1
         name = symbols[i][2] if i >= 0 and addr < symbols[i][0] + symbols[i][1] else "?"
         per_func[name] += (cyc + ws) * n
+        func_ws[name] += ws * n
         per_block[addr] = (cyc + ws) * n
         block_func[addr] = name
 
@@ -305,6 +336,21 @@ def main():
               (heavy_frames[0], htot / heavy_frames[0]))
         for name, c in hf.most_common(args.heavy):
             print("  %-28s %5.1f%%" % (name, 100 * c / htot))
+    if args.waits:
+        size_of = {name: size for _, size, name in symbols}
+        print("\nflash wait cycles by function (what SRAM would save):")
+        for name, w in func_ws.most_common(args.waits):
+            print("  %-28s %5.1f%% of all cycles, %7.0f per frame, %5d bytes" %
+                  (name, 100 * w / est, w / frames, size_of.get(name, 0)))
+    for f in args.callers:
+        print("\ncalls of %s: %.0f per frame; by caller:" % (f, sum(callers[f].values()) / frames))
+        for name, n in callers[f].most_common(12):
+            print("  %-28s %10.1f per frame" % (name, n / frames))
+        if args.heavy and heavy_frames[0]:
+            print("  in the frames over the budget: %.0f per frame" %
+                  (sum(heavy_callers[f].values()) / heavy_frames[0]))
+            for name, n in heavy_callers[f].most_common(12):
+                print("    %-26s %10.1f per frame" % (name, n / heavy_frames[0]))
     for fname in args.func:
         print("\nfunction %s: %.1f%%" % (fname, 100 * per_func[fname] / est))
         for addr in sorted(per_block):

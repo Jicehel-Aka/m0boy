@@ -835,12 +835,22 @@ _Static_assert(sizeof(gbl_lookup_entry_t) == 8 && offsetof(gbl_lookup_entry_t, b
 _Static_assert(offsetof(gbl_cpu_t, rom_bank) == GBL_GBR_ROM_BANK, "rom_bank");
 #endif
 
-static gbl_fn lookup_table(uint16_t pc) {
+/* The dispatch table of pc's bank, or NULL when nothing is compiled in the
+ * page of pc (RAM, a bank without code, or an empty 128-byte page). */
+static const gbl_bank_table *lookup_page(uint16_t pc) {
     const gbl_bank_table *t;
     if (pc < 0x4000) t = &gbl_tables[0];
     else if (pc < 0x8000 && gbr.rom_bank < gbl_table_count) t = &gbl_tables[gbr.rom_bank];
     else return 0;
-    uint32_t lo = 0, hi = t->count;
+    if (!t->count) return 0;
+    uint32_t page = (pc & 0x3FFFu) >> 7;
+    return t->idx[17 + (page >> 4)] >> (page & 15) & 1 ? t : 0;
+}
+
+/* Binary search of the entries in pc's 1 KiB block. */
+static gbl_fn lookup_table(const gbl_bank_table *t, uint16_t pc) {
+    uint32_t block = (pc & 0x3FFFu) >> 10;
+    uint32_t lo = t->idx[block], hi = t->idx[block + 1];
     const uint16_t *addr = t->addr;
     while (lo < hi) {
         uint32_t mid = (lo + hi) >> 1;
@@ -856,21 +866,23 @@ gbl_fn gbl_lookup_miss(uint16_t pc);
 #define gbl_lookup gbl_lookup_miss
 #endif
 gbl_fn gbl_lookup(uint16_t pc) {
+    /* Pages with nothing compiled are answered here and never cached: the
+     * interpreter's transfers inside uncompiled code would evict entries. */
+    const gbl_bank_table *t = lookup_page(pc);
+    if (!t) return 0;
 #if GBL_LOOKUP_CACHE
-    /* RAM code (pc >= 0x8000) is never compiled: no need to cache it. */
-    if (pc >= 0x8000) return 0;
     uint16_t bank = pc < 0x4000 ? 0 : gbr.rom_bank;
     unsigned i = (pc ^ (pc >> 5)) & (GBL_LOOKUP_CACHE - 1);
 #if !GBL_TIMING_ASM /* the assembly gbl_lookup checked the entry already */
     if (lookup_cache[i].pc == pc && lookup_cache[i].bank == bank) return lookup_cache[i].fn;
 #endif
-    gbl_fn fn = lookup_table(pc);
+    gbl_fn fn = lookup_table(t, pc);
     lookup_cache[i].pc = pc;
     lookup_cache[i].bank = bank;
     lookup_cache[i].fn = fn;
     return fn;
 #else
-    return lookup_table(pc);
+    return lookup_table(t, pc);
 #endif
 }
 #if GBL_TIMING_ASM && GBL_LOOKUP_CACHE
