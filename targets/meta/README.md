@@ -415,6 +415,7 @@ Pass these as `-D` flags (`build_flags` in `platformio.ini`, or
 | `META_SWAP_AB` | 1 | META A = Game Boy B, META B = Game Boy A |
 | `META_SD_SPI_HZ` | 24000000 | SPI clock for SD sector reads |
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND, DARK and TBLEND display modes |
+| `META_AUDIO_DMA` | 1 | Audio samples go to the DAC by DMA (TC4-triggered DMAC channel 1, chained descriptors) instead of a 22 kHz TC4 interrupt (about 3% of the CPU); 0 restores the interrupt |
 | `META_LCD_DMA` | 1 | Strips are sent by DMA through a queue: the DMA-complete interrupt programs the next window and starts the next strip, so rendering waits only when every buffer is in flight. At VBlank, if the bus is still busy, the button read is postponed by one frame (never two in a row). 0 writes pixels from the CPU. |
 | `META_LCD_BUFFERS` | 3 | Strip buffers (triple buffering by default) |
 | `META_STRIP_LINES` | 4 | Rows per strip |
@@ -672,13 +673,26 @@ gain nothing (±0.5%). The PPU loops gain because they run long without
 calls back to flash.
 
 The OAM DMA copy (`gbl_oam_dma_asm`, once a frame, about 400 cycles) has
-nothing to gain from the SAMD21 DMAC. The audio interrupt does: TC4
-interrupts 22,049 times a second and its handler, entry and exit cost
-about 65 cycles, some 3% of the CPU, which the estimator does not model.
-A DMAC channel triggered by TC4 could feed the DAC from the ring instead
-(not done: it needs the ring as 16-bit DAC values or a byte-wide DAC
-mode, a shared descriptor table with the display's channel 0, and a
-hardware test; gamebuino-emulator does not model it).
+nothing to gain from the SAMD21 DMAC. The audio interrupt had: TC4
+interrupted 22,049 times a second, and its handler, entry and exit cost
+about 65 cycles, some 3% of the CPU (the estimator does not model
+interrupts). With `META_AUDIO_DMA` (default), each TC4 wrap triggers a
+DMAC beat on channel 1 that copies the next ring entry, already a 10-bit
+DAC value, to the DAC. Each frame's samples get a descriptor (two at the
+ring's wrap) linked from the previous frame's, and the chain ends on an
+invalid descriptor: when emulation falls behind, the DMAC stops there and
+the DAC holds the last sample as the interrupt did, and the next frame
+restarts the channel after 256 samples of it. The samples played while the
+channel runs are derived from `micros()` (same 48 MHz clock as TC4) and
+only bound what can be queued. The two channels share the descriptor table
+(`meta_dma.cpp`). RAM +688 bytes (a 768-entry ring of 16-bit values, eight
+descriptors); the frame refill runs before the save flush, which can
+block on the card. The ring and chaining logic were simulated with
+frame-time jitter, heavy frames and 40 ms to 300 ms stalls (no sample
+replayed out of order, no queued descriptor reused); the DMAC itself has
+only been exercised on hardware by the display so far: if the sound is
+wrong on a META, build with `-DMETA_AUDIO_DMA=0` (in `build_flags`) to get
+the interrupt back.
 
 Ten more games (`panel.txt`: software 3D, isometric, non-identity BGP,
 RPG menus, beat 'em up) found three more things: the ALU helpers called by
@@ -800,7 +814,8 @@ The firmware also runs in
 (load `.pio/build/meta/firmware.bin` in its page; keys: arrows, J = A,
 K = B, U = MENU, I = HOME; sound is emulated: TC4 interrupts and DAC
 writes are modelled and played through WebAudio; `headless.js` records
-them to a WAV with its 5th argument).
+them to a WAV with its 5th argument; this needs a firmware built with
+`-DMETA_AUDIO_DMA=0`, since the emulator does not run TC4-triggered DMA).
 Use the fork in `tools/gb-emu/` (from upstream `9631729`, MIT; see its
 `LISEZMOI.md`):
 upstream could not execute code from SRAM, where our firmware runs its

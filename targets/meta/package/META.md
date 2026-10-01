@@ -307,6 +307,7 @@ Ajoute-les dans `build_flags` du `platformio.ini` généré, par exemple
 | `GBL_PPU_PAL32` | 0 | Table de 4 pixels (2 Ko de RAM), sans gain mesuré |
 | `GBL_GEN_OPTIMIZE_SIZE` | 1 | Code généré en `-Os` |
 | `GBL_SPIN` | 1 | Avance d'un coup le temps des boucles d'attente (LY/STAT, drapeau en RAM, temporisations) ; résultat identique, 0 pour vérifier |
+| `META_AUDIO_DMA` | 1 | Son envoyé au DAC par DMA au lieu d'une interruption à 22 kHz (environ 3 % du processeur) ; 0 si le son est faux sur ta console |
 | `GBL_INTERP_DELAY_LOOP` | 1 | Raccourci de l'interpréteur pour l'attente DMA `DEC A / JR NZ` en HRAM |
 | `GBL_PPU_ASM` | 1 sur M0+ | Chargement des tuiles et conversion des couleurs en assembleur Thumb-1 (`gbl_ppu_asm.S`) |
 | `GBL_PPU_RAMFUNC` | 1 | Ces deux boucles tournent depuis la SRAM (≈150 octets), sans état d'attente de la flash |

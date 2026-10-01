@@ -189,8 +189,10 @@ extern "C" void gbl_platform_vblank(void) {
     frames++;
     int static_next = META_STATIC_SKIP ? gbl_frame_unchanged_next(was_shown) : 0;
     if (bus_free) poll_input(); /* else keep last frame's buttons */
-    meta_save_tick();
+    /* Audio first: a save flush can block on the SD card, and the DMA then
+     * plays from a full ring (meta_audio.cpp). */
     meta_audio_frame();
+    meta_save_tick();
 
     uint32_t now = micros();
     int32_t late = (int32_t)(now - next_frame_us);

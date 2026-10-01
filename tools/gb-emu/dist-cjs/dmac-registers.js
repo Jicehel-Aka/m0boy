@@ -11,9 +11,13 @@ const CHCTRLA_OFFSET = 0x40;
 const CHCTRLB_OFFSET = 0x44;
 const CHINTENSET_OFFSET = 0x4D;
 const CHINTFLAG_OFFSET = 0x4E;
+const SERCOM4_DMAC_ID_TX = 0x0A;
 class DmacRegisters {
     constructor(processor) {
-        this._descriptor = 0;
+        // Next descriptor of each channel (0: the channel's entry in BASEADDR).
+        this._descriptor = [];
+        this._trigsrc = [];
+        this._selectedChannelId = 0;
         processor.registerPeripheralWriteHandler(DMAC_ADDR + BASEADDR_OFFSET, (address, value) => {
             this._baseAddr = value;
             this.debugWrite("BASEADDR", address, value);
@@ -26,24 +30,34 @@ class DmacRegisters {
             this._selectedChannelId = value;
             this.debugWrite("CHID", address, value);
         });
+        processor.registerPeripheralWriteHandler(DMAC_ADDR + CHCTRLB_OFFSET, (address, value) => {
+            this._trigsrc[this._selectedChannelId] = (value >> 8) & 0x3F;
+            this.debugWrite("CHCTRLB", address, value);
+        });
         processor.registerPeripheralWriteHandler(DMAC_ADDR + CHCTRLA_OFFSET, (address, value) => {
+            var _a;
             this.debugWrite("CHCTRLA", address, value);
-            if (value == 0b10) {
+            const ch = this._selectedChannelId;
+            // Only SERCOM4 TX (the display) is modelled, as an instant copy.
+            // Other triggers (the audio channel, TC4 to the DAC) are not
+            // emulated: TC4 and the DAC are not either.
+            if (value == 0b10 && ((_a = this._trigsrc[ch]) !== null && _a !== void 0 ? _a : SERCOM4_DMAC_ID_TX) == SERCOM4_DMAC_ID_TX) {
                 // TODO use wrb appropriately
-                if (this._descriptor == 0) {
-                    this._descriptor = this._baseAddr + this._selectedChannelId * 0x10;
+                if (!this._descriptor[ch]) {
+                    this._descriptor[ch] = this._baseAddr + ch * 0x10;
                 }
                 // TODO use btctrl
-                var btctrl = processor.fetchHalfword(this._descriptor);
-                var btcnt = processor.fetchHalfword(this._descriptor + 0x02);
-                var srcaddr = processor.fetchWord(this._descriptor + 0x04);
-                var dstaddr = processor.fetchWord(this._descriptor + 0x08);
-                var descaddr = processor.fetchWord(this._descriptor + 0x0C);
+                var desc = this._descriptor[ch];
+                var btctrl = processor.fetchHalfword(desc);
+                var btcnt = processor.fetchHalfword(desc + 0x02);
+                var srcaddr = processor.fetchWord(desc + 0x04);
+                var dstaddr = processor.fetchWord(desc + 0x08);
+                var descaddr = processor.fetchWord(desc + 0x0C);
                 // console.log(`btctrl: 0x${btctrl.toString(16)}; btcnt: #${btcnt}; srcaddr: 0x${srcaddr.toString(16)}; dstaddr: 0x${dstaddr.toString(16)}; descaddr: 0x${descaddr.toString(16)};`)
                 for (var i = 0; i < btcnt; i++) {
                     processor.writeByte(dstaddr, processor.fetchByte(srcaddr + i - btcnt));
                 }
-                this._descriptor = descaddr;
+                this._descriptor[ch] = descaddr;
                 processor.dmacInterrupt();
             }
         });

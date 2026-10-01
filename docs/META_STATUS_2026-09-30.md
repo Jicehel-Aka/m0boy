@@ -108,9 +108,10 @@ function is a livelock, not slowness.
   2026-10-01): Faceball 7, Double Dragon 9, Prehistorik Man 5, Donkey
   Kong Land 5, Altered Space 5, R.C. Pro-Am 1 of 1,599, mostly interpreted
   code (more coverage would help more than more assembly).
-- Audio by DMA (TC4-triggered DMAC channel feeding the DAC) would save
-  about 3% of the CPU spent in the TC4 interrupt; needs a hardware test
-  (see the README, interpreter and dispatcher section).
+- Audio by DMA (`META_AUDIO_DMA`, default since 2026-10-01: TC4-triggered
+  DMAC channel 1, chained descriptors) replaces the 22 kHz TC4 interrupt
+  (~3% of the CPU). Simulated and built, not yet heard on a META: test it
+  first on hardware; `-DMETA_AUDIO_DMA=0` restores the interrupt.
 - Remaining M0 profile after the fifth pass: `render_line` and the tile
   fetch/convert loops on games that redraw (SML ~35% together), the
   interpreter on R.C. Pro-Am (~14%, a coverage question), the next-event

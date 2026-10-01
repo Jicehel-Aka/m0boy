@@ -16,6 +16,7 @@
 
 #if META_LCD_DMA
 #include "meta_lcd_queue.h"
+#include "meta_dma.h"
 #endif
 
 #include <Arduino.h>
@@ -117,19 +118,8 @@ static void command_list(const uint8_t *p) {
 #if META_LCD_DMA
 /* ---- DMA (SERCOM4 TX, channel 0) ---------------------------------------- */
 
-typedef struct {
-    uint16_t btctrl;
-    uint16_t btcnt;
-    uint32_t srcaddr;
-    uint32_t dstaddr;
-    uint32_t descaddr;
-} dma_descriptor;
-
-static volatile dma_descriptor dma_wb[1] __attribute__((aligned(16)));
-static dma_descriptor dma_desc[1] __attribute__((aligned(16)));
-
 extern "C" void DMAC_Handler(void) {
-    DMAC->CHID.reg = DMAC_CHID_ID(0);
+    DMAC->CHID.reg = DMAC_CHID_ID(META_DMA_LCD); /* the only channel with interrupts */
     DMAC->CHINTFLAG.reg = DMAC_CHINTFLAG_TCMPL | DMAC_CHINTFLAG_TERR | DMAC_CHINTFLAG_SUSP;
     lcdq_on_complete(); /* starts the next queued strip, if any */
 }
@@ -138,12 +128,8 @@ extern "C" void DMAC_Handler(void) {
 
 #if META_LCD_DMA
 static void dma_init(void) {
-    PM->AHBMASK.reg |= PM_AHBMASK_DMAC;
-    PM->APBBMASK.reg |= PM_APBBMASK_DMAC;
+    meta_dma_init();
     NVIC_EnableIRQ(DMAC_IRQn);
-    DMAC->BASEADDR.reg = (uint32_t)dma_desc;
-    DMAC->WRBADDR.reg = (uint32_t)dma_wb;
-    DMAC->CTRL.reg = DMAC_CTRL_DMAENABLE | DMAC_CTRL_LVLEN(0xF);
 }
 #endif
 
@@ -151,16 +137,16 @@ static void set_window(uint8_t row0, uint8_t row1);
 
 #if META_LCD_DMA
 static void start_dma(const void *buf, uint32_t bytes) {
-    DMAC->CHID.reg = DMAC_CHID_ID(0);
+    DMAC->CHID.reg = DMAC_CHID_ID(META_DMA_LCD);
     DMAC->CHCTRLA.reg = DMAC_CHCTRLA_SWRST;
     DMAC->CHCTRLB.reg = DMAC_CHCTRLB_LVL(0) | DMAC_CHCTRLB_TRIGSRC(SERCOM4_DMAC_ID_TX) |
                         DMAC_CHCTRLB_TRIGACT_BEAT;
     DMAC->CHINTENSET.reg = DMAC_CHINTENSET_TCMPL;
-    dma_desc[0].descaddr = 0;
-    dma_desc[0].dstaddr = (uint32_t)&SERCOM4->SPI.DATA.reg;
-    dma_desc[0].btcnt = (uint16_t)bytes;
-    dma_desc[0].srcaddr = (uint32_t)buf + bytes;
-    dma_desc[0].btctrl = DMAC_BTCTRL_VALID | DMAC_BTCTRL_SRCINC;
+    meta_dma_desc[META_DMA_LCD].descaddr = 0;
+    meta_dma_desc[META_DMA_LCD].dstaddr = (uint32_t)&SERCOM4->SPI.DATA.reg;
+    meta_dma_desc[META_DMA_LCD].btcnt = (uint16_t)bytes;
+    meta_dma_desc[META_DMA_LCD].srcaddr = (uint32_t)buf + bytes;
+    meta_dma_desc[META_DMA_LCD].btctrl = DMAC_BTCTRL_VALID | DMAC_BTCTRL_SRCINC;
     tx_pending = 1;
     DMAC->CHCTRLA.reg |= DMAC_CHCTRLA_ENABLE;
 }

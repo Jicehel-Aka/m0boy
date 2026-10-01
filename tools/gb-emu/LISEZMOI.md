@@ -12,7 +12,10 @@ Deux ajouts, sans lesquels les firmwares gbrecomp ne tournent pas :
   `.SAV` écrits par les jeux sont réécrits dans les fichiers du dossier
   (la progression est gardée). Les jeux streamés y lisent leur `.GB`.
 
-Pas de son (TC4 et le DAC ne sont pas émulés). Le temps suit le modèle de
+Pas de son (TC4 et le DAC ne sont pas émulés). Le DMAC n'émule que le
+canal de l'écran (déclencheur SERCOM4 TX), en copie instantanée ; les
+canaux à un autre déclencheur (l'audio des firmwares, TC4 vers le DAC)
+sont ignorés, et chaque canal garde sa propre chaîne de descripteurs. Le temps suit le modèle de
 l'original (20 MIPS), pas la vitesse réelle de la console.
 
 ## Dans le navigateur
