@@ -28,7 +28,9 @@
  *
  * For n map entries: t[i] = spread[lo] | spread[hi] << 1 where lo, hi are
  * the two bytes of row trow of tile map[i] ^ idx_xor (16 bytes per tile).
- * 16 instructions, about 22 cycles per tile (C: about 28).
+ * About 25 cycles per tile (C: about 28), or 11 when the entry repeats the
+ * previous one: its word is still in r6 (sky, ground and other runs of
+ * one tile: 50% to 85% of the entries on most games).
  */
     GBL_SECTION(gbl_ppu_fetch_asm)
     .align 2
@@ -37,11 +39,19 @@
     .thumb_func
 gbl_ppu_fetch_asm:
     push    {r4-r7, lr}
-    ldr     r4, [sp, #20]          /* idx_xor */
+    mov     r5, r8
+    push    {r5}
+    ldr     r4, [sp, #24]          /* idx_xor */
     ldr     r7, 3f                 /* spread table */
+    movs    r5, #1
+    lsls    r5, r5, #8
+    mov     r8, r5                 /* previous entry: 0x100 matches none */
 1:
     ldrb    r5, [r1]
     adds    r1, #1
+    cmp     r5, r8
+    beq     2f
+    mov     r8, r5
     eors    r5, r4
     lsls    r5, r5, #4
     ldrh    r5, [r3, r5]           /* lo | hi << 8 (tile rows are 2-aligned) */
@@ -52,10 +62,13 @@ gbl_ppu_fetch_asm:
     ldrh    r6, [r7, r6]
     ldrh    r5, [r7, r5]
     lsls    r5, r5, #1
-    orrs    r5, r6
-    stm     r0!, {r5}
+    orrs    r6, r5
+2:
+    stm     r0!, {r6}
     subs    r2, #1
     bne     1b
+    pop     {r5}
+    mov     r8, r5
     pop     {r4-r7, pc}
     .align 2
 3:  .word   gbl_ppu_spread
@@ -72,7 +85,9 @@ gbl_ppu_fetch_asm:
  * four words pairs[nibble] (two RGB565 pixels each), stored with one STM.
  * The nibble is extracted already scaled by 4 (shift, then AND 0x3C), which
  * GCC does not do; the four colours stay in r4-r7 for the STM.
- * 17 instructions, about 27 cycles per 8 pixels (C: about 33).
+ * About 32 cycles per 8 pixels (C: about 33); a group equal to the previous
+ * one (r9) stores the same four words again in 14, pixels 0-1 coming back
+ * from r8 since r4 held the group.
  */
 .macro GBL_CONVERT name, stride
     GBL_SECTION(\name)
@@ -82,13 +97,33 @@ gbl_ppu_fetch_asm:
     .thumb_func
 \name:
     push    {r4-r7}
+    mov     r4, r8
+    mov     r5, r9
+    push    {r4, r5}
     lsls    r3, r3, #(\stride / 2)
     adds    r3, r1
     mov     ip, r3                 /* end of input */
+    movs    r3, #1
+    lsls    r3, r3, #16
+    mov     r9, r3                 /* previous group: 0x10000 matches none */
     movs    r3, #0x3C
 1:
     ldrh    r4, [r1]
     adds    r1, #\stride
+    cmp     r4, r9
+    bne     3f
+    mov     r4, r8                 /* same group: same words */
+    stm     r0!, {r4-r7}
+    cmp     r1, ip
+    bne     1b
+2:
+    pop     {r4, r5}
+    mov     r8, r4
+    mov     r9, r5
+    pop     {r4-r7}
+    bx      lr
+3:
+    mov     r9, r4
     lsrs    r5, r4, #6
     ands    r5, r3
     ldr     r5, [r2, r5]           /* pixels 2-3 */
@@ -101,11 +136,11 @@ gbl_ppu_fetch_asm:
     lsrs    r4, r4, #10
     ands    r4, r3
     ldr     r4, [r2, r4]           /* pixels 0-1 */
+    mov     r8, r4
     stm     r0!, {r4-r7}
     cmp     r1, ip
     bne     1b
-    pop     {r4-r7}
-    bx      lr
+    b       2b
     .size \name, . - \name
 .endm
 
@@ -120,7 +155,9 @@ gbl_ppu_fetch_asm:
  * group g is (t[g] << 16 | t[g + 1]) >> shift (shift = 16 - 2 * fine).
  * Bits above 15 are left in place: every index is masked with 0x3C anyway.
  * This replaces the C extraction loop and its copy (about 13 cycles per
- * group) for 5 more cycles here: about 32 cycles per 8 pixels.
+ * group) for 5 more cycles here: about 34 cycles per 8 pixels.  A group
+ * equal to the previous one (bits above 15 included; r9) copies the
+ * previous four output words instead: 24 cycles.
  */
     GBL_SECTION(gbl_ppu_convert_fine_asm)
     .align 2
@@ -130,11 +167,15 @@ gbl_ppu_fetch_asm:
 gbl_ppu_convert_fine_asm:
     push    {r4-r7}
     mov     r4, r8
-    push    {r4}
+    mov     r5, r9
+    push    {r4, r5}
     mov     r8, r3                 /* shift */
     movs    r4, #80                /* 20 groups, one tile word each */
     adds    r4, r1
     mov     ip, r4
+    movs    r3, #0
+    mvns    r3, r3
+    mov     r9, r3                 /* previous group: shift >= 2 keeps the top bits clear */
     movs    r3, #0x3C
 1:
     ldm     r1!, {r4}              /* t[g] */
@@ -143,6 +184,21 @@ gbl_ppu_convert_fine_asm:
     orrs    r4, r5
     mov     r6, r8
     lsrs    r4, r6
+    cmp     r4, r9
+    bne     3f
+    subs    r0, #16                /* same group: copy the previous words */
+    ldm     r0!, {r4-r7}
+    stm     r0!, {r4-r7}
+    cmp     r1, ip
+    bne     1b
+2:
+    pop     {r4, r5}
+    mov     r8, r4
+    mov     r9, r5
+    pop     {r4-r7}
+    bx      lr
+3:
+    mov     r9, r4
     lsrs    r5, r4, #6
     ands    r5, r3
     ldr     r5, [r2, r5]           /* pixels 2-3 */
@@ -158,10 +214,7 @@ gbl_ppu_convert_fine_asm:
     stm     r0!, {r4-r7}
     cmp     r1, ip
     bne     1b
-    pop     {r4}
-    mov     r8, r4
-    pop     {r4-r7}
-    bx      lr
+    b       2b
     .size gbl_ppu_convert_fine_asm, . - gbl_ppu_convert_fine_asm
 
 /*

@@ -844,6 +844,27 @@ copies of the line loop are 0.7 KiB) and 56 bytes of RAM; `compile.sh`
 fills the flash by bisection, so a game at the limit keeps slightly less
 cold compiled code. Nothing here has been measured on a device.
 
+A cache of decoded or converted tile rows does not fit: one 16-bit word per
+tile row is 6 KiB, and the firmware leaves about 3 KiB of RAM, all of it C
+stack. Within a line, though, the same tile often repeats (sky, ground,
+blank text cells): 50% to 90% of the 8-pixel groups equal the previous one
+on most of the 25 panel games, 14% on Prehistorik Man and 31% on Double
+Dragon. The tile fetch keeps the last map entry and its decoded word
+(11 cycles instead of 22 for a repeat, 25 otherwise). Each colour
+conversion keeps the last group with its four output words (14 cycles
+instead of 27; the fine-scroll loop copies the previous 16 bytes back,
+24 instead of 32). Estimator, 1,600 frames, TBLEND display pipeline
+(`BENCH_META_DISPLAY=6`): median −1.0% over the 25 games; Lemmings
+−7.2%, Super Mario Land −4.6%, Ninja Gaiden −2.8%, Solar Striker −2.3%,
+Batman −2.2%; p99 up to −8.5%; Adventure Island has 17 → 14 frames over the
+budget. Games with few repeats lose a little: Prehistorik Man +0.7% (24 →
+30 frames over the budget, though those frames are mostly ROM decompression),
+Final Fantasy Legend +0.4%. Comparing tile data instead of map entries
+(which also catches FFL's identical blank cells) did less on nine of the
+games: median −1.3% against −1.6%.
+Same pixel and state hashes on six games. SRAM +120 bytes (the loops run
+from RAM).
+
 ## Validation
 
 ```bash
