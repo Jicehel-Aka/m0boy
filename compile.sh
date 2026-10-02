@@ -49,6 +49,7 @@
 #                 chaud à compiler.
 #   JOBS=n        ROMs traitées en parallèle (défaut : cœurs / 4 ; 1 avec PLAY=1)
 #   AUTO_REDO=1   refaire la partie automatique même si elle est déjà enregistrée
+#                 (sinon seules les graines manquantes sont jouées)
 #   REPLAY=1      rejouer les parties à la main enregistrées (profils à jour)
 #   PACK=1 (défaut)
 #                 données de ROM peu lues compressées (LZSS) dans la flash au
@@ -399,15 +400,29 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   # b2) Parties automatiques, sans fenêtre ni son, en parallèle : Start de
   #     temps en temps, directions/A/B au hasard, une graine par partie.
   #     Déjà enregistrées pour cette ROM : réutilisées (AUTO_REDO=1 pour
-  #     les refaire).
-  if [ "$AUTO" = "1" ] && [ "$AUTO_REDO" != "1" ] && { compgen -G "$store/coverage-auto*.cov" > /dev/null ||
-       compgen -G "$PROFILES_DIR/$rom_sha/coverage-auto*.cov" > /dev/null; }; then
+  #     les refaire).  Les graines manquantes sont ajoutées : les ROMs
+  #     passées par une version qui ne jouait qu'une partie (coverage-auto,
+  #     gardée) reçoivent les huit (une seule partie compilait du code moins
+  #     général : Faceball 2000 -10 % par frame sur une partie inédite).
+  local seed n_auto=0
+  for seed in $(seq 1 "$AUTO_SEEDS"); do
+    if [ -f "$store/coverage-auto$seed.cov" ] || [ -f "$PROFILES_DIR/$rom_sha/coverage-auto$seed.cov" ]; then
+      n_auto=$((n_auto + 1))
+    fi
+  done
+  if [ "$AUTO" = "1" ] && [ "$AUTO_REDO" != "1" ] && [ "$n_auto" -ge "$AUTO_SEEDS" ]; then
     echo "[i] Parties automatiques déjà enregistrées : réutilisées"
   elif [ "$AUTO" = "1" ]; then
-    rm -f "$store"/coverage-auto* "$store"/romdata-auto* "$out_dir"/coverage-auto* "$out_dir"/romdata-auto* "$out_dir/auto.input"
-    local guard=() seed frames
+    if [ "$AUTO_REDO" = "1" ]; then
+      rm -f "$store"/coverage-auto* "$store"/romdata-auto* "$out_dir"/coverage-auto* "$out_dir"/romdata-auto* "$out_dir/auto.input"
+    elif [ "$n_auto" -gt 0 ] || [ -f "$store/coverage-auto.cov" ]; then
+      echo "[i] Parties automatiques : $n_auto sur $AUTO_SEEDS enregistrées, ajout des autres"
+    fi
+    local guard=() frames
     command -v timeout > /dev/null && guard=(timeout $((AUTO_SECONDS + 30)))
     for seed in $(seq 1 "$AUTO_SEEDS"); do
+      [ -f "$store/coverage-auto$seed.cov" ] && continue
+      [ -f "$PROFILES_DIR/$rom_sha/coverage-auto$seed.cov" ] && continue
       frames=$AUTO_FRAMES
       [ "$seed" = 1 ] && frames=$AUTO_LONG_FRAMES
       awk -v frames="$frames" -v seed=$((41 + seed)) 'BEGIN { srand(seed); split("right left up down a b", n, " ");

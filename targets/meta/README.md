@@ -411,8 +411,10 @@ current ones; current ones only get missing icons).
   log in `out/<game>/compile.log`. Five ROMs take about 70 s on 16 cores.
 - Every run, random or played (`PLAY=1`), is kept in
   `<rom dir>/profiles/<sha1>/` (`.input`, `.cov`, `.prof`) and reused by
-  later runs. `AUTO_REDO=1` redoes the random runs, and `REPLAY=1` replays
-  the played ones.
+  later runs. A store with fewer seeded runs than `AUTO_SEEDS` (ROMs from
+  the single-run version) gets the missing ones; the old run is kept.
+  `AUTO_REDO=1` redoes the random runs, and `REPLAY=1` replays the played
+  ones.
 
 A cross-platform Node port lives in `tools/meta-compiler/`:
 `node tools/meta-compiler/compile.mjs [rom dir] [output dir]`. Same output
@@ -686,7 +688,9 @@ benchmark and inflates the frames over the budget (R.C. Pro-Am 31 with
 hashing, 1 without). Use the hashes for equivalence, a run without them
 for cost. `--callers FUNC` counts a function's calls by caller (also in
 the frames over the budget) and `--waits N` lists the functions with the
-most flash wait cycles.
+most flash wait cycles. `--frame-costs FILE` writes every frame's cycles: frames over
+the budget near boot are mostly logos and screen transitions, so judge
+gameplay on a long run (`--frames 12000`) past its first 3,000 frames.
 
 Without hashing, the dispatcher (`gbl_lookup`, its miss path and
 `gbl_exec`) took 3% to 8% of the frame, mostly binary searches after

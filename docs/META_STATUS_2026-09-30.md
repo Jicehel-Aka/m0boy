@@ -107,7 +107,26 @@ function is a livelock, not slowness.
 - Frames still over the 60 Hz budget (estimator, without bench hashing,
   2026-10-01): Faceball 7, Double Dragon 9, Prehistorik Man 5, Donkey
   Kong Land 5, Altered Space 5, R.C. Pro-Am 1 of 1,599, mostly interpreted
-  code (more coverage would help more than more assembly).
+  code. 2026-10-02: in those 1,600 frames from boot they are boot and
+  screen transitions (blank screens, logos, "MISSION 1"), which the player
+  does not see as slowdown. Over frames 3,000 to 12,000 of the same
+  sessions, at the real flash budget (`compile.sh` bisection), none of
+  Faceball, Double Dragon, R.C. Pro-Am or Altered Space goes over; Prehistorik
+  Man 5, DKL 3, Contra 3 (Prehistorik Man and DKL are heavy in general:
+  920 and 140 frames above 80% of the budget, interpreter about 6%). On a
+  held-out random session (seed 99): Double Dragon 6, others 0 or 1.
+  All of these games are flash-bound: 2,100 to 3,300 compiled instructions
+  of 50,000 to 90,000 recorded. Measure gameplay with
+  `--frames 12000 --frame-costs FILE` and skip the first 3,000 frames.
+- Coverage (2026-10-02): `compile.sh` now adds the missing seeded auto
+  sessions to ROMs recorded by the old single-session version (228 of
+  728 stores had one session). Eight sessions against one, held-out
+  session: Faceball −10.4% per frame, Contra −1.4%, Double Dragon −0.8%
+  (over budget 6 → 4), Altered Space +1.0%. Tried and dropped: ranking
+  compiled code by load-weighted executions (each frame's counts times
+  that frame's instruction count): Double Dragon 6 → 0 frames over budget
+  but +1% to +2.4% per frame on Double Dragon, Altered Space and R.C.
+  Pro-Am, held-out and in-sample.
 - Audio by DMA (`META_AUDIO_DMA`, default since 2026-10-01: TC4-triggered
   DMAC channel 1, chained descriptors) replaces the 22 kHz TC4 interrupt
   (~3% of the CPU). Simulated and built, not yet heard on a META: test it

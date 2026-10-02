@@ -131,6 +131,8 @@ def main():
     ap.add_argument("--hot-blocks", type=int, default=0, help="print the N most expensive basic blocks")
     ap.add_argument("--dump", action="append", default=[], metavar="SYMBOL",
                     help="write the final contents of a data symbol (or ADDRESS:SIZE) to <build-dir>/<name>.bin")
+    ap.add_argument("--frame-costs", metavar="FILE",
+                    help="write the estimated cycles of every frame, one line per frame (frame number, cycles)")
     ap.add_argument("--heavy", type=int, default=0,
                     help="profile only the frames over the 60 Hz budget: print the N costliest functions")
     ap.add_argument("--func", action="append", default=[],
@@ -309,6 +311,10 @@ def main():
                sum(1 for c in per if c > 0.5 * budget), 50))
         print("frames over the 60 Hz budget (%.0f cycles, emulation only): %d of %d" %
               (budget, sum(1 for c in per if c > budget), len(per)))
+        if args.frame_costs:
+            with open(args.frame_costs, "w") as f:
+                for i, (a, b) in enumerate(zip(frame_marks[1:], frame_marks[2:])):
+                    f.write("%d %.0f\n" % (i + 1, b - a))
     groups = collections.Counter()
     for name, c in per_func.items():
         if name.startswith("r") and "_" in name and name[1:].split("_")[0].isdigit():
