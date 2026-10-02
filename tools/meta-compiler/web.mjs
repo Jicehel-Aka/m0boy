@@ -67,11 +67,13 @@ function zipStore(entries) {
   const parts = [];
   const central = [];
   let offset = 0;
-  for (const [name, data, mtime] of entries) {
+  for (const [name, data, mtime, isDir] of entries) {
     const nameBuf = Buffer.from(name, 'utf8');
     const utf8 = /[^\x20-\x7e]/.test(name) ? 0x0800 : 0;
     const [time, date] = dosTime(mtime);
     const crc = crc32(data);
+    /* attributs unix comme les releases (drwxr-xr-x / rw-r--r--) */
+    const extAttr = isDir ? 0x41ed0000 : 0x81a40000;
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
@@ -97,6 +99,7 @@ function zipStore(entries) {
     cen.writeUInt32LE(data.length, 24);
     cen.writeUInt16LE(nameBuf.length, 28);
     cen.writeUInt32LE(offset, 42);
+    cen.writeUInt32LE(extAttr, 38);
     /* le nom suit l'en-tête de 46 octets : concat obligatoire (copy dans un
      * tampon trop petit est ignorée silencieusement) */
     central.push(Buffer.concat([cen, nameBuf]));
@@ -115,8 +118,8 @@ function zipStore(entries) {
 function listFilesRec(dir, base) {
   const out = [];
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    /* .gbrmeta.json et compagnie : état interne, pas sur la carte */
-    if (e.name.startsWith('.')) continue;
+    /* tout le répertoire part, y compris .gbrmeta.json : c'est le format
+     * de release tel que compile.mjs le produit (voir roms/meta/*.zip) */
     const full = path.join(dir, e.name);
     const rel = base ? `${base}/${e.name}` : e.name;
     if (e.isDirectory()) out.push(...listFilesRec(full, rel));
@@ -126,8 +129,11 @@ function listFilesRec(dir, base) {
 }
 
 function zipGameDir(gameDir, zipName) {
-  const entries = listFilesRec(gameDir, '').map(([full, rel]) =>
-    [`${zipName}/${rel}`, fs.readFileSync(full), fs.statSync(full).mtime]);
+  const stat = fs.statSync(gameDir);
+  const entries = [[`${zipName}/`, Buffer.alloc(0), stat.mtime, true]];
+  for (const [full, rel] of listFilesRec(gameDir, '')) {
+    entries.push([`${zipName}/${rel}`, fs.readFileSync(full), fs.statSync(full).mtime, false]);
+  }
   return zipStore(entries);
 }
 

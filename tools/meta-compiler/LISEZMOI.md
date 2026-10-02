@@ -17,9 +17,10 @@ l'émulateur (`tools/meta-emu-sdl`, version wasm comprise).
   tourne sur la machine locale, pas dans le navigateur ; rien ne sort de
   `127.0.0.1`.
 - Un `.gb` par conversion ; les demandes sont traitées en série.
-- Le zip exclut l'état interne (`.gbrmeta.json`) ; tout le reste du
-  répertoire (`.bin`, icônes, `.SAV`, `.GB` de streaming, fichiers d'états)
-  y est.
+- Le zip reproduit le format de release : le répertoire du jeu à la
+  racine, avec son entrée de dossier, `.gbrmeta.json` compris — prêt à
+  déposer sur la carte SD, dans l'émulateur (`tools/meta-emu-sdl`,
+  version wasm comprise) ou à partager tel quel.
 - Prérequis : les mêmes que `compile.mjs` (gbrecomp compilé dans
   `build/bin`, pio dans le PATH) — la page affiche un bandeau s'il en
   manque.
