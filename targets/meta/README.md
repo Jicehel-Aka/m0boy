@@ -405,8 +405,19 @@ confirms version updates. Otherwise it processes everything that needs
 work, keeping outdated firmwares unless `UPDATE=1` (`FORCE=1` redoes even
 current ones; current ones only get missing icons).
 
-- Precompute: 8 random-input runs per ROM in parallel (`AUTO_SEEDS`), one of
-  30 minutes of game time and seven of 10 minutes, about 11 s on 8 cores.
+- Precompute: one random-input run per core (`AUTO_SEEDS`), all in
+  parallel at full speed for `AUTO_SECONDS` (20 s) of wall time: 3,000 to
+  12,000 frames a second each, so 15 to 60 minutes of game per run. The
+  stored input is cut at the last frame played, so a run replays exactly.
+  With several ROMs in flight (`JOBS`), their random runs take the cores
+  one ROM at a time (`flock`); generation and builds overlap. 20 s is the
+  knee measured on the 25-game panel (16 runs, top 2,500 instructions by
+  count, scored on four unseen random sessions): the interpreted share
+  of 40-minute sessions is 2.36% at 5 s, 1.94% at 15 s, 1.70% at 20 s,
+  1.69% at 30 s and 1.85% at 60 s, and on 8-minute sessions it stays at
+  1.91% to 1.95% up to 20 s, then rises (2.28% at 60 s: long runs give
+  late-game and attract loops more weight). From 8 to 16 runs gains
+  little (1.72% → 1.70%).
 - Several ROMs run in parallel (`JOBS`, default cores / 4), each with its
   log in `out/<game>/compile.log`. Five ROMs take about 70 s on 16 cores.
 - Every run, random or played (`PLAY=1`), is kept in

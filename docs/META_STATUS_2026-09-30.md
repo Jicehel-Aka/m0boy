@@ -118,6 +118,9 @@ function is a livelock, not slowness.
   All of these games are flash-bound: 2,100 to 3,300 compiled instructions
   of 50,000 to 90,000 recorded. Measure gameplay with
   `--frames 12000 --frame-costs FILE` and skip the first 3,000 frames.
+- Random runs (2026-10-02): one per core, full speed, 20 s of wall time
+  (`AUTO_SECONDS`), inputs cut at the last frame played; the 20 s choice
+  and its measurements are in the README (Batch conversion).
 - Coverage (2026-10-02): `compile.sh` now adds the missing seeded auto
   sessions to ROMs recorded by the old single-session version (228 of
   728 stores had one session). Eight sessions against one, held-out

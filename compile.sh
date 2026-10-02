@@ -43,10 +43,12 @@
 #
 #   PLAY=1        ouvre aussi une fenêtre pour jouer soi-même (défaut 0 : non)
 #   AUTO=1        (défaut) chaque ROM est jouée sans fenêtre ni son, avec des
-#                 touches aléatoires (Start de temps en temps) :
-#                 AUTO_SEEDS parties en parallèle (8 : une de 30 min de jeu,
-#                 sept de 10 min, environ 11 s en tout), pour trouver le code
-#                 chaud à compiler.
+#                 touches aléatoires (Start de temps en temps), à pleine
+#                 vitesse : AUTO_SEEDS parties en parallèle (défaut : une par
+#                 cœur) pendant AUTO_SECONDS secondes (défaut 20), pour
+#                 trouver le code chaud à compiler.  Les parties automatiques
+#                 de plusieurs ROMs passent une à une (elles prennent tous
+#                 les cœurs) ; le reste du lot continue en parallèle.
 #   JOBS=n        ROMs traitées en parallèle (défaut : cœurs / 4 ; 1 avec PLAY=1)
 #   AUTO_REDO=1   refaire la partie automatique même si elle est déjà enregistrée
 #                 (sinon seules les graines manquantes sont jouées)
@@ -80,14 +82,11 @@ PLAY="${PLAY:-0}"
 STATIC="${STATIC:-1}"
 AUTO="${AUTO:-1}"
 NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
-# Précalcul : AUTO_SEEDS parties aléatoires en parallèle par ROM, une de
-# AUTO_LONG_FRAMES (30 min de jeu) et les autres de AUTO_FRAMES (10 min).
-# Mesuré sur 4 jeux : au-delà, moins de 5 % de code en plus ; environ 11 s
-# par ROM sur 8 cœurs.
-AUTO_SEEDS="${AUTO_SEEDS:-8}"
-AUTO_FRAMES="${AUTO_FRAMES:-36000}"
-AUTO_LONG_FRAMES="${AUTO_LONG_FRAMES:-108000}"
-AUTO_SECONDS="${AUTO_SECONDS:-60}"  # plafond de temps réel par partie
+# Précalcul : AUTO_SEEDS parties aléatoires en parallèle par ROM (une par
+# cœur), chacune jouée à pleine vitesse pendant AUTO_SECONDS secondes de
+# temps réel (3 000 à 12 000 frames par seconde selon le jeu).
+AUTO_SEEDS="${AUTO_SEEDS:-$NPROC}"
+AUTO_SECONDS="${AUTO_SECONDS:-20}"
 # ROMs traitées en parallèle (1 avec PLAY=1) ; journal de chacune dans
 # out/<jeu>/compile.log.
 JOBS="${JOBS:-$(( NPROC / 4 > 0 ? NPROC / 4 : 1 ))}"
@@ -418,24 +417,32 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
     elif [ "$n_auto" -gt 0 ] || [ -f "$store/coverage-auto.cov" ]; then
       echo "[i] Parties automatiques : $n_auto sur $AUTO_SEEDS enregistrées, ajout des autres"
     fi
-    local guard=() frames
-    command -v timeout > /dev/null && guard=(timeout $((AUTO_SECONDS + 30)))
+    local frames=$((AUTO_SECONDS * 40000)) lock=()
+    # Une ROM à la fois sur tous les cœurs (flock, quand il existe).
+    command -v flock > /dev/null && lock=(flock "$DEST_DIR/.gbrecomp-auto.lock")
     for seed in $(seq 1 "$AUTO_SEEDS"); do
       [ -f "$store/coverage-auto$seed.cov" ] && continue
       [ -f "$PROFILES_DIR/$rom_sha/coverage-auto$seed.cov" ] && continue
-      frames=$AUTO_FRAMES
-      [ "$seed" = 1 ] && frames=$AUTO_LONG_FRAMES
       awk -v frames="$frames" -v seed=$((41 + seed)) 'BEGIN { srand(seed); split("right left up down a b", n, " ");
         for (f = 30; f < frames; f += 20) {
           if (f % 600 < 20) { print f, "start"; continue }
           b = ""; for (i = 1; i <= 6; i++) if (rand() < (i == 1 ? 0.55 : 0.25)) b = b (b == "" ? "" : "+") n[i];
           print f, (b == "" ? "none" : b) } }' > "$out_dir/coverage-auto$seed.input"
-      "${guard[@]}" "$out_dir/host/build/${prefix}_profile" --interp --frames "$frames" \
-        --max-seconds "$AUTO_SECONDS" --input "$out_dir/coverage-auto$seed.input" \
-        --coverage "$out_dir/coverage-auto$seed.cov" \
-        --rom-profile-out "$out_dir/romdata-auto$seed.prof" > /dev/null 2>&1 &
     done
-    wait
+    # Pleine vitesse, arrêt au bout de AUTO_SECONDS ; l'entrée enregistrée
+    # est coupée à la dernière frame jouée, pour rejouer la même partie.
+    "${lock[@]}" bash -c '
+      prof=$1 dir=$2 secs=$3 frames=$4; shift 4
+      guard=(); command -v timeout > /dev/null && guard=(timeout $((secs + 30)))
+      for seed in "$@"; do
+        [ -f "$dir/coverage-auto$seed.input" ] && [ ! -f "$dir/coverage-auto$seed.cov" ] || continue
+        ( n=$("${guard[@]}" "$prof" --interp --frames "$frames" --max-seconds "$secs" \
+              --input "$dir/coverage-auto$seed.input" --coverage "$dir/coverage-auto$seed.cov" \
+              --rom-profile-out "$dir/romdata-auto$seed.prof" 2> /dev/null | sed -n "s/^frames \([0-9]*\).*/\1/p")
+          [ -n "$n" ] && awk -v n="$n" "\$1 <= n" "$dir/coverage-auto$seed.input" > "$dir/coverage-auto$seed.tmp" &&
+            mv "$dir/coverage-auto$seed.tmp" "$dir/coverage-auto$seed.input" ) &
+      done
+      wait' _ "$out_dir/host/build/${prefix}_profile" "$out_dir" "$AUTO_SECONDS" "$frames" $(seq 1 "$AUTO_SEEDS")
     save_sessions
   fi
 
