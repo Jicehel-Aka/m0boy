@@ -419,7 +419,8 @@ current ones; current ones only get missing icons).
   late-game and attract loops more weight). From 8 to 16 runs gains
   little (1.72% → 1.70%).
 - Several ROMs run in parallel (`JOBS`, default cores / 4), each with its
-  log in `out/<game>/compile.log`. Five ROMs take about 70 s on 16 cores.
+  log in `out/<game>/compile.log`. One ROM takes about 45 s on 16 cores;
+  a batch takes at least 20 s per ROM (the random runs go one ROM at a time).
 - Every run, random or played (`PLAY=1`), is kept in
   `<rom dir>/profiles/<sha1>/` (`.input`, `.cov`, `.prof`) and reused by
   later runs. A store with fewer seeded runs than `AUTO_SEEDS` (ROMs from
