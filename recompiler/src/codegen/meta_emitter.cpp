@@ -388,6 +388,9 @@ private:
     bool replaying_ = false;
     bool stream_ = false, pack_ = false;
     size_t stream_code_budget_ = 0, resident_budget_ = 0;
+    /* Flash for the application: META 240 KiB above its 16 KiB loader,
+     * Pokitto 228 KiB below its loader at 0x39000. */
+    size_t app_flash() const { return opt_.pokitto ? 0x39000 : 245760; }
     std::vector<std::vector<uint8_t>> packed_sector_; /* per ROM sector (banks 1+) */
     std::vector<uint64_t> chunk_weight_; /* per 4 KiB ROM chunk */
     std::vector<int> resident_index_;    /* per chunk: slot in flash, -1 on the card */
@@ -445,7 +448,7 @@ bool Generator::load_coverage(MetaTargetStats& stats, std::string& error) {
     if (!budget && stream_) {
         budget = stream_code_budget_;
     } else if (!budget) {
-        const size_t app = 245760, runtime = 40960;
+        const size_t app = app_flash(), runtime = 40960;
         budget = app > runtime + rom_.size() ? app - runtime - rom_.size() : 0;
     }
     const size_t max_ins = budget / (opt_.bytes_per_instruction ? opt_.bytes_per_instruction : 20);
@@ -599,7 +602,7 @@ bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
     size_t touched = 0;
     for (size_t c = 4; c < chunks; c++)
         if (chunk_weight_[c]) touched += 4096;
-    const size_t app = 245760;
+    const size_t app = app_flash();
     if (pack_) {
         /* Compressed flash: every sector of banks 1+ is packed now; the
          * resident chunks (chosen later) stay raw instead.  Flash holds the
@@ -650,8 +653,9 @@ bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
             return true;
         }
     }
-    /* Flash: 240 KiB minus the runtime with the SD reader, bank 0 and the
-     * chunk map; the rest is shared between resident chunks and code. */
+    /* Flash: the application area minus the runtime with the SD reader,
+     * bank 0 and the chunk map; the rest is shared between resident chunks
+     * and code. */
     const size_t runtime = 45056;
     const size_t fixed = runtime + 0x4000 + chunks;
     const size_t available = app > fixed ? app - fixed : 0;
@@ -1768,6 +1772,7 @@ std::string Generator::emit_config(std::string& error) const {
                                      ".GB\"\n#define GBL_STREAM_NAME83 \"" +
                                      stream_name83(opt_.name) + "\"\n")
                   : std::string())
+      << (opt_.pokitto ? "#define GBL_TARGET_POKITTO 1\n" : "")
       << "#define GBL_TITLE \"" << [&] {
              std::string t;
              for (char c : h.title)
@@ -1789,7 +1794,8 @@ bool write_file(const fs::path& path, const std::string& text, std::string& erro
     return static_cast<bool>(out);
 }
 
-bool copy_dir_files(const fs::path& from, const fs::path& to, std::string& error) {
+bool copy_dir_files(const fs::path& from, const fs::path& to, std::string& error,
+                    const std::set<std::string>& skip = {}) {
     std::error_code ec;
     if (!fs::is_directory(from, ec)) {
         error = "missing template directory " + from.string();
@@ -1798,6 +1804,8 @@ bool copy_dir_files(const fs::path& from, const fs::path& to, std::string& error
     fs::create_directories(to, ec);
     for (const auto& entry : fs::directory_iterator(from, ec)) {
         if (!entry.is_regular_file()) continue;
+        const std::string fname = entry.path().filename().string();
+        if (skip.count(fname) || entry.path().extension() == ".in") continue;
         fs::copy_file(entry.path(), to / entry.path().filename(),
                       fs::copy_options::overwrite_existing, ec);
         if (ec) {
@@ -1849,18 +1857,47 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     std::error_code ec;
     fs::create_directories(src, ec);
     fs::create_directories(out / "host", ec);
-    fs::create_directories(out / "boards", ec);
-    fs::create_directories(out / "variants" / "gbl_meta", ec);
+    if (!options.pokitto) {
+        fs::create_directories(out / "boards", ec);
+        fs::create_directories(out / "variants" / "gbl_meta", ec);
+    }
     fs::create_directories(out / "coverage", ec);
     if (ec) {
         error = "cannot create " + out.string() + ": " + ec.message();
         return false;
     }
 
+    /* platform/src holds the shared frontend and the META's drivers; the
+     * Pokitto build takes the shared files and platform/pokitto instead of
+     * the META drivers (see meta_target.h).  Files of the other console left
+     * by an earlier generation into this directory are removed. */
+    const std::set<std::string> meta_only = {
+        "meta_audio.cpp", "meta_clock.cpp", "meta_display.c", "meta_display_asm.S", "meta_dma.cpp",
+        "meta_dma.h",     "meta_lcd.cpp",   "meta_lcd_queue.h", "meta_sd.cpp"};
+    std::set<std::string> other_console;
+    if (options.pokitto) {
+        other_console = meta_only;
+    } else {
+        for (const auto& entry : fs::directory_iterator(tpl / "platform" / "pokitto", ec))
+            if (entry.path().extension() != ".in") other_console.insert(entry.path().filename().string());
+    }
+    for (const auto& name : other_console) fs::remove(src / name, ec);
+    if (options.pokitto) {
+        fs::remove(out / "platformio.ini", ec);
+        fs::remove(out / "gamebuino_meta.ld", ec);
+    } else {
+        fs::remove(out / "Makefile", ec);
+        fs::remove(out / "pokitto.ld", ec);
+    }
+
     if (!copy_dir_files(tpl / "runtime", src, error) ||
-        !copy_dir_files(tpl / "platform" / "src", src, error) ||
-        !copy_dir_files(tpl / "platform" / "boards", out / "boards", error) ||
-        !copy_dir_files(tpl / "platform" / "variants" / "gbl_meta", out / "variants" / "gbl_meta", error))
+        !copy_dir_files(tpl / "platform" / "src", src, error, options.pokitto ? meta_only
+                                                                              : std::set<std::string>{}))
+        return false;
+    if (options.pokitto ? !copy_dir_files(tpl / "platform" / "pokitto", src, error)
+                        : (!copy_dir_files(tpl / "platform" / "boards", out / "boards", error) ||
+                           !copy_dir_files(tpl / "platform" / "variants" / "gbl_meta",
+                                           out / "variants" / "gbl_meta", error)))
         return false;
     fs::copy_file(tpl / "host" / "gbl_host.c", out / "host" / "gbl_host.c",
                   fs::copy_options::overwrite_existing, ec);
@@ -1871,9 +1908,13 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         error = "cannot copy host harness: " + ec.message();
         return false;
     }
-    for (const char* file : {"platformio.ini", "gamebuino_meta.ld", "README.md"}) {
+    const fs::path platform_tpl = tpl / "platform" / (options.pokitto ? "pokitto" : "");
+    const std::vector<std::string> project_files =
+        options.pokitto ? std::vector<std::string>{"Makefile", "pokitto.ld", "README.md"}
+                        : std::vector<std::string>{"platformio.ini", "gamebuino_meta.ld", "README.md"};
+    for (const auto& file : project_files) {
         std::string text;
-        if (!read_file(tpl / "platform" / (std::string(file) + ".in"), text, error)) return false;
+        if (!read_file(platform_tpl / (file + ".in"), text, error)) return false;
         if (!write_file(out / file, substitute(text, options.name), error)) return false;
     }
     {

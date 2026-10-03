@@ -1,0 +1,95 @@
+/* Pokitto (LPC11U68) linker script, generated project @NAME@.
+ *
+ * Flash from 0x0 up to the loader at 0x39000 (the Pokitto loader keeps the
+ * top 28 KiB).  Main RAM 32 KiB at 0x10000000 (the first 256 bytes left
+ * alone, as PokittoLib does), the stack at its top; the two 2 KiB banks
+ * take buffers placed in .bss_ram1 / .bss_usbram. */
+MEMORY
+{
+  FLASH (rx)   : ORIGIN = 0x00000000, LENGTH = 0x39000
+  RAM (rwx)    : ORIGIN = 0x10000100, LENGTH = 0x8000 - 0x100
+  RAM1 (rwx)   : ORIGIN = 0x20000000, LENGTH = 0x800
+  USBRAM (rwx) : ORIGIN = 0x20004000, LENGTH = 0x800
+}
+
+ENTRY(Reset_Handler)
+
+/* Room the stack needs below RAM's top (checked at link time). */
+__stack_min = 2048;
+
+SECTIONS
+{
+  .text :
+  {
+    KEEP(*(.isr_vector))
+    *(.text*)
+    KEEP(*(.init))
+    KEEP(*(.fini))
+    *(.rodata*)
+    . = ALIGN(4);
+  } > FLASH
+
+  .ARM.extab : { *(.ARM.extab* .gnu.linkonce.armextab.*) } > FLASH
+  .ARM.exidx :
+  {
+    __exidx_start = .;
+    *(.ARM.exidx* .gnu.linkonce.armexidx.*)
+    __exidx_end = .;
+  } > FLASH
+
+  . = ALIGN(4);
+  _sidata = LOADADDR(.data);
+
+  /* .data also holds the runtime's SRAM functions (.data.gbl_ramfunc.*). */
+  .data : ALIGN(4)
+  {
+    _sdata = .;
+    *(.data*)
+    . = ALIGN(4);
+    PROVIDE_HIDDEN(__preinit_array_start = .);
+    KEEP(*(.preinit_array))
+    PROVIDE_HIDDEN(__preinit_array_end = .);
+    PROVIDE_HIDDEN(__init_array_start = .);
+    KEEP(*(SORT(.init_array.*)))
+    KEEP(*(.init_array))
+    PROVIDE_HIDDEN(__init_array_end = .);
+    PROVIDE_HIDDEN(__fini_array_start = .);
+    KEEP(*(SORT(.fini_array.*)))
+    KEEP(*(.fini_array))
+    PROVIDE_HIDDEN(__fini_array_end = .);
+    . = ALIGN(4);
+    _edata = .;
+  } > RAM AT > FLASH
+
+  .bss (NOLOAD) : ALIGN(4)
+  {
+    _sbss = .;
+    __bss_start__ = .;
+    *(.bss .bss.*)
+    *(COMMON)
+    . = ALIGN(4);
+    _ebss = .;
+    __bss_end__ = .;
+  } > RAM
+
+  .bss_ram1 (NOLOAD) : ALIGN(4)
+  {
+    _sram1_bss = .;
+    *(.bss_ram1*)
+    . = ALIGN(4);
+    _eram1_bss = .;
+  } > RAM1
+
+  .bss_usbram (NOLOAD) : ALIGN(4)
+  {
+    _susbram_bss = .;
+    *(.bss_usbram*)
+    . = ALIGN(4);
+    _eusbram_bss = .;
+  } > USBRAM
+
+  __StackTop = ORIGIN(RAM) + LENGTH(RAM);
+  end = _ebss;
+  PROVIDE(_end = _ebss);
+  ASSERT(_ebss + __stack_min <= __StackTop, "RAM: no room left for the stack")
+}

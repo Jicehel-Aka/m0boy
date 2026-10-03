@@ -25,12 +25,17 @@ struct MetaTargetOptions {
     std::string name;                                  ///< C identifier for files
     std::filesystem::path output_dir;
     std::filesystem::path template_dir;                ///< targets/meta
+    /* Console: the Gamebuino META (PlatformIO, Arduino core) or the Pokitto
+     * (bare-metal Makefile; same runtime and generated code, its own
+     * drivers in platform/pokitto, 228 KiB of flash below its loader). */
+    bool pokitto = false;
     std::vector<std::filesystem::path> coverage_files; ///< gbl coverage v1 files
     bool emit_comments = true;
     bool precise = false;      ///< poll interrupts before every instruction
     size_t max_region_instructions = 256;
-    /* Flash available for generated code; 0 = derive from the META's 240 KiB
-     * application area minus the runtime (~40 KiB) and the ROM image.
+    /* Flash available for generated code; 0 = derive from the application
+     * area (META 240 KiB, Pokitto 228 KiB) minus the runtime (~40 KiB) and
+     * the ROM image.
      * Played coverage is always compiled; speculative (static analysis)
      * instructions fill the remaining budget, loops first, then bank 0. */
     size_t code_budget_bytes = 0;
@@ -71,7 +76,8 @@ struct MetaTargetStats {
 };
 
 /**
- * @brief Write a PlatformIO + host-harness project for the gbl runtime.
+ * @brief Write a firmware (PlatformIO for the META, Makefile for the Pokitto)
+ *        + host-harness project for the gbl runtime.
  * @return false and fill @p error when generation is impossible.
  */
 bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,

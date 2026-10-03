@@ -6,7 +6,10 @@
  */
 #include "meta_menu.h"
 
+#include "meta_target.h"
+#if META_ARDUINO
 #include <Arduino.h>
+#endif
 #include <string.h>
 
 #include "meta_clock.h"
@@ -14,13 +17,18 @@
 #include "meta_font.h"
 #include "meta_lcd.h"
 
-#define RGB565_BE(rgb)                                                                         \
-    ((uint16_t)(((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) >> 8 | \
-                ((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) << 8))
+static const uint16_t bg = META_COLOR(0x081820);
+static const uint16_t bar = META_COLOR(0x24524A);   /* selected line */
+static const uint16_t title_bg = META_COLOR(0x346856);
 
-static const uint16_t bg = RGB565_BE(0x081820);
-static const uint16_t bar = RGB565_BE(0x24524A);   /* selected line */
-static const uint16_t title_bg = RGB565_BE(0x346856);
+/* Bands of 8 rows over the picture: 16 on the META, 18 on the Pokitto. */
+#define BANDS (META_SCREEN_ROWS / 8)
+
+static inline void feed_watchdog(void) {
+#if META_ARDUINO
+    if (WDT->CTRL.reg & WDT_CTRL_ENABLE) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
+#endif
+}
 
 /* delay() assumes a 48 MHz SysTick. */
 static void wait_ms(uint32_t ms) {
@@ -28,7 +36,7 @@ static void wait_ms(uint32_t ms) {
     while (meta_micros() - t < ms * 1000u) {}
 }
 
-static uint16_t to565(uint32_t rgb) { return (uint16_t)RGB565_BE(rgb); }
+static uint16_t to565(uint32_t rgb) { return (uint16_t)META_COLOR(rgb); }
 
 static uint16_t font_colour[3];
 
@@ -64,17 +72,17 @@ static void draw_text(uint16_t *band, int x, const char *s) {
 }
 
 /* Bands of 8 rows: the title on band 0, item i on band 1 + i, the
- * information line on band 14, the hint on band 15. */
+ * information line on the band before last, the hint on the last. */
 static void draw(uint16_t *buf, const char *title, const meta_menu_item *items, unsigned n,
                  unsigned sel, const char *info) {
-    for (int b = 0; b < 16; b++) {
+    for (int b = 0; b < BANDS; b++) {
         int item = b - 1;
         if (item >= (int)n) item = -1;
         uint16_t fill = b == 0 ? title_bg : (item >= 0 && (unsigned)item == sel) ? bar : bg;
         for (int i = 0; i < 160 * 8; i++) buf[i] = fill;
         if (b == 0) draw_text(buf, (160 - text_width(title)) / 2, title);
-        if (b == 14 && info) draw_text(buf, (160 - text_width(info)) / 2, info);
-        if (b == 15) draw_text(buf, 4, "A:ok   B:retour");
+        if (b == BANDS - 2 && info) draw_text(buf, (160 - text_width(info)) / 2, info);
+        if (b == BANDS - 1) draw_text(buf, 4, "A:ok   B:retour");
         if (item >= 0) {
             const meta_menu_item *it = &items[item];
             draw_text(buf, 4, it->label);
@@ -105,7 +113,7 @@ int meta_menu_run(const char *title, const meta_menu_item *items, unsigned n,
     uint8_t held = buttons(); /* ignore what is already down (HOME) */
     int redraw = 1, result = -1;
     for (;;) {
-        if (WDT->CTRL.reg & WDT_CTRL_ENABLE) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
+        feed_watchdog();
         if (redraw) {
             draw(buf, title, items, n, sel, info);
             redraw = 0;
@@ -131,7 +139,7 @@ int meta_menu_run(const char *title, const meta_menu_item *items, unsigned n,
     }
     /* Let go of everything before the game reads the buttons again. */
     while (buttons()) {
-        if (WDT->CTRL.reg & WDT_CTRL_ENABLE) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
+        feed_watchdog();
         wait_ms(10);
     }
     return result;

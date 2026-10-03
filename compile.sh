@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# Convertit toutes les ROMs .gb/.gbc d'un dossier en jeux Gamebuino META,
-# rangés comme le loader de la console les attend.
+# Convertit toutes les ROMs .gb/.gbc d'un dossier en jeux Gamebuino META
+# (ou Pokitto, TARGET=pokitto), rangés comme le loader de la console les
+# attend.
 #
 # Usage : ./compile.sh [dossier_roms] [dossier_sortie]
 #   Par défaut : toutes les ROMs de ./roms/gb/, jeux dans ./roms/meta/<Jeu>/
 #   (le .elf de débogage reste dans out/<jeu>/.pio/build/meta/)
+#
+#   TARGET=pokitto  même chaîne pour la Pokitto : jeux dans ./roms/pokitto/<Jeu>/,
+#                   projets dans out/pokitto/<jeu>/ (build/firmware.elf), firmware
+#                   construit par make (arm-none-eabi-gcc seul, sans PlatformIO),
+#                   228 Kio de flash sous le loader au lieu de 240, pas
+#                   d'icônes (format du loader META).  Les parties
+#                   enregistrées sont communes aux deux consoles.
 #
 # Chaque jeu devient un dossier à copier tel quel à la racine de la carte SD :
 #   <Jeu>/<Jeu>.bin        le firmware (nommé simplement : « Zerd (J) [!] »
@@ -76,8 +84,16 @@
 # Une ROM en échec n'arrête pas le lot ; le bilan est affiché à la fin.
 set -uo pipefail
 
+TARGET="${TARGET:-meta}"
+case "$TARGET" in
+  meta|pokitto) ;;
+  *) echo "TARGET=$TARGET inconnu (meta ou pokitto)."; exit 1 ;;
+esac
 SRC_DIR="${1:-./roms/gb}"
-DEST_DIR="${2:-./roms/meta}"
+DEST_DIR="${2:-./roms/$TARGET}"
+# Projets générés : out/<jeu> pour la META, out/pokitto/<jeu> pour la Pokitto
+# (les deux peuvent coexister).
+if [ "$TARGET" = pokitto ]; then OUT_ROOT="out/pokitto"; else OUT_ROOT="out"; fi
 PLAY="${PLAY:-0}"
 STATIC="${STATIC:-1}"
 AUTO="${AUTO:-1}"
@@ -143,9 +159,10 @@ url_quote() {
 
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
-# Version de gbrecomp embarquée dans un firmware (voir meta_main.cpp).
+# Version de gbrecomp embarquée dans un firmware (voir meta_main.cpp) :
+# « gbrecomp-meta x.y.z » ou « gbrecomp-pokitto x.y.z ».
 firmware_version() {
-  grep -aoE 'gbrecomp-meta [0-9A-Za-z._+-]{1,32}' "$1" 2>/dev/null \
+  grep -aoE "gbrecomp-$TARGET [0-9A-Za-z._+-]{1,32}" "$1" 2>/dev/null \
     | head -n1 | cut -d' ' -f2
 }
 
@@ -329,7 +346,7 @@ in_array() { # $1 valeur, $2... tableau
 build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 sha1
   local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
   local game_dir="$DEST_DIR/$game_name"
-  local out_dir="out/$prefix"
+  local out_dir="$OUT_ROOT/$prefix"
 
   # a0) Parties enregistrées pour cette ROM exacte (par SHA-1) : celles du
   #     dossier profiles/ fourni, puis celles sauvées par les lancements
@@ -363,7 +380,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   # a) Projet interpréteur seul et outils PC
   local pack_args=()
   [ "$PACK" = "1" ] && pack_args=(--meta-pack)
-  "$GBRECOMP" "$rom_path" --target meta --output-prefix "$prefix" "${pack_args[@]}" -o "$out_dir" || return 1
+  "$GBRECOMP" "$rom_path" --target "$TARGET" --output-prefix "$prefix" "${pack_args[@]}" -o "$out_dir" || return 1
   cmake -G Ninja -S "$out_dir/host" -B "$out_dir/host/build" > /dev/null || return 1
   ninja -C "$out_dir/host/build" || return 1
 
@@ -489,11 +506,16 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   # d) Firmware, en remplissant la flash au maximum.  Le code est trié du
   #    plus exécuté au moins exécuté ; --meta-bytes-per-instruction règle
   #    combien en garder.  Recherche dichotomique de la plus petite valeur
-  #    (= le plus de code) qui tient encore dans les 240 Kio de la META.
+  #    (= le plus de code) qui tient encore dans les 240 Kio de la META
+  #    (228 Kio sur la Pokitto).
   build_with() { # $1 = octets par instruction ; 0 ok, 1 flash pleine, 2 erreur
-    gen_log=$("$GBRECOMP" "$rom_path" --target meta --output-prefix "$prefix" \
+    gen_log=$("$GBRECOMP" "$rom_path" --target "$TARGET" --output-prefix "$prefix" \
       "${cov_args[@]}" "${static_args[@]}" "${pack_args[@]}" --meta-bytes-per-instruction "$1" -o "$out_dir") || return 2
-    build_log=$(pio run -d "$out_dir" 2>&1) && return 0
+    if [ "$TARGET" = pokitto ]; then
+      build_log=$(make -C "$out_dir" -j"$NPROC" 2>&1) && return 0
+    else
+      build_log=$(pio run -d "$out_dir" 2>&1) && return 0
+    fi
     echo "$build_log" | grep -q -E "overflowed|greater than maximum allowed" && return 1
     echo "$build_log" | tail -20
     return 2
@@ -512,11 +534,16 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   # Le dernier essai n'est pas forcément le meilleur : reconstruire celui-ci.
   build_with "$best" || return 1
   echo "$gen_log" | grep -E "compiled:|interpreter only:|wait loops:|ROM streaming:|ROM packed:|--meta-pack:"
-  echo "$build_log" | grep -E "RAM:|Flash:"
-  cp "$out_dir/.pio/build/meta/firmware.bin" "$game_dir/$game_name.bin"
-  # Icônes du loader (PNG libretro -> BMP 24 bits), sans bloquer le jeu.
-  fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" "$gbc" \
-    || echo "[i] (jeu conservé sans icône)"
+  if [ "$TARGET" = pokitto ]; then
+    echo "$build_log" | grep -E "^flash:"
+    cp "$out_dir/build/firmware.bin" "$game_dir/$game_name.bin"
+  else
+    echo "$build_log" | grep -E "RAM:|Flash:"
+    cp "$out_dir/.pio/build/meta/firmware.bin" "$game_dir/$game_name.bin"
+    # Icônes du loader (PNG libretro -> BMP 24 bits), sans bloquer le jeu.
+    fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" "$gbc" \
+      || echo "[i] (jeu conservé sans icône)"
+  fi
   # Sauvegarde (cartouche à pile) ou grande RAM de cartouche : un fichier
   # .SAV de la taille de cette RAM, à mettre sur la carte à côté du .bin.
   # Jamais écrasé : il contient la progression.
@@ -739,12 +766,12 @@ for index in ${SEL[@]+"${SEL[@]}"}; do
     fi
     echo ""
   else
-    mkdir -p "out/$prefix"
+    mkdir -p "$OUT_ROOT/$prefix"
     (
-      if run_one "$rom_path" "$prefix" "$dir" "${R_sha[i]}" "$i" > "out/$prefix/compile.log" 2>&1; then
+      if run_one "$rom_path" "$prefix" "$dir" "${R_sha[i]}" "$i" > "$OUT_ROOT/$prefix/compile.log" 2>&1; then
         echo "[+] $dir"
       else
-        echo "[x] $dir (voir out/$prefix/compile.log)"
+        echo "[x] $dir (voir $OUT_ROOT/$prefix/compile.log)"
       fi
     ) &
     running=$((running + 1))

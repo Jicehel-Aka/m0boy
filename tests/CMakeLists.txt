@@ -567,6 +567,14 @@ add_test(NAME meta_target_end_to_end
         --gbrecomp "$<TARGET_FILE:gbrecomp>")
 set_tests_properties(meta_target_end_to_end PROPERTIES TIMEOUT 300)
 
+# --target pokitto: the same gbl project for the Pokitto (generated files,
+# host harness, and the bare-metal firmware when arm-none-eabi-gcc exists).
+add_test(NAME meta_pokitto_target
+    COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test_pokitto_target.py"
+        --gbrecomp "$<TARGET_FILE:gbrecomp>")
+set_tests_properties(meta_pokitto_target PROPERTIES TIMEOUT 300)
+
 add_executable(test_meta_ppu_reference_pal32
     "${GBL_META_DIR}/tests/ppu_reference.c"
     ${GBL_META_RUNTIME_SOURCES}

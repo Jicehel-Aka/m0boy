@@ -13,7 +13,8 @@ are untouched.
 | META frontend | `targets/meta/platform/src/meta_*.cpp` |
 | Host harness | `targets/meta/host/gbl_host.c` |
 | Cycle estimator | `targets/meta/tools/m0bench/` |
-| Tests | `targets/meta/tests/`, `tests/test_meta_target_e2e.py` |
+| Tests | `targets/meta/tests/`, `tests/test_meta_target_e2e.py`, `tests/test_pokitto_target.py` |
+| Pokitto drivers | `targets/meta/platform/pokitto/` (see [Pokitto](#pokitto---target-pokitto)) |
 
 ## How it works
 
@@ -362,6 +363,54 @@ Tetris 73%, Mystic Quest 78%. FastLZ does 5 to 10 points worse on these
 ROMs; zlib does 10 points better, but it needs Huffman tables in RAM.
 Compressing ROM data meant for the SD card would not pay: decoding costs
 more than the transfer it saves.
+
+## Pokitto (`--target pokitto`)
+
+`gbrecomp --target pokitto` writes the same project for the
+[Pokitto](https://www.pokitto.com) (LPC11U68: Cortex-M0+, 48 MHz, run at
+72 MHz like PokittoLib's usual `_OSCT=2`; 32 + 2 + 2 KiB RAM; 256 KiB flash
+of which the loader keeps the top 28 KiB; 220×176 panel on a 16-bit
+parallel bus; 8-bit R2R DAC). Every `--meta-*` option applies; the runtime,
+the generated code and the frontend are shared, only the drivers differ.
+
+- **One configuration header.** `platform/src/meta_target.h` selects the
+  console from `GBL_TARGET_POKITTO` (written into `gbl_config.h` by the
+  generator) and sets the `META_*` switches the shared files test with
+  `#if`: `META_ARDUINO` (Arduino core or bare metal), `META_USB_SERIAL`,
+  `META_SCALED_MODES` (the META's 144→128 display modes), `META_SCREEN_ROWS`
+  (menu height), `META_SWAP_AB_DEFAULT`, `META_CLOCK_DEFAULT` and
+  `META_COLOR` (byte-swapped RGB565 on the META's SPI, native on the
+  Pokitto's bus). The META firmware built from these files is byte-identical
+  to the one built before the Pokitto target existed.
+- **Bare metal.** No mbed, no PokittoLib: `platform/pokitto/` holds the
+  startup (vector table, LPC boot checksum written into word 7 by the
+  Makefile), the clock (crystal + PLL, 48/72 MHz from the menu), the display
+  (PokittoLib's init sequence; the 160×144 picture unscaled in the middle,
+  each line written as the PPU completes it, unchanged lines skipped by
+  their signature), audio (CT32B0 at 22,050 Hz into the R2R DAC, amplifier
+  on P1_17, the volume potentiometer set over software I2C), the SD card on
+  SSP0 and the buttons. The project builds with `make` and only needs
+  `arm-none-eabi-gcc` (PATH, or PlatformIO's `toolchain-gccarmnoneeabi`).
+- **Flash and RAM.** 228 KiB below the loader at `0x39000`, so the code
+  budget is 12 KiB smaller than on the META. Main RAM holds the machine and
+  the stack; the line signatures and the audio ring live in the 2 KiB banks.
+- **Controls.** D-pad, A, B (not swapped); C tap = Start, C + B = Select,
+  C held half a second = option menu (same menu as the META, without the
+  display modes), C held at power-on = the Pokitto loader (as PokittoLib
+  does; "Quitter" in the menu jumps there too).
+- **Batch.** `TARGET=pokitto ./compile.sh` produces `roms/pokitto/<Game>/`
+  (firmware, `.SAV`, `.STA`, streamed `.GB`; no icons) from projects in
+  `out/pokitto/<game>/`, reusing the recorded play sessions of the META.
+
+Status: runs in `tools/meta-emu-sdl --target pokitto` (picture, buttons,
+menu, SD streaming, battery RAM file, save and load of a state within a
+session). **Not run on a Pokitto yet**: the panel orientation, the 72 MHz
+default, the button pull-downs, the volume potentiometer and the loader's
+file layout are taken from PokittoLib and the emulator, not from hardware.
+The emulator's Pokitto SD model does not answer ACMD41 and its byte-wide
+GPIO registers ignore unaligned pins, so the firmware reads the buttons
+from `PIN[1]` and writes the DAC through `SET`/`CLR` (both equally valid on
+the chip); card tests need an emulator with ACMD41 accepted.
 
 ## Batch conversion (`compile.sh`)
 

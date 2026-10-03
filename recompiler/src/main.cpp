@@ -140,6 +140,8 @@ void print_usage(const char* program) {
     std::cout << "  -j, --jobs <n>        Parallel workers for codegen and batch generation (0=auto)\n";
     std::cout << "  --target meta         Emit a compact gbl project for the Gamebuino META\n";
     std::cout << "                        (coverage-driven; see targets/meta/README.md)\n";
+    std::cout << "  --target pokitto      Same gbl project for the Pokitto (bare-metal Makefile build;\n";
+    std::cout << "                        every --meta-* option applies)\n";
     std::cout << "  --coverage <file>     gbl coverage profile for --target meta (repeatable)\n";
     std::cout << "  --meta-precise        Poll interrupts before every instruction (differential tests)\n";
     std::cout << "  --meta-static         Add the code found by static analysis (no play session needed)\n";
@@ -1774,8 +1776,9 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
                            const fs::path& explicit_meta_dir,
                            const std::vector<fs::path>& coverage_paths, bool precise,
                            bool static_coverage, size_t bytes_per_instruction,
-                           bool emit_comments) {
+                           bool emit_comments, bool pokitto) {
     gbrecomp::MetaTargetOptions options;
+    options.pokitto = pokitto;
     options.template_dir = resolve_meta_dir(argv0, explicit_meta_dir);
     if (options.template_dir.empty()) {
         std::cerr << "Error: could not locate targets/meta. Use --meta-dir or GBRECOMP_META_DIR.\n";
@@ -1790,8 +1793,9 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
     }
     options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string())
                                          : output_prefix;
-    options.output_dir = output_dir.empty() ? fs::path(fs::path(rom_path).stem().string() + "_meta")
-                                            : fs::path(output_dir);
+    options.output_dir = output_dir.empty()
+                             ? fs::path(fs::path(rom_path).stem().string() + (pokitto ? "_pokitto" : "_meta"))
+                             : fs::path(output_dir);
     options.coverage_files = coverage_paths;
     options.bytes_per_instruction = bytes_per_instruction;
     options.code_budget_bytes = g_meta_code_budget;
@@ -1853,7 +1857,8 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
     const size_t cart_ram = rom->header().ram_size_bytes;
     if (cart_ram > 4096) {
         std::cout << "Warning: " << cart_ram << " bytes of cartridge RAM are allocated in the "
-                     "META's 32 KiB; check the PlatformIO RAM report.\n";
+                  << (pokitto ? "Pokitto's 32 KiB; check the link map.\n"
+                              : "META's 32 KiB; check the PlatformIO RAM report.\n");
     }
     std::cout << std::dec;
     std::cout << "Flash budget: about " << stats.budget_instructions << " compiled instructions";
@@ -1883,7 +1888,8 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
               << (!stats.pack_note.empty() ? "  --meta-pack:        not applied, " + stats.pack_note + "\n"
                                            : std::string())
               << (precise ? "  mode:               precise (interrupt poll per instruction)\n" : "")
-              << "Build firmware:  pio run -d " << options.output_dir.string() << "\n"
+              << (pokitto ? "Build firmware:  make -C " : "Build firmware:  pio run -d ")
+              << options.output_dir.string() << "\n"
               << "Build host test: cmake -G Ninja -S " << (options.output_dir / "host").string()
               << " -B " << (options.output_dir / "host" / "build").string() << "\n";
     return 0;
@@ -2100,13 +2106,14 @@ int main(int argc, char* argv[]) {
         print_usage(argv[0]);
         return 1;
     }
-    if (target != "desktop" && target != "meta") {
-        std::cerr << "Error: unknown --target '" << target << "' (expected desktop or meta)\n";
+    if (target != "desktop" && target != "meta" && target != "pokitto") {
+        std::cerr << "Error: unknown --target '" << target << "' (expected desktop, meta or pokitto)\n";
         return 1;
     }
-    if (target == "meta") {
+    if (target == "meta" || target == "pokitto") {
         return run_meta_target(argv[0], rom_path, output_dir, output_prefix, meta_dir,
-                               coverage_paths, meta_precise, meta_static, meta_bpi, emit_comments);
+                               coverage_paths, meta_precise, meta_static, meta_bpi, emit_comments,
+                               target == "pokitto");
     }
     if (!coverage_paths.empty() || meta_precise || meta_static || !meta_dir.empty()) {
         std::cerr << "Error: --coverage, --meta-precise, --meta-static and --meta-dir require --target meta\n";

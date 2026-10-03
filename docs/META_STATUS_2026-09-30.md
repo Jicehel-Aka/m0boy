@@ -44,6 +44,20 @@ state, evidence and open items.
   `gbl_cp`. Estimator: −16% to −52% cycles per frame on five games, same
   hashes as the C runtime. Firmware +1.2 KiB flash, +56 B RAM.
 
+## Pokitto target (2026-10-03)
+
+`--target pokitto` (and `TARGET=pokitto ./compile.sh`): same runtime,
+generated code and frontend, bare-metal LPC11U68 drivers in
+`targets/meta/platform/pokitto/`, console switches in
+`platform/src/meta_target.h`, Makefile build with PlatformIO's
+arm-none-eabi-gcc. Evidence: emulator only (`tools/meta-emu-sdl --target
+pokitto`, a scratch copy with ACMD41 accepted for the card): Alleyway and
+Link's Awakening (streamed, battery RAM file) run, C/menu/save/load of a
+state work. The META firmware from the shared files is byte-identical to the
+previous templates' (Alleyway). Not run on a Pokitto: panel orientation,
+72 MHz default, button pulls, volume potentiometer, loader file layout.
+Pixel writes are CPU-driven (no DMA): their cost per frame is unmeasured.
+
 ## Evidence (label these correctly)
 
 - Host: `state_hash` / `run_hash` equality between builds for the same input

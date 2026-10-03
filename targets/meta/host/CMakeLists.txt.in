@@ -49,6 +49,9 @@ endif()
 
 # @NAME@_metaview: the game through the real META display pipeline, written
 # as 160x128 images of the console screen (--mode, --dump N file.ppm).
-add_executable(@NAME@_metaview gbl_metaview.c ${GBL_RUNTIME} ${GBL_GENERATED} ${GBL_SRC}/meta_display.c)
-target_include_directories(@NAME@_metaview PRIVATE ${GBL_SRC})
-target_compile_options(@NAME@_metaview PRIVATE -Wall -Wno-unused-label)
+# META projects only: a Pokitto project has no scaling pipeline.
+if(EXISTS ${GBL_SRC}/meta_display.c)
+    add_executable(@NAME@_metaview gbl_metaview.c ${GBL_RUNTIME} ${GBL_GENERATED} ${GBL_SRC}/meta_display.c)
+    target_include_directories(@NAME@_metaview PRIVATE ${GBL_SRC})
+    target_compile_options(@NAME@_metaview PRIVATE -Wall -Wno-unused-label)
+endif()

@@ -21,7 +21,7 @@ Documentation roles:
 - `ACCURACY.md`: current external-ROM test snapshot
 - `GBC.md`: CGB implementation and validation status
 - `ANDROID.md`: Android generation and APK workflow
-- `targets/meta/README.md`: Gamebuino META backend (`--target meta`), coverage workflow, and limits
+- `targets/meta/README.md`: Gamebuino META backend (`--target meta`, and `--target pokitto`), coverage workflow, and limits
 - `docs/META_STATUS_2026-09-30.md`: META branch state, evidence labels, local artifacts, and open items
 - `GROUND_TRUTH_WORKFLOW.md`: trace-assisted coverage, including its limits
 - `NATIVE_PATCHES.md`: exact-ROM native replacement manifest and callback ABI
@@ -204,6 +204,8 @@ ctest --test-dir build -R meta --output-on-failure
 ```
 
 For game-level changes, compare the host builds of a generated project: a `--meta-precise` project must print the same `run_hash` as `--interp` for the same input, and the PlatformIO build (`pio run -d <project>`) must still fit the RAM/Flash report. Label `m0_estimate.py` numbers as estimates, never as device measurements.
+
+`--target pokitto` reuses the same runtime, generated code and frontend (`targets/meta/platform/src`, console switches in `meta_target.h`) with bare-metal drivers in `targets/meta/platform/pokitto` and a Makefile build. A change to the shared frontend must keep both consoles building: `ctest -R meta` covers the Pokitto project and firmware (`meta_pokitto_target`); for the META, compare `firmware.bin` against a build from the previous templates when the change is meant to be META-neutral.
 
 Runtime changes that touch dispatch, streaming or `--meta-pack` rely on the e2e packed build and its C-stack sweep (`--stack-bytes`, livelock timeout). Assembly paths cannot run on the host: compare them against the C versions on the estimator with `--cflag=-DBENCH_PIXEL_HASH`, and use `targets/meta/tools/m0bench/where.py` when an estimator run never finishes.
 
