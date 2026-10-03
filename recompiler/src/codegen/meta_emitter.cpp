@@ -1772,7 +1772,11 @@ std::string Generator::emit_config(std::string& error) const {
                                      ".GB\"\n#define GBL_STREAM_NAME83 \"" +
                                      stream_name83(opt_.name) + "\"\n")
                   : std::string())
-      << (opt_.pokitto ? "#define GBL_TARGET_POKITTO 1\n" : "")
+      /* Pokitto: its 2 KiB banks hold a 256-entry dispatch cache, and
+       * the main RAM they free an 8-sector stream cache (pokitto.ld). */
+      << (opt_.pokitto ? std::string("#define GBL_TARGET_POKITTO 1\n#define GBL_LOOKUP_CACHE 256\n") +
+                             (stream_ && !pack_ ? "#define GBL_STREAM_SECTORS 8\n" : "")
+                       : std::string())
       << "#define GBL_TITLE \"" << [&] {
              std::string t;
              for (char c : h.title)

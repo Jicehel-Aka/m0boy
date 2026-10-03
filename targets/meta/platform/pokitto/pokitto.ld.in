@@ -2,8 +2,17 @@
  *
  * Flash from 0x0 up to the loader at 0x39000 (the Pokitto loader keeps the
  * top 28 KiB).  Main RAM 32 KiB at 0x10000000 (the first 256 bytes left
- * alone, as PokittoLib does), the stack at its top; the two 2 KiB banks
- * take buffers placed in .bss_ram1 / .bss_usbram. */
+ * alone, as PokittoLib does), the stack at its top.  The two 2 KiB banks
+ * take what main RAM can do without, chosen here by section name (every
+ * variable has its own with -fdata-sections), so the shared runtime needs
+ * no Pokitto attribute:
+ *   RAM1    the display's line signatures, the audio queue (.bss_ram1.*)
+ *           and the PPU's BGP byte table (bgp_byte, 256 bytes);
+ *   USB RAM the dispatch cache (gbl_lookup_cache, 256 entries on the
+ *           Pokitto, 2 KiB).
+ * What they free in main RAM pays for an 8-sector ROM stream cache in
+ * streamed builds.  These output sections come before .bss: an input
+ * section goes to the first rule that matches it. */
 MEMORY
 {
   FLASH (rx)   : ORIGIN = 0x00000000, LENGTH = 0x39000
@@ -61,6 +70,24 @@ SECTIONS
     _edata = .;
   } > RAM AT > FLASH
 
+  .bss_ram1 (NOLOAD) : ALIGN(4)
+  {
+    _sram1_bss = .;
+    *(.bss_ram1*)
+    *(.bss.bgp_byte)
+    . = ALIGN(4);
+    _eram1_bss = .;
+  } > RAM1
+
+  .bss_usbram (NOLOAD) : ALIGN(4)
+  {
+    _susbram_bss = .;
+    *(.bss_usbram*)
+    *(.bss.gbl_lookup_cache)
+    . = ALIGN(4);
+    _eusbram_bss = .;
+  } > USBRAM
+
   .bss (NOLOAD) : ALIGN(4)
   {
     _sbss = .;
@@ -71,22 +98,6 @@ SECTIONS
     _ebss = .;
     __bss_end__ = .;
   } > RAM
-
-  .bss_ram1 (NOLOAD) : ALIGN(4)
-  {
-    _sram1_bss = .;
-    *(.bss_ram1*)
-    . = ALIGN(4);
-    _eram1_bss = .;
-  } > RAM1
-
-  .bss_usbram (NOLOAD) : ALIGN(4)
-  {
-    _susbram_bss = .;
-    *(.bss_usbram*)
-    . = ALIGN(4);
-    _eusbram_bss = .;
-  } > USBRAM
 
   __StackTop = ORIGIN(RAM) + LENGTH(RAM);
   end = _ebss;

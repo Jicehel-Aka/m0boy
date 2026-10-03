@@ -403,7 +403,20 @@ the generated code and the frontend are shared, only the drivers differ.
   `arm-none-eabi-gcc` (PATH, or PlatformIO's `toolchain-gccarmnoneeabi`).
 - **Flash and RAM.** 228 KiB below the loader at `0x39000`, so the code
   budget is 12 KiB smaller than on the META. Main RAM holds the machine and
-  the stack; the line signatures and the audio ring live in the 2 KiB banks.
+  the stack. The two 2 KiB banks, placed by `pokitto.ld` by section name
+  (the shared runtime has no Pokitto attribute), take the line signatures,
+  the audio queue and the PPU's BGP byte table (RAM1) and a 256-entry
+  dispatch cache instead of 64 (USB RAM, `GBL_LOOKUP_CACHE 256`, about 1%
+  on the estimator); the main RAM this frees pays for an 8-sector ROM
+  stream cache in streamed builds (`GBL_STREAM_SECTORS 8`: Link's
+  Awakening reads 1,365 sectors from the card instead of 2,269 over 6,000
+  frames, about 0.5 ms each on the device, not modelled by the estimator).
+- **Audio interrupt** in Thumb-1 from SRAM (`pokitto_audio_asm.S`): r0-r3
+  only (no push), no flash access, the SET/CLR choice for bit 7 an address
+  offset instead of a branch; about 52 cycles plus exception entry and exit
+  instead of about 96, i.e. some 2.4% of the CPU at 72 MHz instead of 3.7%.
+  Same DAC samples as the C handler (`-DPOKITTO_AUDIO_ASM=0`) over 270,000
+  samples of Link's Awakening in the emulator.
 - **Controls.** D-pad, A, B (not swapped); C tap = Start, C + B = Select,
   C held half a second = option menu (same menu as the META, with the
   Pokitto's two display modes), C held at power-on = the Pokitto loader (as PokittoLib

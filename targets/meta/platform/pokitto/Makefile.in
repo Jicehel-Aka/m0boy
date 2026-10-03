@@ -22,7 +22,7 @@ COMMON := $(ARCH) -O2 -g -ffunction-sections -fdata-sections -fno-common \
           -Wall -Wno-unused-label -Isrc $(EXTRA_CFLAGS)
 CFLAGS := $(COMMON) -std=gnu11
 CXXFLAGS := $(COMMON) -std=gnu++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics
-ASFLAGS := $(ARCH) -g -Isrc -x assembler-with-cpp
+ASFLAGS := $(ARCH) -g -Isrc -x assembler-with-cpp $(EXTRA_CFLAGS)
 LDFLAGS := $(ARCH) -nostartfiles --specs=nano.specs --specs=nosys.specs \
            -Wl,--gc-sections -Wl,-Map=$(BUILD)/firmware.map -T pokitto.ld
 

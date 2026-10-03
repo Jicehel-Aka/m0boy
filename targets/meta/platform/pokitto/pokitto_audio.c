@@ -13,6 +13,7 @@
  */
 #include "meta_audio.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #include "gbl.h"
@@ -23,9 +24,25 @@
 #define AUDIO_RATE 22050u
 #define RING 1024u
 
-static uint8_t ring[RING] __attribute__((section(".bss_usbram.ring"))); /* 2 KiB USB RAM bank */
-static volatile uint16_t ring_tail;
-static uint16_t ring_head;
+/* Interrupt in Thumb-1 from SRAM (pokitto_audio_asm.S); 0 keeps the C one
+ * below, the reference. */
+#ifndef POKITTO_AUDIO_ASM
+#define POKITTO_AUDIO_ASM 1
+#endif
+
+/* The queue, laid out for the assembly interrupt (tail at 0, head at 2, the
+ * ring at 4), in the 2 KiB RAM1 bank (pokitto.ld). */
+typedef struct {
+    volatile uint16_t tail; /* next sample to play (interrupt) */
+    uint16_t head;          /* next free slot (meta_audio_frame) */
+    uint8_t ring[RING];
+} audio_queue;
+audio_queue pokitto_audio_q __attribute__((section(".bss_ram1.audio_q"), aligned(4)));
+_Static_assert(offsetof(audio_queue, head) == 2 && offsetof(audio_queue, ring) == 4 && RING == 1024,
+               "audio_queue layout used by pokitto_audio_asm.S");
+#define ring pokitto_audio_q.ring
+#define ring_tail pokitto_audio_q.tail
+#define ring_head pokitto_audio_q.head
 static uint8_t volume = 4; /* 0..8, 8 = the DAC's whole range */
 static uint32_t frac;
 
@@ -46,6 +63,7 @@ static inline void dac_write(uint32_t v) {
     else GPIO_CLR(2) = 1u << 23;
 }
 
+#if !POKITTO_AUDIO_ASM
 void CT32B0_IRQHandler(void) {
     CT32B0_IR = 2u; /* match 1 */
     uint16_t t = ring_tail;
@@ -54,6 +72,7 @@ void CT32B0_IRQHandler(void) {
         ring_tail = (uint16_t)((t + 1u) & (RING - 1u));
     }
 }
+#endif
 
 /* ---- digital potentiometer (software I2C, open drain) ---------------------- */
 
