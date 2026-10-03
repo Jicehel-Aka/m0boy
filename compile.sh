@@ -15,9 +15,11 @@
 #                   enregistrées sont communes aux deux consoles.
 #
 # Chaque jeu devient un dossier à copier tel quel à la racine de la carte SD :
-#   <Jeu>/<Jeu>.bin        le firmware (nommé simplement : « Zerd (J) [!] »
-#                          -> « Zerd » ; c'est ce nom que montre le loader,
-#                          28 caractères au plus : voir loader_name)
+#   <Jeu>/<NOM>.BIN        le firmware, nommé en 8.3 comme les autres fichiers
+#                          du jeu (TETRIS.BIN) ; le dossier porte le nom
+#                          simple (« Zerd (J) [!] » -> « Zerd »), celui que
+#                          montre le loader, 28 caractères au plus : voir
+#                          loader_name.  (Pokitto : <Jeu>/<Jeu>.bin.)
 #   <Jeu>/ICON.BMP         icône 32x32 du menu (grille)
 #   <Jeu>/TITLESCREEN.BMP  écran titre 80x64 du menu (détail)
 #     Icônes tirées de thumbnails.libretro.com (Named_Titles), mises en cache
@@ -152,14 +154,16 @@ sd_safe() {
   printf '%s' "$1" | sed -E 's#[\\/:*?"<>|]# #g; s/[[:space:]]+/ /g; s/^ //; s/ $//'
 }
 
-# Longueur des noms de jeux (dossier et .bin), pour le loader et le
-# bootloader de la META :
+# Longueur des noms de jeux, pour le loader et le bootloader de la META
+# (le .bin, lui, a un nom 8.3 : voir meta_bin) :
 #   - le loader (github.com/Gamebuino/Loader-META) garde « /Nom » dans
 #     40 octets et construit « /Nom/Nom.bin » dans 80 sans contrôle : au-delà
 #     de 36 caractères le jeu n'est pas listé (vu avec 38) ;
 #   - le bootloader, qui charge ce chemin, n'en prend pas 72 (un nom de 33
 #     ne se lance pas) mais prend 62 (28) : 64 octets probablement, d'où
 #     28 caractères au plus.
+# Le loader essaie « /Nom/Nom.bin », puis prend le premier .bin du dossier :
+# un .bin court garde le chemin passé au bootloader loin de sa limite.
 # Plus long : voir les étapes de loader_name (article, abréviations,
 # séparateurs, coupe sur un mot ; le début du sous-titre reste : il
 # distingue les jeux d'une même série).
@@ -187,6 +191,27 @@ loader_name() {
     s=$(printf '%s' "$s" | sed -E ':a; s/[ ,.:-]+$//; s/ (&|and|of|the|The|a|A|an|An|vs|vs\.|no|o|to|de|wa|ga|with|in|Ed|Ver)$//; ta')
   fi
   printf '%s' "$s" | sed -E 's/[ ,:-]+$//'
+}
+
+# Firmware d'un dossier de jeu : <Jeu>/<Jeu>.bin (Pokitto, anciens
+# dossiers META) ou le seul .bin/.BIN du dossier (META).
+game_bin() {
+  local d="$1" f
+  [ -f "$d/$(basename "$d").bin" ] && { printf '%s' "$d/$(basename "$d").bin"; return; }
+  [ "$TARGET" = pokitto ] && return
+  for f in "$d"/*.bin "$d"/*.BIN; do
+    [ -f "$f" ] && { printf '%s' "$f"; return; }
+  done
+}
+
+# Nom 8.3 du .bin META : la racine des fichiers du jeu (GBL_STATE_NAME, sinon
+# GBL_SAVE_NAME ou GBL_STREAM_NAME), sinon les 8 premiers caractères du
+# préfixe.  $1 gbl_config.h, $2 préfixe C.
+meta_bin() {
+  local n
+  n=$(sed -n 's/^#define GBL_\(STATE\|SAVE\|STREAM\)_NAME "\([^".]*\)\..*"$/\2/p' "$1" | head -n1)
+  [ -n "$n" ] || n=$(printf '%s' "$2" | tr -cd 'A-Za-z0-9' | tr 'a-z' 'A-Z' | cut -c1-8)
+  printf '%s.BIN' "${n:-GAME}"
 }
 
 url_quote() {
@@ -346,7 +371,8 @@ fetch_icons() { # $1 dossier du jeu, $2 nom du jeu, $3 base du fichier ROM, $4 "
 # S_tag (affichage), S_todo (0 rien, 1 à faire, 2 à confirmer).
 assess() {
   local dir="$1" sha="$2"
-  local bin="$DEST_DIR/$dir/$dir.bin"
+  local bin
+  bin=$(game_bin "$DEST_DIR/$dir")
   local state="$DEST_DIR/$dir/.gbrmeta.json"
   local ver="" state_sha="" state_pack=""
   S_todo=1; S_tag="nouvelle"
@@ -576,7 +602,9 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
     cp "$out_dir/build/firmware.bin" "$game_dir/$game_name.bin"
   else
     echo "$build_log" | grep -E "RAM:|Flash:"
-    cp "$out_dir/.pio/build/meta/firmware.bin" "$game_dir/$game_name.bin"
+    # Un seul .bin par dossier : le loader lance le premier qu'il trouve.
+    rm -f "$game_dir"/*.bin "$game_dir"/*.BIN
+    cp "$out_dir/.pio/build/meta/firmware.bin" "$game_dir/$(meta_bin "$out_dir/src/gbl_config.h" "$prefix")"
     # Icônes du loader (PNG libretro -> BMP 24 bits), sans bloquer le jeu.
     fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" "$gbc" \
       || echo "[i] (jeu conservé sans icône)"
@@ -621,7 +649,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
       "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$PACK" "$(date +%Y-%m-%d)"
   } > "$game_dir/.gbrmeta.json"
   local fw_ver
-  fw_ver=$(firmware_version "$game_dir/$game_name.bin")
+  fw_ver=$(firmware_version "$(game_bin "$game_dir")")
   [ -n "$fw_ver" ] || fw_ver="$CUR_VERSION (pas de marqueur : gbrecomp trop ancien)"
   echo "[i] Firmware produit par gbrecomp v$fw_ver"
 }
@@ -800,7 +828,7 @@ for index in ${SEL[@]+"${SEL[@]}"}; do
     echo "[+] $dir  (${R_base[i]})"
     echo "=========================================="
     if run_one "$rom_path" "$prefix" "$dir" "${R_sha[i]}" "$i"; then
-      echo "[+] Terminé : $DEST_DIR/$dir/$dir.bin"
+      echo "[+] Terminé : $DEST_DIR/$dir/"
     else
       echo "[x] Échec pour ${R_base[i]} (ROM refusée ou firmware trop gros : voir le message ci-dessus)"
     fi
