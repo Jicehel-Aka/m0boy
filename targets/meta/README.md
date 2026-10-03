@@ -12,7 +12,7 @@ are untouched.
 | Runtime (portable C) | `targets/meta/runtime/gbl_*.c` |
 | Optimisation profiles | `targets/meta/runtime/gbl_profile.h` (every switch, per console) |
 | Shared frontend | `targets/meta/platform/src/` (main loop, menu, saves, states, streaming, FAT, SD protocol, palettes; console facts in `meta_target.h`) |
-| META drivers | `targets/meta/platform/meta/` (display + DMA, audio, SD bus, clock; PlatformIO templates, board, variant) |
+| META drivers | `targets/meta/platform/meta/` (startup, SPI, display + DMA, audio, SD bus, clock; PlatformIO templates, board) |
 | Host harness | `targets/meta/host/gbl_host.c` |
 | Cycle estimator | `targets/meta/tools/m0bench/` |
 | Tests | `targets/meta/tests/`, `tests/test_meta_target_e2e.py`, `tests/test_pokitto_target.py` |
@@ -89,14 +89,19 @@ ninja -C output/game_meta/host/build
 
 # 4. Firmware
 pio run -d output/game_meta                 # check the RAM/Flash report
-pio run -d output/game_meta -t upload       # USB (sam-ba, offset 0x4000)
+pio run -d output/game_meta -t upload       # USB (sam-ba, offset 0x4000), see below
 # or copy output/game_meta/.pio/build/meta/firmware.bin to the SD card
 ```
 
 Coverage is incremental. Run a compiled build with `--coverage` but without
 `--interp`: it records only the instructions that still fall back to the
-interpreter. Regenerate with every coverage file. The META prints the count
-of interpreted instructions each second on its USB serial port.
+interpreter. Regenerate with every coverage file.
+
+The firmware is bare metal (`meta_startup.c`, `meta_spi.c`; no Arduino
+core, no USB stack): it prints nothing on USB, and `-t upload` only reaches
+a META whose bootloader is already running, since nothing in the firmware
+answers PlatformIO's 1200-baud reset request. Copying `firmware.bin` to the
+SD card works as for any META game.
 
 Play-mode keys: arrows, X = A, Z = B, Enter = Start, Backspace or Right
 Shift = Select.
@@ -167,13 +172,14 @@ frame skip renders nothing while a frame or more is owed.
 
 72 MHz (`meta_clock.cpp`) is past the SAMD21's 48 MHz rating. Generator 5
 divides the DFLL48M to 1 MHz, the FDPLL96M multiplies it by 72 and
-generator 0 (CPU, SERCOMs) switches to it with two flash wait states;
-USB, TC4/TC5 and the DAC run from generator 4 (DFLL48M) at either clock,
-SysTick is reloaded for 1 ms and `meta_micros()` replaces the core's
-`micros()` (which assumes 48 MHz). The core's SPI puts SERCOM4 back on
-generator 0 at every reconfiguration: the display keeps the fastest
-setting (36 MHz at 72 MHz; the ST7735 took it in gm0's overclocked META
-port), the card and buttons ask `meta_spi_hz()` for rates within theirs.
+generator 0 (CPU, SERCOM4) switches to it with two flash wait states;
+TC4/TC5 and the DAC run from generator 4 (DFLL48M) at either clock,
+SysTick is reloaded for 1 ms and `meta_micros()` scales its fraction.
+SERCOM4 stays on generator 0: the display keeps the fastest setting
+unscaled (`META_SPI_MAX_HZ`, 12 MHz, so 18 MHz at 72 MHz; with the
+SERCOM's 24 MHz it would be 36, which the ST7735 took in gm0's
+overclocked META port), the card and buttons ask `meta_spi_hz()` for
+rates within theirs.
 When the PLL does not lock the menu stays at 48 MHz, and the loader is
 always entered at 48 MHz. Not yet run on a META: on the M0 estimator a
 frame at 72 MHz (two wait states) costs about 1.35 times less of its
@@ -255,7 +261,7 @@ touches the FAT.
   without RAM disable can lose it.
 - If the file is missing, a game whose RAM must live on the card shows a
   yellow screen. A game whose RAM stays in RAM runs normally, but its
-  progress is not kept (the USB serial status says so).
+  progress is not kept.
 - On the host, `--save FILE` uses the same file format. Without it, the RAM
   starts erased and is not kept.
 
@@ -292,8 +298,9 @@ default; `on` / `off` force it):
   interpreter count.
 - The other chunks are read from the ROM file on the SD card, one 512-byte
   sector at a time, into an LRU cache of `GBL_STREAM_SECTORS` sectors
-  (4, i.e. 2 KiB). A read first lets the display's DMA queue drain and
-  frees the shared SPI bus, then issues CMD17 at 24 MHz.
+  (8, i.e. 4 KiB; 4 when 2 KiB of cartridge RAM stay in RAM). A read
+  first lets the display's DMA queue drain and frees the shared SPI bus,
+  then issues CMD17 (24 MHz asked, `META_SPI_MAX_HZ` caps it at 12).
 - The resident set comes from ROM data-read profiles. In streaming
   projects, the host `_profile` and `_play` builds record them with
   `--rom-profile-out FILE`; pass them back with `--rom-profile FILE`.
@@ -306,8 +313,8 @@ default; `on` / `off` force it):
   FAT32 (`meta_fat.c`; no FAT access afterwards; at most 16 fragments) and
   checks its cartridge header against bank 0. If that fails, the screen
   turns red (file not found), blue (card unreadable), orange (too
-  fragmented) or magenta (a different ROM). The USB serial port explains
-  the error, and holding HOME for 3 s returns to the loader.
+  fragmented) or magenta (a different ROM). Holding HOME for 3 s returns
+  to the loader.
 - To make room for the 2 KiB cache, streaming builds use two display strips
   instead of three and drop the BLEND, DARK and TBLEND modes (TBLEND falls back to TILE). RAM then stays at the
   usual level: 28.9 KiB.
@@ -380,12 +387,12 @@ the generated code and the frontend are shared, only the drivers differ.
   `platform/src/meta_target.h` selects the
   console from `GBL_TARGET_POKITTO` (written into `gbl_config.h` by the
   generator) and sets the `META_*` switches the shared files test with
-  `#if`: `META_ARDUINO` (Arduino core or bare metal), `META_USB_SERIAL`,
-  `META_SCALED_MODES` (the META's 144→128 display modes), `META_SCREEN_ROWS`
+  `#if`: `META_TARGET_POKITTO` (whose drivers, `pokitto_hw.h` or
+  `meta_hw.h`), `META_SCALED_MODES` (the META's 144→128 display modes), `META_SCREEN_ROWS`
   (menu height), `META_SWAP_AB_DEFAULT`, `META_CLOCK_DEFAULT` and
   `META_COLOR` (byte-swapped RGB565 on the META's SPI, native on the
-  Pokitto's bus). The META firmware built from these files is byte-identical
-  to the one built before the Pokitto target existed.
+  Pokitto's bus). When the Pokitto target was added, the META firmware
+  built from these files was byte-identical to the one built before.
 - **Bare metal.** No mbed, no PokittoLib: `platform/pokitto/` holds the
   startup (vector table, LPC boot checksum written into word 7 by the
   Makefile), the clock (crystal + PLL, 48/72 MHz from the menu; flash wait
@@ -498,8 +505,7 @@ There is no ROM size limit: ROMs that do not fit in flash stream from the
 card (see above).
 
 Every firmware embeds the version of the META edition that produced it
-(`gbrecomp-meta x.y.z` string in the .bin, also printed on the USB serial
-port at boot). The version lives in `targets/meta/VERSION` only: the
+(`gbrecomp-meta x.y.z` string in the .bin). The version lives in `targets/meta/VERSION` only: the
 recompiler stamps it (`GBL_GEN_VERSION`), `gbrecomp --meta-version` prints
 it, the release archive's CMake project and zip name take it. Bump it when
 the runtime, the frontend or the generated code change what a firmware
@@ -606,7 +612,7 @@ run (same picture in Link's Awakening).
 | `GBL_INTERP_ASM` | 1 on Cortex-M0+ (not in coverage or trace builds) | Interpreter loop and common opcodes in Thumb-1 (`gbl_interp_asm.S`); DAA, EI, RETI, HALT, STOP, PUSH/POP AF, SP arithmetic and `LD (nn),SP` go through the C `gbl_interp_op` |
 | `GBL_RENDER_LINE_ASM` | follows `GBL_PPU_ASM` | `render_line` (sprite selection, line signature, frontend calls) in Thumb-1 (`gbl_ppu_asm.S`); needs `GBL_LINE_SIGNATURE` |
 | `GBL_LOOKUP_CACHE` | 64 | Entries of the dispatch cache, a power of two (0 disables it) |
-| `GBL_STREAM_SECTORS` | 4 | Sector cache of a streamed ROM (512 bytes each). More reads the card much less (Donkey Kong Land, 3,000 frames: 764 reads with 4, 400 with 6, 217 with 8), but streamed META builds have about 2 KiB of RAM left, the stack: 8 overflow it, 6 would leave ~1 KiB. The Pokitto uses 8. |
+| `GBL_STREAM_SECTORS` | 8 | Sector cache of a streamed or packed ROM (512 bytes each). More reads the card much less (Donkey Kong Land, 3,000 frames: 764 reads with 4, 400 with 6, 217 with 8). The RAM the Arduino core used pays for 8: streamed builds keep about 1.8 KiB of stack (2 KiB with the core and 4 sectors). 4 when 2 KiB of cartridge RAM are in RAM. The Pokitto uses 8. |
 | `GBL_ERAM_ON_SD` | 1 above 2 KiB of cartridge RAM | Cartridge RAM kept in the save file behind a 1 KiB cache |
 | `GBL_ROM_PACKED` | set by `--meta-pack` | Streamed ROM sectors LZSS-compressed in flash instead of on the SD card |
 | `GBL_UNPACK_ASM` | 1 on Cortex-M0+ | Thumb-1 decoder for those sectors |
@@ -615,6 +621,7 @@ run (same picture in Link's Awakening).
 | `META_SD_SPI_HZ` | 24000000 | SPI clock for SD sector reads |
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND, DARK and TBLEND display modes |
 | `META_AUDIO_DMA` | 1 | Audio samples go to the DAC by DMA (TC4-triggered DMAC channel 1, chained descriptors) instead of a 22 kHz TC4 interrupt (about 3% of the CPU); 0 restores the interrupt |
+| `META_SPI_MAX_HZ` | 12000000 | Fastest SPI rate (`meta_spi.c`). 12 MHz is the Arduino core's cap, which every firmware tested on a META ran at, whatever the drivers asked. The SERCOM can do 24 MHz; not tried on a device. |
 | `META_LCD_DMA` | 1 | Strips are sent by DMA through a queue: the DMA-complete interrupt programs the next window and starts the next strip, so rendering waits only when every buffer is in flight. At VBlank, if the bus is still busy, the button read is postponed by one frame (never two in a row). 0 writes pixels from the CPU. |
 | `META_LCD_BUFFERS` | 3 | Strip buffers (triple buffering by default) |
 | `META_STRIP_LINES` | 4 | Rows per strip |
@@ -844,6 +851,17 @@ never uses: −1,160 bytes of RAM and −1.8 KiB of flash. The firmware draws
 the same screens in gamebuino-emulator. Most games had less free RAM
 than the 3 KiB C stack budget plus the 768-byte interrupt headroom, so
 the stack was getting less than 3 KiB.
+
+Since 2026-10-03 the firmware is bare metal: `meta_startup.c` (vector
+table, the Arduino Zero core's clock setup, SysTick) and `meta_spi.c`
+(SERCOM4 configured as the core's SPI library did, same dividers) replace
+the core, its SPI library and its USB stack; the USB serial status line
+went with them. Donkey Kong Land (streamed, same code and options):
+222,340 → 207,296 bytes of flash (−15.0 KiB) and 30,772 → 28,892 bytes of
+RAM (−1,880); Tetris: −14.2 KiB and −1,884 bytes. The RAM goes to the
+stream cache (`GBL_STREAM_SECTORS` 4 → 8), the flash to compiled code.
+Tetris and Donkey Kong Land boot and draw the same screens as before in
+the `tools/gb-emu` fork; not yet run on a META.
 
 Since the commit before the interpreter work (`c7fd04d`), same pixel and
 state hashes on twelve games; per frame without hashing:

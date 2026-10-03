@@ -1,22 +1,18 @@
 {
   "build": {
-    "arduino": {
-      "ldscript": "flash_with_bootloader.ld"
-    },
     "core": "arduino",
     "cpu": "cortex-m0plus",
-    "extra_flags": "-DARDUINO_SAMD_ZERO -D__SAMD21G18A__",
+    "extra_flags": "-D__SAMD21G18A__",
     "f_cpu": "48000000L",
     "hwids": [
       ["0x2341", "0x804D"],
       ["0x2341", "0x004D"]
     ],
     "mcu": "samd21g18a",
-    "usb_product": "Gamebuino META",
-    "variant": "arduino_zero"
+    "usb_product": "Gamebuino META"
   },
-  "frameworks": ["arduino"],
-  "name": "Gamebuino META (gbl, Arduino Zero core, app at 0x4000)",
+  "frameworks": [],
+  "name": "Gamebuino META (gbl, bare metal, app at 0x4000)",
   "upload": {
     "disable_flushing": true,
     "maximum_ram_size": 32768,

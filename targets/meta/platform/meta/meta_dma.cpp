@@ -1,7 +1,7 @@
 /* SAMD21 DMAC setup shared by meta_lcd.cpp and meta_audio.cpp. */
 #include "meta_dma.h"
 
-#include <Arduino.h>
+#include "meta_hw.h"
 
 meta_dma_descriptor meta_dma_desc[META_DMA_CHANNELS] __attribute__((aligned(16)));
 volatile meta_dma_descriptor meta_dma_wb[META_DMA_CHANNELS] __attribute__((aligned(16)));

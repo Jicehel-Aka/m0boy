@@ -20,6 +20,5 @@ Regenerate with every coverage file in `coverage/` plus new ones, e.g.
 
 META controls: D-pad, A, B; MENU = Start; HOME tap = Select; HOME held half
 a second opens the option menu (display mode, palette, frame skip, 48/72 MHz,
-back to the Gamebuino loader). Once per second the firmware
-prints emulated/shown FPS, idle time and interpreted instructions on the USB
-serial port.
+back to the Gamebuino loader). The menu shows the emulated and drawn frames
+of the last second.

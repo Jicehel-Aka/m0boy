@@ -14,9 +14,9 @@ state, evidence and open items.
 | --- | --- |
 | Generator | `recompiler/src/codegen/meta_emitter.cpp`, options in `recompiler/include/recompiler/codegen/meta_emitter.h`, CLI in `recompiler/src/main.cpp` (`--target meta`, `--meta-*`, `--rom-profile`) |
 | Runtime (gbl) | `targets/meta/runtime/` — `gbl_core.c` (bus, dispatch, streaming, packed ROM, saves), `gbl_cpu.c` (interpreter), `gbl_ppu.c`, `gbl_apu.c`, asm in `gbl_core_asm.S` / `gbl_ppu_asm.S` / `gbl_timing_asm.S` (field offsets in `gbl_timing_layout.h`), switch values per console in `gbl_profile.h`, rules in `gbl_options.h` |
-| Frontend | `targets/meta/platform/src/` (shared: main loop, menu, saves, states, stream, FAT, SD protocol), `platform/meta/` (META drivers: LCD DMA, audio, SD bus, clock), `platform/pokitto/` (Pokitto drivers) |
+| Frontend | `targets/meta/platform/src/` (shared: main loop, menu, saves, states, stream, FAT, SD protocol), `platform/meta/` (META drivers: startup, SPI, LCD DMA, audio, SD bus, clock; bare metal), `platform/pokitto/` (Pokitto drivers) |
 | Host harness | `targets/meta/host/gbl_host.c` (`_host`, `_profile`, `_play` targets) |
-| Tests | `ctest -R meta` (7 tests); `tests/test_meta_target_e2e.py` is the main gate |
+| Tests | `ctest -R meta` (8 tests); `tests/test_meta_target_e2e.py` is the main gate |
 | Tools | `targets/meta/tools/m0bench/` (`m0_estimate.py` M0+ cycle model, `where.py` stall finder), `tools/gb-emu/` (gamebuino-emulator fork: SRAM execution, emulated SD card, `headless.js`), `tools/meta-compiler/` (Node port of `compile.sh`) |
 | Batch | `compile.sh` (reference), `tools/meta-compiler/` (Node/ink port by another agent; uncommitted, in progress) |
 
@@ -25,7 +25,7 @@ state, evidence and open items.
 - Coverage-driven compact generation, wait-loop fast-forward, EI duplication,
   lazy devices, asm bus/stack/PPU paths, sprite masks, fixed-palette tables.
 - ROMs of 256 KiB and more stream from the SD card (4 KiB resident chunks
-  chosen from data-read profiles, 4-sector LRU cache).
+  chosen from data-read profiles, 8-sector LRU cache since 2026-10-03).
 - Battery saves (`.SAV` on the card, write-back cache above 2 KiB).
 - A/B swap (`META_SWAP_AB`), firmware version stamp (`gbrecomp-meta x.y.z`
   string, read back by `compile.sh`).
@@ -63,6 +63,26 @@ Pixel writes are CPU-driven (no DMA), in Thumb-1 from SRAM; estimator
 (`m0_estimate.py --target pokitto`, four games): 2.0–3.5 ms a frame at
 72 MHz against 2.5–3.6 ms for the META at 48 MHz, display 6–17% of it (see
 targets/meta/README.md, Pokitto).
+
+## META without the Arduino core (2026-10-03)
+
+The META firmware is bare metal like the Pokitto's: `platform/meta/`
+`meta_startup.c` (vector table, the Arduino Zero core's SystemInit clock
+sequence, SysTick, the core's APBC clocks, VTOR and watchdog as
+`initVariant` did) and `meta_spi.c` (SERCOM4 as the core's SPI library
+set it, same `BAUD = 24 MHz / rate - 1`), CMSIS headers through
+`platform_packages`; no framework, no variant, no USB stack (no serial
+status line; `pio run -t upload` needs the bootloader already running).
+The core capped SPI at 12 MHz: every firmware so far ran display, card
+and buttons at 12 MHz; `META_SPI_MAX_HZ` keeps that (24 MHz untried).
+Donkey Kong Land: −15.0 KiB flash, −1,880 B RAM; the RAM pays for
+`GBL_STREAM_SECTORS` 8 (4 with 2 KiB of cartridge RAM in RAM), streamed
+builds keep ~1.8 KiB of stack (2.0 before). Evidence: `ctest -R meta`,
+Tetris and Donkey Kong Land (4 and 8 sectors) draw the same screens as
+the Arduino builds in `tools/gb-emu`; RAM checked on packed (Addams
+Family, Aretha MBC2, Battle Dodge Ball) and streamed (DKL, Link's
+Awakening) builds. Not run on a META: clocks, DAC, SPI, the 72 MHz SPI
+rates, the loader return.
 
 ## Evidence (label these correctly)
 
@@ -159,7 +179,10 @@ function is a livelock, not slowness.
   interpreter on R.C. Pro-Am (~14%, a coverage question), the next-event
   recomputation on raster-heavy Batman (~11%), and generated code.
 
-- Run on hardware: SD streaming, saves, asm paths, frame pacing.
+- Run on hardware: SD streaming, saves, asm paths, frame pacing, and now
+  the bare-metal startup (clocks, DAC, SPI rates, HOME back to the loader).
+- Try `META_SPI_MAX_HZ=24000000` on a META: the display and card have run
+  at 12 MHz so far (the Arduino core's cap).
 - Option menu (HOME held ½ s, 2026-10-01): save states in `<NAME>.STA`,
   volume, palettes, frame skip, speed, 72 MHz (untested on a META), restart;
   checked in gamebuino-emulator and by the host `--state-test`.

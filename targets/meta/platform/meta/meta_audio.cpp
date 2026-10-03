@@ -26,7 +26,9 @@
 #include "meta_dma.h"
 #include "meta_target.h"
 
-#include <Arduino.h>
+#include "meta_hw.h"
+
+#include <string.h>
 
 extern "C" {
 #include "gbl.h"
@@ -56,6 +58,21 @@ static void drop_samples(unsigned n) {
         gbl_apu_render(scratch, k);
         n -= k;
     }
+}
+
+/* PA02 to the DAC (function B), referenced to AVCC with its output on the
+ * pin as the Arduino core set it, holding mid-scale.  CTRLB can only be
+ * written while the DAC is off (the loader may have left it on). */
+static void dac_start(void) {
+    PORT->Group[0].PMUX[1].bit.PMUXE = PORT_PMUX_PMUXE_B_Val;
+    PORT->Group[0].PINCFG[2].reg |= PORT_PINCFG_PMUXEN;
+    DAC->CTRLA.bit.ENABLE = 0;
+    while (DAC->STATUS.bit.SYNCBUSY) {}
+    DAC->CTRLB.reg = DAC_CTRLB_REFSEL_AVCC | DAC_CTRLB_EOEN;
+    DAC->DATA.reg = DAC_MID;
+    while (DAC->STATUS.bit.SYNCBUSY) {}
+    DAC->CTRLA.bit.ENABLE = 1;
+    while (DAC->STATUS.bit.SYNCBUSY) {}
 }
 
 static void timer_start(bool irq) {
@@ -134,8 +151,7 @@ static void describe(meta_dma_descriptor *d, unsigned start, unsigned count,
 }
 
 void meta_audio_init(void) {
-    analogWriteResolution(10);
-    analogWrite(A0, DAC_MID); /* enables the DAC on PA02 */
+    dac_start();
     for (unsigned i = 0; i < RING; i++) ring[i] = DAC_MID;
     gbl_apu_set_rate(AUDIO_RATE);
     meta_dma_init();
@@ -240,8 +256,7 @@ extern "C" void TC4_Handler(void) {
 }
 
 void meta_audio_init(void) {
-    analogWriteResolution(10);
-    analogWrite(A0, DAC_MID); /* enables the DAC on PA02 */
+    dac_start();
     memset(ring, 128, sizeof(ring));
     gbl_apu_set_rate(AUDIO_RATE);
     timer_start(true);

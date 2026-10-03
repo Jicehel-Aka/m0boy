@@ -7,10 +7,13 @@ boards_dir = boards
 [env:meta]
 platform = atmelsam
 board = gamebuino_meta
-framework = arduino
+; Bare metal (meta_startup.c, meta_spi.c): no framework, only the SAMD21
+; CMSIS headers.
+platform_packages =
+    platformio/framework-cmsis@~1.40500.0
+    platformio/framework-cmsis-atmel@~1.2.2
 board_build.ldscript = gamebuino_meta.ld
-; The Arduino Zero variant without the unused hardware UART objects.
-board_build.variants_dir = variants
-board_build.variant = gbl_meta
-build_unflags = -Os
+build_unflags = -Os -DUSBCON
 build_flags = -O2 -Wno-unused-label
+    -I${platformio.packages_dir}/framework-cmsis/CMSIS/Include
+    -I${platformio.packages_dir}/framework-cmsis-atmel/CMSIS/Device/ATMEL

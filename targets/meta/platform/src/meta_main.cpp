@@ -19,26 +19,24 @@
  * by a frame, rendering of up to META_MAX_SKIP consecutive frames is
  * skipped), none, or one frame drawn in two, three or four.  Frames whose
  * picture cannot differ from the one on screen are not rendered at all
- * (META_STATIC_SKIP).  Once per second a status
- * line is printed on the USB serial port (never on Serial: its pins drive
- * the display).
+ * (META_STATIC_SKIP).
  *
  * The same file is the Pokitto frontend (meta_target.h, --target pokitto):
- * bare metal instead of the Arduino core, the picture 1:1 in the middle of
+ * the picture 1:1 in the middle of
  * the 220x176 panel (or enlarged to 200x176 as gm0 does, menu "Ecran"),
  * A = A, B = B, C tap = Start, C held half a second =
  * option menu, C + B = Select, C held at power-on = the Pokitto loader.
- * The META-only parts are under META_ARDUINO / META_SCALED_MODES /
- * META_USB_SERIAL; the Pokitto drivers are in platform/pokitto.
+ * The META-only parts are under !META_TARGET_POKITTO / META_SCALED_MODES;
+ * each console's drivers are in platform/meta and platform/pokitto, both
+ * bare metal.
  */
 #include "meta_target.h"
 
-#if META_ARDUINO
-#include <Arduino.h>
-#include <SPI.h>
-#else
 #include <string.h>
+#if META_TARGET_POKITTO
 #include "pokitto_hw.h"
+#else
+#include "meta_hw.h"
 #endif
 #include <setjmp.h>
 
@@ -91,7 +89,7 @@ static int close_frame(void) {
 
 /* ---- buttons -------------------------------------------------------------- */
 
-#if META_ARDUINO
+#if !META_TARGET_POKITTO
 #define BTN_CS_MASK (1u << 3) /* PB03 */
 
 /* 12 MHz like the Gamebuino library.  The library also waits ~1 us after CS
@@ -104,9 +102,7 @@ static int close_frame(void) {
 #define META_BUTTONS_SPI_HZ 12000000
 #endif
 
-static uint8_t buttons_raw = 0xFF; /* last shift-register byte (active low) */
-
-#endif /* META_ARDUINO */
+#endif /* !META_TARGET_POKITTO */
 
 /* META A gives Game Boy B and META B gives Game Boy A; 0 maps them straight
  * (the Pokitto's default: its A is already the right-hand button). */
@@ -114,22 +110,20 @@ static uint8_t buttons_raw = 0xFF; /* last shift-register byte (active low) */
 #define META_SWAP_AB META_SWAP_AB_DEFAULT
 #endif
 
-#if META_ARDUINO
+#if !META_TARGET_POKITTO
 
 static uint8_t read_buttons_raw(void) {
-    SPI.beginTransaction(SPISettings(meta_spi_hz(META_BUTTONS_SPI_HZ), MSBFIRST, SPI_MODE0));
+    meta_spi_rate(meta_spi_hz(META_BUTTONS_SPI_HZ));
     /* Drop bytes left by display writes (the receive FIFO holds two). */
     for (int i = 0; i < 2 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
         (void)SERCOM4->SPI.DATA.reg;
     SERCOM4->SPI.STATUS.reg = SERCOM_SPI_STATUS_BUFOVF;
     PORT->Group[1].OUTCLR.reg = BTN_CS_MASK;
 #if META_BUTTONS_PL_US > 0
-    delayMicroseconds(META_BUTTONS_PL_US);
+    for (uint32_t t = meta_micros(); meta_micros() - t < META_BUTTONS_PL_US;) {}
 #endif
-    uint8_t raw = SPI.transfer(1);
-    buttons_raw = raw;
+    uint8_t raw = meta_spi_transfer(1);
     PORT->Group[1].OUTSET.reg = BTN_CS_MASK;
-    SPI.endTransaction();
     return (uint8_t)~raw; /* active low */
 }
 
@@ -168,8 +162,6 @@ static uint8_t meta_buttons(void) {
 
 #else /* Pokitto */
 
-static uint8_t buttons_raw; /* last state, for symmetry with the META */
-
 /* Hand the console to the Pokitto loader: saves written back, sound off,
  * card deselected.  Without a loader in flash this returns. */
 static void enter_loader(void) {
@@ -183,7 +175,6 @@ static void enter_loader(void) {
 /* Pokitto buttons as META_MB_* bits: C plays the META's HOME. */
 static uint8_t meta_buttons(void) {
     uint8_t p = pokitto_buttons();
-    buttons_raw = p;
     uint8_t m = 0;
     if (p & POKITTO_A) m |= META_MB_A;
     if (p & POKITTO_B) m |= META_MB_B;
@@ -195,7 +186,7 @@ static uint8_t meta_buttons(void) {
     return m;
 }
 
-#endif /* META_ARDUINO */
+#endif /* !META_TARGET_POKITTO */
 
 static uint32_t home_since;
 static uint8_t home_held, home_stage, select_frames, menu_request;
@@ -274,12 +265,8 @@ static jmp_buf restart_point;             /* menu "Redemarrer", loaded states */
 #define GBL_STATE_SLOTS_OR_1 1
 #endif
 
-static uint32_t stat_start_ms, idle_us;
-static int save_state;
-#if GBL_ROM_STREAM && META_USB_SERIAL
-static uint32_t stream_reported;
-#endif
-static uint16_t frames, shown, unchanged, skipped_run;
+static uint32_t stat_start_ms;
+static uint16_t frames, shown, skipped_run;
 
 /* Time owed to the emulation, like Gdl's rate: elapsed time comes in, each
  * emulated frame takes FRAME_US out.  Below zero the frame was early and
@@ -305,7 +292,6 @@ static void pace_frame(void) {
     pace_owed -= (int32_t)FRAME_US;
     if (pace_owed < 0) {
         uint32_t until = now + (uint32_t)-pace_owed;
-        idle_us += (uint32_t)-pace_owed;
         while ((int32_t)(meta_micros() - until) < 0) meta_audio_idle();
         now = meta_micros();
         pace_owed += (int32_t)(now - pace_last);
@@ -447,9 +433,9 @@ extern "C" void gbl_platform_safe_point(void) {
 }
 
 extern "C" void gbl_platform_vblank(void) {
-#if META_ARDUINO
-    /* If the loader locked the watchdog on (ALWAYSON), initVariant could not
-     * disable it: feed it once per frame instead. */
+#if !META_TARGET_POKITTO
+    /* If the loader locked the watchdog on (ALWAYSON), meta_startup.c could
+     * not disable it: feed it once per frame instead. */
     if (WDT->CTRL.reg & WDT_CTRL_ENABLE) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
 #endif
     int bus_free = close_frame();
@@ -478,7 +464,6 @@ extern "C" void gbl_platform_vblank(void) {
     if (skip_mode >= FSKIP_HALF) phase = (uint8_t)(phase + 1 < skip_mode ? phase + 1 : 0);
     if (static_next) {
         gbl_skip_render = 1;
-        unchanged++;
     } else if (skip) {
         gbl_skip_render = 1;
         skipped_run++;
@@ -489,81 +474,26 @@ extern "C" void gbl_platform_vblank(void) {
 
     uint32_t ms = millis();
     if (ms - stat_start_ms >= 1000) {
-#if META_USB_SERIAL
-        /* Only when a terminal is attached and the report fits without
-         * blocking emulation. */
-        if (SerialUSB && SerialUSB.availableForWrite() >= 64) {
-            SerialUSB.print("btn 0x");
-            SerialUSB.print((uint8_t)~buttons_raw, HEX); /* pressed bits: 1 down 2 left 4 right 8 up 10 A 20 B 40 menu 80 home */
-            SerialUSB.print(", emu ");
-            SerialUSB.print(frames);
-            SerialUSB.print(" fps, shown ");
-            SerialUSB.print(shown);
-            SerialUSB.print(", lcd waits ");
-            SerialUSB.print(meta_display_lcd_waits);
-            SerialUSB.print(", rows kept ");
-            SerialUSB.print(meta_display_rows_skipped);
-            SerialUSB.print(", unchanged ");
-            SerialUSB.print(unchanged);
-            SerialUSB.print(", idle ");
-            SerialUSB.print(idle_us / ((ms - stat_start_ms) * 10u));
-            SerialUSB.print("%");
-            if (save_state == META_SAVE_NO_FILE) SerialUSB.print(", SAUVEGARDE DESACTIVEE (fichier .SAV absent)");
-            SerialUSB.print(", saves ");
-            SerialUSB.print(meta_save_writes);
-            SerialUSB.print(", interp ");
-#if GBL_ROM_STREAM
-            SerialUSB.print(gbl_interp_instrs);
-            SerialUSB.print(GBL_ROM_PACKED ? ", unpacked sectors " : ", SD sectors ");
-            SerialUSB.print(gbl_stream_misses - stream_reported);
-            SerialUSB.print(" (errors ");
-            SerialUSB.print(meta_stream_errors);
-            SerialUSB.println(")");
-            stream_reported = gbl_stream_misses;
-#else
-            SerialUSB.println(gbl_interp_instrs);
-#endif
-        }
-#endif /* META_USB_SERIAL */
         gbl_interp_instrs = 0;
         last_frames = frames;
         last_shown = shown;
-        frames = shown = unchanged = 0;
+        frames = shown = 0;
         meta_display_lcd_waits = meta_display_rows_skipped = 0;
-        idle_us = 0;
         stat_start_ms = ms;
     }
 }
 
-/* Runs right after the core's init(), before the first SysTick.  The META
- * loader normally points VTOR at the application already; be certain.  It
- * also leaves its launch watchdog armed and nothing in this runtime feeds
- * it, so disarm it here or the console resets shortly after boot. */
-#if META_ARDUINO
-void initVariant() {
-    SCB->VTOR = 0x4000u & SCB_VTOR_TBLOFF_Msk;
-    NVIC_DisableIRQ(WDT_IRQn);
-    WDT->INTENCLR.reg = WDT_INTENCLR_EW;
-    WDT->INTFLAG.reg = WDT_INTFLAG_EW;
-    WDT->CTRL.reg = 0;
-    while (WDT->STATUS.reg & WDT_STATUS_SYNCBUSY) {}
-    /* Keep the SD card off the shared SPI bus from the very start. */
-    meta_sd_deselect();
-}
-#endif
-
 extern "C" char __bss_end__;
 
 /* A file the game needs is missing or unusable: a coloured screen tells
- * which, the USB serial port says it in words (META), HOME (Pokitto: C)
- * held 3 s returns to the loader.  Red: ROM not found, blue: card
- * unreadable, orange: ROM fragmented, magenta: a different ROM, yellow:
- * save file missing. */
-static void __attribute__((unused)) boot_error(uint16_t colour, const char *text) {
+ * which, HOME (Pokitto: C) held 3 s returns to the loader.  Red: ROM not
+ * found, blue: card unreadable, orange: ROM fragmented, magenta: a
+ * different ROM, yellow: save file missing. */
+static void __attribute__((unused)) boot_error(uint16_t colour) {
     meta_lcd_fill(colour);
-    uint32_t held = 0, last = 0;
+    uint32_t held = 0;
     for (;;) {
-#if META_ARDUINO
+#if !META_TARGET_POKITTO
         if (WDT->CTRL.reg & WDT_CTRL_ENABLE) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
         uint8_t m = read_buttons_raw();
 #else
@@ -576,36 +506,24 @@ static void __attribute__((unused)) boot_error(uint16_t colour, const char *text
         } else {
             held = 0;
         }
-        if (now - last >= 1000) {
-            last = now;
-#if META_USB_SERIAL
-            if (SerialUSB) {
-                SerialUSB.print("ROM " GBL_TITLE " : ");
-                SerialUSB.println(text);
-            }
-#else
-            (void)text;
-#endif
-        }
         delay(20);
     }
 }
 
 #if GBL_ROM_STREAM && !GBL_ROM_PACKED /* packed: the ROM is all in flash */
+/* meta_stream_init's errors: 1 card unreadable (FAT16/FAT32 expected), 2
+ * GBL_STREAM_NAME not found (root or one folder), 3 the file is too
+ * fragmented (copy it again), 4 it is not this firmware's ROM. */
 static void stream_error_screen(int err) {
     static const uint16_t colour[] = {0, META_COLOR(0x0000FF), META_COLOR(0xFF0000), META_COLOR(0xFFA000),
                                       META_COLOR(0xFF00FF)};
-    static const char *const text[] = {
-        "", "carte SD illisible (FAT16/FAT32 attendu)",
-        "fichier " GBL_STREAM_NAME " introuvable (racine de la carte ou un dossier)",
-        "fichier " GBL_STREAM_NAME " trop fragmente : recopie-le",
-        "fichier " GBL_STREAM_NAME " : ce n'est pas la ROM de ce firmware"};
-    boot_error(colour[err], text[err]);
+    boot_error(colour[err]);
 }
 #endif
 
-void setup() {
-#if META_ARDUINO
+int main(void) {
+#if !META_TARGET_POKITTO
+    meta_sd_deselect(); /* the card off the shared SPI bus from the start */
     PORT->Group[1].DIRSET.reg = BTN_CS_MASK;
     PORT->Group[1].OUTSET.reg = BTN_CS_MASK;
 #else
@@ -615,35 +533,29 @@ void setup() {
     /* Like the Gamebuino library's SD.begin at boot: the loader relies on
      * the card being in SPI mode when HOME brings it back. */
     int card_ok = meta_sd_init();
-#if META_USB_SERIAL
-    SerialUSB.begin(115200);
-    /* Also keeps gbl_gen_version in the binary (compile.sh reads it there). */
-    SerialUSB.println(gbl_gen_version);
-#else
     __asm__ volatile("" ::"r"(gbl_gen_version)); /* kept in the binary for compile.sh */
-#endif
 #if GBL_ROM_STREAM && !GBL_ROM_PACKED
     /* Before gbl_reset: the lookup borrows the stream cache. */
     int stream_err = meta_stream_init(card_ok);
     if (stream_err) stream_error_screen(stream_err);
 #endif
     /* Also before gbl_reset, which loads the saved cartridge RAM. */
-    save_state = meta_save_init(card_ok);
+    int save_state = meta_save_init(card_ok);
+    (void)save_state; /* only checked when the cartridge RAM is on the card */
     {
         unsigned rows;
         meta_state_init(card_ok, (uint8_t *)meta_display_scratch(&rows));
     }
 #if GBL_ERAM_SIZE > 0 && GBL_ERAM_ON_SD
-    if (save_state == META_SAVE_MISSING)
-        boot_error(META_COLOR(0xFFFF00),
-                   "fichier " GBL_SAVE_NAME " introuvable : copie-le a cote de la ROM (compile.sh le cree)");
+    if (save_state == META_SAVE_MISSING) /* GBL_SAVE_NAME not next to the ROM (compile.sh makes it) */
+        boot_error(META_COLOR(0xFFFF00));
 #endif
 #if META_TARGET_POKITTO
     meta_lcd_fill(0); /* black around the picture */
 #else
     meta_lcd_fill(meta_dmg_palette[0]);
 #endif
-    meta_clock_init(); /* after SerialUSB.begin: USB moves to generator 4 */
+    meta_clock_init();
     meta_audio_init();
 
 #if META_SCALED_MODES
@@ -665,13 +577,5 @@ void setup() {
     pace_reset();
     stat_start_ms = millis();
     gbl_run();
-}
-
-#if META_ARDUINO
-void loop() {}
-#else
-int main(void) {
-    setup();
     for (;;) {}
 }
-#endif

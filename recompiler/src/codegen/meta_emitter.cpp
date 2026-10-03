@@ -1856,9 +1856,11 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     std::error_code ec;
     /* targets/meta/platform: src holds the frontend both consoles share,
      * meta/ and pokitto/ each console's drivers and project templates (*.in);
-     * the META also has PlatformIO board and variant directories.  Files the
-     * other console left in this directory (an earlier generation) are
-     * removed: the builds compile every source in src/. */
+     * the META also has a PlatformIO board directory.  Files the other
+     * console left in this directory (an earlier generation) are removed:
+     * the builds compile every source in src/; so is the Arduino variant
+     * directory of META projects generated before the firmware went bare
+     * metal. */
     const char* console = options.pokitto ? "pokitto" : "meta";
     const char* other = options.pokitto ? "meta" : "pokitto";
     const fs::path platform_tpl = tpl / "platform" / console;
@@ -1871,7 +1873,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     }
     for (const auto& entry : fs::directory_iterator(tpl / "platform" / other, ec)) {
         const fs::path name = entry.path().filename();
-        if (entry.is_directory()) fs::remove_all(out / name, ec); /* boards/, variants/ */
+        if (entry.is_directory()) fs::remove_all(out / name, ec); /* boards/ */
         else if (name.extension() == ".in" && name.stem() != "README.md") fs::remove(out / name.stem(), ec);
     }
     /* Template files in src/ that this generation does not copy (the other
@@ -1894,7 +1896,8 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         !copy_dir_files(tpl / "platform" / "src", src, error) ||
         !copy_dir_files(platform_tpl, src, error))
         return false;
-    /* Subdirectories (the META's boards/ and variants/) as they are. */
+    fs::remove_all(out / "variants", ec);
+    /* Subdirectories (the META's boards/) as they are. */
     for (const auto& entry : fs::directory_iterator(platform_tpl)) {
         if (!entry.is_directory()) continue;
         std::error_code cec;

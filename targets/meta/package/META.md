@@ -284,7 +284,9 @@ et la vitesse n'est pas celle de la console.
 
 ## 3. Mettre le jeu sur la META
 
-- Par USB : `pio run -d out/tetris -t upload`.
+- Par USB : `pio run -d out/tetris -t upload`, la META déjà en mode
+  bootloader (le firmware n'a pas de pile USB pour répondre à la demande de
+  redémarrage de PlatformIO).
 - Par carte SD : copie `out/tetris/.pio/build/meta/firmware.bin` sur la carte
   (renomme-le, par exemple `TETRIS.BIN`), puis lance-le depuis le loader.
 
@@ -340,9 +342,8 @@ Modes d'affichage (les 144 lignes Game Boy sur les 128 de la META) :
 Pour voir l'écran exact de la META sur PC :
 `out/<jeu>/host/build/<jeu>_metaview --mode tile --frames 300 --dump 200 ecran.ppm`.
 
-Chaque seconde, le port série USB affiche les FPS émulés et affichés, les
-lignes non redessinées, les attentes DMA et les instructions interprétées.
-Ce dernier chiffre indique s'il faut enregistrer plus de couverture.
+Le menu (HOME maintenu) affiche les images émulées et dessinées de la
+dernière seconde. Le firmware n'écrit rien sur le port USB.
 
 ## Limites
 

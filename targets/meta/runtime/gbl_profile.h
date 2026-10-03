@@ -165,14 +165,19 @@
 #ifndef GBL_LOOKUP_CACHE
 #define GBL_LOOKUP_CACHE 64
 #endif
-/* 4: streamed builds have about 2 KiB of RAM left, and that is the stack.
- * More sectors read the card much less (Donkey Kong Land: 764 reads with
- * 4 over 3,000 frames, 400 with 6, 217 with 8; Link's Awakening: frames
- * with 8 reads or more 26 -> 1 with 6), but 8 overflow the RAM and 6 would
- * leave about 1 KiB of stack: they need RAM taken from elsewhere first
- * (strips, dispatch cache), not measured on the device. */
+/* 8 (4 KiB): the RAM the Arduino core used (about 1.9 KiB) pays for it;
+ * streamed builds keep about 1.8 KiB of stack, 200 bytes less than with 4
+ * sectors and the core.  4 when 2 KiB of cartridge RAM are in the META's
+ * RAM instead of on the card (MBC2's 512 bytes leave room for 8).  More sectors read the card much less
+ * (Donkey Kong Land: 764 reads with 4 over 3,000 frames, 400 with 6, 217
+ * with 8; Link's Awakening: frames with 8 reads or more 26 -> 1 with 6),
+ * not measured on the device. */
 #ifndef GBL_STREAM_SECTORS
+#if GBL_ERAM_SIZE > 512 && !GBL_ERAM_ON_SD
 #define GBL_STREAM_SECTORS 4
+#else
+#define GBL_STREAM_SECTORS 8
+#endif
 #endif
 #ifndef GBL_PPU_ASM
 #define GBL_PPU_ASM 1
@@ -208,6 +213,12 @@
 #endif
 #ifndef META_LCD_DMA
 #define META_LCD_DMA 1
+#endif
+/* Fastest SPI rate (meta_spi.c): 12 MHz, the Arduino core's cap, which
+ * every firmware tested on a META so far ran at; the SERCOM can do
+ * 24000000 (36 MHz for the display at 72 MHz), not tried on a device. */
+#ifndef META_SPI_MAX_HZ
+#define META_SPI_MAX_HZ 12000000
 #endif
 #ifndef META_AUDIO_DMA
 #define META_AUDIO_DMA 1

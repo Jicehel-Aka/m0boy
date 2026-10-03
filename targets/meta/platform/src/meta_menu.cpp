@@ -7,10 +7,10 @@
 #include "meta_menu.h"
 
 #include "meta_target.h"
-#if META_ARDUINO
-#include <Arduino.h>
-#endif
 #include <string.h>
+#if !META_TARGET_POKITTO
+#include "meta_hw.h"
+#endif
 
 #include "meta_clock.h"
 #include "meta_display.h"
@@ -25,12 +25,11 @@ static const uint16_t title_bg = META_COLOR(0x346856);
 #define BANDS (META_SCREEN_ROWS / 8)
 
 static inline void feed_watchdog(void) {
-#if META_ARDUINO
+#if !META_TARGET_POKITTO
     if (WDT->CTRL.reg & WDT_CTRL_ENABLE) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
 #endif
 }
 
-/* delay() assumes a 48 MHz SysTick. */
 static void wait_ms(uint32_t ms) {
     uint32_t t = meta_micros();
     while (meta_micros() - t < ms * 1000u) {}

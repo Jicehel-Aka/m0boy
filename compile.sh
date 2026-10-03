@@ -34,8 +34,7 @@
 #   <Jeu>/.gbrmeta.json    état interne (ROM, sha1, version, PACK) ; ignorable.
 #
 # Versions : chaque firmware embarque la version de gbrecomp qui l'a produit
-# (chaîne « gbrecomp-meta x.y.z » dans le .bin, aussi imprimée au démarrage
-# sur le port USB).  compile.sh la relit : un firmware déjà à jour (même
+# (chaîne « gbrecomp-meta x.y.z » dans le .bin).  compile.sh la relit : un firmware déjà à jour (même
 # version, même ROM) est conservé tel quel ; un firmware fait par une autre
 # version est proposé à la mise à jour.
 #

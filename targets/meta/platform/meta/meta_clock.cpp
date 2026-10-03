@@ -1,21 +1,21 @@
 /*
  * CPU clock switch for the Gamebuino META.
  *
- * 48 MHz: generator 0 runs from the DFLL48M as the Arduino core sets it up.
+ * 48 MHz: generator 0 runs from the DFLL48M as meta_startup.c sets it up.
  * 72 MHz: generator 5 divides the DFLL48M down to 1 MHz, the FDPLL96M
  * multiplies it by 72 and generator 0 (CPU, SERCOMs) switches to it, with
  * two flash wait states instead of one.  This is past the SAMD21's 48 MHz
  * rating: it works on many parts, not necessarily on every console.
- * USB, TC4/TC5 and the DAC stay on generator 4 (DFLL48M); the SERCOMs follow
- * generator 0 because the core's SPI selects it on every reconfiguration:
- * the display keeps the core's fastest setting (36 MHz at 72 MHz, which
- * the ST7735 took in gm0's overclocked META port), the card and the
- * buttons ask meta_spi_hz() for a rate that stays within theirs.  SysTick is reloaded for
+ * TC4/TC5 and the DAC stay on generator 4 (DFLL48M); SERCOM4 (meta_spi.c)
+ * follows generator 0: the display keeps the SPI's fastest setting
+ * unscaled (META_SPI_MAX_HZ; at its 24 MHz maximum that is 36 MHz at
+ * 72 MHz, which the ST7735 took in gm0's overclocked META port), the card
+ * and the buttons ask meta_spi_hz() for a rate that stays within theirs.  SysTick is reloaded for
  * 1 ms ticks at the new clock and meta_micros() scales its fraction.
  */
 #include "meta_clock.h"
 
-#include <Arduino.h>
+#include "meta_hw.h"
 
 static uint8_t clock_mhz = 48;
 static uint32_t frac_mul = 1048576u * 1000u / 48000u; /* 2^20 us per tick */
@@ -34,7 +34,6 @@ void meta_clock_init(void) {
     gclk_sync();
     GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(4) | GCLK_GENCTRL_SRC_DFLL48M | GCLK_GENCTRL_IDC | GCLK_GENCTRL_GENEN;
     gclk_sync();
-    route(GCLK_CLKCTRL_ID_USB_Val, GCLK_CLKCTRL_GEN_GCLK4);
     route(GCLK_CLKCTRL_ID_TC4_TC5_Val, GCLK_CLKCTRL_GEN_GCLK4);
     route(GCLK_CLKCTRL_ID_DAC_Val, GCLK_CLKCTRL_GEN_GCLK4);
 }
@@ -89,7 +88,7 @@ uint8_t meta_clock_set(uint8_t mhz) {
     return clock_mhz;
 }
 
-/* The core's micros(), with the sub-millisecond part scaled for the actual
+/* Arduino's micros(), with the sub-millisecond part scaled for the actual
  * SysTick period. */
 uint32_t meta_micros(void) {
     uint32_t ticks, ticks2, pend, pend2, count, count2;
@@ -109,7 +108,7 @@ uint32_t meta_micros(void) {
 
 uint32_t meta_spi_hz(uint32_t hz) {
     if (clock_mhz == 48) return hz;
-    /* The core sets BAUD + 1 = 24 MHz / requested; at 72 MHz the SPI runs
+    /* meta_spi_rate sets BAUD + 1 = 24 MHz / requested; at 72 MHz the SPI runs
      * at 36 MHz / (BAUD + 1): ask for 24 MHz / ceil(36 MHz / hz). */
     uint32_t n = (36000000u + hz - 1u) / hz;
     return 24000000u / n;

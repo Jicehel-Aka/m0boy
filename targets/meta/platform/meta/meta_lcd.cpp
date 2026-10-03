@@ -18,8 +18,7 @@
 #include "meta_dma.h"
 #endif
 
-#include <Arduino.h>
-#include <SPI.h>
+#include "meta_hw.h"
 
 #define TFT_CS_MASK (1u << 22) /* PB22 */
 #define TFT_DC_MASK (1u << 23) /* PB23 */
@@ -80,7 +79,9 @@ static const uint8_t cmd_init[] = {
     ST7735_DISPON, 0,
 };
 
-static const SPISettings tft_spi(24000000, MSBFIRST, SPI_MODE0);
+/* The SERCOM's fastest rate, capped by META_SPI_MAX_HZ, not rescaled at
+ * 72 MHz (meta_clock.cpp): 1.5 times the 48 MHz rate there. */
+#define TFT_SPI_HZ 24000000u
 
 /* TXC only rises after a transmission, so track whether one is in flight
  * before waiting for the shifter to drain. */
@@ -98,7 +99,7 @@ static inline void data_mode(void) { spi_wait_txc(); TFT_PORT.OUTSET.reg = TFT_D
 static inline void idle_mode(void) { spi_wait_txc(); TFT_PORT.OUTSET.reg = TFT_CS_MASK; }
 
 static void command_list(const uint8_t *p) {
-    SPI.beginTransaction(tft_spi);
+    meta_spi_rate(TFT_SPI_HZ);
     uint8_t n = *p++;
     while (n--) {
         command_mode();
@@ -111,7 +112,6 @@ static void command_list(const uint8_t *p) {
         if (ms) delay(*p++);
     }
     idle_mode();
-    SPI.endTransaction();
 }
 
 #if META_LCD_DMA
@@ -184,7 +184,7 @@ uint32_t meta_lcd_done_seq(void) {
 void meta_lcd_init(void) {
     TFT_PORT.DIRSET.reg = TFT_CS_MASK | TFT_DC_MASK;
     TFT_PORT.OUTSET.reg = TFT_CS_MASK;
-    SPI.begin();
+    meta_spi_init();
     if (!PM->RCAUSE.bit.SYST) command_list(cmd_reset);
     command_list(cmd_init);
 #if META_LCD_DMA
@@ -210,7 +210,7 @@ static void set_window(uint8_t row0, uint8_t row1) {
 
 static void open_bus(void) {
     if (in_transaction) return;
-    SPI.beginTransaction(tft_spi);
+    meta_spi_rate(TFT_SPI_HZ);
     in_transaction = 1;
 }
 
@@ -243,7 +243,6 @@ int meta_lcd_release(void) {
     if (meta_lcd_busy()) return 0;
     if (in_transaction) {
         idle_mode();
-        SPI.endTransaction();
         in_transaction = 0;
     }
     return 1;
