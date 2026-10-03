@@ -99,8 +99,10 @@ static inline void command_mode(void) { spi_wait_txc(); TFT_PORT.OUTCLR.reg = TF
 static inline void data_mode(void) { spi_wait_txc(); TFT_PORT.OUTSET.reg = TFT_DC_MASK; TFT_PORT.OUTCLR.reg = TFT_CS_MASK; }
 static inline void idle_mode(void) { spi_wait_txc(); TFT_PORT.OUTSET.reg = TFT_CS_MASK; }
 
+/* Commands at 24 MHz whatever the menu's pixel rate, as meta-lapinou sends
+ * them on a META. */
 static void command_list(const uint8_t *p) {
-    meta_spi_rate(TFT_SPI_HZ);
+    meta_spi_rate(24000000u);
     uint8_t n = *p++;
     while (n--) {
         command_mode();
