@@ -16,7 +16,8 @@
 #
 # Chaque jeu devient un dossier à copier tel quel à la racine de la carte SD :
 #   <Jeu>/<Jeu>.bin        le firmware (nommé simplement : « Zerd (J) [!] »
-#                          -> « Zerd » ; c'est ce nom que montre le loader)
+#                          -> « Zerd » ; c'est ce nom que montre le loader,
+#                          38 caractères au plus : voir loader_name)
 #   <Jeu>/ICON.BMP         icône 32x32 du menu (grille)
 #   <Jeu>/TITLESCREEN.BMP  écran titre 80x64 du menu (détail)
 #     Icônes tirées de thumbnails.libretro.com (Named_Titles), mises en cache
@@ -149,6 +150,26 @@ clean_name() {
 # Caractères interdits sur une carte FAT -> espace.
 sd_safe() {
   printf '%s' "$1" | sed -E 's#[\\/:*?"<>|]# #g; s/[[:space:]]+/ /g; s/^ //; s/ $//'
+}
+
+# Le loader de la META range chaque dossier de jeu dans 40 octets
+# (loader/GAMEFOLDERS.CACHE : « /Nom » et un zéro) : 38 octets au plus pour
+# le nom, qui est aussi celui du .bin.  Plus long : l'article final remis
+# devant (« Legend of Zelda, The - X » -> « The Legend of Zelda - X »), puis
+# une coupe sur un mot (le début du sous-titre reste : il distingue les jeux
+# d'une même série).
+LOADER_NAME_MAX=38
+loader_name() {
+  local LC_ALL=C s="$1" max="${2:-$LOADER_NAME_MAX}"
+  [ "${#s}" -le "$max" ] && { printf '%s' "$s"; return; }
+  s=$(printf '%s' "$s" | sed -E 's/^([^,]+), (The|A|An|Le|La|Les|L'"'"'|Die|Der|Das) - /\2 \1 - /; s/^([^,]+), (The|A|An|Le|La|Les|Die|Der|Das)$/\2 \1/')
+  if [ "${#s}" -gt "$max" ]; then
+    s="${s:0:$max}"
+    [[ "$s" == *" "* ]] && s="${s% *}"
+    # Pas de mot de liaison pendant à la fin (« Asteroids & », « Bart vs. the »).
+    s=$(printf '%s' "$s" | sed -E ':a; s/[ ,.:-]+$//; s/ (&|and|of|the|The|a|A|an|An|vs|vs\.|no|o|to|de|wa|ga|with|in)$//; ta')
+  fi
+  printf '%s' "$s" | sed -E 's/[ ,.:-]+$//'
 }
 
 url_quote() {
@@ -616,18 +637,21 @@ for rom_path in "${roms[@]}"; do
     continue
   fi
 
-  clean=$(sd_safe "$(clean_name "$(basename "$rom_path")")")
-  [ -n "$clean" ] || clean=$(sd_safe "$(basename "$rom_path")")
+  long=$(sd_safe "$(clean_name "$(basename "$rom_path")")")
+  [ -n "$long" ] || long=$(sd_safe "$(basename "$rom_path")")
+  clean=$(loader_name "$long")
   dir="$clean"
   for ((k = 2; ; k++)); do
     busy=0
     for d in ${used_dirs[@]+"${used_dirs[@]}"}; do [ "$d" = "$dir" ] && busy=1; done
     [ "$busy" = 0 ] && break
-    dir="$clean $k"
+    dir="$(loader_name "$clean" $((LOADER_NAME_MAX - 1 - ${#k}))) $k"
   done
 
   # Identifiant C : caractères spéciaux -> '_', jamais de chiffre en tête.
-  prefix=$(printf '%s' "$clean" | tr -c 'a-zA-Z0-9_' '_' | sed -E 's/_+$//')
+  # Tiré du nom complet, pas du nom raccourci pour le loader : il donne les
+  # noms 8.3 des fichiers .GB/.SAV/.STA du jeu, qui ne doivent pas changer.
+  prefix=$(printf '%s' "$long" | tr -c 'a-zA-Z0-9_' '_' | sed -E 's/_+$//')
   [ -n "$prefix" ] || prefix="game"
   case "$prefix" in [0-9]*) prefix="g$prefix" ;; esac
   while in_array "$prefix" ${used_prefixes[@]+"${used_prefixes[@]}"}; do prefix="${prefix}_2"; done
