@@ -1871,13 +1871,24 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     }
     for (const auto& entry : fs::directory_iterator(tpl / "platform" / other, ec)) {
         const fs::path name = entry.path().filename();
-        if (entry.is_directory()) {
-            fs::remove_all(out / name, ec); /* boards/, variants/ */
-        } else if (name.extension() == ".in") {
-            if (name.stem() != "README.md") fs::remove(out / name.stem(), ec);
-        } else {
-            fs::remove(src / name, ec);
+        if (entry.is_directory()) fs::remove_all(out / name, ec); /* boards/, variants/ */
+        else if (name.extension() == ".in" && name.stem() != "README.md") fs::remove(out / name.stem(), ec);
+    }
+    /* Template files in src/ that this generation does not copy (the other
+     * console's, or renamed since) would be compiled too: remove them. */
+    {
+        std::set<std::string> fresh;
+        for (const fs::path& dir : {tpl / "runtime", tpl / "platform" / "src", platform_tpl})
+            for (const auto& entry : fs::directory_iterator(dir, ec))
+                if (entry.is_regular_file()) fresh.insert(entry.path().filename().string());
+        std::vector<fs::path> stale;
+        for (const auto& entry : fs::directory_iterator(src, ec)) {
+            const std::string n = entry.path().filename().string();
+            const bool templated = n.rfind("gbl_", 0) == 0 || n.rfind("meta_", 0) == 0 ||
+                                   n.rfind("pokitto_", 0) == 0 || n == "lpc11u6x.h";
+            if (templated && n != "gbl_config.h" && !fresh.count(n)) stale.push_back(entry.path());
         }
+        for (const auto& path : stale) fs::remove(path, ec);
     }
     if (!copy_dir_files(tpl / "runtime", src, error) ||
         !copy_dir_files(tpl / "platform" / "src", src, error) ||

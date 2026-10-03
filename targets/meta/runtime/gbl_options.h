@@ -79,9 +79,6 @@
 #ifndef GBL_BATTERY
 #define GBL_BATTERY 0
 #endif
-#ifndef GBL_ERAM_ON_SD
-#define GBL_ERAM_ON_SD (GBL_ERAM_SIZE > 2048)
-#endif
 #ifndef GBL_ROM_STREAM
 #define GBL_ROM_STREAM 0
 #endif

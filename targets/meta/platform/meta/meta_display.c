@@ -49,14 +49,9 @@
  * META_LINE_SKIP         rows whose inputs did not change since they were
  *                        drawn are neither rendered nor sent (exact: see
  *                        GBL_LINE_SIGNATURE)
- * ROM streaming (2 KiB sector cache) and cartridge RAM kept on the card
- * (1 KiB cache) need RAM: in those builds the profile keeps two strips and
- * leaves out the merge modes. */
-#if GBL_ROM_STREAM || GBL_ERAM_ON_SD
-#define META_STREAM_RAM 1
-#else
-#define META_STREAM_RAM 0
-#endif
+ * In builds with a ROM sector cache or cartridge RAM on the card the
+ * profile keeps two strips and leaves out the merge modes (META_STREAM_RAM).
+ */
 #if META_SMOOTH_ASM && !defined(__ARM_ARCH_6M__)
 #undef META_SMOOTH_ASM
 #define META_SMOOTH_ASM 0

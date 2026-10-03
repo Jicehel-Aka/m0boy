@@ -25,6 +25,32 @@
 
 #include "gbl_config.h"
 
+/* ---- what the cartridge needs (gbl_config.h, written per game) -----------
+ * A profile can choose differently for each kind of build; every game gets
+ * its own firmware, so the right variant is picked at compile time, with no
+ * second build to make:
+ *   GBL_PROFILE_SD_ROM     ROM read from the SD card (sector cache, card
+ *                          reads on cache misses)
+ *   GBL_PROFILE_PACKED_ROM ROM LZSS-packed in flash (sector cache, unpacking
+ *                          on cache misses)
+ *   GBL_PROFILE_ERAM_ON_SD cartridge RAM in the save file (1 KiB cache)
+ * GBL_ERAM_ON_SD itself is a cartridge choice: RAM above 2 KiB goes to the
+ * card (override with -D). */
+#ifndef GBL_ERAM_ON_SD
+#define GBL_ERAM_ON_SD (GBL_ERAM_SIZE > 2048)
+#endif
+#if defined(GBL_ROM_STREAM) && GBL_ROM_STREAM && !(defined(GBL_ROM_PACKED) && GBL_ROM_PACKED)
+#define GBL_PROFILE_SD_ROM 1
+#else
+#define GBL_PROFILE_SD_ROM 0
+#endif
+#if defined(GBL_ROM_PACKED) && GBL_ROM_PACKED
+#define GBL_PROFILE_PACKED_ROM 1
+#else
+#define GBL_PROFILE_PACKED_ROM 0
+#endif
+#define GBL_PROFILE_ERAM_ON_SD (GBL_ERAM_SIZE > 0 && GBL_ERAM_ON_SD)
+
 #if defined(GBL_TARGET_POKITTO) && GBL_TARGET_POKITTO
 /* ======================================================= Pokitto (LPC11U68) */
 
@@ -195,14 +221,26 @@
 #ifndef META_SMOOTH_SPECULATE
 #define META_SMOOTH_SPECULATE 1
 #endif
-/* META_STREAM_RAM (meta_display.c) is set in builds whose ROM cache or
- * cartridge RAM cache leaves less RAM: two strips instead of three, no
- * merge modes (their 1.3 KiB of tables). */
+/* Builds with a ROM sector cache (SD or packed) or cartridge RAM on the
+ * card have 2-2.5 KiB of RAM left (the stack) instead of 3-5: two strips in
+ * flight instead of three, no merge modes (their 1.3 KiB of tables; TBLEND
+ * falls back to TILE). */
+#if (defined(GBL_ROM_STREAM) && GBL_ROM_STREAM) || GBL_ERAM_ON_SD
+#define META_STREAM_RAM 1
 #ifndef META_LCD_BUFFERS
-#define META_LCD_BUFFERS (META_STREAM_RAM ? 2 : 3)
+#define META_LCD_BUFFERS 2
 #endif
 #ifndef META_MERGE_MODES
-#define META_MERGE_MODES (!META_STREAM_RAM)
+#define META_MERGE_MODES 0
+#endif
+#else
+#define META_STREAM_RAM 0
+#ifndef META_LCD_BUFFERS
+#define META_LCD_BUFFERS 3
+#endif
+#ifndef META_MERGE_MODES
+#define META_MERGE_MODES 1
+#endif
 #endif
 
 #endif

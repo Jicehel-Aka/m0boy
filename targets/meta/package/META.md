@@ -6,6 +6,26 @@ console : ce n'est ni un JIT ni un émulateur classique. Le code déjà vu
 pendant une partie de profilage est traduit, et un petit interpréteur
 exécute le reste.
 
+## Nouveautés de la version 0.5.0
+
+- Pokitto : `gbrecomp --target pokitto` et `TARGET=pokitto ./compile.sh`
+  (jeux dans `roms/pokitto/<Jeu>/`). Même runtime, même code généré et
+  même menu que la META ; pilotes LPC11U68 écrits à la main (sans mbed ni
+  PokittoLib), build `make` avec arm-none-eabi-gcc seul. Image 1:1 au
+  centre de l'écran, ou agrandie en 200x176 comme gm0 (rognée ou entière,
+  menu Écran) ; C court = Start, C + B = Select, C maintenu = menu, C au
+  démarrage = loader. Testé dans l'émulateur seulement, pas sur la console.
+- Pokitto plus rapide : écriture des pixels et interruption audio en
+  assembleur depuis la RAM ; les deux bancs de 2 Ko servent à un cache de
+  dispatch plus grand et à un cache de streaming de 8 secteurs (40 % de
+  lectures SD en moins sur Zelda ; estimations).
+- Un seul fichier de réglages des optimisations, par console :
+  `targets/meta/runtime/gbl_profile.h` ; chaque optimisation est un
+  `-D` indépendant.
+- Firmwares META inchangés en comportement (code SD réorganisé, mêmes
+  images et mêmes sauvegardes dans l'émulateur) ; le convertisseur propose
+  de mettre à jour les jeux faits en 0.4.0.
+
 ## Nouveautés de la version 0.4.0
 
 - Menu d'options : HOME maintenu une demi-seconde (le jeu est en pause).
