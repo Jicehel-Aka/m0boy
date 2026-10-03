@@ -22,6 +22,7 @@
 #define META_TARGET_H
 
 #include "gbl_config.h"
+#include "gbl_profile.h" /* the console's optimisation switches */
 
 #if defined(GBL_TARGET_POKITTO) && GBL_TARGET_POKITTO
 

@@ -58,14 +58,10 @@ extern "C" {
 #include "gbl_options.h"
 }
 
-#ifndef META_MAX_SKIP
-#define META_MAX_SKIP 3
-#endif
-/* Skip rendering and SPI transfer while the picture cannot have changed
- * (see gbl_frame_unchanged_next); a change then appears one frame late. */
-#ifndef META_STATIC_SKIP
-#define META_STATIC_SKIP 1
-#endif
+/* Switches (gbl_profile.h): META_MAX_SKIP, frames skipped in a row at
+ * most by the automatic frame skip; META_STATIC_SKIP, no rendering nor
+ * transfer while the picture cannot have changed (see
+ * gbl_frame_unchanged_next; a change then appears one frame late). */
 
 #define FRAME_US 16743u   /* 70224 cycles at 4.194304 MHz */
 

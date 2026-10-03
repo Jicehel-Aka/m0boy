@@ -15,9 +15,7 @@
  *
  * The queue is pokitto_audio_q: uint16 tail, uint16 head, 1024 samples.
  */
-#ifndef POKITTO_AUDIO_ASM
-#define POKITTO_AUDIO_ASM 1
-#endif
+#include "gbl_profile.h"
 #if POKITTO_AUDIO_ASM
     .syntax unified
     .cpu cortex-m0plus

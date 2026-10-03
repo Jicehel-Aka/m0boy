@@ -14,6 +14,8 @@
  * only WR toggled), 160 -> 200.  pokitto_lcd.c keeps the C versions
  * (POKITTO_LCD_ASM=0) as the reference.
  */
+#include "gbl_profile.h"
+#if POKITTO_LCD_ASM
     .syntax unified
     .cpu cortex-m0plus
     .thumb
@@ -115,3 +117,4 @@ pokitto_push200:
 2:  pop {r4, r5, r6, r7, pc}
     .pool
     .size pokitto_push200, . - pokitto_push200
+#endif

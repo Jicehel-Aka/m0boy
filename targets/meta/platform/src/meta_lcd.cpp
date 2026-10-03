@@ -7,12 +7,11 @@
  * Industries).
  */
 #include "meta_lcd.h"
+#include "meta_target.h"
 
-/* META_LCD_DMA=1 streams pixels with DMA while emulation continues;
- * 0 writes them from the CPU (simpler, blocks for the transfer). */
-#ifndef META_LCD_DMA
-#define META_LCD_DMA 1
-#endif
+/* META_LCD_DMA (gbl_profile.h): 1 streams pixels with DMA while emulation
+ * continues; 0 writes them from the CPU (simpler, blocks for the
+ * transfer). */
 
 #if META_LCD_DMA
 #include "meta_lcd_queue.h"

@@ -26,9 +26,7 @@
 #include "meta_target.h"
 #include "pokitto_hw.h"
 
-#ifndef META_LINE_SKIP
-#define META_LINE_SKIP 1
-#endif
+/* META_LINE_SKIP (gbl_profile.h) */
 
 const uint32_t meta_palettes[META_PALETTE_COUNT][4] = {
     {0xE0F8D0, 0x88C070, 0x346856, 0x081820}, /* green (DMG-like) */

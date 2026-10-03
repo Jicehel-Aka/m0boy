@@ -16,6 +16,7 @@
 #include "meta_lcd.h"
 
 #include "lpc11u6x.h"
+#include "meta_target.h"
 #include "pokitto_hw.h"
 
 #define WR_BIT (1u << 12) /* P1_12 */
@@ -24,11 +25,9 @@
 #define RES_BIT (1u << 0) /* P1_0 */
 #define DATA_MASK (0xFFFFu << 3)
 
-/* Pixel pushes in Thumb-1 from SRAM (pokitto_lcd_asm.S); 0 keeps the C
- * loops below, the reference they must match. */
-#ifndef POKITTO_LCD_ASM
-#define POKITTO_LCD_ASM 1
-#endif
+/* POKITTO_LCD_ASM (gbl_profile.h): pixel pushes in Thumb-1 from SRAM
+ * (pokitto_lcd_asm.S); 0 keeps the C loops below, the reference they must
+ * match. */
 #if POKITTO_LCD_ASM
 void pokitto_push160(const uint16_t *px);
 void pokitto_push200(const uint16_t *px);

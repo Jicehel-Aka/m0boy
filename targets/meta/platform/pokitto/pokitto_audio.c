@@ -19,16 +19,14 @@
 #include "gbl.h"
 #include "meta_clock.h"
 #include "lpc11u6x.h"
+#include "meta_target.h"
 #include "pokitto_hw.h"
 
 #define AUDIO_RATE 22050u
 #define RING 1024u
 
-/* Interrupt in Thumb-1 from SRAM (pokitto_audio_asm.S); 0 keeps the C one
- * below, the reference. */
-#ifndef POKITTO_AUDIO_ASM
-#define POKITTO_AUDIO_ASM 1
-#endif
+/* POKITTO_AUDIO_ASM (gbl_profile.h): the interrupt in Thumb-1 from SRAM
+ * (pokitto_audio_asm.S); 0 keeps the C one below, the reference. */
 
 /* The queue, laid out for the assembly interrupt (tail at 0, head at 2, the
  * ring at 4), in the 2 KiB RAM1 bank (pokitto.ld). */

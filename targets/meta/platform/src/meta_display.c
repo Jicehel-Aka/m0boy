@@ -36,43 +36,34 @@
 
 #include <string.h>
 
-/* Rows per strip, and strips in flight: with META_LCD_DMA the DMA interrupt
- * chains queued strips, so rendering only waits when all buffers are busy. */
-#ifndef META_STRIP_LINES
-#define META_STRIP_LINES 4
-#endif
-/* ROM streaming (2 KiB sector cache) and cartridge RAM kept on the card
- * (1 KiB cache) need RAM: those builds keep two strips and leave out the
- * merge modes (their 1.3 KiB of tables). */
+/* Switches (values in gbl_profile.h):
+ * META_STRIP_LINES       rows per strip; META_LCD_BUFFERS strips in flight
+ *                        (with META_LCD_DMA the DMA interrupt chains queued
+ *                        strips, so rendering only waits when all are busy)
+ * META_SMOOTH_ASM        the SMOOTH/TBLEND row blend in Thumb-1
+ *                        (meta_display_asm.S)
+ * META_SMOOTH_SPECULATE  SMOOTH: render again on the next frame the lines
+ *                        that changed, so that a row whose lower line keeps
+ *                        moving finds its upper line rendered
+ * META_MERGE_MODES       BLEND, DARK and TBLEND (1 KiB table, a spare line)
+ * META_LINE_SKIP         rows whose inputs did not change since they were
+ *                        drawn are neither rendered nor sent (exact: see
+ *                        GBL_LINE_SIGNATURE)
+ * ROM streaming (2 KiB sector cache) and cartridge RAM kept on the card
+ * (1 KiB cache) need RAM: in those builds the profile keeps two strips and
+ * leaves out the merge modes. */
 #if GBL_ROM_STREAM || GBL_ERAM_ON_SD
 #define META_STREAM_RAM 1
 #else
 #define META_STREAM_RAM 0
 #endif
-#ifndef META_LCD_BUFFERS
-#define META_LCD_BUFFERS (META_STREAM_RAM ? 2 : 3)
-#endif
-/* The SMOOTH row blend in Thumb-1 (meta_display_asm.S) on Cortex-M0+. */
-#ifndef META_SMOOTH_ASM
-#if defined(__ARM_ARCH_6M__)
-#define META_SMOOTH_ASM 1
-#else
+#if META_SMOOTH_ASM && !defined(__ARM_ARCH_6M__)
+#undef META_SMOOTH_ASM
 #define META_SMOOTH_ASM 0
 #endif
-#endif
-/* SMOOTH: render again on the next frame the lines that changed, so that a
- * row whose lower line keeps moving finds its upper line rendered. */
-#ifndef META_SMOOTH_SPECULATE
-#define META_SMOOTH_SPECULATE 1
-#endif
-/* BLEND, DARK and TBLEND modes (1 KiB table and one spare line). */
-#ifndef META_MERGE_MODES
-#define META_MERGE_MODES (!META_STREAM_RAM)
-#endif
-/* Skip rendering and sending display rows whose inputs did not change since
- * they were last drawn (exact: see GBL_LINE_SIGNATURE). */
-#ifndef META_LINE_SKIP
-#define META_LINE_SKIP 1
+#if !defined(META_STRIP_LINES) || !defined(META_LCD_BUFFERS) || !defined(META_SMOOTH_ASM) || \
+    !defined(META_SMOOTH_SPECULATE) || !defined(META_MERGE_MODES) || !defined(META_LINE_SKIP)
+#error "gbl_profile.h: a META display switch is missing"
 #endif
 
 #define RGB565(rgb) ((uint16_t)((((rgb) >> 8) & 0xF800) | (((rgb) >> 5) & 0x07E0) | (((rgb) >> 3) & 0x001F)))

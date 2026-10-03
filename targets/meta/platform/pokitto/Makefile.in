@@ -24,7 +24,7 @@ CFLAGS := $(COMMON) -std=gnu11
 CXXFLAGS := $(COMMON) -std=gnu++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics
 ASFLAGS := $(ARCH) -g -Isrc -x assembler-with-cpp $(EXTRA_CFLAGS)
 LDFLAGS := $(ARCH) -nostartfiles --specs=nano.specs --specs=nosys.specs \
-           -Wl,--gc-sections -Wl,-Map=$(BUILD)/firmware.map -T pokitto.ld
+           -Wl,--gc-sections -Wl,-Map=$(BUILD)/firmware.map -T $(BUILD)/pokitto.ld
 
 SRC_C := $(wildcard src/*.c)
 SRC_CXX := $(wildcard src/*.cpp)
@@ -41,7 +41,11 @@ $(BUILD)/%.o: src/%.cpp | $(BUILD)
 $(BUILD)/%.o: src/%.S | $(BUILD)
 	$(CC) $(ASFLAGS) -MMD -MP -c $< -o $@
 
-$(BUILD)/firmware.elf: $(OBJ) pokitto.ld
+# The linker script sees the profile (POKITTO_RAM_BANKS): preprocessed.
+$(BUILD)/pokitto.ld: pokitto.ld src/gbl_config.h src/gbl_profile.h | $(BUILD)
+	$(CC) -E -P -x c -Isrc $(EXTRA_CFLAGS) $< -o $@
+
+$(BUILD)/firmware.elf: $(OBJ) $(BUILD)/pokitto.ld
 	$(CXX) $(LDFLAGS) $(OBJ) -o $@
 
 # The LPC boot ROM runs user code only when the first eight vector words

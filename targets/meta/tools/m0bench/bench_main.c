@@ -191,6 +191,12 @@ void gbl_platform_vblank(void) {
 #endif
     }
 #endif
+#if defined(BENCH_SD_PER_FRAME) && GBL_ROM_STREAM && !GBL_ROM_PACKED
+    /* SD sectors read so far, at every VBlank, in the stand-in SD region
+     * (m0_estimate.py --dump 0x10300000:<4 * frames>): how card reads
+     * cluster, for stream cache sizes (their time is not modelled). */
+    if (f < 0x4000u) ((uint32_t *)0x10300000u)[f] = bench_sd_sectors;
+#endif
 #ifdef BENCH_STATIC_SKIP
     gbl_skip_render = (uint8_t)gbl_frame_unchanged_next(!gbl_skip_render);
 #endif

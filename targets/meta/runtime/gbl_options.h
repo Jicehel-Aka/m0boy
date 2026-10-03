@@ -1,5 +1,6 @@
 /*
- * Build options for the gbl runtime.  Override with -D or in gbl_config.h.
+ * Build options for the gbl runtime.  The value of each optimisation per
+ * console is in gbl_profile.h; override any of them with -D.
  *
  * GBL_PPU_BATCH           Scanlines per PPU event when no per-line STAT
  *                         interrupt (mode 0 / mode 2) is enabled; 1 restores
@@ -60,27 +61,21 @@
 #ifndef GBL_OPTIONS_H
 #define GBL_OPTIONS_H
 
-#ifndef GBL_PPU_BATCH
-#define GBL_PPU_BATCH 8
+/* The console's choices for every optimisation switch above. */
+#include "gbl_profile.h"
+
+/* Every switch must come from the profile (a missing one would read as 0
+ * in #if and silently turn an optimisation off). */
+#if !defined(GBL_PPU_BATCH) || !defined(GBL_FRAME_SIGNATURE) || !defined(GBL_LINE_SIGNATURE) ||   \
+    !defined(GBL_PPU_PAL32) || !defined(GBL_GEN_OPTIMIZE_SIZE) || !defined(GBL_SPIN) ||           \
+    !defined(GBL_INTERP_DELAY_LOOP) || !defined(GBL_LOOKUP_CACHE) || !defined(GBL_STREAM_SECTORS) || \
+    !defined(GBL_PPU_ASM) || !defined(GBL_RENDER_LINE_ASM) || !defined(GBL_PPU_RAMFUNC) ||        \
+    !defined(GBL_CORE_ASM) || !defined(GBL_TIMING_ASM) || !defined(GBL_INTERP_ASM) ||             \
+    !defined(GBL_UNPACK_ASM)
+#error "gbl_profile.h: a runtime switch is missing from this console's profile"
 #endif
-#ifndef GBL_FRAME_SIGNATURE
-#define GBL_FRAME_SIGNATURE 1
-#endif
-#ifndef GBL_LINE_SIGNATURE
-#define GBL_LINE_SIGNATURE 1
-#endif
-#ifndef GBL_PPU_PAL32
-#define GBL_PPU_PAL32 0
-#endif
-#ifndef GBL_GEN_OPTIMIZE_SIZE
-#define GBL_GEN_OPTIMIZE_SIZE 1
-#endif
-#ifndef GBL_SPIN
-#define GBL_SPIN 1
-#endif
-#ifndef GBL_INTERP_DELAY_LOOP
-#define GBL_INTERP_DELAY_LOOP 1
-#endif
+
+/* ---- the cartridge (gbl_config.h) --------------------------------------- */
 #ifndef GBL_BATTERY
 #define GBL_BATTERY 0
 #endif
@@ -93,68 +88,24 @@
 #ifndef GBL_ROM_PACKED
 #define GBL_ROM_PACKED 0
 #endif
-#ifndef GBL_UNPACK_ASM
-#if defined(__ARM_ARCH_6M__)
-#define GBL_UNPACK_ASM 1
-#else
-#define GBL_UNPACK_ASM 0
-#endif
-#endif
-#if GBL_UNPACK_ASM && !defined(__ARM_ARCH_6M__)
+
+/* ---- what the build can do: Thumb-1 paths need an ARMv6-M compiler (not
+ * the host harness), the assembly interpreter has no coverage or trace
+ * hooks, the assembly render_line needs the assembly PPU and line
+ * signatures. ---------------------------------------------------------------- */
+#if !defined(__ARM_ARCH_6M__)
+#undef GBL_PPU_ASM
+#define GBL_PPU_ASM 0
+#undef GBL_TIMING_ASM
+#define GBL_TIMING_ASM 0
+#undef GBL_INTERP_ASM
+#define GBL_INTERP_ASM 0
 #undef GBL_UNPACK_ASM
 #define GBL_UNPACK_ASM 0
 #endif
-#ifndef GBL_LOOKUP_CACHE
-#define GBL_LOOKUP_CACHE 64 /* dispatch cache entries, a power of two */
-#endif
-#if GBL_LOOKUP_CACHE & (GBL_LOOKUP_CACHE - 1) || GBL_LOOKUP_CACHE > 256
-#error "GBL_LOOKUP_CACHE must be 0 or a power of two up to 256"
-#endif
-#ifndef GBL_STREAM_SECTORS
-#define GBL_STREAM_SECTORS 4
-#endif
-#ifndef GBL_PPU_ASM
-#if defined(__ARM_ARCH_6M__)
-#define GBL_PPU_ASM 1
-#else
-#define GBL_PPU_ASM 0
-#endif
-#endif
-#ifndef GBL_CORE_ASM
-#define GBL_CORE_ASM 1
-#endif
-#ifndef GBL_TIMING_ASM
-#if defined(__ARM_ARCH_6M__)
-#define GBL_TIMING_ASM 1
-#else
-#define GBL_TIMING_ASM 0
-#endif
-#endif
-#if GBL_TIMING_ASM && !defined(__ARM_ARCH_6M__)
-#undef GBL_TIMING_ASM
-#define GBL_TIMING_ASM 0
-#endif
-#ifndef GBL_INTERP_ASM
-#if defined(__ARM_ARCH_6M__) && !defined(GBL_COVERAGE) && !defined(GBL_TRACE) && !defined(GBL_ROM_TRACE)
-#define GBL_INTERP_ASM 1
-#else
-#define GBL_INTERP_ASM 0
-#endif
-#endif
-#if GBL_INTERP_ASM && (!defined(__ARM_ARCH_6M__) || defined(GBL_COVERAGE) || defined(GBL_TRACE) || \
-                       defined(GBL_ROM_TRACE))
+#if GBL_INTERP_ASM && (defined(GBL_COVERAGE) || defined(GBL_TRACE) || defined(GBL_ROM_TRACE))
 #undef GBL_INTERP_ASM
 #define GBL_INTERP_ASM 0
-#endif
-#ifndef GBL_PPU_RAMFUNC
-#define GBL_PPU_RAMFUNC 1
-#endif
-#if GBL_PPU_ASM && !defined(__ARM_ARCH_6M__)
-#undef GBL_PPU_ASM
-#define GBL_PPU_ASM 0
-#endif
-#ifndef GBL_RENDER_LINE_ASM
-#define GBL_RENDER_LINE_ASM GBL_PPU_ASM
 #endif
 #if GBL_RENDER_LINE_ASM && !(GBL_PPU_ASM && GBL_LINE_SIGNATURE)
 #undef GBL_RENDER_LINE_ASM
@@ -166,6 +117,9 @@
 #endif
 #ifndef GBL_VRAM_HOOK
 #define GBL_VRAM_HOOK 0
+#endif
+#if GBL_LOOKUP_CACHE & (GBL_LOOKUP_CACHE - 1) || GBL_LOOKUP_CACHE > 256
+#error "GBL_LOOKUP_CACHE must be 0 or a power of two up to 256"
 #endif
 #if GBL_PPU_BATCH < 1 || (GBL_PPU_BATCH & (GBL_PPU_BATCH - 1))
 #error "GBL_PPU_BATCH must be a power of two"

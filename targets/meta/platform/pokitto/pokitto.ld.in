@@ -12,7 +12,12 @@
  *           Pokitto, 2 KiB).
  * What they free in main RAM pays for an 8-sector ROM stream cache in
  * streamed builds.  These output sections come before .bss: an input
- * section goes to the first rule that matches it. */
+ * section goes to the first rule that matches it.  With
+ * POKITTO_RAM_BANKS 0 (gbl_profile.h) everything stays in main RAM.
+ *
+ * The Makefile runs this file through the C preprocessor (build/pokitto.ld)
+ * with the project's gbl_config.h and gbl_profile.h. */
+#include "gbl_profile.h"
 MEMORY
 {
   FLASH (rx)   : ORIGIN = 0x00000000, LENGTH = 0x39000
@@ -73,8 +78,10 @@ SECTIONS
   .bss_ram1 (NOLOAD) : ALIGN(4)
   {
     _sram1_bss = .;
+#if POKITTO_RAM_BANKS
     *(.bss_ram1*)
     *(.bss.bgp_byte)
+#endif
     . = ALIGN(4);
     _eram1_bss = .;
   } > RAM1
@@ -82,8 +89,10 @@ SECTIONS
   .bss_usbram (NOLOAD) : ALIGN(4)
   {
     _susbram_bss = .;
+#if POKITTO_RAM_BANKS
     *(.bss_usbram*)
     *(.bss.gbl_lookup_cache)
+#endif
     . = ALIGN(4);
     _eusbram_bss = .;
   } > USBRAM
@@ -92,7 +101,7 @@ SECTIONS
   {
     _sbss = .;
     __bss_start__ = .;
-    *(.bss .bss.*)
+    *(.bss .bss.* .bss_ram1* .bss_usbram*)
     *(COMMON)
     . = ALIGN(4);
     _ebss = .;
