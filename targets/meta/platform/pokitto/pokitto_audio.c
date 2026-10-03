@@ -147,13 +147,7 @@ void meta_audio_init(void) {
     NVIC_ISER = 1u << IRQ_CT32B0;
 }
 
-static unsigned frame_samples(void) {
-    /* One DMG frame worth of samples: 70224 cycles at 4194304 Hz. */
-    frac += AUDIO_RATE * 70224u;
-    unsigned n = frac / 4194304u;
-    frac %= 4194304u;
-    return n;
-}
+static unsigned frame_samples(void) { return meta_audio_frame_samples(AUDIO_RATE, &frac); }
 
 void meta_audio_frame(void) {
     unsigned n = frame_samples();

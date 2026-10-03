@@ -37,11 +37,12 @@ if(BUILD_TESTS)
     add_test(NAME meta_ppu_pal32_matches_per_pixel_reference COMMAND test_meta_ppu_reference_pal32)
 
     add_executable(test_meta_lcd_queue "${GBL_META_DIR}/tests/lcd_queue.c")
-    target_include_directories(test_meta_lcd_queue PRIVATE "${GBL_META_DIR}/platform/src")
+    target_include_directories(test_meta_lcd_queue PRIVATE "${GBL_META_DIR}/platform/meta")
     add_test(NAME meta_lcd_queue_is_fifo_and_lossless COMMAND test_meta_lcd_queue)
 
     add_executable(test_meta_display_sim "${GBL_META_DIR}/tests/display_sim.c"
-        "${GBL_META_DIR}/platform/src/meta_display.c" ${GBL_META_RUNTIME_SOURCES})
+        "${GBL_META_DIR}/platform/meta/meta_display.c" "${GBL_META_DIR}/platform/src/meta_palettes.c"
+        ${GBL_META_RUNTIME_SOURCES})
     target_include_directories(test_meta_display_sim PRIVATE "${GBL_META_DIR}/runtime"
         "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/platform/src" "${GBL_META_DIR}/tests")
     add_test(NAME meta_display_panel_matches_reference COMMAND test_meta_display_sim)

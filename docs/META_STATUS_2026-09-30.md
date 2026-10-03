@@ -13,8 +13,8 @@ state, evidence and open items.
 | Area | Where |
 | --- | --- |
 | Generator | `recompiler/src/codegen/meta_emitter.cpp`, options in `recompiler/include/recompiler/codegen/meta_emitter.h`, CLI in `recompiler/src/main.cpp` (`--target meta`, `--meta-*`, `--rom-profile`) |
-| Runtime (gbl) | `targets/meta/runtime/` — `gbl_core.c` (bus, dispatch, streaming, packed ROM, saves), `gbl_cpu.c` (interpreter), `gbl_ppu.c`, `gbl_apu.c`, asm in `gbl_core_asm.S` / `gbl_ppu_asm.S` / `gbl_timing_asm.S` (field offsets in `gbl_timing_layout.h`), every switch in `gbl_options.h` |
-| META frontend | `targets/meta/platform/src/` (LCD DMA, audio, SD/FAT, saves, stream) |
+| Runtime (gbl) | `targets/meta/runtime/` — `gbl_core.c` (bus, dispatch, streaming, packed ROM, saves), `gbl_cpu.c` (interpreter), `gbl_ppu.c`, `gbl_apu.c`, asm in `gbl_core_asm.S` / `gbl_ppu_asm.S` / `gbl_timing_asm.S` (field offsets in `gbl_timing_layout.h`), switch values per console in `gbl_profile.h`, rules in `gbl_options.h` |
+| Frontend | `targets/meta/platform/src/` (shared: main loop, menu, saves, states, stream, FAT, SD protocol), `platform/meta/` (META drivers: LCD DMA, audio, SD bus, clock), `platform/pokitto/` (Pokitto drivers) |
 | Host harness | `targets/meta/host/gbl_host.c` (`_host`, `_profile`, `_play` targets) |
 | Tests | `ctest -R meta` (7 tests); `tests/test_meta_target_e2e.py` is the main gate |
 | Tools | `targets/meta/tools/m0bench/` (`m0_estimate.py` M0+ cycle model, `where.py` stall finder), `tools/gb-emu/` (gamebuino-emulator fork: SRAM execution, emulated SD card, `headless.js`), `tools/meta-compiler/` (Node port of `compile.sh`) |

@@ -1795,8 +1795,8 @@ bool write_file(const fs::path& path, const std::string& text, std::string& erro
     return static_cast<bool>(out);
 }
 
-bool copy_dir_files(const fs::path& from, const fs::path& to, std::string& error,
-                    const std::set<std::string>& skip = {}) {
+/* Regular files of `from` into `to`, templates (*.in) left out. */
+bool copy_dir_files(const fs::path& from, const fs::path& to, std::string& error) {
     std::error_code ec;
     if (!fs::is_directory(from, ec)) {
         error = "missing template directory " + from.string();
@@ -1804,9 +1804,7 @@ bool copy_dir_files(const fs::path& from, const fs::path& to, std::string& error
     }
     fs::create_directories(to, ec);
     for (const auto& entry : fs::directory_iterator(from, ec)) {
-        if (!entry.is_regular_file()) continue;
-        const std::string fname = entry.path().filename().string();
-        if (skip.count(fname) || entry.path().extension() == ".in") continue;
+        if (!entry.is_regular_file() || entry.path().extension() == ".in") continue;
         fs::copy_file(entry.path(), to / entry.path().filename(),
                       fs::copy_options::overwrite_existing, ec);
         if (ec) {
@@ -1856,50 +1854,46 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     const fs::path src = out / "src";
     const fs::path tpl = options.template_dir;
     std::error_code ec;
+    /* targets/meta/platform: src holds the frontend both consoles share,
+     * meta/ and pokitto/ each console's drivers and project templates (*.in);
+     * the META also has PlatformIO board and variant directories.  Files the
+     * other console left in this directory (an earlier generation) are
+     * removed: the builds compile every source in src/. */
+    const char* console = options.pokitto ? "pokitto" : "meta";
+    const char* other = options.pokitto ? "meta" : "pokitto";
+    const fs::path platform_tpl = tpl / "platform" / console;
     fs::create_directories(src, ec);
     fs::create_directories(out / "host", ec);
-    if (!options.pokitto) {
-        fs::create_directories(out / "boards", ec);
-        fs::create_directories(out / "variants" / "gbl_meta", ec);
-    }
     fs::create_directories(out / "coverage", ec);
     if (ec) {
         error = "cannot create " + out.string() + ": " + ec.message();
         return false;
     }
-
-    /* platform/src holds the shared frontend and the META's drivers; the
-     * Pokitto build takes the shared files and platform/pokitto instead of
-     * the META drivers (see meta_target.h).  Files of the other console left
-     * by an earlier generation into this directory are removed. */
-    const std::set<std::string> meta_only = {
-        "meta_audio.cpp", "meta_clock.cpp", "meta_display.c", "meta_display_asm.S", "meta_dma.cpp",
-        "meta_dma.h",     "meta_lcd.cpp",   "meta_lcd_queue.h", "meta_sd.cpp"};
-    std::set<std::string> other_console;
-    if (options.pokitto) {
-        other_console = meta_only;
-    } else {
-        for (const auto& entry : fs::directory_iterator(tpl / "platform" / "pokitto", ec))
-            if (entry.path().extension() != ".in") other_console.insert(entry.path().filename().string());
+    for (const auto& entry : fs::directory_iterator(tpl / "platform" / other, ec)) {
+        const fs::path name = entry.path().filename();
+        if (entry.is_directory()) {
+            fs::remove_all(out / name, ec); /* boards/, variants/ */
+        } else if (name.extension() == ".in") {
+            if (name.stem() != "README.md") fs::remove(out / name.stem(), ec);
+        } else {
+            fs::remove(src / name, ec);
+        }
     }
-    for (const auto& name : other_console) fs::remove(src / name, ec);
-    if (options.pokitto) {
-        fs::remove(out / "platformio.ini", ec);
-        fs::remove(out / "gamebuino_meta.ld", ec);
-    } else {
-        fs::remove(out / "Makefile", ec);
-        fs::remove(out / "pokitto.ld", ec);
-    }
-
     if (!copy_dir_files(tpl / "runtime", src, error) ||
-        !copy_dir_files(tpl / "platform" / "src", src, error, options.pokitto ? meta_only
-                                                                              : std::set<std::string>{}))
+        !copy_dir_files(tpl / "platform" / "src", src, error) ||
+        !copy_dir_files(platform_tpl, src, error))
         return false;
-    if (options.pokitto ? !copy_dir_files(tpl / "platform" / "pokitto", src, error)
-                        : (!copy_dir_files(tpl / "platform" / "boards", out / "boards", error) ||
-                           !copy_dir_files(tpl / "platform" / "variants" / "gbl_meta",
-                                           out / "variants" / "gbl_meta", error)))
-        return false;
+    /* Subdirectories (the META's boards/ and variants/) as they are. */
+    for (const auto& entry : fs::directory_iterator(platform_tpl)) {
+        if (!entry.is_directory()) continue;
+        std::error_code cec;
+        fs::copy(entry.path(), out / entry.path().filename(),
+                 fs::copy_options::recursive | fs::copy_options::overwrite_existing, cec);
+        if (cec) {
+            error = "cannot copy " + entry.path().string() + ": " + cec.message();
+            return false;
+        }
+    }
     fs::copy_file(tpl / "host" / "gbl_host.c", out / "host" / "gbl_host.c",
                   fs::copy_options::overwrite_existing, ec);
     if (!ec)
@@ -1909,14 +1903,12 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         error = "cannot copy host harness: " + ec.message();
         return false;
     }
-    const fs::path platform_tpl = tpl / "platform" / (options.pokitto ? "pokitto" : "");
-    const std::vector<std::string> project_files =
-        options.pokitto ? std::vector<std::string>{"Makefile", "pokitto.ld", "README.md"}
-                        : std::vector<std::string>{"platformio.ini", "gamebuino_meta.ld", "README.md"};
-    for (const auto& file : project_files) {
+    /* Project files: every *.in of the console's directory, @NAME@ filled. */
+    for (const auto& entry : fs::directory_iterator(platform_tpl, ec)) {
+        if (entry.is_directory() || entry.path().extension() != ".in") continue;
         std::string text;
-        if (!read_file(platform_tpl / (file + ".in"), text, error)) return false;
-        if (!write_file(out / file, substitute(text, options.name), error)) return false;
+        if (!read_file(entry.path(), text, error)) return false;
+        if (!write_file(out / entry.path().stem(), substitute(text, options.name), error)) return false;
     }
     {
         std::string text;

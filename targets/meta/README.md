@@ -10,7 +10,9 @@ are untouched.
 | --- | --- |
 | Emitter | `recompiler/src/codegen/meta_emitter.cpp` |
 | Runtime (portable C) | `targets/meta/runtime/gbl_*.c` |
-| META frontend | `targets/meta/platform/src/meta_*.cpp` |
+| Optimisation profiles | `targets/meta/runtime/gbl_profile.h` (every switch, per console) |
+| Shared frontend | `targets/meta/platform/src/` (main loop, menu, saves, states, streaming, FAT, SD protocol, palettes; console facts in `meta_target.h`) |
+| META drivers | `targets/meta/platform/meta/` (display + DMA, audio, SD bus, clock; PlatformIO templates, board, variant) |
 | Host harness | `targets/meta/host/gbl_host.c` |
 | Cycle estimator | `targets/meta/tools/m0bench/` |
 | Tests | `targets/meta/tests/`, `tests/test_meta_target_e2e.py`, `tests/test_pokitto_target.py` |
@@ -373,7 +375,9 @@ of which the loader keeps the top 28 KiB; 220×176 panel on a 16-bit
 parallel bus; 8-bit R2R DAC). Every `--meta-*` option applies; the runtime,
 the generated code and the frontend are shared, only the drivers differ.
 
-- **One configuration header.** `platform/src/meta_target.h` selects the
+- **Configuration.** `runtime/gbl_profile.h` lists every optimisation
+  switch with its value for each console (see [Build options](#build-options));
+  `platform/src/meta_target.h` selects the
   console from `GBL_TARGET_POKITTO` (written into `gbl_config.h` by the
   generator) and sets the `META_*` switches the shared files test with
   `#if`: `META_ARDUINO` (Arduino core or bare metal), `META_USB_SERIAL`,
@@ -570,8 +574,19 @@ per frame for any input.
 
 ## Build options
 
-Pass these as `-D` flags (`build_flags` in `platformio.ini`, or
-`CMAKE_C_FLAGS` for the host).
+Every optimisation switch has its value per console in
+`runtime/gbl_profile.h` (the META and Pokitto profiles): edit it to change
+a console's default, or pass a `-D` flag for one build (`build_flags` in
+`platformio.ini`, `EXTRA_CFLAGS=` for the Pokitto Makefile, `--cflag` for
+`m0_estimate.py`, `CMAKE_C_FLAGS` for the host). Each switch is
+independent; `gbl_options.h` stops the build if a profile leaves one out,
+turns the Thumb-1 ones off on other compilers and resolves dependencies
+(for example `GBL_RENDER_LINE_ASM` needs `GBL_PPU_ASM` and
+`GBL_LINE_SIGNATURE`). The table gives the META values; the Pokitto
+profile differs in `GBL_LOOKUP_CACHE` 256, `GBL_STREAM_SECTORS` 8 (both with
+`POKITTO_RAM_BANKS`) and its own `POKITTO_LCD_ASM`, `POKITTO_AUDIO_ASM`,
+`POKITTO_RAM_BANKS`. Each Pokitto switch turned off alone was built and
+run (same picture in Link's Awakening).
 
 | Define | Default | Effect |
 | --- | --- | --- |
@@ -591,7 +606,7 @@ Pass these as `-D` flags (`build_flags` in `platformio.ini`, or
 | `GBL_INTERP_ASM` | 1 on Cortex-M0+ (not in coverage or trace builds) | Interpreter loop and common opcodes in Thumb-1 (`gbl_interp_asm.S`); DAA, EI, RETI, HALT, STOP, PUSH/POP AF, SP arithmetic and `LD (nn),SP` go through the C `gbl_interp_op` |
 | `GBL_RENDER_LINE_ASM` | follows `GBL_PPU_ASM` | `render_line` (sprite selection, line signature, frontend calls) in Thumb-1 (`gbl_ppu_asm.S`); needs `GBL_LINE_SIGNATURE` |
 | `GBL_LOOKUP_CACHE` | 64 | Entries of the dispatch cache, a power of two (0 disables it) |
-| `GBL_STREAM_SECTORS` | 4 | Sector cache of a streamed ROM (512 bytes each) |
+| `GBL_STREAM_SECTORS` | 4 | Sector cache of a streamed ROM (512 bytes each). More reads the card much less (Donkey Kong Land, 3,000 frames: 764 reads with 4, 400 with 6, 217 with 8), but streamed META builds have about 2 KiB of RAM left, the stack: 8 overflow it, 6 would leave ~1 KiB. The Pokitto uses 8. |
 | `GBL_ERAM_ON_SD` | 1 above 2 KiB of cartridge RAM | Cartridge RAM kept in the save file behind a 1 KiB cache |
 | `GBL_ROM_PACKED` | set by `--meta-pack` | Streamed ROM sectors LZSS-compressed in flash instead of on the SD card |
 | `GBL_UNPACK_ASM` | 1 on Cortex-M0+ | Thumb-1 decoder for those sectors |
@@ -823,7 +838,7 @@ evicts entries (Faceball's misses drop by 90%); a miss searches one
 (+256 bytes; 128 entries gain another 0.5 point for 512 more bytes).
 
 The generated PlatformIO project builds with its own copy of the Arduino
-Zero variant (`platform/variants/gbl_meta`, LGPL like the original)
+Zero variant (`platform/meta/variants/gbl_meta`, LGPL like the original)
 without the hardware UART objects `Serial` and `Serial1`, which the META
 never uses: −1,160 bytes of RAM and −1.8 KiB of flash. The firmware draws
 the same screens in gamebuino-emulator. Most games had less free RAM

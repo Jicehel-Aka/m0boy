@@ -83,15 +83,16 @@ def build(project, out_dir, frames, opt, input_file, extra):
     # -DBENCH_META_DISPLAY=<mode>: the META display pipeline instead of the
     # benchmark's simple row policy.
     if any(f.startswith("-DBENCH_META_DISPLAY") for f in extra):
-        plat = os.path.normpath(os.path.join(HERE, "..", "..", "platform", "src"))
-        sources += [os.path.join(plat, "meta_display.c"), os.path.join(plat, "meta_display_asm.S")]
-        extra = extra + ["-I", plat]
+        plat = os.path.normpath(os.path.join(HERE, "..", "..", "platform"))
+        sources += [os.path.join(plat, "meta", "meta_display.c"), os.path.join(plat, "meta", "meta_display_asm.S"),
+                    os.path.join(plat, "src", "meta_palettes.c")]
+        extra = extra + ["-I", os.path.join(plat, "src"), "-I", os.path.join(plat, "meta")]
     # -DBENCH_POKITTO_DISPLAY=<mode> (--target pokitto): the Pokitto's.
     if any(f.startswith("-DBENCH_POKITTO_DISPLAY") for f in extra):
         plat = os.path.normpath(os.path.join(HERE, "..", "..", "platform"))
         pk = os.path.join(plat, "pokitto")
         sources += [os.path.join(pk, "pokitto_display.c"), os.path.join(pk, "pokitto_lcd.c"),
-                    os.path.join(pk, "pokitto_lcd_asm.S")]
+                    os.path.join(pk, "pokitto_lcd_asm.S"), os.path.join(plat, "src", "meta_palettes.c")]
         extra = extra + ["-DGBL_TARGET_POKITTO=1", "-I", pk, "-I", os.path.join(plat, "src")]
     # Streaming projects: the whole ROM stands in for the SD card (placed in
     # its own region by bench.ld; the SD transfer time is not modelled).

@@ -11,7 +11,7 @@
  *
  * What each switch does is documented where it is defined or used:
  *   GBL_*      runtime/gbl_options.h (the runtime, shared)
- *   META_*     platform/src (META drivers, and the shared frontend)
+ *   META_*     platform/src (shared frontend), platform/meta (META drivers)
  *   POKITTO_*  platform/pokitto (Pokitto drivers, pokitto.ld)
  * gbl_options.h turns the Thumb-1 switches off on other compilers (the host
  * harness), whatever the profile says, and resolves their dependencies.

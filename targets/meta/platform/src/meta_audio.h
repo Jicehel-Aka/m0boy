@@ -15,6 +15,15 @@ void meta_audio_set_volume(uint8_t v); /* 0..8, 4 = default */
 uint8_t meta_audio_volume(void);
 void meta_audio_stop(void);   /* timer and interrupt off (before the loader) */
 
+/* Samples of one DMG frame (70224 cycles at 4194304 Hz) at `rate` Hz, the
+ * remainder carried over in *frac (shared by the consoles' drivers). */
+static inline unsigned meta_audio_frame_samples(uint32_t rate, uint32_t *frac) {
+    *frac += rate * 70224u;
+    unsigned n = *frac / 4194304u;
+    *frac %= 4194304u;
+    return n;
+}
+
 #ifdef __cplusplus
 }
 #endif

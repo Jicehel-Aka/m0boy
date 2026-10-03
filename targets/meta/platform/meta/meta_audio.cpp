@@ -45,13 +45,7 @@ uint8_t meta_audio_volume(void) { return volume; }
 
 static uint32_t frac;
 
-static unsigned frame_samples(void) {
-    /* One DMG frame worth of samples: 70224 cycles at 4194304 Hz. */
-    frac += AUDIO_RATE * 70224u;
-    unsigned n = frac / 4194304u;
-    frac %= 4194304u;
-    return n;
-}
+static unsigned frame_samples(void) { return meta_audio_frame_samples(AUDIO_RATE, &frac); }
 
 /* Still advance the APU when there is no room (output stalled) so length
  * counters and envelopes keep time. */

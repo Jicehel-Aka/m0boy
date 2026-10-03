@@ -2,7 +2,8 @@
 """`gbrecomp --target pokitto` on the synthetic ROM of test_meta_target_e2e.
 
 The Pokitto build shares the runtime, the generated code and the frontend
-with the Gamebuino META build (targets/meta/platform/src/meta_target.h); this
+with the Gamebuino META build (targets/meta/platform/src, the console
+switches in meta_target.h and runtime/gbl_profile.h); this
 checks what differs:
   * the generated project: the Pokitto drivers instead of the META ones,
     GBL_TARGET_POKITTO in gbl_config.h, a Makefile and pokitto.ld instead of
@@ -29,12 +30,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_meta_target_e2e import build_host, make_rom, run  # noqa: E402
 
-POKITTO_DRIVERS = {"pokitto_startup.c", "pokitto_clock.c", "pokitto_lcd.c", "pokitto_display.c",
-                   "pokitto_audio.c", "pokitto_sd.c", "pokitto_buttons.c", "pokitto_hw.h", "lpc11u6x.h"}
-META_DRIVERS = {"meta_lcd.cpp", "meta_display.c", "meta_audio.cpp", "meta_sd.cpp", "meta_clock.cpp",
+POKITTO_DRIVERS = {"pokitto_startup.c", "pokitto_clock.c", "pokitto_lcd.c", "pokitto_lcd_asm.S",
+                   "pokitto_display.c", "pokitto_audio.c", "pokitto_audio_asm.S", "pokitto_sd.c",
+                   "pokitto_buttons.c", "pokitto_hw.h", "lpc11u6x.h"}
+META_DRIVERS = {"meta_lcd.cpp", "meta_display.c", "meta_audio.cpp", "meta_sd_bus.cpp", "meta_clock.cpp",
                 "meta_dma.cpp"}
 SHARED = {"meta_main.cpp", "meta_menu.cpp", "meta_save.cpp", "meta_state.cpp", "meta_stream.cpp",
-          "meta_fat.c", "meta_target.h"}
+          "meta_fat.c", "meta_sd.c", "meta_palettes.c", "meta_target.h", "gbl_profile.h"}
 
 
 def toolchain() -> str | None:
