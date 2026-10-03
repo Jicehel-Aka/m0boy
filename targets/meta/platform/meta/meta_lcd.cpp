@@ -79,8 +79,9 @@ static const uint8_t cmd_init[] = {
     ST7735_DISPON, 0,
 };
 
-/* The SERCOM's fastest rate, capped by META_SPI_MAX_HZ, not rescaled at
- * 72 MHz (meta_clock.cpp): 1.5 times the 48 MHz rate there. */
+/* The SERCOM's fastest rate (24 MHz, as meta-lapinou drives this panel),
+ * capped by META_SPI_MAX_HZ, not rescaled at 72 MHz (meta_clock.cpp):
+ * 36 MHz there. */
 #define TFT_SPI_HZ 24000000u
 
 /* TXC only rises after a transmission, so track whether one is in flight

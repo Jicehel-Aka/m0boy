@@ -74,7 +74,9 @@ set it, same `BAUD = 24 MHz / rate - 1`), CMSIS headers through
 `platform_packages`; no framework, no variant, no USB stack (no serial
 status line; `pio run -t upload` needs the bootloader already running).
 The core capped SPI at 12 MHz: every firmware so far ran display, card
-and buttons at 12 MHz; `META_SPI_MAX_HZ` keeps that (24 MHz untried).
+and buttons at 12 MHz. The display now runs at 24 MHz (`META_SPI_MAX_HZ`,
+the rate meta-lapinou drives the panel at on a META); buttons stay at 12
+(at 24 the bits shift and UP is lost), the card at 12 (`META_SD_SPI_HZ`).
 Donkey Kong Land: −15.0 KiB flash, −1,880 B RAM; the RAM pays for
 `GBL_STREAM_SECTORS` 8 (4 with 2 KiB of cartridge RAM in RAM), streamed
 builds keep ~1.8 KiB of stack (2.0 before). Evidence: `ctest -R meta`,
@@ -181,8 +183,8 @@ function is a livelock, not slowness.
 
 - Run on hardware: SD streaming, saves, asm paths, frame pacing, and now
   the bare-metal startup (clocks, DAC, SPI rates, HOME back to the loader).
-- Try `META_SPI_MAX_HZ=24000000` on a META: the display and card have run
-  at 12 MHz so far (the Arduino core's cap).
+- On a META: the display at 24 MHz in this firmware (36 at 72 MHz), then
+  `-DMETA_SD_SPI_HZ=24000000` for the card.
 - Option menu (HOME held ½ s, 2026-10-01): save states in `<NAME>.STA`,
   volume, palettes, frame skip, speed, 72 MHz (untested on a META), restart;
   checked in gamebuino-emulator and by the host `--state-test`.

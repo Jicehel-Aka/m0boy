@@ -92,14 +92,12 @@ static int close_frame(void) {
 #if !META_TARGET_POKITTO
 #define BTN_CS_MASK (1u << 3) /* PB03 */
 
-/* 12 MHz like the Gamebuino library.  The library also waits ~1 us after CS
- * low for the shift register's parallel load; reading immediately works on
- * the META tested here, so the wait is optional (META_BUTTONS_PL_US). */
+/* META_BUTTONS_SPI_HZ (gbl_profile.h): 12 MHz like the Gamebuino library.
+ * The library also waits ~1 us after CS low for the shift register's
+ * parallel load; reading immediately works on the META tested here, so
+ * the wait is optional (META_BUTTONS_PL_US). */
 #ifndef META_BUTTONS_PL_US
 #define META_BUTTONS_PL_US 0
-#endif
-#ifndef META_BUTTONS_SPI_HZ
-#define META_BUTTONS_SPI_HZ 12000000
 #endif
 
 #endif /* !META_TARGET_POKITTO */

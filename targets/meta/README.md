@@ -176,8 +176,7 @@ generator 0 (CPU, SERCOM4) switches to it with two flash wait states;
 TC4/TC5 and the DAC run from generator 4 (DFLL48M) at either clock,
 SysTick is reloaded for 1 ms and `meta_micros()` scales its fraction.
 SERCOM4 stays on generator 0: the display keeps the fastest setting
-unscaled (`META_SPI_MAX_HZ`, 12 MHz, so 18 MHz at 72 MHz; with the
-SERCOM's 24 MHz it would be 36, which the ST7735 took in gm0's
+unscaled (24 MHz, so 36 MHz at 72 MHz, which the ST7735 took in gm0's
 overclocked META port), the card and buttons ask `meta_spi_hz()` for
 rates within theirs.
 When the PLL does not lock the menu stays at 48 MHz, and the loader is
@@ -229,9 +228,10 @@ tables against the formula and a run of sprites moving down. `<name>_metaview
 --mode … --dump N file.ppm` writes the exact META screen of a game on the
 host.
 
-The buttons are read at 12 MHz in the Gamebuino library bit order. Build with
-`-DMETA_BUTTONS_LAPINOU_ORDER` (and `-DMETA_BUTTONS_SPI_HZ=24000000`) for the
-order observed when reading at 24 MHz.
+The buttons are read at 12 MHz in the Gamebuino library bit order
+(`META_BUTTONS_SPI_HZ`). Do not raise it: at 24 MHz the bits come in
+another order (meta-lapinou's, `-DMETA_BUTTONS_LAPINOU_ORDER`) and UP is
+lost.
 
 ## Saves and large cartridge RAM
 
@@ -300,7 +300,7 @@ default; `on` / `off` force it):
   sector at a time, into an LRU cache of `GBL_STREAM_SECTORS` sectors
   (8, i.e. 4 KiB; 4 when 2 KiB of cartridge RAM stay in RAM). A read
   first lets the display's DMA queue drain and frees the shared SPI bus,
-  then issues CMD17 (24 MHz asked, `META_SPI_MAX_HZ` caps it at 12).
+  then issues CMD17 at 12 MHz (`META_SD_SPI_HZ`).
 - The resident set comes from ROM data-read profiles. In streaming
   projects, the host `_profile` and `_play` builds record them with
   `--rom-profile-out FILE`; pass them back with `--rom-profile FILE`.
@@ -618,10 +618,11 @@ run (same picture in Link's Awakening).
 | `GBL_UNPACK_ASM` | 1 on Cortex-M0+ | Thumb-1 decoder for those sectors |
 | `GBL_STACK_GUARD` | 1 | C stack check on entry to every compiled region |
 | `META_SWAP_AB` | 1 | META A = Game Boy B, META B = Game Boy A |
-| `META_SD_SPI_HZ` | 24000000 | SPI clock for SD sector reads |
+| `META_SD_SPI_HZ` | 12000000 | SPI clock for SD sector reads: the rate the card has run at so far (cards take 25 MHz in SPI mode) |
+| `META_BUTTONS_SPI_HZ` | 12000000 | SPI clock for the buttons' shift register; at 24 MHz the bits shift and UP is lost |
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND, DARK and TBLEND display modes |
 | `META_AUDIO_DMA` | 1 | Audio samples go to the DAC by DMA (TC4-triggered DMAC channel 1, chained descriptors) instead of a 22 kHz TC4 interrupt (about 3% of the CPU); 0 restores the interrupt |
-| `META_SPI_MAX_HZ` | 12000000 | Fastest SPI rate (`meta_spi.c`). 12 MHz is the Arduino core's cap, which every firmware tested on a META ran at, whatever the drivers asked. The SERCOM can do 24 MHz; not tried on a device. |
+| `META_SPI_MAX_HZ` | 24000000 | Fastest SPI rate (`meta_spi.c`), the SERCOM's maximum at 48 MHz; the display asks for it (meta-lapinou drives the META's ST7735 at 24 MHz). The Arduino core capped every rate at 12 MHz, so firmwares built before 2026-10-03 sent the picture at 12. |
 | `META_LCD_DMA` | 1 | Strips are sent by DMA through a queue: the DMA-complete interrupt programs the next window and starts the next strip, so rendering waits only when every buffer is in flight. At VBlank, if the bus is still busy, the button read is postponed by one frame (never two in a row). 0 writes pixels from the CPU. |
 | `META_LCD_BUFFERS` | 3 | Strip buffers (triple buffering by default) |
 | `META_STRIP_LINES` | 4 | Rows per strip |
@@ -860,6 +861,8 @@ went with them. Donkey Kong Land (streamed, same code and options):
 222,340 → 207,296 bytes of flash (−15.0 KiB) and 30,772 → 28,892 bytes of
 RAM (−1,880); Tetris: −14.2 KiB and −1,884 bytes. The RAM goes to the
 stream cache (`GBL_STREAM_SECTORS` 4 → 8), the flash to compiled code.
+The core also capped SPI at 12 MHz: the display now gets the SERCOM's
+24 MHz, as in meta-lapinou; card and buttons stay at 12.
 Tetris and Donkey Kong Land boot and draw the same screens as before in
 the `tools/gb-emu` fork; not yet run on a META.
 

@@ -214,11 +214,22 @@
 #ifndef META_LCD_DMA
 #define META_LCD_DMA 1
 #endif
-/* Fastest SPI rate (meta_spi.c): 12 MHz, the Arduino core's cap, which
- * every firmware tested on a META so far ran at; the SERCOM can do
- * 24000000 (36 MHz for the display at 72 MHz), not tried on a device. */
+/* SPI rates (meta_spi.c).  META_SPI_MAX_HZ caps them all: 24 MHz is the
+ * SERCOM's maximum at 48 MHz (BAUD 0); the Arduino core capped it at 12,
+ * so the firmwares tested on a META before 2026-10-03 ran everything at
+ * 12.  The display asks for the maximum, unscaled at 72 MHz (36 MHz
+ * there): meta-lapinou drives the META's ST7735 at 24 MHz.  The buttons
+ * stay at 12: at 24 the shift register's bits come shifted and UP is lost
+ * (meta-lapinou's order, META_BUTTONS_LAPINOU_ORDER).  The card stays at
+ * 12, the rate it has run at so far (SD cards take 25 in SPI mode). */
 #ifndef META_SPI_MAX_HZ
-#define META_SPI_MAX_HZ 12000000
+#define META_SPI_MAX_HZ 24000000
+#endif
+#ifndef META_BUTTONS_SPI_HZ
+#define META_BUTTONS_SPI_HZ 12000000
+#endif
+#ifndef META_SD_SPI_HZ
+#define META_SD_SPI_HZ 12000000
 #endif
 #ifndef META_AUDIO_DMA
 #define META_AUDIO_DMA 1

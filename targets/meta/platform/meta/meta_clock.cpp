@@ -8,8 +8,8 @@
  * rating: it works on many parts, not necessarily on every console.
  * TC4/TC5 and the DAC stay on generator 4 (DFLL48M); SERCOM4 (meta_spi.c)
  * follows generator 0: the display keeps the SPI's fastest setting
- * unscaled (META_SPI_MAX_HZ; at its 24 MHz maximum that is 36 MHz at
- * 72 MHz, which the ST7735 took in gm0's overclocked META port), the card
+ * unscaled (24 MHz, so 36 MHz at 72 MHz, which the ST7735 took in gm0's
+ * overclocked META port), the card
  * and the buttons ask meta_spi_hz() for a rate that stays within theirs.  SysTick is reloaded for
  * 1 ms ticks at the new clock and meta_micros() scales its fraction.
  */

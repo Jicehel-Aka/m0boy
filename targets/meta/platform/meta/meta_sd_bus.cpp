@@ -9,17 +9,14 @@
  */
 #include "meta_sd.h"
 #include "meta_clock.h"
+#include "meta_target.h"
 
 #include "meta_hw.h"
 
 #include "meta_lcd.h"
 
 #define SD_CS_MASK (1u << 27) /* PA27, Arduino pin 26 */
-/* Sector reads (ROM streaming).  SD cards accept 25 MHz in SPI mode; the
- * SERCOM tops out at 24 MHz (META_SPI_MAX_HZ caps it). */
-#ifndef META_SD_SPI_HZ
-#define META_SD_SPI_HZ 24000000
-#endif
+/* Sector reads (ROM streaming) at META_SD_SPI_HZ (gbl_profile.h). */
 
 void meta_sd_deselect(void) {
     PORT->Group[0].DIRSET.reg = SD_CS_MASK;

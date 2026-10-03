@@ -4,11 +4,11 @@
  * on PAD3, MISO on PAD0), without the library.
  *
  * The divider follows the core's: BAUD = 24 MHz / rate - 1, the rate capped
- * at META_SPI_MAX_HZ (gbl_profile.h).  The core capped it at 12 MHz, so
- * every firmware tested on a META so far ran the display, the card and the
- * buttons at 12 MHz (18 at 72 MHz) whatever they asked for; the SERCOM can
- * do 24.  The SERCOM's clock is generator 0, which meta_clock.cpp moves to
- * the PLL at 72 MHz: meta_spi_hz() rescales the requested rates.
+ * at META_SPI_MAX_HZ (gbl_profile.h, 24 MHz).  The core capped it at
+ * 12 MHz: firmwares built with it ran the display, the card and the
+ * buttons at 12 MHz (18 at 72 MHz) whatever they asked for.  The SERCOM's
+ * clock is generator 0, which meta_clock.cpp moves to the PLL at 72 MHz:
+ * meta_spi_hz() rescales the requested rates.
  */
 #include "meta_hw.h"
 #include "meta_target.h"
