@@ -1,9 +1,14 @@
 /*
- * Pokitto display pipeline (meta_display.h): the 160x144 picture fits the
- * 220x176 panel, so every DMG line is one panel row, written as soon as the
- * PPU has rendered it.  Lines whose inputs did not change since they were
- * last drawn are neither rendered nor written (GBL_LINE_SIGNATURE), as on
- * the META.
+ * Pokitto display pipeline (meta_display.h), two modes:
+ *   1:1 (default)  the 160x144 picture in the middle of the 220x176 panel,
+ *                  one panel row per DMG line;
+ *   200x176        gm0's enlargement: 5:4 both ways (pokitto_lcd_row_zoom
+ *                  repeats the second pixel of every four, line 4k is
+ *                  written twice), 180 rows of which the first and last two
+ *                  fall off the panel.
+ * Each line is written as soon as the PPU has rendered it.  Lines whose
+ * inputs did not change since they were last drawn are neither rendered nor
+ * written (GBL_LINE_SIGNATURE), as on the META.
  */
 #include "meta_display.h"
 
@@ -46,10 +51,15 @@ static uint32_t line_sig[144] __attribute__((section(".bss_ram1.line_sig")));
 static uint8_t line_valid[144] __attribute__((section(".bss_ram1.line_valid")));
 #endif
 
-uint8_t meta_display_mode(void) { return 0; }
+static uint8_t display_mode = POKITTO_MODE_1X;
 
+uint8_t meta_display_mode(void) { return display_mode; }
+
+/* Call at VBlank (or from the menu): clears the panel, then the next frame
+ * redraws every line. */
 void meta_display_set_mode(uint8_t mode) {
-    (void)mode;
+    display_mode = mode < POKITTO_MODE_COUNT ? mode : POKITTO_MODE_1X;
+    pokitto_lcd_fill_all(0); /* black around the picture */
     for (unsigned i = 0; i < 4; i++) gbl_lcd_palette[i] = meta_dmg_palette[i];
     gbl_lcd_palette_primary = 1;
     gbl_ppu_packed = 0;
@@ -66,7 +76,7 @@ void meta_display_set_palette(uint8_t index) {
     if (index >= META_PALETTE_COUNT) index = 0;
     palette_index = index;
     for (unsigned i = 0; i < 4; i++) meta_dmg_palette[i] = META_COLOR(meta_palettes[index][i]);
-    meta_display_set_mode(0); /* the PPU's colours, a full redraw */
+    meta_display_set_mode(display_mode); /* the PPU's colours, a full redraw */
 }
 
 uint16_t *meta_display_scratch(unsigned *rows) {
@@ -93,4 +103,13 @@ int gbl_platform_line_check(uint8_t ly, uint32_t sig) {
 
 uint16_t *gbl_platform_line_begin(uint8_t ly) { return ly < 144 ? scratch : 0; }
 
-void gbl_platform_line_end(uint8_t ly) { pokitto_lcd_row(ly, scratch); }
+void gbl_platform_line_end(uint8_t ly) {
+    if (display_mode == POKITTO_MODE_1X) {
+        pokitto_lcd_row(ly, scratch);
+        return;
+    }
+    /* Panel row of line ly in the 180-row picture, two rows cut each side. */
+    int y = (int)ly + (((int)ly + 3) >> 2) - 2;
+    if (y >= 0 && y < 176) pokitto_lcd_row_zoom((unsigned)y, scratch);
+    if (!(ly & 3) && y + 1 >= 0 && y + 1 < 176) pokitto_lcd_row_zoom((unsigned)y + 1u, scratch);
+}

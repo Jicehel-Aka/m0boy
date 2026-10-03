@@ -3,8 +3,9 @@
  *
  * 48 MHz is PokittoLib's SystemInit (SYSPLLCTRL 0x23: M = 4, P = 2); 72 MHz
  * its _OSCT=2 overclock (0x25: M = 6, FCCO 288 MHz), past the LPC11U68's
- * 50 MHz rating but what Pokitto programs commonly run at.  Flash takes
- * three clocks per access at either.  SysTick counts milliseconds;
+ * 50 MHz rating but what Pokitto programs commonly run at (gm0 too).  The
+ * flash wait states stay at their reset value, as in PokittoLib and gm0,
+ * which run at 72 MHz that way.  SysTick counts milliseconds;
  * meta_micros adds the fraction of the current one.  A clock change runs
  * the core from the 12 MHz IRC while the PLL relocks, then rescales the
  * SysTick, the audio sample timer and the SD card's SPI divider.
@@ -62,7 +63,6 @@ static int pll_to(uint8_t mhz) {
 }
 
 void pokitto_clock_boot(void) {
-    FLASHCFG = (FLASHCFG & ~3u) | 2u; /* three clocks per flash access */
     IOCON_PIO2(0) = IOCON_FUNC(1);    /* XTALIN (PokittoLib's SystemInit writes 0x01) */
     IOCON_PIO2(1) = IOCON_FUNC(1);    /* XTALOUT */
     SYSCON_SYSOSCCTRL = 0;            /* 1-20 MHz, not bypassed */

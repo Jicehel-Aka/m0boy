@@ -30,10 +30,15 @@ int pokitto_c_held_at_boot(void);    /* before .data/.bss exist */
 void pokitto_enter_loader(void);     /* never returns (unless no loader: returns) */
 
 /* ---- display (pokitto_lcd.c) ---------------------------------------------- */
-/* The Game Boy picture is centred: columns 30..189, rows 16..159. */
+/* The Game Boy picture is centred: columns 30..189, rows 16..159 (1:1). */
 #define POKITTO_GB_X 30u
 #define POKITTO_GB_Y 16u
 void pokitto_lcd_row(unsigned row, const uint16_t *px); /* 160 pixels to picture row `row` */
+/* Display modes (pokitto_display.c, the menu's "Ecran"). */
+enum { POKITTO_MODE_1X, POKITTO_MODE_ZOOM, POKITTO_MODE_COUNT };
+/* gm0's enlarged picture: 200 columns from x = 10, panel row y (0..175). */
+#define POKITTO_ZOOM_X 10u
+void pokitto_lcd_row_zoom(unsigned y, const uint16_t *px);
 void pokitto_lcd_fill_all(uint16_t color);               /* whole 220x176 panel */
 void pokitto_fault_screen(void);                         /* red screen, never returns */
 

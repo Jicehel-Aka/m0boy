@@ -25,7 +25,8 @@
  *
  * The same file is the Pokitto frontend (meta_target.h, --target pokitto):
  * bare metal instead of the Arduino core, the picture 1:1 in the middle of
- * the 220x176 panel, A = A, B = B, C tap = Start, C held half a second =
+ * the 220x176 panel (or enlarged to 200x176 as gm0 does, menu "Ecran"),
+ * A = A, B = B, C tap = Start, C held half a second =
  * option menu, C + B = Select, C held at power-on = the Pokitto loader.
  * The META-only parts are under META_ARDUINO / META_SCALED_MODES /
  * META_USB_SERIAL; the Pokitto drivers are in platform/pokitto.
@@ -323,6 +324,10 @@ static void pace_frame(void) {
 #if META_SCALED_MODES
 static const char *const mode_names[META_MODE_COUNT] = {"SMOOTH", "TILE", "BLEND", "DARK",
                                                         "CROP", "SKIP", "TBLEND"};
+#define SCREEN_MODES META_MODE_COUNT
+#else /* Pokitto: unscaled, or gm0's 200x176 */
+static const char *const mode_names[POKITTO_MODE_COUNT] = {"1:1", "200x176"};
+#define SCREEN_MODES POKITTO_MODE_COUNT
 #endif
 static const char *const skip_names[FSKIP_MODES] = {"Auto", "Aucun", "1 sur 2", "1 sur 3", "1 sur 4"};
 static const char *const speed_names[2] = {"Normale", "Rapide"};
@@ -376,9 +381,7 @@ static void option_menu(void) {
         ADD(M_LOAD, "Charger l'etat", META_MENU_ACTION, 0, 0, 0);
     }
     ADD(M_VOLUME, "Volume", META_MENU_CHOICE, &vol, 9, volume_names);
-#if META_SCALED_MODES
-    ADD(M_SCREEN, "Ecran", META_MENU_CHOICE, &mode, META_MODE_COUNT, mode_names);
-#endif
+    ADD(M_SCREEN, "Ecran", META_MENU_CHOICE, &mode, SCREEN_MODES, mode_names);
     ADD(M_PALETTE, "Palette", META_MENU_CHOICE, &pal, META_PALETTE_COUNT, meta_palette_names);
     ADD(M_SKIP, "Images", META_MENU_CHOICE, &skip, FSKIP_MODES, skip_names);
     ADD(M_SPEED, "Vitesse", META_MENU_CHOICE, &fast, 2, speed_names);
@@ -397,6 +400,9 @@ static void option_menu(void) {
         p = put_uint(p + 6, last_shown);
         memcpy(p, " vues", 6);
     }
+#if META_TARGET_POKITTO
+    meta_lcd_fill(0); /* the menu covers the 160x144 area only */
+#endif
     int line = meta_menu_run(GBL_TITLE, items, n, meta_buttons, info);
     int action = line >= 0 ? ids[line] : -1;
     if (action == M_QUIT) enter_loader();

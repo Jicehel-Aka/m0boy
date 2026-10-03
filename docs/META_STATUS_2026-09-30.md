@@ -53,9 +53,12 @@ generated code and frontend, bare-metal LPC11U68 drivers in
 arm-none-eabi-gcc. Evidence: emulator only (`tools/meta-emu-sdl --target
 pokitto`, a scratch copy with ACMD41 accepted for the card): Alleyway and
 Link's Awakening (streamed, battery RAM file) run, C/menu/save/load of a
-state work. The META firmware from the shared files is byte-identical to the
-previous templates' (Alleyway). Not run on a Pokitto: panel orientation,
-72 MHz default, button pulls, volume potentiometer, loader file layout.
+state work; menu "Ecran" adds gm0's 200x176 enlargement. The META firmware
+from the shared files is byte-identical to the previous templates'
+(Alleyway). Not run on a Pokitto; display, buttons, 72 MHz, flash wait
+states and the loader jump match gm0 (`~/dev/gm0`, the author's Pokitto
+Game Boy emulator, run on hardware), audio and the loader file layout do
+not.
 Pixel writes are CPU-driven (no DMA): their cost per frame is unmeasured.
 
 ## Evidence (label these correctly)

@@ -40,9 +40,6 @@
 #define PDRUN_SYSOSC (1u << 5)
 #define PDRUN_SYSPLL (1u << 7)
 
-/* ---- flash controller ---------------------------------------------------- */
-#define FLASHCFG REG32(0x4003C010u) /* FLASHTIM in bits 1:0: n + 1 clocks */
-
 /* ---- IOCON: PIOp_n at base + offset of the port + 4 * n ------------------ */
 #define IOCON_BASE 0x40044000u
 #define IOCON_PIO0(n) REG32(IOCON_BASE + 0x000 + 4u * (n))

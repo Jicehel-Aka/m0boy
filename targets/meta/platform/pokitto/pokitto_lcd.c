@@ -9,8 +9,9 @@
  *
  * GRAM register 0x20 addresses the panel's 176-row axis and 0x21 its
  * 220-column one; entry mode 0x1038 makes writes advance along a row.  The
- * Game Boy picture is centred, 160x144 at (30, 16); rows are written as the
- * PPU completes them, so the meta_lcd.h transfer API is synchronous here.
+ * Game Boy picture is centred, 160x144 at (30, 16), or enlarged to 200x176
+ * as gm0 does (pokitto_lcd_row_zoom); rows are written as the PPU completes
+ * them, so the meta_lcd.h transfer API is synchronous here.
  */
 #include "meta_lcd.h"
 
@@ -73,6 +74,34 @@ static void push_same(uint16_t c, uint32_t n) {
 void pokitto_lcd_row(unsigned row, const uint16_t *px) {
     at(POKITTO_GB_X, POKITTO_GB_Y + row);
     push(px, 160);
+}
+
+/* gm0's 5:4 stretch: in each group of four pixels the second one is
+ * latched twice (a second WR strobe, the bus unchanged), 160 -> 200. */
+void pokitto_lcd_row_zoom(unsigned y, const uint16_t *px) {
+    at(POKITTO_ZOOM_X, y);
+    volatile uint32_t *mpin = &GPIO_MPIN(2), *clr = &GPIO_CLR(1), *set = &GPIO_SET(1);
+    for (unsigned g = 0; g < 40; g++, px += 4) {
+        *mpin = (uint32_t)px[0] << 3;
+        *clr = WR_BIT;
+        __asm__ volatile("nop");
+        *set = WR_BIT;
+        *mpin = (uint32_t)px[1] << 3;
+        *clr = WR_BIT;
+        __asm__ volatile("nop");
+        *set = WR_BIT;
+        *clr = WR_BIT;
+        __asm__ volatile("nop");
+        *set = WR_BIT;
+        *mpin = (uint32_t)px[2] << 3;
+        *clr = WR_BIT;
+        __asm__ volatile("nop");
+        *set = WR_BIT;
+        *mpin = (uint32_t)px[3] << 3;
+        *clr = WR_BIT;
+        __asm__ volatile("nop");
+        *set = WR_BIT;
+    }
 }
 
 void pokitto_lcd_fill_all(uint16_t color) {

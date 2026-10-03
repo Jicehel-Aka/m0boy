@@ -22,4 +22,4 @@ Pokitto controls: D-pad, A, B; C tap = Start; C + B = Select; C held half a
 second opens the option menu (save states, volume, palette, frame skip,
 48/72 MHz, back to the loader). C held at power-on starts the Pokitto
 loader. The picture is the Game Boy's 160x144, unscaled, in the middle of
-the 220x176 screen.
+the 220x176 screen, or enlarged to 200x176 as gm0 does (menu "Ecran").

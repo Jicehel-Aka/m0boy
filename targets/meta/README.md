@@ -384,10 +384,13 @@ the generated code and the frontend are shared, only the drivers differ.
   to the one built before the Pokitto target existed.
 - **Bare metal.** No mbed, no PokittoLib: `platform/pokitto/` holds the
   startup (vector table, LPC boot checksum written into word 7 by the
-  Makefile), the clock (crystal + PLL, 48/72 MHz from the menu), the display
-  (PokittoLib's init sequence; the 160×144 picture unscaled in the middle,
-  each line written as the PPU completes it, unchanged lines skipped by
-  their signature), audio (CT32B0 at 22,050 Hz into the R2R DAC, amplifier
+  Makefile), the clock (crystal + PLL, 48/72 MHz from the menu; flash wait
+  states left at their reset value, as PokittoLib and gm0 do), the display
+  (PokittoLib's init sequence; each line written as the PPU completes it,
+  unchanged lines skipped by their signature; menu "Ecran": `1:1`, the
+  default, the 160×144 picture unscaled in the middle, or `200x176`, gm0's
+  5:4 enlargement — the second pixel of every four and line 4k latched
+  twice, the first and last two of the 180 rows off the panel), audio (CT32B0 at 22,050 Hz into the R2R DAC, amplifier
   on P1_17, the volume potentiometer set over software I2C), the SD card on
   SSP0 and the buttons. The project builds with `make` and only needs
   `arm-none-eabi-gcc` (PATH, or PlatformIO's `toolchain-gccarmnoneeabi`).
@@ -395,18 +398,21 @@ the generated code and the frontend are shared, only the drivers differ.
   budget is 12 KiB smaller than on the META. Main RAM holds the machine and
   the stack; the line signatures and the audio ring live in the 2 KiB banks.
 - **Controls.** D-pad, A, B (not swapped); C tap = Start, C + B = Select,
-  C held half a second = option menu (same menu as the META, without the
-  display modes), C held at power-on = the Pokitto loader (as PokittoLib
+  C held half a second = option menu (same menu as the META, with the
+  Pokitto's two display modes), C held at power-on = the Pokitto loader (as PokittoLib
   does; "Quitter" in the menu jumps there too).
 - **Batch.** `TARGET=pokitto ./compile.sh` produces `roms/pokitto/<Game>/`
   (firmware, `.SAV`, `.STA`, streamed `.GB`; no icons) from projects in
   `out/pokitto/<game>/`, reusing the recorded play sessions of the META.
 
-Status: runs in `tools/meta-emu-sdl --target pokitto` (picture, buttons,
-menu, SD streaming, battery RAM file, save and load of a state within a
-session). **Not run on a Pokitto yet**: the panel orientation, the 72 MHz
-default, the button pull-downs, the volume potentiometer and the loader's
-file layout are taken from PokittoLib and the emulator, not from hardware.
+Status: runs in `tools/meta-emu-sdl --target pokitto` (picture in both
+modes, buttons, menu, SD streaming, battery RAM file, save and load of a
+state within a session). **Not run on a Pokitto yet.** The display bus and
+init sequence, the entry mode, the button pins and pulls, the 72 MHz PLL
+setting, the flash wait states and the jump to the loader match gm0 (the
+author's Game Boy emulator for the Pokitto, run on the console); the audio
+path (R2R DAC, amplifier, volume potentiometer, from PokittoLib) and the
+loader's file layout are not covered by it.
 The emulator's Pokitto SD model does not answer ACMD41 and its byte-wide
 GPIO registers ignore unaligned pins, so the firmware reads the buttons
 from `PIN[1]` and writes the DAC through `SET`/`CLR` (both equally valid on

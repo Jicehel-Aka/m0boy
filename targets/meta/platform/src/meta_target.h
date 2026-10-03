@@ -30,7 +30,7 @@
 #define META_ARDUINO 0     /* bare metal: startup, clock and drivers of our own */
 #define META_USB_SERIAL 0  /* no USB stack: no status line */
 #define META_LCD_ASYNC 0   /* the CPU writes every pixel: no transfer runs behind */
-#define META_SCALED_MODES 0 /* the 160x144 picture fits 220x176: no scaling modes */
+#define META_SCALED_MODES 0 /* no 144->128 modes: 1:1, or gm0's 200x176 (pokitto_display.c) */
 #define META_SCREEN_ROWS 144 /* rows of the picture the menu draws on */
 #define META_SWAP_AB_DEFAULT 0 /* Pokitto A (right) is Game Boy A already */
 #define META_CLOCK_DEFAULT 72 /* PokittoLib's usual overclock (_OSCT=2); 48 in the menu */
