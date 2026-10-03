@@ -18,7 +18,16 @@ static int strip_cur, strip_fill;
 static unsigned input_pos;
 volatile uint32_t bench_sink;
 
-#ifdef BENCH_META_DISPLAY
+#if defined(BENCH_POKITTO_DISPLAY)
+/* The Pokitto's display pipeline (platform/pokitto: pokitto_display.c,
+ * pokitto_lcd.c and its Thumb-1 pixel pushes, mode BENCH_POKITTO_DISPLAY:
+ * 0 1:1, 1 200x176, 2 200x176 entier).  Its GPIO writes go to the region
+ * m0_estimate.py maps at 0xA0000000, so every pixel store is counted. */
+#include "meta_display.h"
+void delay(uint32_t ms) { (void)ms; }
+#define BENCH_OWN_DISPLAY 1
+#elif defined(BENCH_META_DISPLAY)
+#define BENCH_OWN_DISPLAY 1
 /* The META's own display pipeline (platform/src/meta_display.c, mode
  * BENCH_META_DISPLAY: 0 SMOOTH, 1 TILE, ..., 6 TBLEND) with an LCD that takes every
  * strip at once: the rendering, blending and row bookkeeping of the
@@ -105,7 +114,7 @@ void gbl_platform_line_end(uint8_t ly) {
     }
 }
 
-#endif /* BENCH_META_DISPLAY */
+#endif /* BENCH_POKITTO_DISPLAY / BENCH_META_DISPLAY */
 
 __attribute__((noinline)) void bench_done(void) {
     for (;;) __asm__ volatile("nop");
@@ -185,7 +194,7 @@ void gbl_platform_vblank(void) {
 #ifdef BENCH_STATIC_SKIP
     gbl_skip_render = (uint8_t)gbl_frame_unchanged_next(!gbl_skip_render);
 #endif
-#ifndef BENCH_META_DISPLAY
+#ifndef BENCH_OWN_DISPLAY
     strip_fill = 0;
 #else
     meta_display_flush();
@@ -265,7 +274,9 @@ int main(void) {
     gbl_stack_limit = (uintptr_t)&probe - 3072u;
 #endif
     gbl_reset();
-#ifdef BENCH_META_DISPLAY
+#if defined(BENCH_POKITTO_DISPLAY)
+    meta_display_set_mode(BENCH_POKITTO_DISPLAY);
+#elif defined(BENCH_META_DISPLAY)
     meta_display_set_mode(BENCH_META_DISPLAY);
 #endif
 #ifdef BENCH_INTERP_ONLY

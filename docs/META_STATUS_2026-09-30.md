@@ -59,7 +59,10 @@ from the shared files is byte-identical to the previous templates'
 states and the loader jump match gm0 (`~/dev/gm0`, the author's Pokitto
 Game Boy emulator, run on hardware), audio and the loader file layout do
 not.
-Pixel writes are CPU-driven (no DMA): their cost per frame is unmeasured.
+Pixel writes are CPU-driven (no DMA), in Thumb-1 from SRAM; estimator
+(`m0_estimate.py --target pokitto`, four games): 2.0–3.5 ms a frame at
+72 MHz against 2.5–3.6 ms for the META at 48 MHz, display 6–17% of it (see
+targets/meta/README.md, Pokitto).
 
 ## Evidence (label these correctly)
 

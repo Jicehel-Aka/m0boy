@@ -388,9 +388,16 @@ the generated code and the frontend are shared, only the drivers differ.
   states left at their reset value, as PokittoLib and gm0 do), the display
   (PokittoLib's init sequence; each line written as the PPU completes it,
   unchanged lines skipped by their signature; menu "Ecran": `1:1`, the
-  default, the 160×144 picture unscaled in the middle, or `200x176`, gm0's
+  default, the 160×144 picture unscaled in the middle; `200x176`, gm0's
   5:4 enlargement — the second pixel of every four and line 4k latched
-  twice, the first and last two of the 180 rows off the panel), audio (CT32B0 at 22,050 Hz into the R2R DAC, amplifier
+  twice, the first and last two of the 180 rows off the panel, so lines 0,
+  142 and 143 are not shown; `200x176 entier`, the same with lines 4, 12,
+  132 and 140 latched once instead of twice: 176 rows and every line, no
+  blending needed since a doubled line is only a repeat. The pixel pushes
+  are Thumb-1 from SRAM (`pokitto_lcd_asm.S`, after FManga's
+  `FLUSH_QUAD_SCALE` in gm0: about 9 cycles a pixel, the next load placed
+  inside the WR strobe; `-DPOKITTO_LCD_ASM=0` keeps the C reference, same
+  pixels in all three modes in the emulator), audio (CT32B0 at 22,050 Hz into the R2R DAC, amplifier
   on P1_17, the volume potentiometer set over software I2C), the SD card on
   SSP0 and the buttons. The project builds with `make` and only needs
   `arm-none-eabi-gcc` (PATH, or PlatformIO's `toolchain-gccarmnoneeabi`).
@@ -417,6 +424,35 @@ The emulator's Pokitto SD model does not answer ACMD41 and its byte-wide
 GPIO registers ignore unaligned pins, so the firmware reads the buttons
 from `PIN[1]` and writes the DAC through `SET`/`CLR` (both equally valid on
 the chip); card tests need an emulator with ACMD41 accepted.
+
+Cost estimate: `m0_estimate.py <project> --target pokitto [--display-mode
+0|1|2]` builds the Pokitto display pipeline into the benchmark (its GPIO
+pixel stores counted like any store), at 72 MHz with 2 wait cycles per
+non-sequential flash fetch; the LPC11U68's flash at 72 MHz is not modelled
+from documentation, so also run `--seq-wait 0.5` (an extra half cycle per
+instruction fetched from flash) and report the two as a range. The audio
+interrupt (22,050 a second, about 75 cycles each, some 2% at 72 MHz) is
+not in the benchmark.
+
+Estimate (2026-10-03, 6,000 frames of each game's recorded session,
+average over frames 3,000-6,000, the same generated code on both consoles,
+static frame skip on; milliseconds of CPU per emulated frame, budget
+16.7 ms):
+
+| Game | META 48 MHz (TBLEND) | META 72 MHz | Pokitto 1:1 | Pokitto 200x176 entier |
+| --- | --- | --- | --- | --- |
+| Altered Space | 2.54 | 1.87 | 2.03–2.48 | 2.10–2.55 |
+| Double Dragon | 3.50 | 2.60 | 2.77–3.38 | 2.85–3.47 |
+| Faceball 2000 | 3.38 | 2.49 | 2.51–3.10 | 2.55–3.13 |
+| Link's Awakening | 3.55 | 2.63 | 2.76–3.37 | 2.83–3.45 |
+
+The Pokitto ranges are the two flash bounds (`--seq-wait` 0 and 0.5). Its
+display takes 6–13% of the frame in 1:1 and 8–17% enlarged, against 3–5%
+for the META's TBLEND (whose SPI transfer runs by DMA and is not counted).
+At the clock each runs by default (META 48, Pokitto 72 MHz) the Pokitto
+needs 3–20% less time per frame; against a META at 72 MHz it needs 8–33%
+more. These are estimates, not device measurements; the Pokitto build also
+has 12 KiB less flash for compiled code than these META projects.
 
 ## Batch conversion (`compile.sh`)
 

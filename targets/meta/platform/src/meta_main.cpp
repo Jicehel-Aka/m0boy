@@ -325,8 +325,8 @@ static void pace_frame(void) {
 static const char *const mode_names[META_MODE_COUNT] = {"SMOOTH", "TILE", "BLEND", "DARK",
                                                         "CROP", "SKIP", "TBLEND"};
 #define SCREEN_MODES META_MODE_COUNT
-#else /* Pokitto: unscaled, or gm0's 200x176 */
-static const char *const mode_names[POKITTO_MODE_COUNT] = {"1:1", "200x176"};
+#else /* Pokitto: unscaled, gm0's 200x176, or 200x176 with every line */
+static const char *const mode_names[POKITTO_MODE_COUNT] = {"1:1", "200x176", "200x176 entier"};
 #define SCREEN_MODES POKITTO_MODE_COUNT
 #endif
 static const char *const skip_names[FSKIP_MODES] = {"Auto", "Aucun", "1 sur 2", "1 sur 3", "1 sur 4"};

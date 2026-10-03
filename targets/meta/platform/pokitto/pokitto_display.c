@@ -5,7 +5,12 @@
  *   200x176        gm0's enlargement: 5:4 both ways (pokitto_lcd_row_zoom
  *                  repeats the second pixel of every four, line 4k is
  *                  written twice), 180 rows of which the first and last two
- *                  fall off the panel.
+ *                  fall off the panel (lines 0, 142 and 143 not shown);
+ *   200x176 entier the same with lines 4, 12, 132 and 140 written once
+ *                  instead of twice: 176 rows, every line on screen, no
+ *                  blending needed (a doubled line is only a repeat), the
+ *                  first two and last two tile rows 9 rows high instead
+ *                  of 10.
  * Each line is written as soon as the PPU has rendered it.  Lines whose
  * inputs did not change since they were last drawn are neither rendered nor
  * written (GBL_LINE_SIGNATURE), as on the META.
@@ -108,8 +113,16 @@ void gbl_platform_line_end(uint8_t ly) {
         pokitto_lcd_row(ly, scratch);
         return;
     }
-    /* Panel row of line ly in the 180-row picture, two rows cut each side. */
-    int y = (int)ly + (((int)ly + 3) >> 2) - 2;
+    /* Panel row of line ly: lines 0, 4, 8, ... are doubled (180 rows). */
+    int y = (int)ly + (((int)ly + 3) >> 2);
+    int twice = !(ly & 3);
+    if (display_mode == POKITTO_MODE_ZOOM) {
+        y -= 2; /* two rows cut at each edge */
+    } else {
+        /* Lines 4, 12, 132 and 140 once: 176 rows. */
+        y -= (ly > 4) + (ly > 12) + (ly > 132) + (ly > 140);
+        if (ly == 4 || ly == 12 || ly == 132 || ly == 140) twice = 0;
+    }
     if (y >= 0 && y < 176) pokitto_lcd_row_zoom((unsigned)y, scratch);
-    if (!(ly & 3) && y + 1 >= 0 && y + 1 < 176) pokitto_lcd_row_zoom((unsigned)y + 1u, scratch);
+    if (twice && y + 1 >= 0 && y + 1 < 176) pokitto_lcd_row_zoom((unsigned)y + 1u, scratch);
 }

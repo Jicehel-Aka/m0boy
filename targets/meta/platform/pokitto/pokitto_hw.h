@@ -35,7 +35,12 @@ void pokitto_enter_loader(void);     /* never returns (unless no loader: returns
 #define POKITTO_GB_Y 16u
 void pokitto_lcd_row(unsigned row, const uint16_t *px); /* 160 pixels to picture row `row` */
 /* Display modes (pokitto_display.c, the menu's "Ecran"). */
-enum { POKITTO_MODE_1X, POKITTO_MODE_ZOOM, POKITTO_MODE_COUNT };
+enum {
+    POKITTO_MODE_1X,        /* 160x144 unscaled in the middle */
+    POKITTO_MODE_ZOOM,      /* gm0's 200x176: 180 rows, two cut at each edge */
+    POKITTO_MODE_ZOOM_FULL, /* 200x176 with every line: four lines not doubled */
+    POKITTO_MODE_COUNT
+};
 /* gm0's enlarged picture: 200 columns from x = 10, panel row y (0..175). */
 #define POKITTO_ZOOM_X 10u
 void pokitto_lcd_row_zoom(unsigned y, const uint16_t *px);

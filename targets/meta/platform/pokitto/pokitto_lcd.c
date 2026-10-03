@@ -24,6 +24,16 @@
 #define RES_BIT (1u << 0) /* P1_0 */
 #define DATA_MASK (0xFFFFu << 3)
 
+/* Pixel pushes in Thumb-1 from SRAM (pokitto_lcd_asm.S); 0 keeps the C
+ * loops below, the reference they must match. */
+#ifndef POKITTO_LCD_ASM
+#define POKITTO_LCD_ASM 1
+#endif
+#if POKITTO_LCD_ASM
+void pokitto_push160(const uint16_t *px);
+void pokitto_push200(const uint16_t *px);
+#endif
+
 static uint32_t seq;
 
 static inline void strobe(void) {
@@ -56,6 +66,7 @@ static void at(unsigned x, unsigned y) {
     command(0x22);
 }
 
+#if !POKITTO_LCD_ASM
 static void push(const uint16_t *px, unsigned n) {
     volatile uint32_t *mpin = &GPIO_MPIN(2), *clr = &GPIO_CLR(1), *set = &GPIO_SET(1);
     while (n--) {
@@ -65,6 +76,7 @@ static void push(const uint16_t *px, unsigned n) {
         *set = WR_BIT;
     }
 }
+#endif
 
 static void push_same(uint16_t c, uint32_t n) {
     GPIO_MPIN(2) = (uint32_t)c << 3;
@@ -73,13 +85,20 @@ static void push_same(uint16_t c, uint32_t n) {
 
 void pokitto_lcd_row(unsigned row, const uint16_t *px) {
     at(POKITTO_GB_X, POKITTO_GB_Y + row);
+#if POKITTO_LCD_ASM
+    pokitto_push160(px);
+#else
     push(px, 160);
+#endif
 }
 
 /* gm0's 5:4 stretch: in each group of four pixels the second one is
  * latched twice (a second WR strobe, the bus unchanged), 160 -> 200. */
 void pokitto_lcd_row_zoom(unsigned y, const uint16_t *px) {
     at(POKITTO_ZOOM_X, y);
+#if POKITTO_LCD_ASM
+    pokitto_push200(px);
+#else
     volatile uint32_t *mpin = &GPIO_MPIN(2), *clr = &GPIO_CLR(1), *set = &GPIO_SET(1);
     for (unsigned g = 0; g < 40; g++, px += 4) {
         *mpin = (uint32_t)px[0] << 3;
@@ -102,6 +121,7 @@ void pokitto_lcd_row_zoom(unsigned y, const uint16_t *px) {
         __asm__ volatile("nop");
         *set = WR_BIT;
     }
+#endif
 }
 
 void pokitto_lcd_fill_all(uint16_t color) {

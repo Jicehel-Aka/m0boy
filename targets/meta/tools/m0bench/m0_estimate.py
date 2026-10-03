@@ -12,6 +12,12 @@ This is an estimate, not a hardware measurement: it ignores cache hits,
 DMA/bus contention, interrupts, and the Arduino core.  Use it to compare
 variants and to find where time goes.
 
+--target pokitto: the Pokitto (LPC11U68) instead: its display pipeline is
+built in (platform/pokitto, the CPU writes every pixel to GPIO, counted like
+any store), 72 MHz, and --flash-wait / --seq-wait describe its flash, whose
+behaviour at 72 MHz is not modelled from documentation here: run both bounds
+(--seq-wait 0 and 0.5) and label the result as a range.
+
 Requires: unicorn, capstone, pyelftools; arm-none-eabi-gcc (PlatformIO's
 toolchain-gccarmnoneeabi is found automatically).
 """
@@ -80,6 +86,13 @@ def build(project, out_dir, frames, opt, input_file, extra):
         plat = os.path.normpath(os.path.join(HERE, "..", "..", "platform", "src"))
         sources += [os.path.join(plat, "meta_display.c"), os.path.join(plat, "meta_display_asm.S")]
         extra = extra + ["-I", plat]
+    # -DBENCH_POKITTO_DISPLAY=<mode> (--target pokitto): the Pokitto's.
+    if any(f.startswith("-DBENCH_POKITTO_DISPLAY") for f in extra):
+        plat = os.path.normpath(os.path.join(HERE, "..", "..", "platform"))
+        pk = os.path.join(plat, "pokitto")
+        sources += [os.path.join(pk, "pokitto_display.c"), os.path.join(pk, "pokitto_lcd.c"),
+                    os.path.join(pk, "pokitto_lcd_asm.S")]
+        extra = extra + ["-DGBL_TARGET_POKITTO=1", "-I", pk, "-I", os.path.join(plat, "src")]
     # Streaming projects: the whole ROM stands in for the SD card (placed in
     # its own region by bench.ld; the SD transfer time is not modelled).
     host = os.path.join(project, "host")
@@ -137,6 +150,15 @@ def main():
                     help="profile only the frames over the 60 Hz budget: print the N costliest functions")
     ap.add_argument("--func", action="append", default=[],
                     help="print every executed block of this function, in address order")
+    ap.add_argument("--target", choices=("meta", "pokitto"), default="meta",
+                    help="pokitto: its display pipeline, 72 MHz and its flash parameters")
+    ap.add_argument("--display-mode", type=int, default=0,
+                    help="--target pokitto: 0 1:1, 1 200x176, 2 200x176 entier")
+    ap.add_argument("--mhz", type=float, default=None, help="CPU clock (META 48, Pokitto 72)")
+    ap.add_argument("--flash-wait", type=float, default=None,
+                    help="wait cycles per non-sequential flash fetch or literal load (META 1, Pokitto 2)")
+    ap.add_argument("--seq-wait", type=float, default=0.0,
+                    help="extra wait cycles per instruction fetched from flash sequentially")
     ap.add_argument("--waits", type=int, default=0, metavar="N",
                     help="print the N functions with the most flash wait cycles (candidates for SRAM)")
     ap.add_argument("--callers", action="append", default=[], metavar="FUNC",
@@ -144,14 +166,23 @@ def main():
                          "the frames over the budget)")
     args = ap.parse_args()
 
+    pokitto = args.target == "pokitto"
+    mhz = args.mhz or (72.0 if pokitto else 48.0)
+    fw = args.flash_wait if args.flash_wait is not None else (2.0 if pokitto else 1.0)
+    sw = args.seq_wait
+    cflags = list(args.cflag)
+    if pokitto:
+        cflags.append("-DBENCH_POKITTO_DISPLAY=%d" % args.display_mode)
     out_dir = args.build_dir or os.path.join(args.project, "m0bench")
-    elf_path = build(args.project, out_dir, args.frames, args.opt, args.input, args.cflag)
+    elf_path = build(args.project, out_dir, args.frames, args.opt, args.input, cflags)
 
     uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
     uc.mem_map(0, 0x80000)
     big_stack = any(f == "-DBENCH_BIG_STACK" for f in args.cflag)
     uc.mem_map(0x20000000, 0x20000 if big_stack else 0x8000)
     uc.mem_map(0x10000000, 0x400000)  # stand-in SD card (bench.ld SDROM)
+    if pokitto:
+        uc.mem_map(0xA0000000, 0x5000)  # LPC GPIO: the display's pixel writes
     symbols = []
     with open(elf_path, "rb") as f:
         elf = ELFFile(f)
@@ -198,7 +229,7 @@ def main():
     block_cost = {}
     running = [0.0]
     frame_marks = []
-    budget = 48e6 / 59.7275
+    budget = mhz * 1e6 / 59.7275
     frame_blocks = collections.Counter()  # blocks of the current frame (--heavy)
     heavy_blocks = collections.Counter()
     heavy_frames = [0]
@@ -211,7 +242,7 @@ def main():
             c = 0.0
             for insn in md.disasm(bytes(uc_.mem_read(addr, size)), addr):
                 cy, w = classify(insn)
-                c += cy + (0 if addr >= 0x20000000 else w)
+                c += cy + (0 if addr >= 0x20000000 else w * fw + sw)
             block_cost[(addr, size)] = c
         running[0] += c
         if args.heavy:
@@ -267,7 +298,7 @@ def main():
         for insn in md.disasm(code, addr):
             c, w = classify(insn)
             cyc += c
-            ws += 0 if in_ram else w
+            ws += 0 if in_ram else w * fw + sw
             ins += 1
         total_cyc += cyc * n
         total_ws += ws * n
@@ -300,7 +331,10 @@ def main():
     print("instructions: %.0f (%.0f per frame)" % (total_ins, total_ins / frames))
     print("estimated M0+ cycles per frame: %.0f core + %.0f flash wait = %.0f" %
           (total_cyc / frames, total_ws / frames, per_frame))
-    print("=> %.1f emulated frames/s at 48 MHz with every frame rendered (DMG: 59.7)" % (48e6 / per_frame))
+    print("=> %.1f emulated frames/s at %g MHz with every frame rendered (DMG: 59.7)" % (mhz * 1e6 / per_frame, mhz))
+    if pokitto:
+        print("   (Pokitto model: flash wait %g per non-sequential fetch, %g per sequential instruction; "
+              "display mode %d; audio interrupt not included)" % (fw, sw, args.display_mode))
     if len(frame_marks) > 2:
         # Skip frame 0 (boot): costs of whole VBlank-to-VBlank frames.
         per = sorted(b - a for a, b in zip(frame_marks[1:], frame_marks[2:]))
@@ -319,6 +353,9 @@ def main():
     for name, c in per_func.items():
         if name.startswith("r") and "_" in name and name[1:].split("_")[0].isdigit():
             groups["generated code"] += c
+        elif name.startswith(("pokitto_", "gbl_platform_line", "meta_display", "meta_smooth", "smooth_")) or \
+                name in ("at", "command", "data", "reg", "strip_slot", "claim_strip"):
+            groups["display"] += c
         elif name in ("gbl_ppu_sync", "render_line", "decode8", "tile_row"):
             groups["PPU"] += c
         elif name == "gbl_interp_block":
