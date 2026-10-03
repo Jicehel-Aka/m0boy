@@ -17,7 +17,7 @@
 # Chaque jeu devient un dossier à copier tel quel à la racine de la carte SD :
 #   <Jeu>/<Jeu>.bin        le firmware (nommé simplement : « Zerd (J) [!] »
 #                          -> « Zerd » ; c'est ce nom que montre le loader,
-#                          38 caractères au plus : voir loader_name)
+#                          28 caractères au plus : voir loader_name)
 #   <Jeu>/ICON.BMP         icône 32x32 du menu (grille)
 #   <Jeu>/TITLESCREEN.BMP  écran titre 80x64 du menu (détail)
 #     Icônes tirées de thumbnails.libretro.com (Named_Titles), mises en cache
@@ -152,24 +152,41 @@ sd_safe() {
   printf '%s' "$1" | sed -E 's#[\\/:*?"<>|]# #g; s/[[:space:]]+/ /g; s/^ //; s/ $//'
 }
 
-# Le loader de la META range chaque dossier de jeu dans 40 octets
-# (loader/GAMEFOLDERS.CACHE : « /Nom » et un zéro) : 38 octets au plus pour
-# le nom, qui est aussi celui du .bin.  Plus long : l'article final remis
-# devant (« Legend of Zelda, The - X » -> « The Legend of Zelda - X »), puis
-# une coupe sur un mot (le début du sous-titre reste : il distingue les jeux
-# d'une même série).
-LOADER_NAME_MAX=38
+# Longueur des noms de jeux (dossier et .bin), pour le loader et le
+# bootloader de la META :
+#   - le loader (github.com/Gamebuino/Loader-META) garde « /Nom » dans
+#     40 octets et construit « /Nom/Nom.bin » dans 80 sans contrôle : au-delà
+#     de 36 caractères le jeu n'est pas listé (vu avec 38) ;
+#   - le bootloader, qui charge ce chemin, n'en prend pas 72 (un nom de 33
+#     ne se lance pas) mais prend 62 (28) : 64 octets probablement, d'où
+#     28 caractères au plus.
+# Plus long : voir les étapes de loader_name (article, abréviations,
+# séparateurs, coupe sur un mot ; le début du sous-titre reste : il
+# distingue les jeux d'une même série).
+LOADER_NAME_MAX=28
 loader_name() {
   local LC_ALL=C s="$1" max="${2:-$LOADER_NAME_MAX}"
   [ "${#s}" -le "$max" ] && { printf '%s' "$s"; return; }
+  # 1. « Titre, The - X » -> « The Titre - X ».
   s=$(printf '%s' "$s" | sed -E 's/^([^,]+), (The|A|An|Le|La|Les|L'"'"'|Die|Der|Das) - /\2 \1 - /; s/^([^,]+), (The|A|An|Le|La|Les|Die|Der|Das)$/\2 \1/')
+  # 2. Abréviations courantes.
+  [ "${#s}" -gt "$max" ] && s=$(printf '%s' "$s" | sed -E '
+    s/Teenage Mutant Ninja Turtles/TMNT/; s/Teenage Mutant Hero Turtles/TMHT/
+    s/(The )?Legend of Zelda/Zelda/; s/ No\. ([0-9])/ \1/g
+    s/Championship/Champ./g; s/International/Intl/g; s/Professional/Pro/g
+    s/Adventures/Adv./g; s/Adventure/Adv./g; s/Productivity/Prod./g
+    s/Edition/Ed./g; s/Collection/Coll./g; s/Tournament/Tourn./g
+    s/Baseball/B.ball/g; s/Basketball/B.ball/g; s/Football/F.ball/g')
+  # 3. « - » devient une espace, 4. plus d'article en tête.
+  [ "${#s}" -gt "$max" ] && s="${s// - / }"
+  [ "${#s}" -gt "$max" ] && s="${s#The }"
+  # 5. Coupe sur un mot, sans mot de liaison pendant (« Asteroids & »).
   if [ "${#s}" -gt "$max" ]; then
     s="${s:0:$max}"
     [[ "$s" == *" "* ]] && s="${s% *}"
-    # Pas de mot de liaison pendant à la fin (« Asteroids & », « Bart vs. the »).
-    s=$(printf '%s' "$s" | sed -E ':a; s/[ ,.:-]+$//; s/ (&|and|of|the|The|a|A|an|An|vs|vs\.|no|o|to|de|wa|ga|with|in)$//; ta')
+    s=$(printf '%s' "$s" | sed -E ':a; s/[ ,.:-]+$//; s/ (&|and|of|the|The|a|A|an|An|vs|vs\.|no|o|to|de|wa|ga|with|in|Ed|Ver)$//; ta')
   fi
-  printf '%s' "$s" | sed -E 's/[ ,.:-]+$//'
+  printf '%s' "$s" | sed -E 's/[ ,:-]+$//'
 }
 
 url_quote() {
