@@ -74,9 +74,13 @@ set it, same `BAUD = 24 MHz / rate - 1`), CMSIS headers through
 `platform_packages`; no framework, no variant, no USB stack (no serial
 status line; `pio run -t upload` needs the bootloader already running).
 The core capped SPI at 12 MHz: every firmware so far ran display, card
-and buttons at 12 MHz. The display now runs at 24 MHz (`META_SPI_MAX_HZ`,
-the rate meta-lapinou drives the panel at on a META); buttons stay at 12
-(at 24 the bits shift and UP is lost), the card at 12 (`META_SD_SPI_HZ`).
+and buttons at 12 MHz. The display now runs at 24 MHz by default
+(`META_LCD_SPI_MHZ`, the rate meta-lapinou drives the panel at on a META);
+the menu's "SPI ecran" offers 12, 24, 36 and 48 MHz (SERCOM4 on its own
+generator 6, from the PLL at 72 or 96 MHz for 36 and 48; 36 at most with
+the CPU at 72). Buttons stay at 12 (at 24 the bits shift and UP is lost),
+the card at 12 (`META_SD_SPI_HZ`). In `tools/gb-emu` (no PLL model) a
+36/48 request falls back to 24 and the game runs.
 Donkey Kong Land: −15.0 KiB flash, −1,880 B RAM; the RAM pays for
 `GBL_STREAM_SECTORS` 8 (4 with 2 KiB of cartridge RAM in RAM), streamed
 builds keep ~1.8 KiB of stack (2.0 before). Evidence: `ctest -R meta`,
@@ -183,8 +187,8 @@ function is a livelock, not slowness.
 
 - Run on hardware: SD streaming, saves, asm paths, frame pacing, and now
   the bare-metal startup (clocks, DAC, SPI rates, HOME back to the loader).
-- On a META: the display at 24 MHz in this firmware (36 at 72 MHz), then
-  `-DMETA_SD_SPI_HZ=24000000` for the card.
+- On a META: "SPI ecran" at 24, 36 and 48 MHz (frame rate in the menu's
+  info line), then `-DMETA_SD_SPI_HZ=24000000` for the card.
 - Option menu (HOME held ½ s, 2026-10-01): save states in `<NAME>.STA`,
   volume, palettes, frame skip, speed, 72 MHz (untested on a META), restart;
   checked in gamebuino-emulator and by the host `--state-test`.

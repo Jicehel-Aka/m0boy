@@ -1,23 +1,34 @@
 /*
- * CPU clock switch for the Gamebuino META.
+ * Clocks of the Gamebuino META: CPU at 48 or 72 MHz, display SPI at 12, 24,
+ * 36 or 48 MHz (the option menu's "Processeur" and "SPI ecran").
  *
  * 48 MHz: generator 0 runs from the DFLL48M as meta_startup.c sets it up.
  * 72 MHz: generator 5 divides the DFLL48M down to 1 MHz, the FDPLL96M
- * multiplies it by 72 and generator 0 (CPU, SERCOMs) switches to it, with
- * two flash wait states instead of one.  This is past the SAMD21's 48 MHz
- * rating: it works on many parts, not necessarily on every console.
- * TC4/TC5 and the DAC stay on generator 4 (DFLL48M); SERCOM4 (meta_spi.c)
- * follows generator 0: the display keeps the SPI's fastest setting
- * unscaled (24 MHz, so 36 MHz at 72 MHz, which the ST7735 took in gm0's
- * overclocked META port), the card
- * and the buttons ask meta_spi_hz() for a rate that stays within theirs.  SysTick is reloaded for
- * 1 ms ticks at the new clock and meta_micros() scales its fraction.
+ * multiplies it by 72 and generator 0 (CPU) switches to it, with two flash
+ * wait states instead of one.  This is past the SAMD21's 48 MHz rating: it
+ * works on many parts, not necessarily on every console.  SysTick is
+ * reloaded for 1 ms ticks at the new clock and meta_micros() scales its
+ * fraction.  TC4/TC5 and the DAC stay on generator 4 (DFLL48M).
+ *
+ * SERCOM4 (the SPI shared by display, card and buttons, meta_spi.c) has
+ * generator 6 to itself, independent of the CPU.  A synchronous SPI runs at
+ * most at half its clock: the DFLL48M gives 12 and 24 MHz, the FDPLL96M at
+ * 72 or 96 MHz gives 36 and 48 (past the SERCOM's 48 MHz clock rating;
+ * gm0's overclocked META port ran the ST7735 at 36).  The PLL has one
+ * frequency: with the CPU at 72 MHz the display gets 36 MHz at most.
+ * meta_spi_rate derives the card's and the buttons' dividers from the
+ * SERCOM clock, so they keep their rates.
  */
 #include "meta_clock.h"
 
 #include "meta_hw.h"
+#include "meta_target.h"
 
-static uint8_t clock_mhz = 48;
+#if META_LCD_SPI_MHZ != 12 && META_LCD_SPI_MHZ != 24 && META_LCD_SPI_MHZ != 36 && META_LCD_SPI_MHZ != 48
+#error "META_LCD_SPI_MHZ: 12, 24, 36 or 48"
+#endif
+
+static uint8_t clock_mhz = 48, lcd_mhz = 24, pll_mhz; /* pll_mhz 0: off */
 static uint32_t frac_mul = 1048576u * 1000u / 48000u; /* 2^20 us per tick */
 
 static void gclk_sync(void) {
@@ -29,16 +40,10 @@ static void route(uint16_t id, uint16_t gen) {
     gclk_sync();
 }
 
-void meta_clock_init(void) {
-    GCLK->GENDIV.reg = GCLK_GENDIV_ID(4) | GCLK_GENDIV_DIV(1);
+static void gen_source(uint32_t id, uint32_t src) {
+    GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(id) | src | GCLK_GENCTRL_IDC | GCLK_GENCTRL_GENEN;
     gclk_sync();
-    GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(4) | GCLK_GENCTRL_SRC_DFLL48M | GCLK_GENCTRL_IDC | GCLK_GENCTRL_GENEN;
-    gclk_sync();
-    route(GCLK_CLKCTRL_ID_TC4_TC5_Val, GCLK_CLKCTRL_GEN_GCLK4);
-    route(GCLK_CLKCTRL_ID_DAC_Val, GCLK_CLKCTRL_GEN_GCLK4);
 }
-
-uint8_t meta_clock_mhz(void) { return clock_mhz; }
 
 static void systick_for(uint8_t mhz) {
     SystemCoreClock = (uint32_t)mhz * 1000000u;
@@ -47,15 +52,15 @@ static void systick_for(uint8_t mhz) {
     frac_mul = 1048576u * 1000u / ((uint32_t)mhz * 1000u);
 }
 
-static int pll_start(void) {
+static int pll_start(uint8_t mhz) {
     GCLK->GENDIV.reg = GCLK_GENDIV_ID(5) | GCLK_GENDIV_DIV(48);
     gclk_sync();
     GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(5) | GCLK_GENCTRL_SRC_DFLL48M | GCLK_GENCTRL_GENEN;
     gclk_sync();
     route(GCLK_CLKCTRL_ID_FDPLL_Val, GCLK_CLKCTRL_GEN_GCLK5);
     SYSCTRL->DPLLCTRLA.reg = 0;
-    SYSCTRL->DPLLRATIO.reg = SYSCTRL_DPLLRATIO_LDR(71) | SYSCTRL_DPLLRATIO_LDRFRAC(0); /* 1 MHz x 72 */
-    SYSCTRL->DPLLCTRLB.reg = SYSCTRL_DPLLCTRLB_REFCLK(2);                         /* reference: GCLK */
+    SYSCTRL->DPLLRATIO.reg = SYSCTRL_DPLLRATIO_LDR(mhz - 1u) | SYSCTRL_DPLLRATIO_LDRFRAC(0); /* 1 MHz x mhz */
+    SYSCTRL->DPLLCTRLB.reg = SYSCTRL_DPLLCTRLB_REFCLK(2);                               /* reference: GCLK */
     SYSCTRL->DPLLCTRLA.reg = SYSCTRL_DPLLCTRLA_ENABLE;
     const uint32_t ready = SYSCTRL_DPLLSTATUS_LOCK | SYSCTRL_DPLLSTATUS_CLKRDY;
     for (uint32_t n = 0; n < 1000000u; n++)
@@ -64,28 +69,62 @@ static int pll_start(void) {
     return 0;
 }
 
-uint8_t meta_clock_set(uint8_t mhz) {
-    if (mhz != 72) mhz = 48;
-    if (mhz == clock_mhz) return clock_mhz;
-    if (mhz == 72) {
-        if (!pll_start()) return clock_mhz;
+/* CPU and display SPI clocks.  Nothing may be using the SPI bus. */
+static void apply(uint8_t cpu, uint8_t lcd) {
+    uint8_t pll = cpu == 72 || lcd == 36 ? 72 : lcd == 48 ? 96 : 0;
+    if (cpu == 72 && lcd == 48) lcd = 36;
+    int pll_change = pll != pll_mhz;
+    if (clock_mhz == 72 && (cpu != 72 || pll_change)) {
         __disable_irq();
-        NVMCTRL->CTRLB.bit.RWS = 2; /* before the clock goes up */
-        GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(0) | GCLK_GENCTRL_SRC_FDPLL | GCLK_GENCTRL_IDC | GCLK_GENCTRL_GENEN;
-        gclk_sync();
-        systick_for(72);
-        __enable_irq();
-    } else {
-        __disable_irq();
-        GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(0) | GCLK_GENCTRL_SRC_DFLL48M | GCLK_GENCTRL_IDC | GCLK_GENCTRL_GENEN;
-        gclk_sync();
-        NVMCTRL->CTRLB.bit.RWS = NVMCTRL_CTRLB_RWS_HALF_Val; /* after it came down */
+        gen_source(0, GCLK_GENCTRL_SRC_DFLL48M);
+        NVMCTRL->CTRLB.bit.RWS = NVMCTRL_CTRLB_RWS_HALF_Val; /* after the clock came down */
         systick_for(48);
         __enable_irq();
-        SYSCTRL->DPLLCTRLA.reg = 0;
+        clock_mhz = 48;
     }
-    clock_mhz = mhz;
+    if (pll_change || lcd <= 24) gen_source(6, GCLK_GENCTRL_SRC_DFLL48M);
+    if (pll_change) {
+        SYSCTRL->DPLLCTRLA.reg = 0;
+        pll_mhz = pll && pll_start(pll) ? pll : 0;
+        if (pll && !pll_mhz) { /* no lock: stay on the DFLL48M */
+            cpu = 48;
+            if (lcd > 24) lcd = 24;
+        }
+    }
+    if (cpu == 72 && clock_mhz != 72) {
+        __disable_irq();
+        NVMCTRL->CTRLB.bit.RWS = 2; /* before the clock goes up */
+        gen_source(0, GCLK_GENCTRL_SRC_FDPLL);
+        systick_for(72);
+        __enable_irq();
+        clock_mhz = 72;
+    }
+    if (lcd > 24) gen_source(6, GCLK_GENCTRL_SRC_FDPLL);
+    lcd_mhz = lcd;
+    meta_spi_clock(lcd > 24 ? (uint32_t)pll_mhz * 1000000u : 48000000u);
+}
+
+void meta_clock_init(void) {
+    GCLK->GENDIV.reg = GCLK_GENDIV_ID(4) | GCLK_GENDIV_DIV(1);
+    gclk_sync();
+    gen_source(4, GCLK_GENCTRL_SRC_DFLL48M);
+    route(GCLK_CLKCTRL_ID_TC4_TC5_Val, GCLK_CLKCTRL_GEN_GCLK4);
+    route(GCLK_CLKCTRL_ID_DAC_Val, GCLK_CLKCTRL_GEN_GCLK4);
+    apply(clock_mhz, META_LCD_SPI_MHZ);
+}
+
+uint8_t meta_clock_mhz(void) { return clock_mhz; }
+
+uint8_t meta_clock_set(uint8_t mhz) {
+    apply(mhz == 72 ? 72 : 48, lcd_mhz);
     return clock_mhz;
+}
+
+uint8_t meta_clock_lcd_spi(void) { return lcd_mhz; }
+
+uint8_t meta_clock_set_lcd_spi(uint8_t mhz) {
+    apply(clock_mhz, mhz >= 48 ? 48 : mhz >= 36 ? 36 : mhz >= 24 ? 24 : 12);
+    return lcd_mhz;
 }
 
 /* Arduino's micros(), with the sub-millisecond part scaled for the actual
@@ -104,12 +143,4 @@ uint32_t meta_micros(void) {
         count2 = millis();
     } while (pend != pend2 || count != count2 || ticks < ticks2);
     return (count + pend) * 1000u + (((SysTick->LOAD - ticks) * frac_mul) >> 20);
-}
-
-uint32_t meta_spi_hz(uint32_t hz) {
-    if (clock_mhz == 48) return hz;
-    /* meta_spi_rate sets BAUD + 1 = 24 MHz / requested; at 72 MHz the SPI runs
-     * at 36 MHz / (BAUD + 1): ask for 24 MHz / ceil(36 MHz / hz). */
-    uint32_t n = (36000000u + hz - 1u) / hz;
-    return 24000000u / n;
 }

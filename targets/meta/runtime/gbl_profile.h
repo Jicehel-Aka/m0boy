@@ -214,16 +214,17 @@
 #ifndef META_LCD_DMA
 #define META_LCD_DMA 1
 #endif
-/* SPI rates (meta_spi.c).  META_SPI_MAX_HZ caps them all: 24 MHz is the
- * SERCOM's maximum at 48 MHz (BAUD 0); the Arduino core capped it at 12,
- * so the firmwares tested on a META before 2026-10-03 ran everything at
- * 12.  The display asks for the maximum, unscaled at 72 MHz (36 MHz
- * there): meta-lapinou drives the META's ST7735 at 24 MHz.  The buttons
- * stay at 12: at 24 the shift register's bits come shifted and UP is lost
- * (meta-lapinou's order, META_BUTTONS_LAPINOU_ORDER).  The card stays at
- * 12, the rate it has run at so far (SD cards take 25 in SPI mode). */
-#ifndef META_SPI_MAX_HZ
-#define META_SPI_MAX_HZ 24000000
+/* SPI rates (meta_spi.c, meta_clock.cpp).  META_LCD_SPI_MHZ: the
+ * display's at boot, 12, 24, 36 or 48 (the option menu's "SPI ecran"
+ * changes it); 24 is how meta-lapinou drives the META's ST7735, 36 and 48
+ * clock the SERCOM from the PLL past its rating.  The Arduino core capped
+ * every rate at 12, so the firmwares tested on a META before 2026-10-03
+ * ran everything at 12.  The buttons stay at 12: at 24 the shift
+ * register's bits come shifted and UP is lost (meta-lapinou's order,
+ * META_BUTTONS_LAPINOU_ORDER).  The card stays at 12, the rate it has run
+ * at so far (SD cards take 25 in SPI mode). */
+#ifndef META_LCD_SPI_MHZ
+#define META_LCD_SPI_MHZ 24
 #endif
 #ifndef META_BUTTONS_SPI_HZ
 #define META_BUTTONS_SPI_HZ 12000000

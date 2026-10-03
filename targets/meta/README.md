@@ -137,6 +137,7 @@ kept across power-off), from fgb's menu where they apply on the META:
 | Images | frame skip: Auto (default: when emulation falls a frame behind, up to `META_MAX_SKIP` frames in a row are not rendered), Aucun, 1 sur 2/3/4 (one frame rendered in two, three, four) |
 | Vitesse | Normale, or Rapide: no frame limit (fgb's Synchronization off) |
 | Processeur | 48 MHz (default) or 72 MHz (below) |
+| SPI ecran | display SPI clock: 12, 24 (default, `META_LCD_SPI_MHZ`), 36 or 48 MHz (below); 36 at most with the CPU at 72 MHz. A rate the panel does not take scrambles the screen, menu included: switching off restores the default |
 | Quitter | back to the Gamebuino loader |
 
 Not taken from fgb: gamma (the palettes cover it), double buffering and
@@ -172,13 +173,17 @@ frame skip renders nothing while a frame or more is owed.
 
 72 MHz (`meta_clock.cpp`) is past the SAMD21's 48 MHz rating. Generator 5
 divides the DFLL48M to 1 MHz, the FDPLL96M multiplies it by 72 and
-generator 0 (CPU, SERCOM4) switches to it with two flash wait states;
+generator 0 (CPU) switches to it with two flash wait states;
 TC4/TC5 and the DAC run from generator 4 (DFLL48M) at either clock,
 SysTick is reloaded for 1 ms and `meta_micros()` scales its fraction.
-SERCOM4 stays on generator 0: the display keeps the fastest setting
-unscaled (24 MHz, so 36 MHz at 72 MHz, which the ST7735 took in gm0's
-overclocked META port), the card and buttons ask `meta_spi_hz()` for
-rates within theirs.
+
+SERCOM4 (the SPI) has generator 6 to itself. A synchronous SPI runs at
+most at half the SERCOM's clock, so the display's rate picks the source:
+12 and 24 MHz from the DFLL48M, 36 and 48 MHz from the FDPLL96M at 72 or
+96 MHz (past the SERCOM's 48 MHz clock rating; gm0's overclocked META port
+ran the ST7735 at 36). The PLL has one frequency: with the CPU at 72 MHz
+the display gets 36 MHz at most. `meta_spi_rate()` derives every divider
+from the SERCOM's actual clock, so the card and the buttons keep 12 MHz.
 When the PLL does not lock the menu stays at 48 MHz, and the loader is
 always entered at 48 MHz. Not yet run on a META: on the M0 estimator a
 frame at 72 MHz (two wait states) costs about 1.35 times less of its
@@ -622,7 +627,7 @@ run (same picture in Link's Awakening).
 | `META_BUTTONS_SPI_HZ` | 12000000 | SPI clock for the buttons' shift register; at 24 MHz the bits shift and UP is lost |
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND, DARK and TBLEND display modes |
 | `META_AUDIO_DMA` | 1 | Audio samples go to the DAC by DMA (TC4-triggered DMAC channel 1, chained descriptors) instead of a 22 kHz TC4 interrupt (about 3% of the CPU); 0 restores the interrupt |
-| `META_SPI_MAX_HZ` | 24000000 | Fastest SPI rate (`meta_spi.c`), the SERCOM's maximum at 48 MHz; the display asks for it (meta-lapinou drives the META's ST7735 at 24 MHz). The Arduino core capped every rate at 12 MHz, so firmwares built before 2026-10-03 sent the picture at 12. |
+| `META_LCD_SPI_MHZ` | 24 | Display SPI clock at boot: 12, 24, 36 or 48 (menu "SPI ecran"). meta-lapinou drives the META's ST7735 at 24 MHz; 36 and 48 clock the SERCOM from the PLL. The Arduino core capped every rate at 12 MHz, so firmwares built before 2026-10-03 sent the picture at 12. |
 | `META_LCD_DMA` | 1 | Strips are sent by DMA through a queue: the DMA-complete interrupt programs the next window and starts the next strip, so rendering waits only when every buffer is in flight. At VBlank, if the bus is still busy, the button read is postponed by one frame (never two in a row). 0 writes pixels from the CPU. |
 | `META_LCD_BUFFERS` | 3 | Strip buffers (triple buffering by default) |
 | `META_STRIP_LINES` | 4 | Rows per strip |

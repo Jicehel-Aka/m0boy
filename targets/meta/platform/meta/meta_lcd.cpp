@@ -18,6 +18,7 @@
 #include "meta_dma.h"
 #endif
 
+#include "meta_clock.h"
 #include "meta_hw.h"
 
 #define TFT_CS_MASK (1u << 22) /* PB22 */
@@ -79,10 +80,9 @@ static const uint8_t cmd_init[] = {
     ST7735_DISPON, 0,
 };
 
-/* The SERCOM's fastest rate (24 MHz, as meta-lapinou drives this panel),
- * capped by META_SPI_MAX_HZ, not rescaled at 72 MHz (meta_clock.cpp):
- * 36 MHz there. */
-#define TFT_SPI_HZ 24000000u
+/* The option menu's rate (meta_clock.cpp: 12 to 48 MHz, default
+ * META_LCD_SPI_MHZ; meta-lapinou drives this panel at 24). */
+#define TFT_SPI_HZ ((uint32_t)meta_clock_lcd_spi() * 1000000u)
 
 /* TXC only rises after a transmission, so track whether one is in flight
  * before waiting for the shifter to drain. */

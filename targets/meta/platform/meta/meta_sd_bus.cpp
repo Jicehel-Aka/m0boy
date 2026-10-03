@@ -30,11 +30,11 @@ void meta_sd_cs(int selected) {
 
 void meta_sd_bus_begin(int init) {
     if (init) {
-        meta_spi_rate(meta_spi_hz(250000));
+        meta_spi_rate(250000);
         return;
     }
     meta_lcd_end_frame();
-    meta_spi_rate(meta_spi_hz(META_SD_SPI_HZ));
+    meta_spi_rate(META_SD_SPI_HZ);
     /* Drop bytes left in the receive FIFO by display writes. */
     for (int i = 0; i < 2 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
         (void)SERCOM4->SPI.DATA.reg;

@@ -111,4 +111,3 @@ uint32_t meta_micros(void) {
     return (count + pend) * 1000u + (SYST_RVR - val) / clock_mhz;
 }
 
-uint32_t meta_spi_hz(uint32_t hz) { return hz; }

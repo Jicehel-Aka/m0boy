@@ -17,10 +17,11 @@ uint8_t meta_clock_set(uint8_t mhz);
 uint8_t meta_clock_mhz(void);
 /* Microseconds, right at either clock. */
 uint32_t meta_micros(void);
-/* Frequency to give meta_spi_rate so that the SPI runs at most at hz: the
- * SERCOM follows the CPU clock, meta_spi_rate computes its divider for
- * 48 MHz. */
-uint32_t meta_spi_hz(uint32_t hz);
+/* META: display SPI clock in MHz, 12, 24, 36 or 48 (36 at most with the
+ * CPU at 72 MHz); returns the rate actually set.  Nothing may be using the
+ * SPI bus. */
+uint8_t meta_clock_set_lcd_spi(uint8_t mhz);
+uint8_t meta_clock_lcd_spi(void);
 
 #ifdef __cplusplus
 }

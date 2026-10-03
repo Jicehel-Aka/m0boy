@@ -316,6 +316,7 @@ gauche/droite (ou A) change la valeur, B ou HOME referme.
 | Images | saut d'images : Auto (n'affiche pas les images en retard), Aucun, 1 sur 2, 1 sur 3, 1 sur 4 |
 | Vitesse | Normale, ou Rapide (sans limite d'images par seconde) |
 | Processeur | 48 MHz ou 72 MHz (surcadencé, hors spécification du SAMD21 : à essayer, retour à 48 MHz si instable) |
+| SPI ecran | vitesse d'envoi de l'image à l'écran : 12, 24 (défaut), 36 ou 48 MHz (36 au plus avec le processeur à 72 MHz). Si l'écran devient illisible, le menu l'est aussi : éteindre la console remet 24 MHz |
 | Quitter | retour au loader Gamebuino |
 
 Sous les lignes : images émulées et affichées pendant la dernière seconde,

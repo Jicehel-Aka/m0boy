@@ -22,10 +22,11 @@ void delay(uint32_t ms); /* busy wait */
 /* SERCOM4: MISO PA12, MOSI PB10, SCK PB11, shared by the display, the SD
  * card and the buttons, each with its own chip select. */
 void meta_spi_init(void);
-/* Mode 0, MSB first, at most hz (rated for the 48 MHz clock: pass
- * meta_spi_hz(hz), meta_clock.h).  Reconfigures only when the rate
+/* Mode 0, MSB first, at most hz.  Reconfigures only when the divider
  * changes. */
 void meta_spi_rate(uint32_t hz);
+/* The SERCOM's clock changed (meta_clock.cpp): hz, from now on. */
+void meta_spi_clock(uint32_t hz);
 uint8_t meta_spi_transfer(uint8_t out);
 
 #ifdef __cplusplus

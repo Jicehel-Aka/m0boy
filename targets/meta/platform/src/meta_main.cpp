@@ -11,8 +11,8 @@
  *
  * Input:  D-pad, A = Game Boy B and B = Game Boy A (META_SWAP_AB), MENU =
  *         Start, HOME tap = Select, HOME held half a second = option menu
- *         (display mode, palette, frame skip, CPU clock, back to the
- *         Gamebuino loader).
+ *         (display mode, palette, frame skip, CPU clock, display SPI
+ *         clock, back to the Gamebuino loader).
  *
  * Pacing: 59.73 Hz, kept by an accumulator of elapsed time against emulated
  * frames (Gdl's rate).  Frame skip: automatic (when emulation falls behind
@@ -111,7 +111,7 @@ static int close_frame(void) {
 #if !META_TARGET_POKITTO
 
 static uint8_t read_buttons_raw(void) {
-    meta_spi_rate(meta_spi_hz(META_BUTTONS_SPI_HZ));
+    meta_spi_rate(META_BUTTONS_SPI_HZ);
     /* Drop bytes left by display writes (the receive FIFO holds two). */
     for (int i = 0; i < 2 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
         (void)SERCOM4->SPI.DATA.reg;
@@ -129,9 +129,10 @@ static uint8_t read_buttons_raw(void) {
  * display idle, our audio and DMA interrupts off, SD card deselected and in
  * SPI mode. */
 static void enter_loader(void) {
-    meta_clock_set(48); /* the loader expects the core's clocks */
-    gbl_save_flush(); /* unsaved cartridge RAM changes */
     meta_lcd_end_frame();
+    meta_clock_set_lcd_spi(24); /* the loader expects the core's clocks */
+    meta_clock_set(48);
+    gbl_save_flush(); /* unsaved cartridge RAM changes */
     meta_audio_stop();
     NVIC_DisableIRQ(DMAC_IRQn);
     meta_sd_deselect();
@@ -312,6 +313,9 @@ static const char *const mode_names[POKITTO_MODE_COUNT] = {"1:1", "200x176", "20
 static const char *const skip_names[FSKIP_MODES] = {"Auto", "Aucun", "1 sur 2", "1 sur 3", "1 sur 4"};
 static const char *const speed_names[2] = {"Normale", "Rapide"};
 static const char *const clock_names[2] = {"48 MHz", "72 MHz"};
+#if !META_TARGET_POKITTO
+static const char *const lcd_spi_names[4] = {"12 MHz", "24 MHz", "36 MHz", "48 MHz"};
+#endif
 
 static char *put_uint(char *p, unsigned v) {
     char tmp[10];
@@ -341,12 +345,15 @@ static void name_slots(void) {
 }
 
 enum { M_RESUME, M_RESTART, M_SLOT, M_SAVE, M_LOAD, M_VOLUME, M_SCREEN, M_PALETTE, M_SKIP,
-       M_SPEED, M_CLOCK, M_QUIT };
+       M_SPEED, M_CLOCK, M_LCD_SPI, M_QUIT };
 
 static void option_menu(void) {
     uint8_t mode = meta_display_mode(), pal = meta_display_palette(), skip = skip_mode;
     uint8_t fast = fast_mode, mhz = meta_clock_mhz() == 72, vol = meta_audio_volume();
     uint8_t slot = state_slot;
+#if !META_TARGET_POKITTO
+    uint8_t lcd_spi = (uint8_t)(meta_clock_lcd_spi() / 12u - 1u);
+#endif
     meta_menu_item items[13];
     uint8_t ids[13];
     unsigned n = 0;
@@ -366,6 +373,12 @@ static void option_menu(void) {
     ADD(M_SKIP, "Images", META_MENU_CHOICE, &skip, FSKIP_MODES, skip_names);
     ADD(M_SPEED, "Vitesse", META_MENU_CHOICE, &fast, 2, speed_names);
     ADD(M_CLOCK, "Processeur", META_MENU_CHOICE, &mhz, 2, clock_names);
+#if !META_TARGET_POKITTO
+    /* Display SPI clock (meta_clock.cpp): 36 at most at 72 MHz.  Too fast
+     * for the panel shows garbage, the menu too: switching the console off
+     * restores META_LCD_SPI_MHZ. */
+    ADD(M_LCD_SPI, "SPI ecran", META_MENU_CHOICE, &lcd_spi, 4, lcd_spi_names);
+#endif
     ADD(M_QUIT, "Quitter", META_MENU_ACTION, 0, 0, 0);
 #undef ADD
     /* "59 ips, 41 vues": emulated and drawn frames of the last second, or
@@ -390,7 +403,11 @@ static void option_menu(void) {
     fast_mode = fast;
     state_slot = slot;
     meta_audio_set_volume(vol);
+    meta_lcd_end_frame(); /* no transfer while the clocks change */
     meta_clock_set(mhz ? 72 : 48);
+#if !META_TARGET_POKITTO
+    meta_clock_set_lcd_spi((uint8_t)((lcd_spi + 1u) * 12u));
+#endif
     if (pal != meta_display_palette()) meta_display_set_palette(pal);
     meta_display_set_mode(mode); /* also redraws the whole picture */
     skipped_run = 0;
