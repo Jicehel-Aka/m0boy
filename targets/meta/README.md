@@ -133,7 +133,7 @@ kept across power-off), from fgb's menu where they apply on the META:
 | Etat, Sauver l'etat, Charger l'etat | save states, slot 1 to 10 (shown only when the state file is on the card, see below) |
 | Volume | 0 to 8; 4 (default) is the former level, half the DAC's range, 8 the whole range |
 | Ecran | display mode (below) |
-| Palette | Vert (default), Gris, Pocket, Ambre, Bleu: every mode but SMOOTH, whose 4 KiB colour tables are built at compile time for the first one. TBLEND's ½-weight table is built from the palette in RAM (1 KiB, in the union of mode buffers) |
+| Palette | Vert (default), Gris, Pocket, Ambre, Bleu: every mode but SMOOTH, whose 4 KiB colour tables are built at compile time for the first one. TBLEND's ½-weight table is built from the palette in RAM (1 KiB in the union of mode buffers, or 16 colours without `META_MERGE_MODES`) |
 | Images | frame skip: Auto (default: when emulation falls a frame behind, up to `META_MAX_SKIP` frames in a row are not rendered), Aucun, 1 sur 2/3/4 (one frame rendered in two, three, four) |
 | Vitesse | Normale, or Rapide: no frame limit (fgb's Synchronization off) |
 | Processeur | 48 MHz (default) or 72 MHz (below) |
@@ -254,7 +254,7 @@ touches the FAT.
   Awakening, 32 KiB for Pokémon) lives only in the file, behind a two-sector
   write-back cache. Without that, those games did not fit in RAM (8 KiB on
   top of 29 KiB). Such builds, like streaming ones, keep two display strips
-  and drop the BLEND, DARK and TBLEND modes (TBLEND falls back to TILE). Zerd no Densetsu (8 KiB) builds at
+  and drop the BLEND and DARK modes (TBLEND stays, `META_TBLEND`). Zerd no Densetsu (8 KiB) builds at
   27.5 KiB of RAM.
 - Changed sectors are written back in three cases:
   - when the game disables cartridge RAM, which games do right after
@@ -321,7 +321,7 @@ default; `on` / `off` force it):
   fragmented) or magenta (a different ROM). Holding HOME for 3 s returns
   to the loader.
 - To make room for the 2 KiB cache, streaming builds use two display strips
-  instead of three and drop the BLEND, DARK and TBLEND modes (TBLEND falls back to TILE). RAM then stays at the
+  instead of three and drop the BLEND and DARK modes; TBLEND stays (672 bytes, `META_TBLEND`). RAM then stays at the
   usual level: 28.9 KiB.
 
 `compile.sh` records the profiles, regenerates with them, and copies the
@@ -628,7 +628,9 @@ run (same picture in Link's Awakening).
 | `META_SWAP_AB` | 1 | META A = Game Boy B, META B = Game Boy A |
 | `META_SD_SPI_HZ` | 12000000 | SPI clock for SD sector reads: the rate the card has run at so far (cards take 25 MHz in SPI mode) |
 | `META_BUTTONS_SPI_HZ` | 12000000 | SPI clock for the buttons' shift register; at 24 MHz the bits shift and UP is lost |
-| `META_MERGE_MODES` | 1 (0 when streaming) | BLEND, DARK and TBLEND display modes |
+| `META_MERGE_MODES` | 1 (0 when streaming) | BLEND and DARK display modes (1 KiB table, a spare line); TBLEND then blends two pixels per lookup |
+| `META_TBLEND` | 1 | TBLEND, the default mode, in every build: 600 bytes of held lines and, without `META_MERGE_MODES`, a 16-colour table (one lookup per pixel) instead of the 1 KiB one |
+| `META_LCD_12BPP` | 0 | ST7735 in RGB444 (COLMOD 03h): `META_COLOR` gives 0x0RGB, each row is packed in Thumb-1 as it goes out (`meta_lcd_pack_asm.S`), 240 bytes per row instead of 320. meta-emu-sdl estimate on Super Mario Land: display waits 8.5% → 1.3% of the CPU, audio restarts 7 → 1 per minute |
 | `META_AUDIO_DMA` | 1 | Audio samples go to the DAC by DMA (TC4-triggered DMAC channel 1, chained descriptors) instead of a 22 kHz TC4 interrupt (about 3% of the CPU); 0 restores the interrupt |
 | `META_LCD_SPI_MHZ` | 24 | Display SPI clock at boot: 12, 24, 36 or 48 (menu "SPI ecran"). meta-lapinou drives the META's ST7735 at 24 MHz; 36 and 48 clock the SERCOM from the PLL. The Arduino core capped every rate at 12 MHz, so firmwares built before 2026-10-03 sent the picture at 12. |
 | `META_LCD_DMA` | 1 | Strips are sent by DMA through a queue: the DMA-complete interrupt programs the next window and starts the next strip, so rendering waits only when every buffer is in flight. At VBlank, if the bus is still busy, the button read is postponed by one frame (never two in a row). 0 writes pixels from the CPU. |

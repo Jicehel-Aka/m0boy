@@ -29,7 +29,7 @@ enum {
 #define META_PALETTE_COUNT 5
 extern const uint32_t meta_palettes[META_PALETTE_COUNT][4]; /* 0xRRGGBB, lightest first */
 extern const char *const meta_palette_names[META_PALETTE_COUNT];
-extern uint16_t meta_dmg_palette[4]; /* current palette, byte-swapped RGB565 */
+extern uint16_t meta_dmg_palette[4]; /* current palette, panel format (META_COLOR) */
 /* Palette of every mode but SMOOTH (compile-time tables, first palette). */
 void meta_display_set_palette(uint8_t index);
 uint8_t meta_display_palette(void);

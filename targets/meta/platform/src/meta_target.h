@@ -47,10 +47,16 @@
 #define META_SCREEN_ROWS 128
 #define META_SWAP_AB_DEFAULT 1 /* the META's A is the right-hand button */
 #define META_CLOCK_DEFAULT 48
+#if META_LCD_12BPP
+/* Panel colours: RGB444 in the low 12 bits (0x0RGB); the ST7735 driver packs
+ * two of them into three bytes as each row goes out (meta_lcd_pack.h). */
+#define META_COLOR(rgb) ((uint16_t)((((rgb) >> 12) & 0xF00u) | (((rgb) >> 8) & 0x0F0u) | (((rgb) >> 4) & 0x00Fu)))
+#else
 /* Panel colours: RGB565 byte-swapped (the SPI sends the high byte first). */
 #define META_COLOR(rgb)                                                                          \
     ((uint16_t)(((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) >> 8 | \
                 ((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) << 8))
+#endif
 
 #endif
 

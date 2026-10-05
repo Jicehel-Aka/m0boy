@@ -9,9 +9,13 @@
  */
 #include "gbl.h"
 #include "gbl_internal.h"
+#include "gbl_options.h"
 #include "meta_display.h"
 #include "meta_lcd.h"
 #include "dmg_reference.h"
+#include "meta_lcd_pack.h"
+
+#include <stdint.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -31,7 +35,18 @@ uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
     const uint16_t *p = (const uint16_t *)buf;
     for (unsigned r = 0; r < rows; r++) {
         if (row0 + r >= 128) { printf("window past the panel: row %u\n", row0 + r); continue; }
+#if META_LCD_12BPP
+        /* as the driver does: packed in place, then read back as the panel would */
+        uint8_t *b = (uint8_t *)(uintptr_t)(p + r * 160);
+        meta_lcd_pack444(b, 160);
+        for (unsigned x = 0; x < 160; x += 2) {
+            const uint8_t *q = b + x / 2 * 3;
+            panel[row0 + r][x] = (uint16_t)(q[0] << 4 | q[1] >> 4);
+            panel[row0 + r][x + 1] = (uint16_t)((q[1] & 15) << 8 | q[2]);
+        }
+#else
         memcpy(panel[row0 + r], p + r * 160, 320);
+#endif
     }
     rows_sent += rows;
     return ++sent;
@@ -42,9 +57,15 @@ uint32_t meta_lcd_done_seq(void) { return sent; }
 
 static const uint32_t rgb[4] = {0xE0F8D0, 0x88C070, 0x346856, 0x081820};
 
+/* The panel's pixel format: byte-swapped RGB565, or 0x0RGB with
+ * META_LCD_12BPP. */
 static uint16_t be565(uint32_t c) {
+#if META_LCD_12BPP
+    return (uint16_t)(((c >> 12) & 0xF00) | ((c >> 8) & 0xF0) | ((c >> 4) & 0xF));
+#else
     uint16_t v = (uint16_t)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x1F));
     return (uint16_t)((v >> 8) | (v << 8));
+#endif
 }
 
 /* SMOOTH: row k of each group of 9 lines is (8 - k)/9 of line k and
@@ -119,6 +140,9 @@ int main(void) {
     /* Every mode, then BLEND again: it shares its buffers with TBLEND. */
     for (unsigned step = 0; step <= META_MODE_COUNT; step++) {
         uint8_t mode = step < META_MODE_COUNT ? (uint8_t)step : (uint8_t)META_MODE_BLEND;
+#if !META_MERGE_MODES
+        if (mode == META_MODE_BLEND || mode == META_MODE_DARK) continue; /* left out of this profile */
+#endif
         gbl_reset();
         for (int i = 0; i < 0x2000; i++) gbl_vram[i] = (uint8_t)rnd();
         for (int i = 0; i < 0xA0; i++) gbl_oam[i] = (uint8_t)rnd();

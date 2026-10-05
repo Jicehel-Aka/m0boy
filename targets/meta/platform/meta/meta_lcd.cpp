@@ -20,6 +20,19 @@
 
 #include "meta_clock.h"
 #include "meta_hw.h"
+#include "meta_lcd_pack.h"
+
+/* META_LCD_12BPP (gbl_profile.h): the panel takes RGB444 (COLMOD 03h); the
+ * pipeline renders 0x0RGB halfwords (META_COLOR) and each row is packed in
+ * place just before it is sent (meta_lcd_pack.h, meta_lcd_pack_asm.S): 240
+ * bytes per row instead of 320. */
+#if META_LCD_12BPP
+#define LCD_ROW_BYTES 240u
+#define LCD_COLMOD 0x03
+#else
+#define LCD_ROW_BYTES 320u
+#define LCD_COLMOD 0x05
+#endif
 
 #define TFT_CS_MASK (1u << 22) /* PB22 */
 #define TFT_DC_MASK (1u << 23) /* PB23 */
@@ -71,7 +84,7 @@ static const uint8_t cmd_init[] = {
     ST7735_VMCTR1, 1, 0x0E,
     ST7735_INVOFF, 0,
     ST7735_MADCTL, 1, MADCTL_MX | MADCTL_MV, /* landscape, as ST7735_ROTATE_DOWN */
-    ST7735_COLMOD, 1, 0x05,
+    ST7735_COLMOD, 1, LCD_COLMOD,
     ST7735_GMCTRP1, 16, 0x02, 0x1c, 0x07, 0x12, 0x37, 0x32, 0x29, 0x2d,
                         0x29, 0x25, 0x2B, 0x39, 0x00, 0x01, 0x03, 0x10,
     ST7735_GMCTRN1, 16, 0x03, 0x1d, 0x07, 0x06, 0x2E, 0x2C, 0x29, 0x2D,
@@ -156,7 +169,7 @@ static void start_dma(const void *buf, uint32_t bytes) {
 /* Main loop or DMA interrupt: nothing else is using the bus. */
 static void lcdq_start(const lcdq_entry *e) {
     set_window(e->row0, (uint8_t)(e->row0 + e->rows - 1));
-    start_dma(e->buf, (uint32_t)e->rows * 320u);
+    start_dma(e->buf, (uint32_t)e->rows * LCD_ROW_BYTES);
 }
 #endif
 
@@ -218,6 +231,9 @@ static void open_bus(void) {
 }
 
 uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
+#if META_LCD_12BPP
+    meta_lcd_pack444_asm((uint8_t *)buf, (unsigned)rows * 160u); /* the buffer is the caller's scratch */
+#endif
 #if META_LCD_DMA
     for (;;) {
         int start_now;
@@ -237,7 +253,7 @@ uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
     open_bus();
     set_window(row0, (uint8_t)(row0 + rows - 1));
     const uint8_t *p = (const uint8_t *)buf;
-    for (uint32_t i = 0; i < (uint32_t)rows * 320u; i++) spi_send(p[i]);
+    for (uint32_t i = 0; i < (uint32_t)rows * LCD_ROW_BYTES; i++) spi_send(p[i]);
     return 0;
 #endif
 }
@@ -259,9 +275,19 @@ void meta_lcd_end_frame(void) {
 void meta_lcd_fill(uint16_t color_be) {
     open_bus();
     set_window(0, 127);
+#if META_LCD_12BPP
+    uint8_t px[4] = {(uint8_t)color_be, (uint8_t)(color_be >> 8), (uint8_t)color_be, (uint8_t)(color_be >> 8)};
+    meta_lcd_pack444(px, 2);
+    for (uint32_t i = 0; i < 80u * 128u; i++) {
+        spi_send(px[0]);
+        spi_send(px[1]);
+        spi_send(px[2]);
+    }
+#else
     for (uint32_t i = 0; i < 160u * 128u; i++) {
         spi_send((uint8_t)color_be);
         spi_send((uint8_t)(color_be >> 8));
     }
+#endif
     meta_lcd_end_frame();
 }

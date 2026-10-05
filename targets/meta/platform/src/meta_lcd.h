@@ -13,7 +13,8 @@ void meta_lcd_init(void);
  * META_LCD_DMA the transfer is queued and started by the DMA interrupt as
  * soon as the bus is free; the call only waits when the queue is full.
  * Returns a sequence number: the buffer may be reused once
- * meta_lcd_done_seq() reaches it. */
+ * meta_lcd_done_seq() reaches it.  With META_LCD_12BPP the rows are packed
+ * in place (RGB444): the buffer no longer holds RGB565 afterwards. */
 uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows);
 uint32_t meta_lcd_done_seq(void);
 int meta_lcd_busy(void);

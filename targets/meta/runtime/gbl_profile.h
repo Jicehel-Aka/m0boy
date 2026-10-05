@@ -232,6 +232,16 @@
 #ifndef META_SD_SPI_HZ
 #define META_SD_SPI_HZ 12000000
 #endif
+/* META_LCD_12BPP: the ST7735 in 12-bit colour (RGB444, COLMOD 03h): 25%
+ * fewer bytes per row on the SPI (a full frame 10.2 ms instead of 13.7 at
+ * 24 MHz).  The pipeline renders 0x0RGB pixels (META_COLOR) and each row
+ * is packed in Thumb-1 as it goes out (meta_lcd_pack_asm.S, ~5 cycles per
+ * pixel).  meta-emu-sdl estimate on Super Mario Land: waits for the display
+ * 8.5% -> 1.3% of the CPU, audio restarts 7 -> 1 per minute; colours keep 4
+ * bits per channel. */
+#ifndef META_LCD_12BPP
+#define META_LCD_12BPP 0
+#endif
 #ifndef META_AUDIO_DMA
 #define META_AUDIO_DMA 1
 #endif
@@ -246,8 +256,12 @@
 #endif
 /* Builds with a ROM sector cache (SD or packed) or cartridge RAM on the
  * card have 2-2.5 KiB of RAM left (the stack) instead of 3-5: two strips in
- * flight instead of three, no merge modes (their 1.3 KiB of tables; TBLEND
- * falls back to TILE). */
+ * flight instead of three, no BLEND/DARK (their 1.3 KiB of tables).  TBLEND
+ * (META_TBLEND, the default mode) stays everywhere: 672 bytes, with a
+ * 16-colour table instead of the 1 KiB one when the merge modes are out. */
+#ifndef META_TBLEND
+#define META_TBLEND 1
+#endif
 #if (defined(GBL_ROM_STREAM) && GBL_ROM_STREAM) || GBL_ERAM_ON_SD
 #define META_STREAM_RAM 1
 #ifndef META_LCD_BUFFERS

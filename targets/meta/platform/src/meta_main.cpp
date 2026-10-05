@@ -574,7 +574,7 @@ int main(void) {
     meta_audio_init();
 
 #if META_SCALED_MODES
-    meta_display_set_mode(META_MODE_TBLEND); /* TILE when streaming */
+    meta_display_set_mode(META_MODE_TBLEND); /* TILE without META_TBLEND */
 #else
     meta_display_set_mode(0);
 #endif

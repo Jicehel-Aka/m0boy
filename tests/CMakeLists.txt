@@ -600,9 +600,45 @@ target_include_directories(test_meta_display_sim PRIVATE
     "${GBL_META_DIR}/runtime"
     "${GBL_META_DIR}/tests/config"
     "${GBL_META_DIR}/platform/src"
+    "${GBL_META_DIR}/platform/meta"
     "${GBL_META_DIR}/tests"
 )
 add_test(NAME meta_display_panel_matches_reference COMMAND test_meta_display_sim)
+
+# Streaming builds' profile: no BLEND/DARK, TBLEND with its 16-colour table.
+add_executable(test_meta_display_sim_stream
+    "${GBL_META_DIR}/tests/display_sim.c"
+    "${GBL_META_DIR}/platform/meta/meta_display.c"
+    "${GBL_META_DIR}/platform/src/meta_palettes.c"
+    ${GBL_META_RUNTIME_SOURCES}
+)
+target_include_directories(test_meta_display_sim_stream PRIVATE
+    "${GBL_META_DIR}/runtime"
+    "${GBL_META_DIR}/tests/config"
+    "${GBL_META_DIR}/platform/src"
+    "${GBL_META_DIR}/platform/meta"
+    "${GBL_META_DIR}/tests"
+)
+target_compile_definitions(test_meta_display_sim_stream PRIVATE META_MERGE_MODES=0)
+add_test(NAME meta_display_stream_profile_matches_reference COMMAND test_meta_display_sim_stream)
+
+# 12-bit panel (META_LCD_12BPP): rows packed in place, read back as the panel would.
+add_executable(test_meta_display_sim_12bpp "${GBL_META_DIR}/tests/display_sim.c"
+    "${GBL_META_DIR}/platform/meta/meta_display.c" "${GBL_META_DIR}/platform/src/meta_palettes.c"
+    ${GBL_META_RUNTIME_SOURCES})
+target_include_directories(test_meta_display_sim_12bpp PRIVATE "${GBL_META_DIR}/runtime"
+    "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/platform/src" "${GBL_META_DIR}/platform/meta"
+    "${GBL_META_DIR}/tests")
+target_compile_definitions(test_meta_display_sim_12bpp PRIVATE META_LCD_12BPP=1)
+add_test(NAME meta_display_12bpp_matches_reference COMMAND test_meta_display_sim_12bpp)
+
+add_executable(test_meta_lcd_pack "${GBL_META_DIR}/tests/lcd_pack.c")
+target_include_directories(test_meta_lcd_pack PRIVATE "${GBL_META_DIR}/platform/meta")
+add_test(NAME meta_lcd_pack444_matches_st7735 COMMAND test_meta_lcd_pack)
+
+add_executable(test_meta_apu_lfsr "${GBL_META_DIR}/tests/apu_lfsr.c")
+target_include_directories(test_meta_apu_lfsr PRIVATE "${GBL_META_DIR}/runtime")
+add_test(NAME meta_apu_lfsr_matches_per_clock COMMAND test_meta_apu_lfsr)
 
 add_executable(test_meta_fat_check
     "${GBL_META_DIR}/tests/fat_check.c"
