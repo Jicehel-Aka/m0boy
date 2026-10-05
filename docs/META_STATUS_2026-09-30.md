@@ -234,3 +234,21 @@ travail de session est commité en petites unités.
   de façon identique à l'état 9a65835, avant tout le travail du jour —
   préexistants et hors META.
 - Tests hors META : les 2 échecs ci-dessus seulement ; `ctest -R meta` 12/12.
+
+### 2026-10-05 (nuit) — gel du wrap corrigé, % au titre, rebuilds allégés
+
+- **Gel définitif au wrap du tick** (lapinou frame ~7000, % wasm figé à 0) :
+  la boucle de frame comparait `tick < cible` non signé — après le passage
+  de 2^32 (89,5 s à 48 MHz) la cible rebasée passait SOUS le tick et plus
+  rien ne s'exécutait.  Comparaison signée `(int32_t)(tickCount - cible)` ;
+  lapinou vérifié sur 15 000 frames (~3 wraps).  Le % de vitesse est écrit
+  dans le titre de la fenêtre native.
+- **Boucle de frame batchée** (`step_batch`) : appel direct de step au lieu
+  du pointeur — wasm node 34,6 -> 31,6 s / 3 600 frames (188 %), natif
+  20,4 -> 19,3 s ; hash écran identique ; wasm + standalone régénérés.
+  Gain suivant (bloc) : pré-décodage T16.
+- **`.gbrmeta` garde le remplissage (« bpi »)** : un rebuild de version
+  vérifie l'ancien remplissage et tente un cran de plus (2 builds au lieu
+  de ~7) ; repli sur la recherche complète sinon.  Le profilage (sessions
+  par sha1) était déjà partagé entre consoles et conservé aux montées de
+  version — un rebuild n'est plus « une nuit ».
