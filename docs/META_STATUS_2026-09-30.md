@@ -198,3 +198,39 @@ function is a livelock, not slowness.
 - `roms/bin/` should be regenerated with the current runtime and layout.
 - Unrelated suite failures seen on 2026-09-30: `accuracy_runner_exit_policy`
   (empty PPU catalogue locally) and `crystal_challenge_rules_are_bounded_and_deterministic`.
+
+## 2026-10-05 (soir) — 0.6.0, conversions et optimisations mesurées
+
+Suite au rapport du jour (`META_EMU_RAPPORT_2026-10-05.md`) ; tout le
+travail de session est commité en petites unités.
+
+- **Versions par console** : META `targets/meta/VERSION` = 0.6.0, Pokitto
+  `targets/meta/platform/pokitto/VERSION` = 0.6.0 (tampon `GBL_GEN_VERSION`
+  par console, `--pokitto-version`, `compile.sh` interroge la version de son
+  `TARGET`).  `TARGET=both` enchaîne les deux consoles, sélection demandée
+  une seule fois ; sans TARGET, la console est demandée dans un terminal.
+- **`build_flags` par jeu** : `<sortie>/<Jeu>/build_flags` (ex.
+  `-D META_TBLEND=0`) est appliqué à chaque passe.  TBLEND faisait passer
+  4 jeux streaming sous 2 Ko de pile (1668 o : DKL, Super DK GB, Pokemon
+  Jaune, Zelda) ; avec le flag ils tiennent à 2340 o (Mystic Quest garde
+  TBLEND, 2196 o).
+- **Reconversions** : Gargoyle's Quest (0.4.0 Arduino du 02-10) et les 5
+  jeux streaming sont en 0.6.0.  Émulateur : écrans corrects, 0 « pc fou »,
+  Gargoyle `famine=0.0% relances=0` (famine audio terminée).  **Rappel** :
+  valider les firmwares via leur `.BIN` (ou un zip) — passer un
+  répertoire-carte ne charge pas le firmware (jamais supporté, ne pas
+  confondre avec un écran noir).
+- **Optimisations mesurées (T6/T7 du rapport, obsolètes)** : Mario Land et
+  Zelda tournent à `relances=0 famine=0.0%` sur une minute ; Zelda : CPU
+  libre ≈ 38 % (meta_micros 32,8 %, `gbl_interp_block` 2 %) — la boucle
+  d'attente STAT/LY du rapport est couverte par la couverture complète.
+  RING/LATENCY audio inchangés : les agrandir coûterait de la RAM (Zelda
+  repasserait sous 2 Ko) sans gain mesurable.
+- **Reste** : T8 (APU en Thumb-1 : `gbl_apu_render` 13,3 % sur Zelda,
+  cible < 8 %) — réécriture assembleur à faire avec test d'équivalence ;
+  T9 (WFI) ; T4 (validation sur vraie console) toujours en attente.
+- **T13 clos** : `accuracy_runner_exit_policy` (`.FF...` : catalogues
+  blargg absents) et `crystal_challenge_rules...` (aucune sortie) échouent
+  de façon identique à l'état 9a65835, avant tout le travail du jour —
+  préexistants et hors META.
+- Tests hors META : les 2 échecs ci-dessus seulement ; `ctest -R meta` 12/12.
