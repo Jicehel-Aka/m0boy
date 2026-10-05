@@ -509,12 +509,15 @@ downloads. ImageMagick or Pillow converts the PNG to 24-bit BMPs.
 There is no ROM size limit: ROMs that do not fit in flash stream from the
 card (see above).
 
-Every firmware embeds the version of the META edition that produced it
-(`gbrecomp-meta x.y.z` string in the .bin). The version lives in `targets/meta/VERSION` only: the
-recompiler stamps it (`GBL_GEN_VERSION`), `gbrecomp --meta-version` prints
-it, the release archive's CMake project and zip name take it. Bump it when
-the runtime, the frontend or the generated code change what a firmware
-does. `compile.sh` and `tools/meta-compiler` compare it with the string
+Every firmware embeds the version of the edition that produced it
+(`gbrecomp-meta x.y.z` / `gbrecomp-pokitto x.y.z` string in the .bin). Each
+console has its own version file, bumped independently: the META's lives in
+`targets/meta/VERSION` (the release archive's CMake project and zip name take
+it), the Pokitto's in `targets/meta/platform/pokitto/VERSION`. The recompiler
+stamps the target console's (`GBL_GEN_VERSION`), `gbrecomp --meta-version` and
+`gbrecomp --pokitto-version` print them. Bump a console's version when
+the runtime, the frontend or the generated code change what its firmwares
+do. `compile.sh` (per `TARGET`) and `tools/meta-compiler` compare it with the string
 read back from each .bin (or `.gbrmeta.json` when the .bin has none): a firmware that is current
 (same version, same ROM sha1) is kept as is; one produced by another
 version is offered for rebuild. On a terminal the script is interactive:

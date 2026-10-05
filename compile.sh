@@ -36,8 +36,10 @@
 #                          taille de ROM.
 #   <Jeu>/.gbrmeta.json    état interne (ROM, sha1, version, PACK) ; ignorable.
 #
-# Versions : chaque firmware embarque la version de gbrecomp qui l'a produit
-# (chaîne « gbrecomp-meta x.y.z » dans le .bin).  compile.sh la relit : un firmware déjà à jour (même
+# Versions : chaque firmware embarque la version de l'édition de sa console
+# (« gbrecomp-meta x.y.z » ou « gbrecomp-pokitto x.y.z » dans le .bin ; une
+# version par console : targets/meta/VERSION, targets/meta/platform/pokitto/VERSION).
+# compile.sh la relit : un firmware déjà à jour (même
 # version, même ROM) est conservé tel quel ; un firmware fait par une autre
 # version est proposé à la mise à jour.
 #
@@ -129,9 +131,11 @@ if [ ! -x "$GBRECOMP" ]; then
   echo "gbrecomp introuvable : compile d'abord l'outil (cmake -G Ninja -B build . && ninja -C build)."
   exit 1
 fi
-# Version de l'édition META (targets/meta/VERSION), celle inscrite dans les
-# firmwares ; un gbrecomp plus ancien ne connaît que --version-json.
-CUR_VERSION=$("$GBRECOMP" --meta-version 2>/dev/null | head -n1)
+# Version de l'édition de la console (targets/meta/VERSION pour la META,
+# targets/meta/platform/pokitto/VERSION pour la Pokitto), celle inscrite dans
+# les firmwares « gbrecomp-<console> x.y.z » ; un gbrecomp plus ancien ne
+# connaît que --version-json.
+CUR_VERSION=$("$GBRECOMP" --"$TARGET"-version 2>/dev/null | head -n1)
 case "$CUR_VERSION" in
   [0-9]*) ;;
   *) CUR_VERSION=$("$GBRECOMP" --version-json | sed -n 's/.*"version":"\([^"]*\)".*/\1/p') ;;

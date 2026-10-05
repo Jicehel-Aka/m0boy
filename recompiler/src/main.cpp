@@ -35,6 +35,9 @@ namespace fs = std::filesystem;
 #ifndef GBRECOMP_META_VERSION
 #define GBRECOMP_META_VERSION "0.0.0"
 #endif
+#ifndef GBRECOMP_POKITTO_VERSION
+#define GBRECOMP_POKITTO_VERSION "0.0.0"
+#endif
 
 static void print_version_json() {
     std::cout
@@ -168,6 +171,7 @@ void print_usage(const char* program) {
     std::cout << "  --version             Print the GB Recompiled version\n";
     std::cout << "  --version-json        Print machine-readable version and ABI identity\n";
     std::cout << "  --meta-version        Print the Gamebuino META edition version (stamped into firmwares)\n";
+    std::cout << "  --pokitto-version     Print the Pokitto edition version (stamped into firmwares)\n";
     std::cout << "  -h, --help            Show this help\n";
 }
 
@@ -1908,6 +1912,10 @@ int main(int argc, char* argv[]) {
     }
     if (argc == 2 && std::string(argv[1]) == "--meta-version") {
         std::cout << GBRECOMP_META_VERSION << "\n";
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--pokitto-version") {
+        std::cout << GBRECOMP_POKITTO_VERSION << "\n";
         return 0;
     }
     if (argc == 2 && std::string(argv[1]) == "--version-json") {

@@ -29,10 +29,14 @@
 #include <sstream>
 #include <unordered_map>
 
-/* Set by recompiler/CMakeLists.txt from targets/meta/VERSION; emitted into
+/* Set by recompiler/CMakeLists.txt from targets/meta/VERSION and
+ * targets/meta/platform/pokitto/VERSION; the target console's is emitted into
  * gbl_config.h so a firmware records which gbrecomp produced it. */
 #ifndef GBRECOMP_META_VERSION
 #define GBRECOMP_META_VERSION "unknown"
+#endif
+#ifndef GBRECOMP_POKITTO_VERSION
+#define GBRECOMP_POKITTO_VERSION "unknown"
 #endif
 
 namespace gbrecomp {
@@ -1780,7 +1784,7 @@ std::string Generator::emit_config(std::string& error) const {
                  if (c >= 0x20 && c < 0x7F && c != '"' && c != '\\') t += c;
              return t;
          }() << "\"\n"
-      << "#define GBL_GEN_VERSION \"" << GBRECOMP_META_VERSION << "\"\n"
+      << "#define GBL_GEN_VERSION \"" << (opt_.pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) << "\"\n"
       << "#endif\n";
     return o.str();
 }
