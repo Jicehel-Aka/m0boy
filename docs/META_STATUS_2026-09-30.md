@@ -294,3 +294,27 @@ Le sélecteur « Jeux » du navigateur est opérationnel : le JS et les
 fonctions C existaient, les exports wasm manquaient.  Reste ~2 % sous le
 temps réel (pacing) ; le fast-path des MMIO chaudes (LCD) est la suite
 naturelle si on veut passer au-dessus.
+
+### 2026-10-06 — pokitto à 48 MHz nominal (datasheet), tempo du son corrigé
+
+Le défaut pokitto était l'overclock 72 MHz (META_CLOCK_DEFAULT = 72,
+_OSCT=2 de PokittoLib) : hors datasheet (LPC11U6x : 50 MHz max) et — sur
+les machines où l'hôte n'exécute pas 72 M ticks/s — jeu et son au ralenti
+(son « deux fois trop rapide », 6,9 frames GB par frame émulée mesurées
+par comptage des vblanks du firmware).  Défaut : 48 MHz nominal
+(SYSPLLCTRL 0x23, comme PokittoLib) ; le 72 reste au menu « Processeur ».
+L'émulateur cadence le cœur émulé sur la config réelle (pk_core_hz :
+IRC 12 MHz hors PLL, 12 x M sinon — MAINCLKSEL + SYSPLLCTRL).
+
+Audit timing face à la datasheet : SysTick sur l'horloge CPU (RVR =
+MHz x 1000 - 1, 1 ms) ; CT32B0 sur PCLK = système (SYSAHBCLKDIV = 1),
+MR1 = PCLK/22050 ; SSP (carte SD) divisé de PCLK, recalé à chaque
+changement d'horloge ; pas de DMA dans le runtime (affichage et audio
+pilotés CPU/GPIO).  Mesures post-correctif (SML 0.6.1) : RVR 47999,
+ms_count 999,7 Hz, 58,9 fps GB, ~98 % du temps réel sur les cinq jeux
+du lot utilisateur.
+
+VERSION pokitto : 0.6.1 (meta_micros sans division + horloge 48 MHz
+par défaut changent les firmwares) ; la META reste 0.6.0.  Reconvertir :
+`TARGET=pokitto UPDATE=1 ./compile.sh` — le cache « bpi » et les sessions
+partagées rendent l'opération rapide.
