@@ -325,3 +325,14 @@ plus borné à 100 — il montre la vraie vitesse.  Causes possibles d'un
 périmé face aux firmwares (avant pk_core_hz, le pokitto était cadencé à
 45 MHz en dur : un firmware 72 MHz y tournait à 160 %).  Le build actuel,
 mesuré sur SML 0.6.1 paced : 98 % du temps réel, 58,9 fps GB.
+
+**Vérification tempo finale (2026-10-06)** : avec le binaire à jour et des
+firmwares 0.6.1, la sonde EMU_DMA_TRACE mesure, chez le développeur ET sur
+la machine de l'utilisateur, ms_count 999,9 Hz, 59,46 fps GB en temps
+émulé, 59,73 fps GB mural (3300 frames / 55,25 s), et 21 726 latches
+audio/s portant la musique (110k-1,1 M latches sonores par minute).
+Le tempo pokitto est correct ; le « trop rapide » historique venait du
+72 MHz par défaut (0.6.0) et/ou d'un cadencement 45 MHz en dur côté
+émulateur, deux défauts corrigés.  Reste : la reprise franche audio (à
+sec sous 100 % de pacing) est ajoutée ; le resampling fin (±2 %) n'est
+pas nécessaire au tempo.
