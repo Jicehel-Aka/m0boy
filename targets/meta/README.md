@@ -381,8 +381,10 @@ more than the transfer it saves.
 ## Pokitto (`--target pokitto`)
 
 `gbrecomp --target pokitto` writes the same project for the
-[Pokitto](https://www.pokitto.com) (LPC11U68: Cortex-M0+, 48 MHz, run at
-72 MHz like PokittoLib's usual `_OSCT=2`; 32 + 2 + 2 KiB RAM; 256 KiB flash
+[Pokitto](https://www.pokitto.com) (LPC11U68: Cortex-M0+, 48 MHz nominal —
+the datasheet rates the chip to 50 MHz, PokittoLib's own SystemInit uses
+SYSPLLCTRL 0x23 = 48; the menu's « Processeur » offers the 72 MHz _OSCT=2
+overclock —; 32 + 2 + 2 KiB RAM; 256 KiB flash
 of which the loader keeps the top 28 KiB; 220×176 panel on a 16-bit
 parallel bus; 8-bit R2R DAC). Every `--meta-*` option applies; the runtime,
 the generated code and the frontend are shared, only the drivers differ.

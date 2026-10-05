@@ -33,7 +33,10 @@
 #define META_SCALED_MODES 0 /* no 144->128 modes: 1:1, or gm0's 200x176 (pokitto_display.c) */
 #define META_SCREEN_ROWS 144 /* rows of the picture the menu draws on */
 #define META_SWAP_AB_DEFAULT 0 /* Pokitto A (right) is Game Boy A already */
-#define META_CLOCK_DEFAULT 72 /* PokittoLib's usual overclock (_OSCT=2); 48 in the menu */
+/* LPC11U68 : 50 MHz max (datasheet), 48 MHz nominal (PokittoLib, SYSPLLCTRL
+ * 0x23 : M = 4, P = 2).  Le menu « Processeur » permet le 72 MHz (_OSCT=2,
+ * hors spec), mais le défaut reste la fréquence nominale de la console. */
+#define META_CLOCK_DEFAULT 48
 /* Panel colours: native RGB565 on the 16-bit bus. */
 #define META_COLOR(rgb) \
     ((uint16_t)((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)))
