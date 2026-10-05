@@ -318,3 +318,10 @@ VERSION pokitto : 0.6.1 (meta_micros sans division + horloge 48 MHz
 par défaut changent les firmwares) ; la META reste 0.6.0.  Reconvertir :
 `TARGET=pokitto UPDATE=1 ./compile.sh` — le cache « bpi » et les sessions
 partagées rendent l'opération rapide.
+
+**Diagnostic « tout va trop vite » (son + vidéo)** : le % du titre n'est
+plus borné à 100 — il montre la vraie vitesse.  Causes possibles d'un
+>100 % : `EMU_NOPACE=1` dans l'environnement, ou binaire de l'émulateur
+périmé face aux firmwares (avant pk_core_hz, le pokitto était cadencé à
+45 MHz en dur : un firmware 72 MHz y tournait à 160 %).  Le build actuel,
+mesuré sur SML 0.6.1 paced : 98 % du temps réel, 58,9 fps GB.
