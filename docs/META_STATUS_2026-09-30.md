@@ -252,3 +252,25 @@ travail de session est commité en petites unités.
   de ~7) ; repli sur la recherche complète sinon.  Le profilage (sessions
   par sha1) était déjà partagé entre consoles et conservé aux montées de
   version — un rebuild n'est plus « une nuit ».
+
+### 2026-10-05 (nuit II) — pokitto : horloge fidèle, timers par échéance
+
+- **Flèches du pad pokitto** : fonctionnent (clavier, croix manette,
+  EMU_INPUT) — la chaîne BTN -> pk_btn_gpio -> GPIO P1 est saine ; le test
+  doit se faire avec un firmware 0.6.0 (un .bin d'avant la réécriture bare
+  metal du 03-10 ne lit pas les boutons pareil).  Le stick droit alimente
+  les ADC DAT8/9 (jeux lib), comme la référence.
+- **Horloge pokitto fidèle** : le cœur est cadencé à la fréquence que le
+  firmware configure (IRC 12 MHz, sinon 12 x M du PLL) au lieu de 45 MHz en
+  dur — un jeu 72 MHz tournait à 62,5 %, son étiré de 60 %.  Mesuré :
+  timer audio à 22 050 Hz exacts.
+- **Timers LPC par échéance** : traités à chaque instruction (4-5x le coût
+  du reste), maintenant à leur prochaine échéance avec invalidations
+  (écritures CT/SysTick, COUNTFLAG part au ré-enable).
+- **% du titre/HUD** : bug d'unité (secondes contre millisecondes) depuis
+  le passage au timing fidèle — 0 % en permanence ; corrigé, le % est aussi
+  dans le titre de la fenêtre native.
+- **Reste** : le cœur pokitto atteint ~63-79 % du temps réel sur un
+  Ryzen 6850H (accès mémoire LPC sans fast-path ; le META fait 295 %) —
+  le son reste donc légèrement étiré sur les jeux 72 MHz tant que le cœur
+  ne tourne pas à 100 % (fast-path mémoire = travail T16).
