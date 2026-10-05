@@ -274,3 +274,23 @@ travail de session est commité en petites unités.
   Ryzen 6850H (accès mémoire LPC sans fast-path ; le META fait 295 %) —
   le son reste donc légèrement étiré sur les jeux 72 MHz tant que le cœur
   ne tourne pas à 100 % (fast-path mémoire = travail T16).
+
+### 2026-10-05 (nuit III) — pokitto jouable : 62-80 % -> 98 %
+
+Mesuré sur le lot « pokitto-gb.zip » de l'utilisateur (SML, Tennis,
+Mystic Quest, SolarStriker, Zelda).  Trois causes, trois correctifs :
+
+1. **Fast-path mémoire** : flash et SRAM principale du LPC = les mêmes
+   tampons que le cœur META — accès directs au lieu du grand switch
+   (pk_reg_peek/pk_reg_write) à chaque lecture/écriture.  MMIO, banques
+   2 Ko et fault d'écriture flash gardent la voie lente (effets de bord).
+2. **`meta_micros` sans division** (runtime pokitto, vaut pour la vraie
+   console) : `(SYST_RVR - val) / clock_mhz` appelait `__udivsi3` à
+   chaque tour du limiteur de frames — 47 % du cœur.  Pré-multiplication
+   `us_mul` comme le META et son `frac_mul`.
+3. **Croix directionnelle manette pokitto** absente de `pad_button_mask`.
+
+Le sélecteur « Jeux » du navigateur est opérationnel : le JS et les
+fonctions C existaient, les exports wasm manquaient.  Reste ~2 % sous le
+temps réel (pacing) ; le fast-path des MMIO chaudes (LCD) est la suite
+naturelle si on veut passer au-dessus.
