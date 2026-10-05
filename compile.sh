@@ -13,6 +13,12 @@
 #                   228 Kio de flash sous le loader au lieu de 240, pas
 #                   d'icônes (format du loader META).  Les parties
 #                   enregistrées sont communes aux deux consoles.
+#   TARGET=both     les deux consoles, l'une après l'autre.  La sélection des
+#                   jeux et la confirmation des mises à jour de version sont
+#                   demandées une seule fois, puis appliquées aux deux.
+#                   Avec un dossier de sortie explicite, chaque console y a
+#                   son sous-dossier (<sortie>/meta, <sortie>/pokitto).
+#   Sans TARGET, dans un terminal, la console est demandée (méta par défaut).
 #
 # Chaque jeu devient un dossier à copier tel quel à la racine de la carte SD :
 #   <Jeu>/<NOM>.BIN        le firmware, nommé en 8.3 comme les autres fichiers
@@ -88,10 +94,43 @@
 # Une ROM en échec n'arrête pas le lot ; le bilan est affiché à la fin.
 set -uo pipefail
 
+TARGET="${TARGET:-}"
+if [ -z "$TARGET" ] && [ -t 0 ]; then
+  printf 'Console : méta (entrée), p = pokitto, d = les deux : '
+  read -r t
+  case "$t" in p|pokitto) TARGET=pokitto ;; d|deux|both|all) TARGET=both ;; *) TARGET=meta ;; esac
+fi
 TARGET="${TARGET:-meta}"
+if [ "$TARGET" = both ] || [ "$TARGET" = all ]; then
+  # Une exécution par console.  La sélection des jeux et la confirmation des
+  # mises à jour sont demandées une seule fois (pass de capture ci-dessous,
+  # état de la META) puis transmises aux deux passes via CHOICE/CHOICE_UPD.
+  rc=0
+  src="${1:-./roms/gb}"
+  if [ -n "${2:-}" ]; then mkdir -p "$2/meta" "$2/pokitto"; dm="$2/meta"; dp="$2/pokitto"; else dm=""; dp=""; fi
+  if [ -t 0 ] && [ "${ALL:-0}" != 1 ] && [ -z "${CHOICE:-}" ]; then
+    tf=$(mktemp)
+    if TARGET=meta CHOICE_CAPTURE=1 CHOICE_CAPTURE_OUT="$tf" "$0" "$src" "$dm"; then
+      if [ -s "$tf" ]; then
+        CHOICE=$(sed -n 's/^CHOICE=//p' "$tf")
+        CHOICE_UPD=$(sed -n 's/^UPDANS=//p' "$tf")
+        export CHOICE CHOICE_UPD
+      else
+        rm -f "$tf"; exit 0 # « q » : rien à faire
+      fi
+    fi
+    rm -f "$tf"
+  fi
+  for t in meta pokitto; do
+    echo; echo "################################## $t ##################################"
+    if [ "$t" = meta ]; then TARGET=meta "$0" "$src" "$dm" || rc=1
+    else TARGET=pokitto "$0" "$src" "$dp" || rc=1; fi
+  done
+  exit $rc
+fi
 case "$TARGET" in
   meta|pokitto) ;;
-  *) echo "TARGET=$TARGET inconnu (meta ou pokitto)."; exit 1 ;;
+  *) echo "TARGET=$TARGET inconnu (meta, pokitto ou both)."; exit 1 ;;
 esac
 SRC_DIR="${1:-./roms/gb}"
 DEST_DIR="${2:-./roms/$TARGET}"
@@ -738,7 +777,12 @@ if [ "$interactive" = 1 ]; then
   done
   [ "$n_dup" -gt 0 ] && echo "($n_dup doublon(s) ignoré(s))"
   echo
-  read -r -p "Jeux à traiter [Entrée = ce qui a à faire ($todo_count), a = tout, ex: 1,3-5, q = rien] : " ans
+  if [ -n "${CHOICE:-}" ]; then
+    [ "$CHOICE" = - ] && CHOICE=""
+    ans="$CHOICE"
+  else
+    read -r -p "Jeux à traiter [Entrée = ce qui a à faire ($todo_count), a = tout, ex: 1,3-5, q = rien] : " ans
+  fi
   case "$ans" in
     q|Q) exit 0 ;;
     "" ) for ((i = 0; i < n; i++)); do [ "${R_status[i]}" != 0 ] && SEL+=("$i"); done ;;
@@ -765,7 +809,8 @@ if [ "$interactive" = 1 ]; then
     for i in "${SEL[@]}"; do
       [ "${R_status[i]}" = 2 ] && echo "  - ${R_clean[i]}  [${R_ver[i]}]"
     done
-    read -r -p "Reconstruire avec gbrecomp v$CUR_VERSION ? [O/n] " o
+    if [ -n "${CHOICE_UPD:-}" ]; then o="$CHOICE_UPD"
+    else read -r -p "Reconstruire avec gbrecomp v$CUR_VERSION ? [O/n] " o; fi
     case "$o" in n|N*)
       rest=()
       for i in ${SEL[@]+"${SEL[@]}"}; do
@@ -774,6 +819,10 @@ if [ "$interactive" = 1 ]; then
       SEL=(${rest[@]+"${rest[@]}"})
       ;;
     esac
+  fi
+  if [ "${CHOICE_CAPTURE:-0}" = 1 ]; then
+    printf 'CHOICE=%s\nUPDANS=%s\n' "${ans:--}" "${o:-o}" > "${CHOICE_CAPTURE_OUT:?}"
+    exit 0
   fi
 else
   # Non interactif : ce qui a à faire, sauf mise à jour de version
