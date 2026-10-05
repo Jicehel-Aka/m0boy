@@ -18,6 +18,7 @@
 
 static volatile uint32_t ms_count;
 static uint8_t clock_mhz = 12;
+static uint16_t us_mul; /* (1 << 18) / clock_mhz : micros sans division */
 
 void SysTick_Handler(void) { ms_count++; }
 
@@ -45,6 +46,11 @@ static void main_clock(uint32_t sel) {
 static void systick_for(uint32_t mhz) {
     SYST_CSR = 0;
     SYST_RVR = mhz * 1000u - 1u;
+    /* meta_micros multiplie par us_mul au lieu de diviser par clock_mhz :
+     * le M0+ n'a pas de division matérielle et __udivsi3 coûtait 47 % du
+     * temps du cœur (le limiteur de frames appelle meta_micros en boucle).
+     * Comme le META et son frac_mul (meta_clock.cpp). */
+    us_mul = (1u << 18) / mhz;
     SYST_CVR = 0;
     SYST_CSR = 7u; /* core clock, interrupt, enable */
 }
@@ -108,6 +114,8 @@ uint32_t meta_micros(void) {
      * the count is one millisecond behind.  A small val means the wrap came
      * after val was read. */
     if (pend && val < SYST_RVR / 2u) pend = 0;
-    return (count + pend) * 1000u + (SYST_RVR - val) / clock_mhz;
+    /* x * (2^18 / clock_mhz) >> 18 tient en 32 bits (x < clock_mhz * 1000) :
+     * erreur <= 0,03 %, soit <= 0,25 µs par milliseconde. */
+    return (count + pend) * 1000u + (((SYST_RVR - val) * us_mul) >> 18);
 }
 
