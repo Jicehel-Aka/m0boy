@@ -12,6 +12,7 @@
 #include "gbl.h"
 #include "gbl_config.h"
 #include "gbl_internal.h"
+#include "gbl_apu_lfsr.h"
 
 #include <string.h>
 
@@ -267,11 +268,7 @@ void gbl_apu_render(uint8_t *out, unsigned n) {
                 uint32_t steps = ch[3].phase >> 16;
                 ch[3].phase &= 0xFFFF;
                 if (steps > 64) steps = 64;
-                while (steps--) {
-                    uint16_t x = (lfsr ^ (lfsr >> 1)) & 1;
-                    lfsr = (uint16_t)((lfsr >> 1) | (x << 14));
-                    if (NR(0x22) & 0x08) lfsr = (uint16_t)((lfsr & ~0x40) | (x << 6));
-                }
+                lfsr = gbl_apu_lfsr_steps(lfsr, steps, NR(0x22) & 0x08);
                 mix += (lfsr & 1) ? -(int32_t)ch[3].vol : ch[3].vol;
             }
         }
