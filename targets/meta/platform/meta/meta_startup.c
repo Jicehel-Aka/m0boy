@@ -109,6 +109,7 @@ void SystemInit(void) {
     SYSCTRL->OSC8M.bit.PRESC = SYSCTRL_OSC8M_PRESC_0_Val;
     SYSCTRL->OSC8M.bit.ONDEMAND = 0;
     GCLK->GENDIV.reg = GCLK_GENDIV_ID(3);
+    gclk_sync(); /* every GCLK write waits for SYNCBUSY (datasheet 15.6.6) */
     GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(3) | GCLK_GENCTRL_SRC_OSC8M | GCLK_GENCTRL_GENEN;
     gclk_sync();
 

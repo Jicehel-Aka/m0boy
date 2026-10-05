@@ -48,12 +48,22 @@ void meta_sd_bus_end(int init, int ok) {
 
 uint8_t meta_sd_xfer(uint8_t out) { return meta_spi_transfer(out); }
 
+/* Pipelined: the next 0xFF goes into DATA as soon as DRE says the shifter
+ * took the previous one, so the bus never idles between bytes (one byte in
+ * the shifter, one waiting; the two-level receive buffer cannot overflow).
+ * The byte-by-byte loop left a gap of several cycles per byte. */
 void meta_sd_recv(uint8_t *dst, unsigned n) {
-    for (unsigned i = 0; i < n; i++) {
-        SERCOM4->SPI.DATA.reg = 0xFF;
-        while (!(SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC)) {}
-        dst[i] = (uint8_t)SERCOM4->SPI.DATA.reg;
+    if (!n) return;
+    SercomSpi *spi = &SERCOM4->SPI;
+    spi->DATA.reg = 0xFF;
+    while (--n) {
+        while (!(spi->INTFLAG.reg & SERCOM_SPI_INTFLAG_DRE)) {}
+        spi->DATA.reg = 0xFF;
+        while (!(spi->INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC)) {}
+        *dst++ = (uint8_t)spi->DATA.reg;
     }
+    while (!(spi->INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC)) {}
+    *dst = (uint8_t)spi->DATA.reg;
 }
 
 uint32_t meta_sd_ms(void) { return millis(); }
