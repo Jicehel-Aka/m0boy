@@ -652,9 +652,29 @@ PY
     echo "$build_log" | tail -20
     return 2
   }
-  local lo=8 hi=64 mid best=0 rc build_log gen_log
+  local lo=8 hi=64 mid best=0 rc build_log gen_log need_rebuild=1
   if [ ${#static_args[@]} -eq 0 ] && [ ${#cov_args[@]} -eq 0 ]; then lo=64; fi
-  while [ "$lo" -le "$hi" ]; do
+  # Rebuild de version (même ROM, même PACK) : le remplissage trouvé à la
+  # passe précédente reste le bon ordre de grandeur — on le vérifie, on
+  # tente un cran de remplissage de plus, et on ne fait la recherche
+  # dichotomique complète que si la place a vraiment changé (~7 builds pio
+  # économisés par jeu, c'est ça qui rendait les montées de version longues).
+  local last_bpi
+  last_bpi=$(sed -n 's/.*"bpi":[[:space:]]*\([0-9]*\).*/\1/p' "$game_dir/.gbrmeta.json" 2>/dev/null)
+  case "$last_bpi" in ''|*[!0-9]*) last_bpi="" ;; esac
+  if [ -n "$last_bpi" ] && [ "$last_bpi" -ge 8 ] && [ "$last_bpi" -le 64 ]; then
+    if build_with "$last_bpi"; then
+      best=$last_bpi
+      local try=$(( last_bpi - 4 ))
+      # essai infructueux ou pas : le firmware disque est déjà celui de best
+      if [ "$try" -ge 8 ] && build_with "$try"; then best=$try; fi
+      need_rebuild=0
+    else
+      lo=$(( last_bpi + 1 ))
+      echo "[i] Remplissage précédent (bpi=$last_bpi) ne tient plus : recherche complète"
+    fi
+  fi
+  while [ "$best" -eq 0 ] && [ "$lo" -le "$hi" ]; do
     mid=$(( (lo + hi) / 2 ))
     build_with "$mid"; rc=$?
     if [ $rc -eq 0 ]; then best=$mid; hi=$(( mid - 1 ))
@@ -663,8 +683,9 @@ PY
     fi
   done
   [ "$best" -gt 0 ] || { echo "[x] Même sans code compilé, le firmware ne tient pas en flash."; return 1; }
-  # Le dernier essai n'est pas forcément le meilleur : reconstruire celui-ci.
-  build_with "$best" || return 1
+  # Le dernier essai n'est pas forcément le meilleur : reconstruire celui-ci
+  # (inutile par le chemin rapide : le firmware disque est déjà celui de best).
+  if [ "$need_rebuild" = 1 ]; then build_with "$best" || return 1; fi
   echo "$gen_log" | grep -E "compiled:|interpreter only:|wait loops:|ROM streaming:|ROM packed:|--meta-pack:"
   if [ "$TARGET" = pokitto ]; then
     echo "$build_log" | grep -E "^flash:"
@@ -714,8 +735,8 @@ PY
   fi
   # État pour les lancements suivants : version, ROM exacte, fichiers.
   {
-    printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "pack": %s,\n  "date": "%s"\n}\n' \
-      "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$PACK" "$(date +%Y-%m-%d)"
+    printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "pack": %s,\n  "bpi": %s,\n  "date": "%s"\n}\n' \
+      "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$PACK" "$best" "$(date +%Y-%m-%d)"
   } > "$game_dir/.gbrmeta.json"
   local fw_ver
   fw_ver=$(firmware_version "$(game_bin "$game_dir")")
