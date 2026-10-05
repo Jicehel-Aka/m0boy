@@ -41,6 +41,9 @@
 #                          et lit le reste sur la carte.  Pas de limite de
 #                          taille de ROM.
 #   <Jeu>/.gbrmeta.json    état interne (ROM, sha1, version, PACK) ; ignorable.
+#   <Jeu>/build_flags      options de build du projet, une par ligne (# =
+#                          commentaire ; ex. « -D META_TBLEND=0 » pour un jeu
+#                          dont la pile est trop juste) ; optionnel.
 #
 # Versions : chaque firmware embarque la version de l'édition de sa console
 # (« gbrecomp-meta x.y.z » ou « gbrecomp-pokitto x.y.z » dans le .bin ; une
@@ -453,6 +456,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
   local game_dir="$DEST_DIR/$game_name"
   local out_dir="$OUT_ROOT/$prefix"
+  local flags_file="$game_dir/build_flags" extra_flags=""
 
   # a0) Parties enregistrées pour cette ROM exacte (par SHA-1) : celles du
   #     dossier profiles/ fourni, puis celles sauvées par les lancements
@@ -617,8 +621,30 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   build_with() { # $1 = octets par instruction ; 0 ok, 1 flash pleine, 2 erreur
     gen_log=$("$GBRECOMP" "$rom_path" --target "$TARGET" --output-prefix "$prefix" \
       "${cov_args[@]}" "${static_args[@]}" "${pack_args[@]}" --meta-bytes-per-instruction "$1" -o "$out_dir") || return 2
+    # build_flags du jeu (<dossier_sortie>/<Jeu>/build_flags, une option par
+    # ligne, # = commentaire ; ex. -D META_TBLEND=0 pour un jeu à la pile
+    # trop juste) : platformio.ini est régénéré à chaque passe, on ajoute à
+    # la fin (build_flags y est la dernière clé) ; côté pokitto, make reçoit
+    # EXTRA_CFLAGS.
+    if [ -s "$flags_file" ]; then
+      if [ "$TARGET" = pokitto ]; then
+        extra_flags=$(grep -v '^#' "$flags_file" | sed 's/[[:space:]]*$//' | grep -v '^$' | tr '\n' ' ')
+      else
+        python3 - "$out_dir/platformio.ini" "$flags_file" <<'PY' || return 2
+import sys
+ini, fl = sys.argv[1], sys.argv[2]
+flags = [l.strip() for l in open(fl) if l.strip() and not l.startswith("#")]
+text = open(ini).read()
+if "build_flags" not in text:
+    raise SystemExit("build_flags absent de platformio.ini")
+with open(ini, "a") as f:
+    if text and not text.endswith("\n"): f.write("\n")
+    for flag in flags: f.write("    " + flag + "\n")
+PY
+      fi
+    fi
     if [ "$TARGET" = pokitto ]; then
-      build_log=$(make -C "$out_dir" -j"$NPROC" 2>&1) && return 0
+      build_log=$(make -C "$out_dir" -j"$NPROC" EXTRA_CFLAGS="${extra_flags:-}" 2>&1) && return 0
     else
       build_log=$(pio run -d "$out_dir" 2>&1) && return 0
     fi

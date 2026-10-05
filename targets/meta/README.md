@@ -498,6 +498,7 @@ meant to be copied as is to the root of the SD card:
 | `<Game>/<NAME>.SAV` | cartridge-RAM file, created once (battery or large RAM) |
 | `<Game>/<NAME>.GB` | streamed ROM file (ROMs of 256 KiB and more) |
 | `<Game>/.gbrmeta.json` | bookkeeping (ROM sha1, version, `PACK`); ignorable |
+| `<Game>/build_flags` | optional project build options, one per line (`#` comments; e.g. `-D META_TBLEND=0` for a game whose stack is too tight — applied to `platformio.ini` `build_flags`, or `EXTRA_CFLAGS` on the Pokitto) |
 
 The icons come from thumbnails.libretro.com (`Named_Titles`): the
 catalogue index is cached in `<output dir>/.cache/icons/`, region and
