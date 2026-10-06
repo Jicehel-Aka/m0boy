@@ -70,7 +70,11 @@ uint8_t meta_display_palette(void) { return palette_index; }
 void meta_display_set_palette(uint8_t index) {
     if (index >= META_PALETTE_COUNT) index = 0;
     palette_index = index;
-    for (unsigned i = 0; i < 4; i++) meta_dmg_palette[i] = META_COLOR(meta_palettes[index][i]);
+    meta_display_set_palette_colors(meta_palettes[index]);
+}
+
+void meta_display_set_palette_colors(const uint32_t pal[4]) {
+    for (unsigned i = 0; i < 4; i++) meta_dmg_palette[i] = META_COLOR(pal[i]);
     meta_display_set_mode(display_mode); /* the PPU's colours, a full redraw */
 }
 

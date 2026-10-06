@@ -26,10 +26,15 @@ enum {
     META_MODE_COUNT
 };
 
-/* Palette 0 is the default: when gbrecomp found the game in the Game Boy
- * Color boot ROM's compatibility table it emits GBL_PALETTE_GBC (the four
- * 0xRRGGBB the boot ROM would have loaded, through gbl_config.h) and that
- * is palette 0, first in the menu; otherwise palette 0 is Vert (DMG). */
+/* The menu's palettes: Vert (DMG) first and by default; when gbrecomp
+ * found the game in the Game Boy Color boot ROM's compatibility table it
+ * emits GBL_PALETTE_GBC (the four 0xRRGGBB the boot ROM would have
+ * loaded, through gbl_config.h) and that palette comes second.  The 12
+ * generic boot-ROM palettes follow in the table (not in the menu): a
+ * direction held at power-on, plus A and/or B, picks one
+ * (meta_palette_boot) — they are stored as the boot ROM's 30 base
+ * palettes and (OBJ0, OBJ1, BG) triplets (GBL_GBC_BASE, GBL_GBC_COMBOS)
+ * for the day sprites get palettes of their own. */
 #include "gbl_config.h"
 #ifdef GBL_PALETTE_GBC
 #define META_PALETTE_COUNT 6
@@ -39,8 +44,15 @@ enum {
 extern const uint32_t meta_palettes[META_PALETTE_COUNT][4]; /* 0xRRGGBB, lightest first */
 extern const char *const meta_palette_names[META_PALETTE_COUNT];
 extern uint16_t meta_dmg_palette[4]; /* current palette, panel format (META_COLOR) */
+/* The boot ROM's palette for the buttons held at power-on (META_MB_*
+ * bits: a direction, plus A and/or B), or 0 when none — the four colours
+ * come straight from GBL_GBC_BASE and GBL_GBC_COMBOS. */
+const uint32_t *meta_palette_boot(uint8_t buttons);
 /* Palette of every mode but SMOOTH (compile-time tables, first palette). */
 void meta_display_set_palette(uint8_t index);
+/* Any four colours, as the boot combos and the menu's palette choice
+ * need; rebuilds the blend tables like set_palette. */
+void meta_display_set_palette_colors(const uint32_t pal[4]);
 uint8_t meta_display_palette(void);
 /* The strip buffers, free while emulation is stopped (the option menu):
  * flushes and returns 160-pixel rows of scratch, usable once the display

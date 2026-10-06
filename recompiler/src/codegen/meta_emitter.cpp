@@ -1823,6 +1823,51 @@ static bool cgb_game_palette(const ROM& rom, const ROMHeader& h,
     return false;
 }
 
+/* The boot ROM's generic palettes, which its key combinations select at
+ * power-on (a direction, plus A and/or B): the 30 base palettes and the
+ * 12 combinations as (OBJ0, OBJ1, BG) base indices — the games only show
+ * the BG third today, the triplets are there for the day sprites get
+ * their own palettes. */
+static void cgb_generic_palettes(std::string& out) {
+    static const uint8_t combos[12][3] = {
+        {18, 18, 18}, /* Right */
+        {4, 3, 28},   /* Left */
+        {0, 0, 0},    /* Up */
+        {12, 12, 12}, /* Down */
+        {4, 4, 29},   /* Right + A */
+        {4, 0, 2},    /* Left + A */
+        {3, 28, 4},   /* Up + A */
+        {24, 24, 24}, /* Down + A */
+        {27, 27, 27}, /* Right + B */
+        {5, 5, 5},    /* Left + B */
+        {0, 0, 1},    /* Up + B */
+        {28, 3, 6},   /* Down + B */
+    };
+    auto rgb = [](unsigned word) {
+        uint16_t bgr = CgbPalette::base[word / 4][word % 4];
+        unsigned r = (bgr & 31) * 255 / 31;
+        unsigned g = ((bgr >> 5) & 31) * 255 / 31;
+        unsigned b = ((bgr >> 10) & 31) * 255 / 31;
+        char buf[16];
+        snprintf(buf, sizeof buf, "0x%02X%02X%02Xu", r, g, b);
+        return std::string(buf);
+    };
+    out += "/* Palettes generiques du boot ROM GBC : les 30 de base, puis les\n"
+           " * 12 combos touches (OBJ0, OBJ1, BG) en indice de base — la\n"
+           " * separation BG/sprites consommera les trois colonnes. */\n"
+           "#define GBL_GBC_BASE ";
+    for (unsigned p = 0; p < 30; p++) {
+        out += "{";
+        for (unsigned k = 0; k < 4; k++) out += rgb(p * 4 + k) + ((k < 3) ? ", " : "");
+        out += p < 29 ? "}, " : "}";
+    }
+    out += "\n#define GBL_GBC_COMBOS ";
+    for (unsigned c = 0; c < 12; c++)
+        out += "{" + std::to_string(combos[c][0]) + "," + std::to_string(combos[c][1]) + "," +
+                std::to_string(combos[c][2]) + (c < 11 ? "}, " : "}");
+    out += "\n";
+}
+
 std::string Generator::emit_config(std::string& error) const {
     const ROMHeader& h = rom_.header();
     int mbc = -1;
@@ -1905,6 +1950,11 @@ std::string Generator::emit_config(std::string& error) const {
                       "#define GBL_PALETTE_GBC 0x%06Xu, 0x%06Xu, 0x%06Xu, 0x%06Xu\n",
                       combo, pal[0], pal[1], pal[2], pal[3]);
              return std::string(buf);
+         }()
+      << [&] {
+             std::string s;
+             cgb_generic_palettes(s);
+             return s;
          }()
       << "#define GBL_GEN_VERSION \"" << (opt_.pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) << "\"\n"
       << "#endif\n";

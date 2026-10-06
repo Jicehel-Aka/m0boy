@@ -580,9 +580,12 @@ int main(void) {
 #else
     meta_display_set_mode(0);
 #endif
-    /* Palette 0: the GBC boot ROM's colours for this title when gbrecomp
-     * found it (GBL_PALETTE_GBC), the DMG green otherwise. */
-    meta_display_set_palette(0);
+    /* Palette at power-on, like the GBC boot ROM: a direction held, plus
+     * A and/or B, picks one of its 12 generic palettes; without one, Vert.
+     * The game's own GBC palette (GBL_PALETTE_GBC) is a menu choice. */
+    const uint32_t *boot_palette = meta_palette_boot(meta_buttons());
+    if (boot_palette) meta_display_set_palette_colors(boot_palette);
+    else meta_display_set_palette(0);
     /* Keep generated code within a fixed C stack budget; deeper nesting
      * unwinds to the nearest dispatcher loop. */
     char probe;
