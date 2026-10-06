@@ -246,10 +246,8 @@ uint8_t meta_display_palette(void) { return palette_index; }
 void meta_display_set_palette(uint8_t index) {
     if (index >= META_PALETTE_COUNT) index = 0;
     palette_index = index;
-    const uint32_t *palette = index == META_PALETTE_GBC ? meta_palettes_gbc_auto()
-                                                        : meta_palettes[index];
     for (unsigned i = 0; i < 4; i++) {
-        uint32_t rgb = palette[i];
+        uint32_t rgb = meta_palettes[index][i];
         meta_dmg_palette[i] = META_COLOR(rgb);
 #if META_MERGE_MODES || META_TBLEND
         dmg_rgb[i] = rgb;

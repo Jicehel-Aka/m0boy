@@ -135,7 +135,7 @@ kept across power-off), from fgb's menu where they apply on the META:
 | Etat, Sauver l'etat, Charger l'etat | save states, slot 1 to 10 (shown only when the state file is on the card, see below) |
 | Volume | 0 to 8; 4 (default) is the former level, half the DAC's range, 8 the whole range |
 | Ecran | display mode (below) |
-| Palette | GBC (default: the Game Boy Color boot ROM's own colouring of DMG games — its compatibility palettes, chosen from the cartridge title checksum exactly as the boot ROM did, its default when the title is unknown), Vert, Gris, Pocket, Ambre, Bleu: every mode but SMOOTH, whose 4 KiB colour tables are built at compile time for the first one. TBLEND's ½-weight table is built from the palette in RAM (1 KiB in the union of mode buffers, or 16 colours without `META_MERGE_MODES`) |
+| Palette | GBC (first, default: the Game Boy Color boot ROM's palette for this game, resolved by gbrecomp at conversion time from the title — its compatibility table lives in the converter, the firmware only embeds the four colours; games the boot ROM did not know keep DMG green as the first palette instead), Vert, Gris, Pocket, Ambre, Bleu: every mode but SMOOTH, whose 4 KiB colour tables are built at compile time for the first one. TBLEND's ½-weight table is built from the palette in RAM (1 KiB in the union of mode buffers, or 16 colours without `META_MERGE_MODES`) |
 | Images | frame skip: Auto (default: when emulation falls a frame behind, up to `META_MAX_SKIP` frames in a row are not rendered), Aucun, 1 sur 2/3/4 (one frame rendered in two, three, four) |
 | Vitesse | Normale, or Rapide: no frame limit (fgb's Synchronization off) |
 | Processeur | 48 MHz (default) or 72 MHz (below) |

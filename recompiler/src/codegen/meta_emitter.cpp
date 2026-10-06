@@ -1722,6 +1722,107 @@ std::string Generator::emit_rom() const {
     return o.str();
 }
 
+/* The Game Boy Color boot ROM coloured DMG games from their title: the
+ * 8-bit sum of the 16 raw title bytes selects one of its palette
+ * combinations (checksums that collide are told apart by the 4th title
+ * letter), and the combination's BG third becomes the game's four
+ * colours.  Resolved here, at conversion time, so the firmware only ever
+ * embeds the one palette it needs (four colours) instead of the tables.
+ * Transcribed from the SameBoy boot ROM reimplementation (LIJI32/SameBoy,
+ * BootROMs/cgb_boot.asm), which matches the original BIOS. */
+struct CgbPalette {
+    /* The boot ROM's 30 base palettes, BGR555, lightest first. */
+    static const uint16_t base[30][4];
+    /* BG byte offset into the flattened base palettes, per combination
+     * (51 of them; the four raw ones read across two base palettes). */
+    static const uint8_t comb_bg[51];
+    /* Title checksums (65 unique), then 29 that repeat and are told apart
+     * by the 4th title letter (dup_letters, aligned with dup_checksums). */
+    static const uint8_t checksums[65];
+    static const uint8_t dup_checksums[29];
+    static const char dup_letters[30]; /* 29 letters + the terminator */
+    /* BG combination per title, indexed like the checksum tables. */
+    static const uint8_t bg_combo[94];
+};
+const uint16_t CgbPalette::base[30][4] = {
+    {0x7FFF, 0x32BF, 0x00D0, 0x0000}, {0x639F, 0x4279, 0x15B0, 0x04CB},
+    {0x7FFF, 0x6E31, 0x454A, 0x0000}, {0x7FFF, 0x1BEF, 0x0200, 0x0000},
+    {0x7FFF, 0x421F, 0x1CF2, 0x0000}, {0x7FFF, 0x5294, 0x294A, 0x0000},
+    {0x7FFF, 0x03FF, 0x012F, 0x0000}, {0x7FFF, 0x03EF, 0x01D6, 0x0000},
+    {0x7FFF, 0x42B5, 0x3DC8, 0x0000}, {0x7E74, 0x03FF, 0x0180, 0x0000},
+    {0x67FF, 0x77AC, 0x1A13, 0x2D6B}, {0x7ED6, 0x4BFF, 0x2175, 0x0000},
+    {0x53FF, 0x4A5F, 0x7E52, 0x0000}, {0x4FFF, 0x7ED2, 0x3A4C, 0x1CE0},
+    {0x03ED, 0x7FFF, 0x255F, 0x0000}, {0x036A, 0x021F, 0x03FF, 0x7FFF},
+    {0x7FFF, 0x01DF, 0x0112, 0x0000}, {0x231F, 0x035F, 0x00F2, 0x0009},
+    {0x7FFF, 0x03EA, 0x011F, 0x0000}, {0x299F, 0x001A, 0x000C, 0x0000},
+    {0x7FFF, 0x027F, 0x001F, 0x0000}, {0x7FFF, 0x03E0, 0x0206, 0x0120},
+    {0x7FFF, 0x7EEB, 0x001F, 0x7C00}, {0x7FFF, 0x3FFF, 0x7E00, 0x001F},
+    {0x7FFF, 0x03FF, 0x001F, 0x0000}, {0x03FF, 0x001F, 0x000C, 0x0000},
+    {0x7FFF, 0x033F, 0x0193, 0x0000}, {0x0000, 0x4200, 0x037F, 0x7FFF},
+    {0x7FFF, 0x7E8C, 0x7C00, 0x0000}, {0x7FFF, 0x1BEF, 0x6180, 0x0000},
+};
+const uint8_t CgbPalette::comb_bg[51] = {
+    232, 144, 160, 192, 72, 0, 216, 40, 96, 208, 64, 224, 16, 32, 232, 224,
+    16, 64, 56, 144, 160, 72, 44, 16, 16, 24, 0, 0, 8, 144, 160, 192, 64,
+    104, 56, 60, 36, 80, 224, 16, 16, 24, 0, 32, 32, 0, 224, 64, 224, 48, 232,
+};
+const uint8_t CgbPalette::checksums[65] = {
+    0x00, 0x88, 0x16, 0x36, 0xD1, 0xDB, 0xF2, 0x3C, 0x8C, 0x92, 0x3D, 0x5C,
+    0x58, 0xC9, 0x3E, 0x70, 0x1D, 0x59, 0x69, 0x19, 0x35, 0xA8, 0x14, 0xAA,
+    0x75, 0x95, 0x99, 0x34, 0x6F, 0x15, 0xFF, 0x97, 0x4B, 0x90, 0x17, 0x10,
+    0x39, 0xF7, 0xF6, 0xA2, 0x49, 0x4E, 0x43, 0x68, 0xE0, 0x8B, 0xF0, 0xCE,
+    0x0C, 0x29, 0xE8, 0xB7, 0x86, 0x9A, 0x52, 0x01, 0x9D, 0x71, 0x9C, 0xBD,
+    0x5D, 0x6D, 0x67, 0x3F, 0x6B,
+};
+const uint8_t CgbPalette::dup_checksums[29] = {
+    0xB3, 0x46, 0x28, 0xA5, 0xC6, 0xD3, 0x27, 0x61, 0x18, 0x66, 0x6A, 0xBF,
+    0x0D, 0xF4, 0xB3, 0x46, 0x28, 0xA5, 0xC6, 0xD3, 0x27, 0x61, 0x18, 0x66,
+    0x6A, 0xBF, 0x0D, 0xF4, 0xB3,
+};
+const char CgbPalette::dup_letters[30] = "BEFAARBEKEK R-URAR INAILICE R";
+const uint8_t CgbPalette::bg_combo[94] = {
+    0, 4, 5, 35, 34, 3, 31, 15, 10, 5, 19, 36, 7, 37, 30, 44, 21, 32, 31, 20,
+    5, 33, 13, 14, 5, 29, 5, 18, 9, 3, 2, 26, 25, 25, 41, 42, 26, 45, 42, 45,
+    36, 38, 26, 42, 30, 41, 34, 34, 5, 42, 6, 5, 33, 25, 42, 42, 40, 2, 16,
+    25, 42, 42, 5, 0, 39, 36, 22, 25, 6, 32, 12, 36, 11, 39, 18, 39, 24, 31,
+    50, 17, 46, 6, 27, 0, 47, 41, 41, 0, 0, 19, 34, 23, 18, 29,
+};
+
+/* The game's GBC boot ROM colours (0xRRGGBB, lightest first), or false
+ * when the boot ROM would not have coloured it (no Nintendo licensee, or
+ * a title it does not know). */
+static bool cgb_game_palette(const ROM& rom, const ROMHeader& h,
+                             uint32_t out[4], unsigned* combo_out) {
+    bool nintendo = h.old_licensee_code == 0x01 ||
+                    h.new_licensee_code == "01";
+    if (!nintendo) return false;
+    uint8_t sum = 0, fourth = 0;
+    for (unsigned i = 0; i < 16; i++) {
+        uint8_t b = rom.read_banked(0, (uint16_t)(0x134u + i));
+        sum += b;
+        if (i == 3) fourth = b;
+    }
+    for (unsigned i = 0; i < 94; i++) {
+        uint8_t ck = i < 65 ? CgbPalette::checksums[i]
+                            : CgbPalette::dup_checksums[i - 65];
+        if (ck != sum) continue;
+        if (i >= 65 && CgbPalette::dup_letters[i - 65] != (char)fourth) continue;
+        unsigned combo = CgbPalette::bg_combo[i];
+        unsigned off = CgbPalette::comb_bg[combo];
+        for (unsigned k = 0; k < 4; k++) {
+            unsigned word = off / 2 + k;
+            uint16_t bgr = CgbPalette::base[word / 4][word % 4];
+            unsigned r = (bgr & 31) * 255 / 31;
+            unsigned g = ((bgr >> 5) & 31) * 255 / 31;
+            unsigned b = ((bgr >> 10) & 31) * 255 / 31;
+            out[k] = r << 16 | g << 8 | b;
+        }
+        if (combo_out) *combo_out = combo;
+        return true;
+    }
+    return false;
+}
+
 std::string Generator::emit_config(std::string& error) const {
     const ROMHeader& h = rom_.header();
     int mbc = -1;
@@ -1786,13 +1887,25 @@ std::string Generator::emit_config(std::string& error) const {
          }() << "\"\n"
       /* The CGB boot ROM picks a game's palette from the 8-bit sum of the
        * 16 raw title bytes (spaces and zeros included, GBL_TITLE drops
-       * them); the runtime uses it for its GBC palette. */
+       * them); the resolution runs here, so the firmware only embeds the
+       * one palette when the boot ROM knows this title. */
       << "#define GBL_TITLE_CKSUM " << [&] {
              unsigned s = 0;
              for (unsigned i = 0; i < 16; i++)
                  s += rom_.read_banked(0, 0x134u + i);
              return s & 0xFF;
          }() << "\n"
+      << [&] {
+             uint32_t pal[4];
+             unsigned combo;
+             if (!cgb_game_palette(rom_, h, pal, &combo)) return std::string();
+             char buf[128];
+             snprintf(buf, sizeof buf,
+                      "/* GBC boot ROM palette for this title (combination %u). */\n"
+                      "#define GBL_PALETTE_GBC 0x%06Xu, 0x%06Xu, 0x%06Xu, 0x%06Xu\n",
+                      combo, pal[0], pal[1], pal[2], pal[3]);
+             return std::string(buf);
+         }()
       << "#define GBL_GEN_VERSION \"" << (opt_.pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) << "\"\n"
       << "#endif\n";
     return o.str();

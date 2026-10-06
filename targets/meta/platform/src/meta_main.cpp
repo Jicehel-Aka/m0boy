@@ -267,20 +267,6 @@ static jmp_buf restart_point;             /* menu "Redemarrer", loaded states */
 static uint32_t stat_start_ms;
 static uint16_t frames, shown, skipped_run;
 
-/* The CGB boot ROM colours DMG games from the 8-bit sum of the 16 raw
- * title bytes; gbrecomp puts it in gbl_config.h (GBL_TITLE_CKSUM).  Older
- * generated projects sum the GBL_TITLE string instead, exact for titles
- * without trailing padding. */
-static uint8_t gbl_title_checksum(void) {
-#ifdef GBL_TITLE_CKSUM
-    return GBL_TITLE_CKSUM;
-#else
-    unsigned s = 0;
-    for (const char *p = GBL_TITLE; *p; p++) s += (uint8_t)*p;
-    return (uint8_t)s;
-#endif
-}
-
 /* Time owed to the emulation, like Gdl's rate: elapsed time comes in, each
  * emulated frame takes FRAME_US out.  Below zero the frame was early and
  * pacing waits; a frame or more ahead, the automatic frame skip renders
@@ -594,10 +580,9 @@ int main(void) {
 #else
     meta_display_set_mode(0);
 #endif
-    /* Default palette: the GBC boot ROM's colours for this title (the menu
-     * offers the fixed ones and GBC again). */
-    meta_palettes_set_title(GBL_TITLE, gbl_title_checksum());
-    meta_display_set_palette(META_PALETTE_GBC);
+    /* Palette 0: the GBC boot ROM's colours for this title when gbrecomp
+     * found it (GBL_PALETTE_GBC), the DMG green otherwise. */
+    meta_display_set_palette(0);
     /* Keep generated code within a fixed C stack budget; deeper nesting
      * unwinds to the nearest dispatcher loop. */
     char probe;
