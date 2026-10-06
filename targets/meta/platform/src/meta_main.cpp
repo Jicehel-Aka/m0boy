@@ -10,9 +10,12 @@
  * CROP, SKIP.
  *
  * Input:  D-pad, A = Game Boy B and B = Game Boy A (META_SWAP_AB), MENU =
- *         Start, HOME tap = Select, HOME held half a second = option menu
- *         (display mode, palette, frame skip, CPU clock, display SPI
- *         clock, back to the Gamebuino loader).
+ *         Start, HOME tap = Select, HOME held half a second (alone) =
+ *         option menu (display mode, palette, frame skip, CPU clock,
+ *         display SPI clock, back to the Gamebuino loader); any other key
+ *         while HOME is held is the GBC's power-on palette combo instead
+ *         (one of the boot ROM's generic palettes, live) and keeps the
+ *         menu off.
  *
  * Pacing: 59.73 Hz, kept by an accumulator of elapsed time against emulated
  * frames (Gdl's rate).  Frame skip: automatic (when emulation falls behind
@@ -189,6 +192,7 @@ static uint8_t meta_buttons(void) {
 
 static uint32_t home_since;
 static uint8_t home_held, home_stage, select_frames, menu_request;
+static uint8_t combo_seen; /* keys seen with HOME held (GBC palette combos) */
 #if META_TARGET_POKITTO
 static uint8_t start_frames;
 #endif
@@ -211,8 +215,11 @@ static void poll_input(void) {
 
     uint32_t now = millis();
 #if META_TARGET_POKITTO
-    /* C: a tap is Start, held half a second the option menu, with B Select
-     * (B itself is then not pressed). */
+    /* C: a tap is Start, held half a second (alone) the option menu, with
+     * B Select (B itself is then not pressed).  Any other key while C is
+     * held is the GBC's power-on palette combo instead: it picks one of
+     * the boot ROM's generic palettes live and keeps the menu off — C
+     * stays exclusive. */
     if (m & META_MB_HOME) {
         if (!home_held) {
             home_held = 1;
@@ -220,28 +227,56 @@ static void poll_input(void) {
             home_since = now;
         }
         if (home_stage != 1 && (m & META_MB_B)) home_stage = 2;
-        if (home_stage == 2) gb = (uint8_t)((gb & ~0x02u) | 0x04);
-        else if (home_stage == 0 && now - home_since >= 500) {
+        if (home_stage == 2) {
+            gb = (uint8_t)((gb & ~0x02u) | 0x04);
+        } else if (home_stage == 0 && now - home_since >= 500) {
             home_stage = 1;
             menu_request = 1;
+        } else if (home_stage == 0 && (m & ~META_MB_HOME)) {
+            home_stage = 3;
+        }
+        if (home_stage == 3) {
+            gb = 0;
+            uint8_t combo = m & ~META_MB_HOME;
+            if (combo != combo_seen) {
+                combo_seen = combo;
+                const uint32_t *pal = meta_palette_boot(m);
+                if (pal) meta_display_set_palette_colors(pal);
+            }
         }
     } else if (home_held) {
         home_held = 0;
+        combo_seen = 0;
         if (home_stage == 0) start_frames = 6; /* a tap becomes a Start press */
     }
     if (start_frames) { gb |= 0x08; start_frames--; }
 #else
+    /* HOME: a tap is Select, held half a second (alone) the option menu.
+     * Any other key while HOME is held is the GBC's power-on palette
+     * combo instead: it picks one of the boot ROM's generic palettes live
+     * and keeps the menu off — HOME stays exclusive. */
     if (m & META_MB_HOME) {
         if (!home_held) {
             home_held = 1;
             home_stage = 0;
             home_since = now;
-        } else if (now - home_since >= 500 && home_stage == 0) {
+        } else if (home_stage == 0 && now - home_since >= 500) {
             home_stage = 1; /* no Select tap on release */
             menu_request = 1;
         }
+        if (home_stage == 0 && (m & ~META_MB_HOME)) home_stage = 3;
+        if (home_stage == 3) {
+            gb = 0;
+            uint8_t combo = m & ~META_MB_HOME;
+            if (combo != combo_seen) {
+                combo_seen = combo;
+                const uint32_t *pal = meta_palette_boot(m);
+                if (pal) meta_display_set_palette_colors(pal);
+            }
+        }
     } else if (home_held) {
         home_held = 0;
+        combo_seen = 0;
         if (home_stage == 0) select_frames = 6; /* a tap becomes a Select press */
     }
 #endif

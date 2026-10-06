@@ -115,7 +115,8 @@ On the META:
 | B | A |
 | MENU | Start |
 | HOME (tap) | Select |
-| HOME (hold ½ s) | Option menu |
+| HOME (hold ½ s, alone) | Option menu |
+| HOME (hold) + direction, A, B | one of the GBC boot ROM's 12 generic palettes, live (its power-on combos: first direction in R, L, U, D order, +4 with A, +8 with B); any second key keeps the menu off — HOME stays exclusive, and no Select reaches the game on release |
 
 The option menu (`meta_menu.cpp`, after the menus of fgb, the GP32 port of
 gnuboy) pauses the game: up/down pick a line, left/right (or A) change its
@@ -438,9 +439,11 @@ the generated code and the frontend are shared, only the drivers differ.
   Same DAC samples as the C handler (`-DPOKITTO_AUDIO_ASM=0`) over 270,000
   samples of Link's Awakening in the emulator.
 - **Controls.** D-pad, A, B (not swapped); C tap = Start, C + B = Select,
-  C held half a second = option menu (same menu as the META, with the
+  C held half a second (alone) = option menu (same menu as the META, with the
   Pokitto's two display modes), C held at power-on = the Pokitto loader (as PokittoLib
-  does; "Quitter" in the menu jumps there too).
+  does; "Quitter" in the menu jumps there too).  Another key while C is
+  held (directions and A; B stays the Select gesture) is the GBC's
+  power-on palette combo, live, and keeps the menu off.
 - **Batch.** `TARGET=pokitto ./compile.sh` produces `roms/pokitto/<Game>/`
   (firmware, `.SAV`, `.STA`, streamed `.GB`; no icons) from projects in
   `out/pokitto/<game>/`, reusing the recorded play sessions of the META.
