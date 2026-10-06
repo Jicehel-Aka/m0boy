@@ -336,3 +336,12 @@ Le tempo pokitto est correct ; le « trop rapide » historique venait du
 émulateur, deux défauts corrigés.  Reste : la reprise franche audio (à
 sec sous 100 % de pacing) est ajoutée ; le resampling fin (±2 %) n'est
 pas nécessaire au tempo.
+
+**Comparaison d'intro Burai Fighter (2026-10-06)** : converti pour les
+deux cibles, intros enregistrées via pulse et comparées objectivement :
+jingle de 4,69 s sur la META (1,81-6,51 s) comme sur la pokitto
+(1,83-6,53 s), attaques au même instant, contenu équivalent (~10 %
+actif sur les deux).  EMU_LATCH_DUMP=<fichier> vide le flux horodaté des
+latches pokitto (tick, valeur) — l'outil de cette comparaison.  Le
+correctif de resynchronisation audio posait pk_aqSize à 32 768 au lieu
+de 600 après le saut : corrigé.
