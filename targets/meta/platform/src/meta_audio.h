@@ -14,6 +14,10 @@ void meta_audio_idle(void);   /* called while waiting for frame pacing */
 void meta_audio_set_volume(uint8_t v); /* 0..8, 4 = default */
 uint8_t meta_audio_volume(void);
 void meta_audio_stop(void);   /* timer and interrupt off (before the loader) */
+/* The option menu: the DAC to mid-scale and the sample source off, so the
+ * game's sound actually stops while the menu is open (meta_audio_stop's
+ * cheaper sibling: one call to pause, one to resume). */
+void meta_audio_pause(int on);
 
 /* Samples of one DMG frame (70224 cycles at 4194304 Hz) at `rate` Hz, the
  * remainder carried over in *frac (shared by the consoles' drivers). */

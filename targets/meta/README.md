@@ -119,7 +119,9 @@ On the META:
 
 The option menu (`meta_menu.cpp`, after the menus of fgb, the GP32 port of
 gnuboy) pauses the game: up/down pick a line, left/right (or A) change its
-value, A runs an action, B or HOME closes it. Its text uses dstar's
+value, A runs an action, B or HOME closes it. The game's sound is paused
+too (`meta_audio_pause`, added for 0.7.0: the DAC to mid-scale and the
+sample source stopped while the menu is open). Its text uses dstar's
 greenfont, converted from Gdl's agf format to 2 bits a pixel by
 `tools/font/agf2meta.py` (`meta_font.h`, 1.5 KiB of flash instead of 6.6 KiB
 as agf), drawn through the strip buffers of the display pipeline. Under
@@ -133,7 +135,7 @@ kept across power-off), from fgb's menu where they apply on the META:
 | Etat, Sauver l'etat, Charger l'etat | save states, slot 1 to 10 (shown only when the state file is on the card, see below) |
 | Volume | 0 to 8; 4 (default) is the former level, half the DAC's range, 8 the whole range |
 | Ecran | display mode (below) |
-| Palette | Vert (default), Gris, Pocket, Ambre, Bleu: every mode but SMOOTH, whose 4 KiB colour tables are built at compile time for the first one. TBLEND's ½-weight table is built from the palette in RAM (1 KiB in the union of mode buffers, or 16 colours without `META_MERGE_MODES`) |
+| Palette | GBC (default: the Game Boy Color boot ROM's own colouring of DMG games — its compatibility palettes, chosen from the cartridge title checksum exactly as the boot ROM did, its default when the title is unknown), Vert, Gris, Pocket, Ambre, Bleu: every mode but SMOOTH, whose 4 KiB colour tables are built at compile time for the first one. TBLEND's ½-weight table is built from the palette in RAM (1 KiB in the union of mode buffers, or 16 colours without `META_MERGE_MODES`) |
 | Images | frame skip: Auto (default: when emulation falls a frame behind, up to `META_MAX_SKIP` frames in a row are not rendered), Aucun, 1 sur 2/3/4 (one frame rendered in two, three, four) |
 | Vitesse | Normale, or Rapide: no frame limit (fgb's Synchronization off) |
 | Processeur | 48 MHz (default) or 72 MHz (below) |

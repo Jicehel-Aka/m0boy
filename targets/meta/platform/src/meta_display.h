@@ -26,10 +26,21 @@ enum {
     META_MODE_COUNT
 };
 
-#define META_PALETTE_COUNT 5
+/* The five fixed palettes, then GBC: the Game Boy Color boot ROM's own
+ * colouring for DMG games (its compatibility palettes, picked from the
+ * cartridge title checksum exactly as the boot ROM did). */
+#define META_PALETTE_COUNT 6
+#define META_PALETTE_GBC 5
 extern const uint32_t meta_palettes[META_PALETTE_COUNT][4]; /* 0xRRGGBB, lightest first */
 extern const char *const meta_palette_names[META_PALETTE_COUNT];
 extern uint16_t meta_dmg_palette[4]; /* current palette, panel format (META_COLOR) */
+/* The game's header title and its 8-bit checksum over the 16 raw title
+ * bytes (GBL_TITLE and GBL_TITLE_CKSUM); call once before the first
+ * meta_display_set_palette. */
+void meta_palettes_set_title(const char *title, uint8_t checksum);
+/* The GBC boot ROM's palette for that title (pointer to 4 x 0xRRGGBB,
+ * lightest first; the boot ROM's default when the title is unknown). */
+const uint32_t *meta_palettes_gbc_auto(void);
 /* Palette of every mode but SMOOTH (compile-time tables, first palette). */
 void meta_display_set_palette(uint8_t index);
 uint8_t meta_display_palette(void);

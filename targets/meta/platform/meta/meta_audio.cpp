@@ -238,6 +238,17 @@ void meta_audio_stop(void) {
     DAC->DATA.reg = DAC_MID; /* mid-scale: no click */
 }
 
+void meta_audio_pause(int on) {
+    static bool paused;
+    if (on == paused) return;
+    paused = on;
+    if (on) {
+        meta_audio_stop(); /* channel off: the next frame restarts it */
+        return;
+    }
+    timer_start(false); /* the channel restarts at the next frame */
+}
+
 #else /* META_AUDIO_DMA */
 
 #define RING 1024u
@@ -287,6 +298,14 @@ void meta_audio_stop(void) {
     TC4->COUNT16.INTENCLR.reg = TC_INTENCLR_MC0;
     timer_stop();
     DAC->DATA.reg = DAC_MID; /* mid-scale: no click */
+}
+
+void meta_audio_pause(int on) {
+    static bool paused;
+    if (on == paused) return;
+    paused = on;
+    if (on) meta_audio_stop();
+    else timer_start(true); /* INTENSET and NVIC back on */
 }
 
 #endif /* META_AUDIO_DMA */

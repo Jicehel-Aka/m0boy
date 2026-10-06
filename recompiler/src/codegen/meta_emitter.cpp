@@ -1784,6 +1784,15 @@ std::string Generator::emit_config(std::string& error) const {
                  if (c >= 0x20 && c < 0x7F && c != '"' && c != '\\') t += c;
              return t;
          }() << "\"\n"
+      /* The CGB boot ROM picks a game's palette from the 8-bit sum of the
+       * 16 raw title bytes (spaces and zeros included, GBL_TITLE drops
+       * them); the runtime uses it for its GBC palette. */
+      << "#define GBL_TITLE_CKSUM " << [&] {
+             unsigned s = 0;
+             for (unsigned i = 0; i < 16; i++)
+                 s += rom_.read_banked(0, 0x134u + i);
+             return s & 0xFF;
+         }() << "\n"
       << "#define GBL_GEN_VERSION \"" << (opt_.pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) << "\"\n"
       << "#endif\n";
     return o.str();

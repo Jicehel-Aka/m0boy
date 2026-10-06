@@ -174,3 +174,19 @@ void meta_audio_stop(void) {
     dac_write(128);
     GPIO_CLR(1) = 1u << 17;
 }
+
+void meta_audio_pause(int on) {
+    static int paused;
+    if (on == paused) return;
+    paused = on;
+    if (on) {
+        NVIC_ICER = 1u << IRQ_CT32B0;
+        CT32B0_TCR = 0;
+        dac_write(128); /* mid-scale, amplifier left on: no click */
+        return;
+    }
+    CT32B0_TCR = 2u; /* reset, like meta_audio_init */
+    CT32B0_TCR = 1u;
+    NVIC_ICPR = 1u << IRQ_CT32B0;
+    NVIC_ISER = 1u << IRQ_CT32B0;
+}
