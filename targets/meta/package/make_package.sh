@@ -31,7 +31,7 @@ git -C "$root" archive "$rev" recompiler/CMakeLists.txt recompiler/include recom
 rm -rf "$pkg/targets/meta/package"
 git -C "$root" show "$rev:targets/meta/package/CMakeLists.txt" > "$pkg/CMakeLists.txt"
 git -C "$root" show "$rev:targets/meta/package/META.md" > "$pkg/META.md"
-git -C "$root" show "$rev:targets/meta/package/README.md" > "$pkg/README.md"
+git -C "$root" show "$rev:README.md" > "$pkg/README.md"
 git -C "$root" show "$rev:targets/meta/package/gitignore" > "$pkg/.gitignore"
 mkdir -p "$pkg/roms/gb"
 git -C "$root" show "$rev:targets/meta/package/LISEZMOI.txt" > "$pkg/roms/gb/LISEZMOI.txt"
