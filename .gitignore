@@ -1,68 +1,16 @@
-# Build outputs
-build/
-build_*/
-build-*/
-cmake-build-*/
-out/
-
-# Generated test output
-test_output/
-*_output/
-
-# Compiled objects
-*.o
-*.a
-*.so
-*.dylib
-
-# Executables
-test
-*.exe
-
-# ROM files (don't commit copyrighted content)
-roms/
+# Builds and conversions stay local: no ROMs or firmwares in the repository.
+/build/
+/out/
+/output/
+/logs/
+/roms/*
+!/roms/gb/
+/roms/gb/*
+!/roms/gb/README.txt
+/profiles/*
+!/profiles/.gitkeep
 *.gb
 *.gbc
-*.sav
-
-# IDE / Editor
-.idea/
-.vscode/
-.gsd/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# CMake
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-Makefile
-!tools/meta-emu-sdl/Makefile
-compile_commands.json
-
-# ccache
-.ccache/
-
-# Debug
-*.dSYM/
-
-tetris_test/
-*.log
-*.asm
-output/*
-logs/
-
-tools/mgbdis
-imgui.ini
-
-# Python
-__pycache__/
-*.pyc
-
-# Node (tools/meta-compiler)
+*.bin
+*.elf
 node_modules/
-
-tech_docs/
-SameBoy/
