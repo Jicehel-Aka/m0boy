@@ -1,10 +1,31 @@
-# gbrecomp pour Gamebuino META
+# gbrecomp pour Gamebuino META et Pokitto
 
 `gbrecomp` transforme une ROM Game Boy (DMG) en firmware natif pour la
 Gamebuino META. Le code du jeu est recompilé en C puis compilé pour la
 console : ce n'est ni un JIT ni un émulateur classique. Le code déjà vu
 pendant une partie de profilage est traduit, et un petit interpréteur
 exécute le reste.
+
+## Nouveautés des versions 0.6.0 à 0.7.0
+
+- Palettes du boot ROM Game Boy Color : comme sur une GBC, maintenir une
+  direction (+ A ou B) au démarrage choisit l'une des 12 palettes
+  génériques. Maintenir HOME (META) ou C (Pokitto) avec une direction en
+  change pendant la partie. Quand le titre du jeu est reconnu, sa palette
+  GBC est proposée dans le menu Palette (le Vert reste le défaut).
+- Le menu d'options coupe le son.
+- Pokitto : 48 MHz par défaut, la fréquence nominale de la console (72 MHz
+  reste dans le menu Processeur) ; le tempo du son est corrigé, et la
+  mesure du temps n'utilise plus de division (le M0+ n'en a pas en
+  matériel). Une version par console
+  (`targets/meta/platform/pokitto/VERSION`).
+- `TARGET=both ./compile.sh` convertit pour les deux consoles en une
+  seule passe ; un fichier `build_flags` à côté d'un jeu garde ses options
+  de compilation d'une conversion à l'autre ; les reconstructions de
+  version sont environ deux fois plus légères.
+- META : TBLEND aussi dans les jeux lus sur la carte, bus SD plus rapide,
+  option `-DMETA_LCD_12BPP=1` (écran en 12 bits, 25 % d'octets en moins
+  par rangée).
 
 ## Nouveautés de la version 0.5.0
 
