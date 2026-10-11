@@ -2,6 +2,8 @@
 # META and Pokitto.  `cmake -G Ninja -B build . && ninja -C build` gives
 # build/bin/gbrecomp, which compile.sh uses.
 cmake_minimum_required(VERSION 3.20)
+include("${CMAKE_CURRENT_SOURCE_DIR}/targets/meta/host/prefer_compiler.cmake")
+m0boy_select_host_compiler(C CXX)
 # The version (targets/meta/VERSION) is stamped into every firmware
 # ("gbrecomp-meta x.y.z"); compile.sh offers to rebuild firmwares made by
 # another version.
@@ -37,6 +39,9 @@ if(BUILD_TESTS)
     set_tests_properties(meta_register_ir_clang PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
     add_test(NAME meta_compiler_selection
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_arm_compiler.py")
+    add_test(NAME meta_cmake_compiler_selection
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_cmake_compiler.py"
+                --cmake "${CMAKE_COMMAND}" --selector "${PROJECT_SOURCE_DIR}/targets/meta/host/prefer_compiler.cmake")
     set(GBL_META_DIR "${PROJECT_SOURCE_DIR}/targets/meta")
     file(GLOB GBL_META_RUNTIME_SOURCES "${GBL_META_DIR}/runtime/gbl_*.c")
 

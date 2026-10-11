@@ -160,6 +160,11 @@ TARGET=pokitto ./compile.sh    # ou directement la Pokitto
 TARGET=both ./compile.sh       # ou les deux
 ```
 
+Pour un nouveau build, CMake préfère Clang lorsqu'il est disponible,
+sinon GCC. `-DM0BOY_PREFER_CLANG=OFF` privilégie GCC ; `CC`, `CXX` et une
+toolchain explicite restent prioritaires. Un répertoire déjà configuré
+conserve son compilateur. Voir [le guide des compilateurs](docs/COMPILATEURS.fr.md).
+
 Chaque jeu arrive dans `roms/meta/<Jeu>/` ou `roms/pokitto/<Jeu>/`. Copie
 ce dossier tel quel à la racine de la carte SD, puis lance-le depuis le
 loader de la console. Le guide complet est [docs/GUIDE.fr.md](docs/GUIDE.fr.md) ;

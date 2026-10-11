@@ -2137,6 +2137,9 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     if (!ec)
         fs::copy_file(tpl / "host" / "gbl_metaview.c", out / "host" / "gbl_metaview.c",
                       fs::copy_options::overwrite_existing, ec);
+    if (!ec)
+        fs::copy_file(tpl / "host" / "prefer_compiler.cmake", out / "host" / "prefer_compiler.cmake",
+                      fs::copy_options::overwrite_existing, ec);
     if (ec) {
         error = "cannot copy host harness: " + ec.message();
         return false;

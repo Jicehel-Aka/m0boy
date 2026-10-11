@@ -3,6 +3,8 @@
 #   @NAME@_profile  same program with coverage recording and --trace support
 #   @NAME@_play     SDL2 window for recording coverage while playing (optional)
 cmake_minimum_required(VERSION 3.20)
+include("${CMAKE_CURRENT_SOURCE_DIR}/prefer_compiler.cmake")
+m0boy_select_host_compiler(C)
 project(@NAME@_gbl_host C)
 
 if(NOT CMAKE_BUILD_TYPE)

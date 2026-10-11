@@ -1,8 +1,26 @@
 # Choisir GCC ou Clang pour les firmwares
 
-GCC reste le choix par défaut. Clang peut remplacer le compilateur C/C++
+GCC reste le choix par défaut des firmwares. Clang peut remplacer le compilateur C/C++
 pour la Gamebuino META et la Pokitto, sans changer le fonctionnement de
 `gbrecomp`, de la couverture ou du runtime.
+
+## Build CMake natif
+
+Sur un nouveau répertoire de build, CMake choisit Clang si `clang` et
+`clang++` sont disponibles, sinon GCC et G++. Les projets hôte générés,
+qui ne compilent que du C, demandent seulement `clang`, sinon `gcc`.
+
+```bash
+cmake -G Ninja -S . -B output/build-clang
+cmake -G Ninja -S . -B output/build-gcc -DM0BOY_PREFER_CLANG=OFF
+```
+
+`CC`, `CXX`, `CMAKE_C_COMPILER`, `CMAKE_CXX_COMPILER` et les toolchains
+explicites sont prioritaires. Un build déjà configuré garde son compilateur ;
+utiliser un nouveau répertoire pour changer. L'option
+`M0BOY_PREFER_CLANG=OFF` privilégie GCC ; si aucune toolchain native complète
+n'est trouvée, CMake conserve sa détection de plateforme habituelle.
+Ce choix natif est indépendant du compilateur des firmwares ARM.
 
 ## Projet individuel
 
@@ -117,3 +135,9 @@ synthétique, donne 388 277 cycles estimés/trame avec GCC 14.2.1 et
 393 079 avec Clang 23.1.1 : Clang utilise environ 1,2 % de cycles en plus
 sur ce cas. Le code du benchmark passe de 127 376 à 130 076 octets.
 Ce seul programme ne permet pas de conclure pour les jeux commerciaux.
+
+Le 12 octobre 2026, les builds CMake/Ninja natifs ont été validés avec
+Clang et GCC. Les 16 tests CTest passent avec le build Clang, y compris
+les projets hôte générés ; les neuf cas de sélection couvrent la
+préférence automatique, le repli GCC et les choix explicites. La
+reconfiguration d'un build GCC conserve bien son compilateur en cache.
