@@ -1,5 +1,11 @@
 # m0boy
 
+L’architecture sépare maintenant CPU, console d’origine (`--system`) et
+destination (`--target`). La SG-1000/Z80 dispose d’un premier frontend de
+chargement, d’inspection et de désassemblage (`m0recomp jeu.sg --disasm`) ; son exécution et sa
+génération native restent à implémenter. Voir
+[l’architecture multi-console](docs/MULTI_SYSTEM.fr.md).
+
 **Les jeux Game Boy recompilés en firmwares natifs pour deux consoles
 Cortex-M0+ : la Gamebuino META et la Pokitto.**
 

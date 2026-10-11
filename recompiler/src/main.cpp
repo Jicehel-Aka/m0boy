@@ -3,6 +3,9 @@
  * @brief GameBoy Recompiler CLI entry point
  */
 
+#include "m0boy/system.h"
+#include "m0boy/sg1000.h"
+#include "m0boy/cpu/z80/decoder.h"
 #include "recompiler/rom.h"
 #include "recompiler/decoder.h"
 #include "recompiler/analyzer.h"
@@ -14,6 +17,7 @@
 #include "recompiler/native_patch.h"
 
 #include <iostream>
+#include <iomanip>
 #include <string>
 #include <thread>
 #include <atomic>
@@ -126,7 +130,7 @@ void print_banner() {
 }
 
 void print_usage(const char* program) {
-    std::cout << "Usage: " << program << " <rom.gb|rom_directory> [options]\n\n";
+    std::cout << "Usage: " << program << " <rom.gb|rom.sg|rom_directory> [options]\n\n";
     std::cout << "Directory mode recompiles every .gb/.gbc/.sgb file under the folder,\n";
     std::cout << "emits one module per ROM, and generates a launcher to choose the game.\n\n";
     std::cout << "Options:\n";
@@ -141,6 +145,10 @@ void print_usage(const char* program) {
     std::cout << "  --trace               Trace execution analysis (very verbose)\n";
     std::cout << "  --limit <n>           Limit analysis to n instructions\n";
     std::cout << "  -j, --jobs <n>        Parallel workers for codegen and batch generation (0=auto)\n";
+    std::cout << "  --system auto|gameboy|sg1000  Source console (default auto; legacy GB fallback)\n";
+    std::cout << "  --cpu sm83|z80       Check the CPU required by the source console\n";
+    std::cout << "  --list-systems       List source consoles, CPUs and available pipelines\n";
+    std::cout << "  --info               Inspect a cartridge without generating code\n";
     std::cout << "  --target meta         Emit a compact gbl project for the Gamebuino META\n";
     std::cout << "                        (coverage-driven; see targets/meta/README.md)\n";
     std::cout << "  --target pokitto      Same gbl project for the Pokitto (bare-metal Makefile build;\n";
@@ -1955,6 +1963,10 @@ int main(int argc, char* argv[]) {
     bool emit_android_project = false;
     std::string android_package;
     std::string android_app_name;
+    std::string system_name = "auto";
+    std::optional<m0boy::CpuId> requested_cpu;
+    bool list_systems = false;
+    bool info_only = false;
     std::string target = "desktop";
     std::vector<fs::path> coverage_paths;
     std::string meta_compiler = "gcc";
@@ -2074,6 +2086,29 @@ int main(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 annotation_file_path = argv[++i];
             }
+        } else if (arg == "--system" || arg == "--cpu") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: " << arg << " requires a value\n";
+                return 1;
+            }
+            const std::string value = argv[++i];
+            if (arg == "--system") {
+                if (value != "auto" && !m0boy::parse_system(value)) {
+                    std::cerr << "Error: unknown --system '" << value << "'\n";
+                    return 1;
+                }
+                system_name = value;
+            } else {
+                requested_cpu = m0boy::parse_cpu(value);
+                if (!requested_cpu) {
+                    std::cerr << "Error: unknown --cpu '" << value << "'\n";
+                    return 1;
+                }
+            }
+        } else if (arg == "--list-systems") {
+            list_systems = true;
+        } else if (arg == "--info") {
+            info_only = true;
         } else if (arg == "--target") {
             if (i + 1 < argc) {
                 target = argv[++i];
@@ -2129,6 +2164,17 @@ int main(int argc, char* argv[]) {
         }
     }
     
+    if (list_systems) {
+        for (const auto& system : m0boy::systems()) {
+            std::cout << system.name << " cpu=" << m0boy::cpu_descriptor(system.cpu).name
+                      << " inspect=yes disasm="
+                      << (m0boy::cpu_descriptor(system.cpu).decoder_available ? "yes" : "no")
+                      << " codegen="
+                      << (system.supports(m0boy::TargetId::desktop) ? "desktop,meta,pokitto" : "unavailable")
+                      << "\n";
+        }
+        return 0;
+    }
     if (rom_path.empty()) {
         std::cerr << "Error: No ROM file specified\n";
         print_usage(argv[0]);
@@ -2136,6 +2182,70 @@ int main(int argc, char* argv[]) {
     }
     if (target != "desktop" && target != "meta" && target != "pokitto") {
         std::cerr << "Error: unknown --target '" << target << "' (expected desktop, meta or pokitto)\n";
+        return 1;
+    }
+    // Resolve the source before invoking any Game Boy parser or emitter.
+    // Unknown extensions and directory batches keep the historical GB default.
+    const auto system_id = system_name == "auto"
+        ? m0boy::detect_system(rom_path).value_or(m0boy::SystemId::gameboy)
+        : *m0boy::parse_system(system_name);
+    const auto& source = m0boy::system_descriptor(system_id);
+    if (requested_cpu && *requested_cpu != source.cpu) {
+        std::cerr << "Error: source system " << source.name << " requires CPU "
+                  << m0boy::cpu_descriptor(source.cpu).name << "\n";
+        return 1;
+    }
+    if (info_only) {
+        if (disasm_only || analyze_only) {
+            std::cerr << "Error: --info cannot be combined with --disasm or --analyze\n";
+            return 1;
+        }
+        std::string error;
+        const auto cartridge = source.inspect(rom_path, error);
+        if (!cartridge) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        std::cout << "system=" << source.name
+                  << "\ncpu=" << m0boy::cpu_descriptor(source.cpu).name
+                  << "\ntitle=" << cartridge->title
+                  << "\nrom_bytes=" << cartridge->rom_bytes
+                  << "\nwork_ram_bytes=" << source.work_ram_bytes
+                  << "\ncartridge_ram_bytes=" << cartridge->cartridge_ram_bytes
+                  << "\nmapper=" << cartridge->mapper << "\n";
+        return 0;
+    }
+    if (disasm_only && source.id == m0boy::SystemId::sg1000 && !analyze_only) {
+        if (specific_bank > 0) {
+            std::cerr << "Error: SG-1000 unbanked cartridges only have bank 0\n";
+            return 1;
+        }
+        std::string error;
+        auto cartridge = m0boy::sg1000::Cartridge::load(rom_path, error);
+        if (!cartridge) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        m0boy::cpu::z80::Decoder decoder(*cartridge);
+        size_t offset = 0, count = 0;
+        while (offset < cartridge->bytes().size() &&
+               (!limit_instructions || count < limit_instructions)) {
+            const auto instruction = decoder.decode(static_cast<uint16_t>(offset));
+            if (instruction.length > cartridge->bytes().size() - offset) {
+                std::cerr << "Error: truncated Z80 instruction at file offset " << offset << "\n";
+                return 1;
+            }
+            std::cout << std::hex << std::uppercase << std::setw(4) << std::setfill('0')
+                      << offset << "  " << instruction.mnemonic << std::dec << "\n";
+            offset += instruction.length;
+            ++count;
+        }
+        return 0;
+    }
+    if (!source.supports(*m0boy::parse_target(target))) {
+        std::cerr << "Error: " << source.name << " cartridge inspection is available (--info); "
+                  << "Z80 disassembly is available (--disasm); "
+                  << "analysis and code generation are not implemented yet\n";
         return 1;
     }
     if (target == "meta" || target == "pokitto") {

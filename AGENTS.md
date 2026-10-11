@@ -7,6 +7,16 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
 
 ## Layout
 
+- `recompiler/include/m0boy/`, `recompiler/src/system.cpp`: source CPU/system
+  registry and console-independent byte reader. `--system` is the source
+  console; `--target` is the destination. See `docs/MULTI_SYSTEM.fr.md`.
+- `recompiler/src/cpu/sm83/`: SM83 decoder, independent of the GB cartridge
+  parser. `recompiler/src/system/gameboy/`: GB cartridge, bank mapping and
+  analysis. Legacy `recompiler/rom.h` and `recompiler/decoder.h` are forwarding
+  includes. `recompiler/src/cpu/z80/`: Z80 disassembly, sharing encoding
+  helpers with SM83 in `include/m0boy/cpu/encoding.h`.
+  `recompiler/src/system/sg1000/`: unbanked cartridge inspection; Z80
+  execution and firmware generation are not implemented yet.
 - `recompiler/`: `gbrecomp`, from gb-recompiled. The M0 backend is
   `recompiler/src/codegen/meta_emitter.cpp` (`--target meta`, `--target pokitto`).
 - `targets/meta/runtime/`: the `gbl` runtime shared by both consoles; every

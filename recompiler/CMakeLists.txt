@@ -1,9 +1,29 @@
-# Recompiler implementation shared by the CLI and focused unit tests.
+# Source CPU, source system and output backend are independent build layers.
+add_library(m0boy_common INTERFACE)
+target_include_directories(m0boy_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
+# No Nintendo header or mapper dependency in the CPU decoder.
+add_library(m0boy_cpu_sm83 STATIC src/cpu/sm83/decoder.cpp)
+target_link_libraries(m0boy_cpu_sm83 PUBLIC m0boy_common)
+set_target_properties(m0boy_cpu_sm83 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(m0boy_cpu_z80 STATIC src/cpu/z80/decoder.cpp)
+target_link_libraries(m0boy_cpu_z80 PUBLIC m0boy_common)
+set_target_properties(m0boy_cpu_z80 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+add_library(m0boy_frontends STATIC
+    src/system.cpp
+    src/system/gameboy/cartridge.cpp
+    src/system/gameboy/frontend.cpp
+    src/system/sg1000/cartridge.cpp
+)
+target_link_libraries(m0boy_frontends PUBLIC m0boy_common)
+set_target_properties(m0boy_frontends PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# Existing Game Boy analysis, IR and emitters retain their public API.
 add_library(gbrecomp_core STATIC
-    src/rom.cpp
-    src/decoder.cpp
-    src/analyzer.cpp
-    src/bank_tracker.cpp
+    src/system/gameboy/analyzer.cpp
+    src/system/gameboy/bank_tracker.cpp
+    src/system/gameboy/decode_bank.cpp
     src/symbol_table.cpp
     src/native_patch.cpp
     src/generator.cpp
@@ -13,6 +33,8 @@ add_library(gbrecomp_core STATIC
     src/codegen/register_ir.cpp
     src/codegen/meta_emitter.cpp
 )
+
+target_link_libraries(gbrecomp_core PUBLIC m0boy_frontends m0boy_cpu_sm83)
 
 target_include_directories(gbrecomp_core
     PUBLIC
@@ -51,9 +73,15 @@ else()
     target_compile_definitions(gbrecomp_core PRIVATE GB_PLATFORM_LINUX)
 endif()
 
-add_executable(gbrecomp src/main.cpp)
-target_link_libraries(gbrecomp PRIVATE gbrecomp_core)
-target_compile_definitions(gbrecomp PRIVATE
+# m0recomp is the system-neutral entry point; gbrecomp stays available for
+# compile.sh, the Node frontend and existing generated-project tests.
+add_library(m0boy_cli OBJECT src/main.cpp)
+target_link_libraries(m0boy_cli PRIVATE gbrecomp_core m0boy_cpu_z80)
+add_executable(m0recomp $<TARGET_OBJECTS:m0boy_cli>)
+add_executable(gbrecomp $<TARGET_OBJECTS:m0boy_cli>)
+target_link_libraries(m0recomp PRIVATE gbrecomp_core m0boy_cpu_z80)
+target_link_libraries(gbrecomp PRIVATE gbrecomp_core m0boy_cpu_z80)
+target_compile_definitions(m0boy_cli PRIVATE
     GBRECOMP_DEFAULT_RUNTIME_DIR="${PROJECT_SOURCE_DIR}/runtime"
     GBRECOMP_DEFAULT_META_DIR="${PROJECT_SOURCE_DIR}/targets/meta"
     GBRECOMP_VERSION="${PROJECT_VERSION}"

@@ -34,10 +34,10 @@ if find "$pkg" -type d -name node_modules | grep -q .; then
     echo "refusing: node_modules in the package" >&2
     exit 1
 fi
-if find "$pkg" -type f \( -iname '*.gb' -o -iname '*.gbc' -o -iname '*.bin' -o -iname '*.elf' \
+if find "$pkg" -type f \( -iname '*.gb' -o -iname '*.gbc' -o -iname '*.sg' -o -iname '*.bin' -o -iname '*.elf' \
         -o -iname '*.sav' \) | grep -q .; then
     echo "refusing: ROM or binary in the package" >&2
-    find "$pkg" -type f \( -iname '*.gb' -o -iname '*.gbc' -o -iname '*.bin' -o -iname '*.elf' -o -iname '*.sav' \) >&2
+    find "$pkg" -type f \( -iname '*.gb' -o -iname '*.gbc' -o -iname '*.sg' -o -iname '*.bin' -o -iname '*.elf' -o -iname '*.sav' \) >&2
     exit 1
 fi
 

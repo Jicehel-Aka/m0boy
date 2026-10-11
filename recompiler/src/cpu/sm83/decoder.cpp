@@ -6,8 +6,7 @@
  * The SM83 is a modified Z80/8080 hybrid used in the GameBoy.
  */
 
-#include "recompiler/decoder.h"
-#include "recompiler/rom.h"
+#include "recompiler/cpu/sm83/decoder.h"
 #include <stdexcept>
 #include <sstream>
 #include <iomanip>
@@ -19,10 +18,7 @@ namespace gbrecomp {
  * ========================================================================== */
 
 // Register lookup for bits 0-2 or 3-5 of opcodes
-static constexpr Reg8 REG8_TABLE[8] = {
-    Reg8::B, Reg8::C, Reg8::D, Reg8::E, 
-    Reg8::H, Reg8::L, Reg8::HL_IND, Reg8::A
-};
+static constexpr auto& REG8_TABLE = m0boy::cpu::registers8;
 
 // 16-bit register pairs (for most instructions)
 static constexpr Reg16 REG16_TABLE[4] = {
@@ -43,7 +39,7 @@ static constexpr Condition COND_TABLE[4] = {
  * Decoder Implementation
  * ========================================================================== */
 
-Decoder::Decoder(const ROM& rom) : rom_(rom) {}
+Decoder::Decoder(const m0boy::ByteReader& memory) : memory_(memory) {}
 
 Instruction Decoder::decode(uint32_t full_addr) const {
     BankId bank = static_cast<BankId>(full_addr >> 16);
@@ -60,7 +56,7 @@ Instruction Decoder::decode(uint16_t addr, BankId bank) const {
     instr.is_cb_prefixed = false;
     
     // Read opcode
-    uint8_t opcode = rom_.read_banked(bank, addr);
+    uint8_t opcode = memory_.read_banked(bank, addr);
     instr.opcode = opcode;
     
     // Check for CB prefix
@@ -184,14 +180,14 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
         case 0x26: case 0x2E: case 0x3E: // LD r8, n
             instr.type = InstructionType::LD_R_N;
             instr.reg8_dst = REG8_TABLE[(opcode >> 3) & 0x07];
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 8;
             break;
             
         case 0x36: // LD (HL), n
             instr.type = InstructionType::LD_HL_N;
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 12;
             break;
@@ -221,7 +217,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0x18: // JR i8
             instr.type = InstructionType::JR_N;
-            instr.offset = static_cast<int8_t>(rom_.read_banked(bank, addr + 1));
+            instr.offset = static_cast<int8_t>(memory_.read_banked(bank, addr + 1));
             instr.length = 2;
             instr.cycles = 12;
             instr.is_jump = true;
@@ -230,7 +226,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
         case 0x28: // JR Z,i8
             instr.type = InstructionType::JR_CC_N;
             instr.condition = Condition::Z;
-            instr.offset = static_cast<int8_t>(rom_.read_banked(bank, addr + 1));
+            instr.offset = static_cast<int8_t>(memory_.read_banked(bank, addr + 1));
             instr.length = 2;
             instr.cycles = 8;
             instr.cycles_branch = 12;
@@ -241,7 +237,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
         case 0x38: // JR C,i8
             instr.type = InstructionType::JR_CC_N;
             instr.condition = Condition::C;
-            instr.offset = static_cast<int8_t>(rom_.read_banked(bank, addr + 1));
+            instr.offset = static_cast<int8_t>(memory_.read_banked(bank, addr + 1));
             instr.length = 2;
             instr.cycles = 8;
             instr.cycles_branch = 12;
@@ -252,7 +248,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
         case 0x20: // JR NZ,i8
             instr.type = InstructionType::JR_CC_N;
             instr.condition = Condition::NZ;
-            instr.offset = static_cast<int8_t>(rom_.read_banked(bank, addr + 1));
+            instr.offset = static_cast<int8_t>(memory_.read_banked(bank, addr + 1));
             instr.length = 2;
             instr.cycles = 8;
             instr.cycles_branch = 12;
@@ -263,7 +259,7 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
         case 0x30: // JR NC,i8
             instr.type = InstructionType::JR_CC_N;
             instr.condition = Condition::NC;
-            instr.offset = static_cast<int8_t>(rom_.read_banked(bank, addr + 1));
+            instr.offset = static_cast<int8_t>(memory_.read_banked(bank, addr + 1));
             instr.length = 2;
             instr.cycles = 8;
             instr.cycles_branch = 12;
@@ -691,56 +687,56 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0xC6: // ADD A,u8
             instr.type = InstructionType::ADD_A_N;
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 8;
             break;
             
         case 0xCE: // ADC A,u8
             instr.type = InstructionType::ADC_A_N;
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 8;
             break;
             
         case 0xD6: // SUB u8
             instr.type = InstructionType::SUB_A_N;
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 8;
             break;
             
         case 0xDE: // SBC A,u8
             instr.type = InstructionType::SBC_A_N;
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 8;
             break;
             
         case 0xE6: // AND u8
             instr.type = InstructionType::AND_A_N;
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 8;
             break;
             
         case 0xEE: // XOR u8
             instr.type = InstructionType::XOR_A_N;
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 8;
             break;
             
         case 0xF6: // OR u8
             instr.type = InstructionType::OR_A_N;
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 8;
             break;
             
         case 0xFE: // CP u8
             instr.type = InstructionType::CP_A_N;
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 8;
             break;
@@ -755,14 +751,14 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0xE0: // LDH (u8),A
             instr.type = InstructionType::LDH_N_A;
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 12;
             break;
             
         case 0xF0: // LDH A,(u8)
             instr.type = InstructionType::LDH_A_N;
-            instr.imm8 = rom_.read_banked(bank, addr + 1);
+            instr.imm8 = memory_.read_banked(bank, addr + 1);
             instr.length = 2;
             instr.cycles = 12;
             break;
@@ -793,14 +789,14 @@ void Decoder::decode_main(Instruction& instr, uint8_t opcode,
             
         case 0xE8: // ADD SP,i8
             instr.type = InstructionType::ADD_SP_N;
-            instr.offset = static_cast<int8_t>(rom_.read_banked(bank, addr + 1));
+            instr.offset = static_cast<int8_t>(memory_.read_banked(bank, addr + 1));
             instr.length = 2;
             instr.cycles = 16;
             break;
             
         case 0xF8: // LD HL,SP+i8
             instr.type = InstructionType::LD_HL_SP_N;
-            instr.offset = static_cast<int8_t>(rom_.read_banked(bank, addr + 1));
+            instr.offset = static_cast<int8_t>(memory_.read_banked(bank, addr + 1));
             instr.length = 2;
             instr.cycles = 12;
             break;
@@ -843,14 +839,15 @@ Instruction Decoder::decode_cb(uint16_t addr, BankId bank) const {
     instr.is_cb_prefixed = true;
     instr.opcode = 0xCB;
     
-    uint8_t opcode = rom_.read_banked(bank, addr + 1);
+    uint8_t opcode = memory_.read_banked(bank, addr + 1);
     instr.cb_opcode = opcode;
     
-    Reg8 reg = REG8_TABLE[opcode & 0x07];
+    const m0boy::cpu::OpcodeFields fields(opcode);
+    Reg8 reg = REG8_TABLE[fields.z];
     bool is_hl = (reg == Reg8::HL_IND);
     
-    uint8_t op_type = (opcode >> 6) & 0x03;
-    uint8_t bit = (opcode >> 3) & 0x07;
+    uint8_t op_type = fields.x;
+    uint8_t bit = fields.y;
     
     instr.reg8_dst = reg;
     instr.reg8_src = reg;
@@ -889,9 +886,7 @@ Instruction Decoder::decode_cb(uint16_t addr, BankId bank) const {
 }
 
 uint16_t Decoder::read_u16(uint16_t addr, BankId bank) const {
-    uint8_t lo = rom_.read_banked(bank, addr);
-    uint8_t hi = rom_.read_banked(bank, addr + 1);
-    return static_cast<uint16_t>(lo) | (static_cast<uint16_t>(hi) << 8);
+    return m0boy::cpu::read_u16(memory_, bank, addr);
 }
 
 /* ============================================================================
@@ -899,17 +894,9 @@ uint16_t Decoder::read_u16(uint16_t addr, BankId bank) const {
  * ========================================================================== */
 
 const char* reg8_name(Reg8 r) {
-    switch (r) {
-        case Reg8::B: return "B";
-        case Reg8::C: return "C";
-        case Reg8::D: return "D";
-        case Reg8::E: return "E";
-        case Reg8::H: return "H";
-        case Reg8::L: return "L";
-        case Reg8::HL_IND: return "(HL)";
-        case Reg8::A: return "A";
-        default: return "?";
-    }
+    const auto index = static_cast<unsigned>(r);
+    return index < m0boy::cpu::register_names8.size()
+        ? m0boy::cpu::register_names8[index] : "?";
 }
 
 const char* reg16_name(Reg16 r) {
@@ -1174,39 +1161,6 @@ std::string Instruction::disassemble() const {
     return gbrecomp::disassemble(*this);
 }
 
-std::vector<Instruction> decode_bank(const ROM& rom, BankId bank) {
-    std::vector<Instruction> instructions;
-    
-    // Determine bank boundaries
-    const size_t BANK_SIZE = 0x4000;  // 16KB
-    size_t start_offset, end_offset;
-    
-    if (bank == 0) {
-        start_offset = 0;
-        end_offset = std::min(BANK_SIZE, rom.size());
-    } else {
-        start_offset = bank * BANK_SIZE;
-        end_offset = std::min(start_offset + BANK_SIZE, rom.size());
-    }
-    
-    if (start_offset >= rom.size()) {
-        return instructions;
-    }
-    
-    Decoder decoder(rom);
-    uint16_t addr = (bank == 0) ? 0x0000 : 0x4000;
-    size_t offset = start_offset;
-    
-    while (offset < end_offset) {
-        Instruction instr = decoder.decode(addr, bank);
-        instructions.push_back(instr);
-        
-        offset += instr.length;
-        addr += instr.length;
-    }
-    
-    return instructions;
-}
 
 
 } // namespace gbrecomp

@@ -14,3 +14,4 @@
 *.bin
 *.elf
 node_modules/
+*.sg

@@ -1,5 +1,11 @@
 # m0boy
 
+Source CPU, source console (`--system`) and destination (`--target`) now have
+separate identities. An initial SG-1000/Z80 frontend loads, inspects and
+disassembles unbanked cartridges (`m0recomp game.sg --disasm`); execution and native
+generation are not implemented yet. See the
+[multi-system architecture notes (French)](docs/MULTI_SYSTEM.fr.md).
+
 **Game Boy games recompiled into native firmwares for two Cortex-M0+
 handhelds: the Gamebuino META and the Pokitto.**
 
