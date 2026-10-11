@@ -22,3 +22,7 @@ META controls: D-pad, A, B; MENU = Start; HOME tap = Select; HOME held half
 a second opens the option menu (display mode, palette, frame skip, 48/72 MHz,
 back to the Gamebuino loader). The menu shows the emulated and drawn frames
 of the last second.
+
+The firmware compiler is @COMPILER@. Override with `FIRMWARE_COMPILER=clang pio run`
+(or `gcc`). Clang uses the GNU ARM libraries/assembler/linker and requires
+`clang`/`clang++` in PATH. LLVM LTO is not supported.

@@ -49,7 +49,7 @@ def toolchain() -> str | None:
 
 
 def generate(gbrecomp: str, rom: Path, out: Path, target: str) -> None:
-    run([gbrecomp, str(rom), "--target", target, "--output-prefix", "e2e", "--meta-static", "-o", str(out)])
+    run([gbrecomp, str(rom), "--target", target, "--output-prefix", "e2e", "--meta-static", "--meta-thumb", "-o", str(out)])
 
 
 def check_files(out: Path, pokitto: bool) -> None:
@@ -100,24 +100,27 @@ def main() -> int:
         if tc is None:
             print("SKIP firmware: no arm-none-eabi-gcc (PATH or ~/.platformio)")
             return 0
-        env = dict(os.environ, TOOLCHAIN=tc)
-        proc = subprocess.run(["make", "-C", str(out), "-j8"], stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, env=env, timeout=600)
-        if proc.returncode != 0:
-            sys.stdout.write(proc.stdout[-4000:])
-            raise SystemExit("firmware build failed")
-        fw = (out / "build" / "firmware.bin").read_bytes()
-        if len(fw) > 0x39000:
-            raise SystemExit("firmware is %d bytes, above the loader at 0x39000" % len(fw))
-        words = struct.unpack_from("<8I", fw, 0)
-        if sum(words) & 0xFFFFFFFF:
-            raise SystemExit("vector checksum: the first eight words sum to %#x" % (sum(words) & 0xFFFFFFFF))
-        sp, reset = words[0], words[1]
-        if not (0x10000100 < sp <= 0x10008000) or not (reset & 1) or reset >= len(fw):
-            raise SystemExit("vectors: SP %#x, reset %#x" % (sp, reset))
-        if b"gbrecomp-pokitto " not in fw:
-            raise SystemExit("version string gbrecomp-pokitto missing from the firmware")
-        print("firmware: %d bytes, checksum and vectors ok" % len(fw))
+        compilers = ["gcc"] + (["clang"] if shutil.which("clang") and shutil.which("clang++") else [])
+        for compiler in compilers:
+            env = dict(os.environ, TOOLCHAIN=tc, FIRMWARE_COMPILER=compiler)
+            proc = subprocess.run(["make", "-C", str(out), "-j4", "COMPILER=" + compiler],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env, timeout=600)
+            if proc.returncode != 0:
+                sys.stdout.write(proc.stdout[-6000:])
+                raise SystemExit(compiler + " firmware build failed")
+            folder = "build-clang" if compiler == "clang" else "build"
+            fw = (out / folder / "firmware.bin").read_bytes()
+            if len(fw) > 0x39000:
+                raise SystemExit("firmware is %d bytes, above the loader at 0x39000" % len(fw))
+            words = struct.unpack_from("<8I", fw, 0)
+            if sum(words) & 0xFFFFFFFF:
+                raise SystemExit("vector checksum: the first eight words sum to %#x" % (sum(words) & 0xFFFFFFFF))
+            sp, reset = words[0], words[1]
+            if not (0x10000100 < sp <= 0x10008000) or not (reset & 1) or reset >= len(fw):
+                raise SystemExit("vectors: SP %#x, reset %#x" % (sp, reset))
+            if b"gbrecomp-pokitto " not in fw:
+                raise SystemExit("version string gbrecomp-pokitto missing from the firmware")
+            print("%s firmware: %d bytes, checksum and vectors ok" % (compiler, len(fw)))
         return 0
     finally:
         if args.keep:

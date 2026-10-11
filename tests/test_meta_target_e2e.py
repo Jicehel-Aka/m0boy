@@ -388,7 +388,9 @@ def main() -> int:
             raise SystemExit("synthetic program did not finish cleanly in the interpreter")
 
         results = {}
-        for mode, extra in (("fast", []), ("precise", ["--meta-precise"])):
+        for mode, extra in (("fast", []), ("thumb", ["--meta-thumb"]),
+                            ("precise", ["--meta-precise"]),
+                            ("thumb_precise", ["--meta-thumb", "--meta-precise"])):
             proj = tmp / mode
             out = run([args.gbrecomp, str(rom), "--target", "meta", "--coverage", str(cov),
                        "-o", str(proj)] + common + extra)
@@ -401,6 +403,10 @@ def main() -> int:
                 if not w or int(w.group(1)) < 3 or int(w.group(2)) < 2:
                     print(out)
                     raise SystemExit("fast: the wait loops were not recognised")
+            if mode == "thumb":
+                ir = re.search(r"register IR:\s+(\d+) blocks, (\d+) Thumb blocks", out)
+                if not ir or int(ir.group(2)) == 0:
+                    raise SystemExit("synthetic ROM did not exercise generated Thumb blocks")
             hb = build_host(proj)
             results[mode] = parse(run([str(hb / "e2e_host"), "--frames", str(FRAMES),
                                        "--wram-hash-bytes", str(RESULT_BYTES)]))
@@ -522,6 +528,11 @@ def main() -> int:
         if saved[:64] != expected or boot_copy[0] != b"\xff" * 64 or boot_copy[1] != expected:
             failures.append("battery save not kept: file %s, boot copies %s / %s" % (
                 saved[:64].hex(), boot_copy[0].hex(), boot_copy[1].hex()))
+        for key in ("run_hash", "wram_hash", "state_hash"):
+            if results["thumb"][key] != results["fast"][key]:
+                raise SystemExit("register IR changed fast " + key)
+            if results["thumb_precise"][key] != results["precise"][key]:
+                raise SystemExit("register IR changed precise " + key)
         if results["precise"]["run_hash"] != ref["run_hash"]:
             failures.append("precise frames differ from the interpreter")
         if results["precise"]["wram_hash"] != ref["wram_hash"]:

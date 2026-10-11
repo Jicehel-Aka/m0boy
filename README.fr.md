@@ -26,7 +26,7 @@ puces à 32 Kio de RAM, 256 Kio de flash et sans division matérielle.
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le firmware | 32 + 2 + 2 Kio de RAM, 228 Kio de flash sous le loader |
 | Écran | 160×128 : les 144 lignes du Game Boy fusionnées en 128 | 220×176 : image 1:1, ou agrandie en 200×176 |
 | Build du firmware | PlatformIO | `make` avec arm-none-eabi-gcc |
-| Version | 0.7.0 | 0.7.0 |
+| Version | 0.7.2 | 0.7.2 |
 | État | Jeux lancés sur la console | Testée en émulateur seulement. Un premier testeur sur vraie Pokitto signale une image à l'envers, cause en cours d'analyse |
 
 ## Le travail réalisé

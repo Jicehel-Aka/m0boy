@@ -74,6 +74,7 @@
 #   AUTO_REDO=1   refaire la partie automatique même si elle est déjà enregistrée
 #                 (sinon seules les graines manquantes sont jouées)
 #   REPLAY=1      rejouer les parties à la main enregistrées (profils à jour)
+#   FIRMWARE_COMPILER=gcc|clang (défaut gcc) : compilateur C/C++ du firmware
 #   PACK=1 (défaut)
 #                 données de ROM peu lues compressées (LZSS) dans la flash au
 #                 lieu d'être lues sur la carte SD : plus de place pour le code
@@ -154,6 +155,8 @@ AUTO_SECONDS="${AUTO_SECONDS:-20}"
 JOBS="${JOBS:-$(( NPROC / 4 > 0 ? NPROC / 4 : 1 ))}"
 AUTO_REDO="${AUTO_REDO:-0}"
 REPLAY="${REPLAY:-0}"
+FIRMWARE_COMPILER="${FIRMWARE_COMPILER:-gcc}"
+case "$FIRMWARE_COMPILER" in gcc|clang) ;; *) echo "FIRMWARE_COMPILER doit être gcc ou clang."; exit 1 ;; esac
 PACK="${PACK:-1}"  # auto : packe quand ça tient, retombe sur la carte SD sinon (PACK=0 pour désactiver)
 ALL="${ALL:-0}"
 UPDATE="${UPDATE:-0}"
@@ -420,7 +423,7 @@ assess() {
   local bin
   bin=$(game_bin "$DEST_DIR/$dir")
   local state="$DEST_DIR/$dir/.gbrmeta.json"
-  local ver="" state_sha="" state_pack=""
+  local ver="" state_sha="" state_pack="" state_compiler=""
   S_todo=1; S_tag="nouvelle"
   if [ -f "$bin" ]; then
     ver=$(firmware_version "$bin")
@@ -429,10 +432,13 @@ assess() {
     fi
     [ -f "$state" ] && state_sha=$(sed -n 's/.*"sha1":[[:space:]]*"\([^"]*\)".*/\1/p' "$state")
     [ -f "$state" ] && state_pack=$(sed -n 's/.*"pack":[[:space:]]*\([01]\).*/\1/p' "$state")
+    [ -f "$state" ] && state_compiler=$(sed -n 's/.*"compiler":[[:space:]]*"\([^"]*\)".*/\1/p' "$state")
     if [ -n "$state_sha" ] && [ "$state_sha" != "$sha" ]; then
       S_tag="ROM modifiée"; S_todo=1
     elif [ "${state_pack:-0}" != "$PACK" ]; then
       S_tag="PACK=${state_pack:-0} -> PACK=$PACK"; S_todo=1
+    elif [ "${state_compiler:-gcc}" != "$FIRMWARE_COMPILER" ]; then
+      S_tag="compilateur ${state_compiler:-gcc} -> $FIRMWARE_COMPILER"; S_todo=1
     elif [ -z "$ver" ]; then
       S_tag="version inconnue"; S_todo=2
     elif [ "$ver" = "$CUR_VERSION" ]; then
@@ -490,7 +496,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   # a) Projet interpréteur seul et outils PC
   local pack_args=()
   [ "$PACK" = "1" ] && pack_args=(--meta-pack)
-  "$GBRECOMP" "$rom_path" --target "$TARGET" --output-prefix "$prefix" "${pack_args[@]}" -o "$out_dir" || return 1
+  "$GBRECOMP" "$rom_path" --target "$TARGET" --meta-compiler "$FIRMWARE_COMPILER" --output-prefix "$prefix" "${pack_args[@]}" -o "$out_dir" || return 1
   cmake -G Ninja -S "$out_dir/host" -B "$out_dir/host/build" > /dev/null || return 1
   ninja -C "$out_dir/host/build" || return 1
 
@@ -619,7 +625,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   #    (= le plus de code) qui tient encore dans les 240 Kio de la META
   #    (228 Kio sur la Pokitto).
   build_with() { # $1 = octets par instruction ; 0 ok, 1 flash pleine, 2 erreur
-    gen_log=$("$GBRECOMP" "$rom_path" --target "$TARGET" --output-prefix "$prefix" \
+    gen_log=$("$GBRECOMP" "$rom_path" --target "$TARGET" --meta-compiler "$FIRMWARE_COMPILER" --output-prefix "$prefix" \
       "${cov_args[@]}" "${static_args[@]}" "${pack_args[@]}" --meta-bytes-per-instruction "$1" -o "$out_dir") || return 2
     # build_flags du jeu (<dossier_sortie>/<Jeu>/build_flags, une option par
     # ligne, # = commentaire ; ex. -D META_TBLEND=0 pour un jeu à la pile
@@ -644,9 +650,9 @@ PY
       fi
     fi
     if [ "$TARGET" = pokitto ]; then
-      build_log=$(make -C "$out_dir" -j"$NPROC" EXTRA_CFLAGS="${extra_flags:-}" 2>&1) && return 0
+      build_log=$(make -C "$out_dir" -j"$NPROC" COMPILER="$FIRMWARE_COMPILER" EXTRA_CFLAGS="${extra_flags:-}" 2>&1) && return 0
     else
-      build_log=$(pio run -d "$out_dir" 2>&1) && return 0
+      build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" pio run -d "$out_dir" 2>&1) && return 0
     fi
     echo "$build_log" | grep -q -E "overflowed|greater than maximum allowed" && return 1
     echo "$build_log" | tail -20
@@ -689,7 +695,9 @@ PY
   echo "$gen_log" | grep -E "compiled:|interpreter only:|wait loops:|ROM streaming:|ROM packed:|--meta-pack:"
   if [ "$TARGET" = pokitto ]; then
     echo "$build_log" | grep -E "^flash:"
-    cp "$out_dir/build/firmware.bin" "$game_dir/$game_name.bin"
+    local firmware_build=build
+    [ "$FIRMWARE_COMPILER" = clang ] && firmware_build=build-clang
+    cp "$out_dir/$firmware_build/firmware.bin" "$game_dir/$game_name.bin"
   else
     echo "$build_log" | grep -E "RAM:|Flash:"
     # Un seul .bin par dossier : le loader lance le premier qu'il trouve.
@@ -735,8 +743,8 @@ PY
   fi
   # État pour les lancements suivants : version, ROM exacte, fichiers.
   {
-    printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "pack": %s,\n  "bpi": %s,\n  "date": "%s"\n}\n' \
-      "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$PACK" "$best" "$(date +%Y-%m-%d)"
+    printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "pack": %s,\n  "compiler": "%s",\n  "bpi": %s,\n  "date": "%s"\n}\n' \
+      "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$PACK" "$FIRMWARE_COMPILER" "$best" "$(date +%Y-%m-%d)"
   } > "$game_dir/.gbrmeta.json"
   local fw_ver
   fw_ver=$(firmware_version "$(game_bin "$game_dir")")

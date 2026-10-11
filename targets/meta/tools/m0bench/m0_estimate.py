@@ -73,7 +73,7 @@ def write_inputs(path, input_file, frames):
         f.write("};\n")
 
 
-def build(project, out_dir, frames, opt, input_file, extra):
+def build(project, out_dir, frames, opt, input_file, extra, compiler="gcc"):
     src = os.path.join(project, "src")
     os.makedirs(out_dir, exist_ok=True)
     write_inputs(os.path.join(out_dir, "bench_input.h"), input_file, frames)
@@ -105,7 +105,23 @@ def build(project, out_dir, frames, opt, input_file, extra):
            "-Wno-unused-label", "-DBENCH_FRAMES=%d" % frames, "-I", src, "-I", out_dir,
            "-nostartfiles", "--specs=nano.specs", "-Wl,--gc-sections",
            "-T", os.path.join(HERE, "bench.ld"), "-o", elf] + extra + sources
-    subprocess.check_call(cmd)
+    if compiler == "gcc":
+        subprocess.check_call(cmd)
+    else:
+        # Compile with Clang, retain GNU assembly and the embedded link ABI.
+        sys.path.insert(0, os.path.normpath(os.path.join(HERE, "..", "..", "toolchain")))
+        from arm_clang import clang_command
+        flags = ["-mcpu=cortex-m0plus", "-mthumb", "-" + opt, "-g", "-std=gnu11",
+                 "-ffunction-sections", "-fdata-sections", "-Wno-unused-label",
+                 "-DBENCH_FRAMES=%d" % frames, "-I", src, "-I", out_dir] + extra
+        objects = []
+        for i, source in enumerate(sources):
+            obj = os.path.join(out_dir, "%d_%s.o" % (i, os.path.basename(source)))
+            subprocess.check_call(clang_command(find_gcc(), "c", flags + ["-c", source, "-o", obj]))
+            objects.append(obj)
+        subprocess.check_call([find_gcc(), "-mcpu=cortex-m0plus", "-mthumb", "-nostartfiles",
+                               "--specs=nano.specs", "-Wl,--gc-sections",
+                               "-T", os.path.join(HERE, "bench.ld"), "-o", elf] + objects)
     return elf
 
 
@@ -139,6 +155,7 @@ def main():
     ap.add_argument("--frames", type=int, default=300)
     ap.add_argument("--input", help="gbl input script (frame buttons)")
     ap.add_argument("--opt", default="O2")
+    ap.add_argument("--compiler", choices=("gcc", "clang"), default="gcc")
     ap.add_argument("--build-dir", default=None)
     ap.add_argument("--top", type=int, default=15)
     ap.add_argument("--cflag", action="append", default=[], help="extra compiler flag")
@@ -175,7 +192,7 @@ def main():
     if pokitto:
         cflags.append("-DBENCH_POKITTO_DISPLAY=%d" % args.display_mode)
     out_dir = args.build_dir or os.path.join(args.project, "m0bench")
-    elf_path = build(args.project, out_dir, args.frames, args.opt, args.input, cflags)
+    elf_path = build(args.project, out_dir, args.frames, args.opt, args.input, cflags, args.compiler)
 
     uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
     uc.mem_map(0, 0x80000)

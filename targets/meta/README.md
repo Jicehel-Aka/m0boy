@@ -64,6 +64,23 @@ The `--meta-precise` mode polls interrupts before every instruction, exactly
 like the interpreter. It is meant for differential testing, not for the
 device.
 
+## Optional Clang firmware compiler
+
+GCC remains the default. Pass `--meta-compiler clang` to generate a META or
+Pokitto project using Clang for C/C++; GNU ARM assembly, libraries and linking
+remain in use. Batch builds accept `FIRMWARE_COMPILER=clang`; the Node frontend
+also accepts `--compiler clang`. The estimator accepts `--compiler gcc|clang`.
+See [compiler selection and requirements](../../docs/COMPILATEURS.fr.md).
+
+## Experimental generated Thumb blocks
+
+`--meta-thumb` symbolically simplifies register-only `LD` / `NOP` runs and
+emits Thumb-1 for small plans, with equivalent C on the host. It preserves
+cycle accounting and does not cross entry labels, memory effects or EI's
+interrupt boundary. `--meta-precise` retains the original per-instruction
+path. The option is off by default; performance gains are not established.
+See [the design and validation notes](../../docs/THUMB_REGISTER_IR.fr.md).
+
 ## Workflow
 
 ```bash

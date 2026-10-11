@@ -146,6 +146,8 @@ void print_usage(const char* program) {
     std::cout << "  --target pokitto      Same gbl project for the Pokitto (bare-metal Makefile build;\n";
     std::cout << "                        every --meta-* option applies)\n";
     std::cout << "  --coverage <file>     gbl coverage profile for --target meta (repeatable)\n";
+    std::cout << "  --meta-compiler <gcc|clang>  Firmware compiler (default gcc)\n";
+    std::cout << "  --meta-thumb          Experimental register-IR / Thumb-1 code generation\n";
     std::cout << "  --meta-precise        Poll interrupts before every instruction (differential tests)\n";
     std::cout << "  --meta-static         Add the code found by static analysis (no play session needed)\n";
     std::cout << "  --meta-bytes-per-instruction <n>  Flash estimate per compiled instruction (default 20)\n";
@@ -1780,7 +1782,7 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
                            const fs::path& explicit_meta_dir,
                            const std::vector<fs::path>& coverage_paths, bool precise,
                            bool static_coverage, size_t bytes_per_instruction,
-                           bool emit_comments, bool pokitto) {
+                           bool emit_comments, bool pokitto, bool thumb, const std::string& compiler) {
     gbrecomp::MetaTargetOptions options;
     options.pokitto = pokitto;
     options.template_dir = resolve_meta_dir(argv0, explicit_meta_dir);
@@ -1844,6 +1846,8 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
         std::cout << std::dec << "Static analysis: " << written << " instructions\n";
         options.coverage_files.push_back(static_path);
     }
+    options.compiler = compiler;
+    options.thumb = thumb;
     options.precise = precise;
     options.emit_comments = emit_comments;
 
@@ -1876,6 +1880,8 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
               << stats.regions << " regions\n"
               << "  interpreter only:   " << stats.dropped << "\n"
               << "  dispatch entries:   " << stats.dispatch_entries << "\n"
+              << (thumb ? "  register IR:        " + std::to_string(stats.register_blocks) +
+                          " blocks, " + std::to_string(stats.thumb_blocks) + " Thumb blocks\n" : "")
               << "  wait loops:         " << stats.spin_loops << " polling, " << stats.counted_loops
               << " delay (fast-forwarded)\n"
               << (stats.stream && !stats.packed
@@ -1951,6 +1957,8 @@ int main(int argc, char* argv[]) {
     std::string android_app_name;
     std::string target = "desktop";
     std::vector<fs::path> coverage_paths;
+    std::string meta_compiler = "gcc";
+    bool meta_thumb = false;
     bool meta_precise = false;
     bool meta_static = false;
     size_t meta_bpi = 20;
@@ -2074,6 +2082,18 @@ int main(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 coverage_paths.emplace_back(argv[++i]);
             }
+        } else if (arg == "--meta-compiler") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --meta-compiler requires gcc or clang\n";
+                return 1;
+            }
+            meta_compiler = argv[++i];
+            if (meta_compiler != "gcc" && meta_compiler != "clang") {
+                std::cerr << "Error: --meta-compiler requires gcc or clang\n";
+                return 1;
+            }
+        } else if (arg == "--meta-thumb") {
+            meta_thumb = true;
         } else if (arg == "--meta-precise") {
             meta_precise = true;
         } else if (arg == "--meta-static") {
@@ -2121,10 +2141,10 @@ int main(int argc, char* argv[]) {
     if (target == "meta" || target == "pokitto") {
         return run_meta_target(argv[0], rom_path, output_dir, output_prefix, meta_dir,
                                coverage_paths, meta_precise, meta_static, meta_bpi, emit_comments,
-                               target == "pokitto");
+                               target == "pokitto", meta_thumb, meta_compiler);
     }
-    if (!coverage_paths.empty() || meta_precise || meta_static || !meta_dir.empty()) {
-        std::cerr << "Error: --coverage, --meta-precise, --meta-static and --meta-dir require --target meta\n";
+    if (!coverage_paths.empty() || meta_compiler != "gcc" || meta_thumb || meta_precise || meta_static || !meta_dir.empty()) {
+        std::cerr << "Error: --coverage, --meta-compiler, --meta-thumb, --meta-precise, --meta-static and --meta-dir require --target meta or pokitto\n";
         return 1;
     }
     if (!emit_android_project && (!android_package.empty() || !android_app_name.empty())) {

@@ -121,6 +121,7 @@ function parseArgs(argv) {
     play: env('PLAY', '0') === '1',
     auto: env('AUTO', '1') === '1',
     staticAnalysis: env('STATIC', '1') === '1',
+    compiler: env('FIRMWARE_COMPILER', 'gcc'),
     pack: env('PACK', '1') === '1',  // auto : packe quand ça tient, retombe sur la carte SD sinon
     autoRedo: env('AUTO_REDO', '0') === '1',
     replay: env('REPLAY', '0') === '1',
@@ -138,19 +139,19 @@ function parseArgs(argv) {
     sessionsDir: null,
   };
   const positionals = [];
-  const needValue = new Set(['--jobs', '--auto-seeds', '--auto-frames',
+  const needValue = new Set(['--compiler', '--jobs', '--auto-seeds', '--auto-frames',
     '--auto-long-frames', '--auto-seconds', '--profiles-dir', '--sessions-dir']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (needValue.has(a)) {
       if (i + 1 >= argv.length) fail(`valeur manquante pour ${a}`);
       const map = {
-        '--jobs': 'jobs', '--auto-seeds': 'autoSeeds', '--auto-frames': 'autoFrames',
+        '--compiler': 'compiler', '--jobs': 'jobs', '--auto-seeds': 'autoSeeds', '--auto-frames': 'autoFrames',
         '--auto-long-frames': 'autoLongFrames', '--auto-seconds': 'autoSeconds',
         '--profiles-dir': 'profilesDir', '--sessions-dir': 'sessionsDir',
       };
       const key = map[a];
-      cfg[key] = a.endsWith('-dir') ? argv[++i] : num(argv[++i], 1);
+      cfg[key] = (a.endsWith('-dir') || a === '--compiler') ? argv[++i] : num(argv[++i], 1);
     } else switch (a) {
       case '--all': cfg.all = true; break;
       case '--update': cfg.update = true; break;
@@ -171,6 +172,7 @@ function parseArgs(argv) {
         positionals.push(a);
     }
   }
+  if (!['gcc', 'clang'].includes(cfg.compiler)) fail('--compiler/FIRMWARE_COMPILER doit être gcc ou clang');
   cfg.romDir = positionals[0] ?? path.join('.', 'roms', 'gb');
   cfg.destDir = positionals[1] ?? path.join('.', 'roms', 'meta');
   cfg.sessionsDir = cfg.sessionsDir ?? path.join(cfg.romDir, 'profiles');
@@ -181,7 +183,7 @@ function parseArgs(argv) {
 
 function usage() {
   console.log(`Usage : node compile.mjs [dossier_roms] [dossier_sortie] [options]
-Options : --all --update --force --no-icons --emu --play --pack --no-auto --auto-redo
+Options : --compiler gcc|clang --all --update --force --no-icons --emu --play --pack --no-auto --auto-redo
           --replay --no-static --jobs n --auto-seeds n --auto-frames n
           --auto-long-frames n --auto-seconds n --profiles-dir d --sessions-dir d
 Voir l'en-tête du fichier et compile.sh pour le détail.`);
@@ -250,6 +252,7 @@ function writeState(gameDir, game) {
     version: game.version,
     prefix: game.prefix,
     pack: game.pack ? 1 : 0,
+    compiler: game.compiler ?? 'gcc',
     date: new Date().toISOString().slice(0, 10),
   };
   fs.writeFileSync(path.join(gameDir, '.gbrmeta.json'), `${JSON.stringify(state, null, 2)}\n`);
@@ -281,9 +284,9 @@ function gblDefines(outDir) {
 const activeChildren = new Set();
 
 /* Exécute un outil ; capture la sortie, tue après timeoutMs si demandé. */
-function runTool(cmd, args, { timeoutMs = 0, cwd = ROOT, stdio = 'pipe' } = {}) {
+function runTool(cmd, args, { timeoutMs = 0, cwd = ROOT, stdio = 'pipe', env = process.env } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, windowsHide: true, stdio });
+    const child = spawn(cmd, args, { cwd, windowsHide: true, stdio, env });
     activeChildren.add(child);
     let out = '';
     let err = '';
@@ -519,6 +522,9 @@ function assess(game, cfg, curVersion) {
   } else if ((state.pack ?? 0) !== (cfg.pack ? 1 : 0)) {
     game.tag = `PACK=${state.pack ?? 0} -> PACK=${cfg.pack ? 1 : 0}`;
     game.todo = 1;
+  } else if ((state.compiler ?? 'gcc') !== cfg.compiler) {
+    game.tag = `compilateur ${state.compiler ?? 'gcc'} -> ${cfg.compiler}`;
+    game.todo = 1;
   } else if (!ver) {
     game.tag = 'version inconnue';
     game.todo = 2;
@@ -624,7 +630,7 @@ async function buildGame(game, cfg, curVersion, log) {
 
   /* a) Projet interpréteur seul et outils PC */
   const packArgs = cfg.pack ? ['--meta-pack'] : [];
-  let r = await runTool(GBRECOMP, [romPath, '--target', 'meta', '--output-prefix', prefix,
+  let r = await runTool(GBRECOMP, [romPath, '--target', 'meta', '--meta-compiler', cfg.compiler, '--output-prefix', prefix,
     ...packArgs, '-o', outDir]);
   if (r.code !== 0) { log(r.out + r.err); return false; }
   r = await runTool('cmake', ['-G', 'Ninja', '-S', path.join(outDir, 'host'), '-B', path.join(outDir, 'host', 'build')]);
@@ -735,7 +741,7 @@ async function buildGame(game, cfg, curVersion, log) {
   let genLog = '';
   let buildLog = '';
   const buildWith = async (bytesPerInstr) => {
-    const g = await runTool(GBRECOMP, [romPath, '--target', 'meta', '--output-prefix', prefix,
+    const g = await runTool(GBRECOMP, [romPath, '--target', 'meta', '--meta-compiler', cfg.compiler, '--output-prefix', prefix,
       ...covArgs, ...staticArgs, ...packArgs,
       '--meta-bytes-per-instruction', String(bytesPerInstr), '-o', outDir]);
     if (g.code !== 0) {
@@ -753,7 +759,8 @@ async function buildGame(game, cfg, curVersion, log) {
         fs.writeFileSync(ini, txt);
       }
     }
-    const p = await runTool('pio', ['run', '-d', outDir]);
+    const p = await runTool('pio', ['run', '-d', outDir],
+      { env: { ...process.env, FIRMWARE_COMPILER: cfg.compiler } });
     buildLog = p.out + p.err;
     if (p.code === 0) return 0;
     return /overflowed|greater than maximum allowed/.test(buildLog) ? 1 : 2;
@@ -823,6 +830,7 @@ async function buildGame(game, cfg, curVersion, log) {
   /* État pour les lancements suivants : version, ROM exacte, fichiers. */
   game.version = curVersion;
   game.pack = cfg.pack;
+  game.compiler = cfg.compiler;
   writeState(gameDir, game);
   const fwVer = firmwareVersion(path.join(gameDir, `${gameName}.bin`)) || curVersion;
   log(`[i] Firmware produit par gbrecomp v${fwVer}`);

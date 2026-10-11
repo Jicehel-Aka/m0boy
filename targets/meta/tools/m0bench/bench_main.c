@@ -18,6 +18,17 @@ static int strip_cur, strip_fill;
 static unsigned input_pos;
 volatile uint32_t bench_sink;
 
+#ifdef BENCH_STATE_HASH
+/* Independent of the selected display pipeline. */
+uint32_t bench_state_hash = 2166136261u;
+
+static void state_mix(const uint8_t *p, uint32_t n) {
+    uint32_t h = bench_state_hash;
+    while (n--) h = (h ^ *p++) * 16777619u;
+    bench_state_hash = h;
+}
+#endif
+
 #if defined(BENCH_POKITTO_DISPLAY)
 /* The Pokitto's display pipeline (platform/pokitto: pokitto_display.c,
  * pokitto_lcd.c and its Thumb-1 pixel pushes, mode BENCH_POKITTO_DISPLAY:
@@ -35,15 +46,23 @@ void delay(uint32_t ms) { (void)ms; }
 #include "meta_display.h"
 #include "meta_lcd.h"
 static uint32_t lcd_seq;
+#ifdef BENCH_PIXEL_HASH
+uint32_t bench_pixel_hash = 2166136261u;
+#endif
 uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
+#ifdef BENCH_PIXEL_HASH
+    const uint16_t *pixels = (const uint16_t *)buf;
+    uint32_t h = (bench_pixel_hash ^ row0) * 16777619u;
+    h = (h ^ rows) * 16777619u;
+    for (uint32_t i = 0; i < (uint32_t)rows * 160u; i++)
+        h = (h ^ pixels[i]) * 16777619u;
+    bench_pixel_hash = h;
+#endif
     (void)row0; (void)rows;
     bench_sink += *(const uint16_t *)buf;
     return ++lcd_seq;
 }
 uint32_t meta_lcd_done_seq(void) { return lcd_seq; }
-#ifdef BENCH_PIXEL_HASH
-uint32_t bench_pixel_hash = 2166136261u;
-#endif
 #else
 /* Same row policy as the META SKIP mode: unchanged lines are not rendered. */
 static uint32_t row_sig[144];
@@ -80,20 +99,6 @@ uint16_t *gbl_platform_line_begin(uint8_t ly) {
  * to prove two builds (C / asm loops) render identically.  Costs cycles:
  * build it separately from timing runs. */
 uint32_t bench_pixel_hash = 2166136261u;
-#endif
-
-#ifdef BENCH_STATE_HASH
-/* Machine state at every VBlank entry (registers, flags, cycle counter,
- * WRAM, HRAM, IO), like the host's state_hash: proves that assembly
- * versions of timing code (events, PPU transitions) behave like the C ones.
- * Costs cycles: build it separately from timing runs. */
-uint32_t bench_state_hash = 2166136261u;
-
-static void state_mix(const uint8_t *p, uint32_t n) {
-    uint32_t h = bench_state_hash;
-    while (n--) h = (h ^ *p++) * 16777619u;
-    bench_state_hash = h;
-}
 #endif
 
 void gbl_platform_line_end(uint8_t ly) {

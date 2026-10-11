@@ -16,10 +16,22 @@ OBJCOPY := $(TOOLCHAIN)arm-none-eabi-objcopy
 SIZE := $(TOOLCHAIN)arm-none-eabi-size
 PYTHON ?= python3
 
-BUILD := build
+COMPILER ?= $(if $(FIRMWARE_COMPILER),$(FIRMWARE_COMPILER),@COMPILER@)
+ASCC := $(CC)
+LINK := $(CXX)
+ifeq ($(COMPILER),clang)
+CC := $(PYTHON) toolchain/arm_clang.py --gcc $(TOOLCHAIN)arm-none-eabi-gcc --language c --
+CXX := $(PYTHON) toolchain/arm_clang.py --gcc $(TOOLCHAIN)arm-none-eabi-gcc --language c++ --
+else ifneq ($(COMPILER),gcc)
+$(error COMPILER must be gcc or clang)
+endif
+
+# Separate directories prevent mixing GCC and Clang objects when switching.
+BUILD := $(if $(filter clang,$(COMPILER)),build-clang,build)
 ARCH := -mcpu=cortex-m0plus -mthumb
 COMMON := $(ARCH) -O2 -g -ffunction-sections -fdata-sections -fno-common \
           -Wall -Wno-unused-label -Isrc $(EXTRA_CFLAGS)
+COMPILER_DEPS := $(if $(filter clang,$(COMPILER)),toolchain/arm_clang.py,)
 CFLAGS := $(COMMON) -std=gnu11
 CXXFLAGS := $(COMMON) -std=gnu++11 -fno-exceptions -fno-rtti -fno-threadsafe-statics
 ASFLAGS := $(ARCH) -g -Isrc -x assembler-with-cpp $(EXTRA_CFLAGS)
@@ -34,19 +46,19 @@ DEP := $(OBJ:.o=.d)
 
 all: $(BUILD)/firmware.bin
 
-$(BUILD)/%.o: src/%.c | $(BUILD)
+$(BUILD)/%.o: src/%.c $(COMPILER_DEPS) | $(BUILD)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
-$(BUILD)/%.o: src/%.cpp | $(BUILD)
+$(BUILD)/%.o: src/%.cpp $(COMPILER_DEPS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -MMD -MP -c $< -o $@
 $(BUILD)/%.o: src/%.S | $(BUILD)
-	$(CC) $(ASFLAGS) -MMD -MP -c $< -o $@
+	$(ASCC) $(ASFLAGS) -MMD -MP -c $< -o $@
 
 # The linker script sees the profile (POKITTO_RAM_BANKS): preprocessed.
 $(BUILD)/pokitto.ld: pokitto.ld src/gbl_config.h src/gbl_profile.h | $(BUILD)
 	$(CC) -E -P -x c -Isrc $(EXTRA_CFLAGS) $< -o $@
 
 $(BUILD)/firmware.elf: $(OBJ) $(BUILD)/pokitto.ld
-	$(CXX) $(LDFLAGS) $(OBJ) -o $@
+	$(LINK) $(LDFLAGS) $(OBJ) -o $@
 
 # The LPC boot ROM runs user code only when the first eight vector words
 # sum to zero: word 7 takes the two's complement of the others.

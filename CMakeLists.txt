@@ -23,6 +23,20 @@ option(BUILD_TESTS "Build the META and Pokitto target tests" OFF)
 if(BUILD_TESTS)
     enable_testing()
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_executable(test_register_ir tests/test_register_ir.cpp)
+    target_link_libraries(test_register_ir PRIVATE gbrecomp_core)
+    add_test(NAME meta_register_ir_semantics COMMAND test_register_ir)
+    add_test(NAME meta_register_ir_native
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_register_ir_native.py"
+                --ir-test "$<TARGET_FILE:test_register_ir>" --runtime "${PROJECT_SOURCE_DIR}/targets/meta/runtime")
+    set_tests_properties(meta_register_ir_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    add_test(NAME meta_register_ir_clang
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_register_ir_native.py"
+                --ir-test "$<TARGET_FILE:test_register_ir>" --runtime "${PROJECT_SOURCE_DIR}/targets/meta/runtime"
+                --compiler clang)
+    set_tests_properties(meta_register_ir_clang PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+    add_test(NAME meta_compiler_selection
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_arm_compiler.py")
     set(GBL_META_DIR "${PROJECT_SOURCE_DIR}/targets/meta")
     file(GLOB GBL_META_RUNTIME_SOURCES "${GBL_META_DIR}/runtime/gbl_*.c")
 
@@ -75,7 +89,7 @@ if(BUILD_TESTS)
     add_test(NAME meta_target_end_to_end
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_meta_target_e2e.py"
                 --gbrecomp "$<TARGET_FILE:gbrecomp>")
-    set_tests_properties(meta_target_end_to_end PROPERTIES TIMEOUT 300)
+    set_tests_properties(meta_target_end_to_end PROPERTIES TIMEOUT 600)
 
     # --target pokitto: the generated project, its host harness, and the
     # bare-metal firmware when arm-none-eabi-gcc exists.

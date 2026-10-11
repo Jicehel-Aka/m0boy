@@ -31,6 +31,8 @@ struct MetaTargetOptions {
     bool pokitto = false;
     std::vector<std::filesystem::path> coverage_files; ///< gbl coverage v1 files
     bool emit_comments = true;
+    std::string compiler = "gcc"; ///< firmware C/C++ compiler: gcc or clang
+    bool thumb = false;        ///< experimental register-IR / Thumb-1 lowering
     bool precise = false;      ///< poll interrupts before every instruction
     size_t max_region_instructions = 256;
     /* Flash available for generated code; 0 = derive from the application
@@ -60,6 +62,8 @@ struct MetaTargetStats {
     size_t dropped = 0;       ///< covered but left to the interpreter
     size_t regions = 0;
     size_t dispatch_entries = 0;
+    size_t register_blocks = 0; ///< blocks simplified by register IR
+    size_t thumb_blocks = 0;    ///< register blocks with native Thumb lowering
     size_t speculative = 0;      ///< static-analysis instructions offered
     size_t speculative_kept = 0; ///< ... and compiled within the budget
     size_t budget_instructions = 0;

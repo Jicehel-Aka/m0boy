@@ -10,6 +10,7 @@ add_library(gbrecomp_core STATIC
     src/ir/ir_builder.cpp
     src/ir/ir_optimizer.cpp
     src/codegen/c_emitter.cpp
+    src/codegen/register_ir.cpp
     src/codegen/meta_emitter.cpp
 )
 

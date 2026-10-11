@@ -23,3 +23,7 @@ second opens the option menu (save states, volume, palette, frame skip,
 48/72 MHz, back to the loader). C held at power-on starts the Pokitto
 loader. The picture is the Game Boy's 160x144, unscaled, in the middle of
 the 220x176 screen, or enlarged to 200x176 as gm0 does (menu "Ecran").
+
+The firmware compiler is @COMPILER@. Override with `make COMPILER=clang`
+(or `gcc`). Clang writes `build-clang/firmware.bin` and requires
+`clang`/`clang++` plus the GNU ARM toolchain. LLVM LTO is not supported.
