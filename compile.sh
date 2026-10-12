@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Convertit toutes les ROMs .gb/.gbc d'un dossier en jeux Gamebuino META
+# Convertit les ROMs .gb/.gbc et .sg d'un dossier en jeux Gamebuino META
 # (ou Pokitto, TARGET=pokitto), rangés comme le loader de la console les
 # attend.
 #
 # Usage : ./compile.sh [dossier_roms] [dossier_sortie]
-#   Par défaut : toutes les ROMs de ./roms/gb/, jeux dans ./roms/meta/<Jeu>/
+#   Par défaut : ./roms/gb/ et ./roms/sg/, jeux dans ./roms/meta/<Jeu>/
+#   Un dossier explicite accepte .gb/.gbc/.sg (ou ses sous-dossiers gb/ et sg/).
+#   SG-1000 : projets out/sg1000/<cible>/<jeu>/, GCC, couverture NTSC automatique
+#   de AUTO_SECONDS secondes émulées (SG_AUTO_FRAMES pour choisir les images).
+#   PLAY=1 utilise le lecteur natif SG ; PACK et les sauvegardes GB ne s’appliquent pas.
 #   (le .elf de débogage reste dans out/<jeu>/.pio/build/meta/)
 #
 #   TARGET=pokitto  même chaîne pour la Pokitto : jeux dans ./roms/pokitto/<Jeu>/,
@@ -110,7 +114,7 @@ if [ "$TARGET" = both ] || [ "$TARGET" = all ]; then
   # mises à jour sont demandées une seule fois (pass de capture ci-dessous,
   # état de la META) puis transmises aux deux passes via CHOICE/CHOICE_UPD.
   rc=0
-  src="${1:-./roms/gb}"
+  src="${1:-./roms}"
   if [ -n "${2:-}" ]; then mkdir -p "$2/meta" "$2/pokitto"; dm="$2/meta"; dp="$2/pokitto"; else dm=""; dp=""; fi
   if [ -t 0 ] && [ "${ALL:-0}" != 1 ] && [ -z "${CHOICE:-}" ]; then
     tf=$(mktemp)
@@ -136,7 +140,7 @@ case "$TARGET" in
   meta|pokitto) ;;
   *) echo "TARGET=$TARGET inconnu (meta, pokitto ou both)."; exit 1 ;;
 esac
-SRC_DIR="${1:-./roms/gb}"
+SRC_DIR="${1:-./roms}"
 DEST_DIR="${2:-./roms/$TARGET}"
 # Projets générés : out/<jeu> pour la META, out/pokitto/<jeu> pour la Pokitto
 # (les deux peuvent coexister).
@@ -162,12 +166,15 @@ ALL="${ALL:-0}"
 UPDATE="${UPDATE:-0}"
 FORCE="${FORCE:-0}"
 NO_ICONS="${NO_ICONS:-0}"
+# m0recomp is the console-neutral CLI; keep the historical binary as fallback.
 GBRECOMP="./build/bin/gbrecomp"
+[ -x ./build/bin/m0recomp ] && GBRECOMP="./build/bin/m0recomp"
 # Profils fournis (couverture jouée, lectures de données), rangés par SHA-1
 # de la ROM : un dump identique en profite sans rejouer.
 PROFILES_DIR="${PROFILES_DIR:-$(dirname "$0")/profiles}"
 # Parties enregistrées par ce script (aléatoires et à la main), gardées d'un
 # lancement à l'autre : <dossier_roms>/profiles/<sha1>/.
+SESSIONS_CUSTOM="${SESSIONS_DIR:-}"
 SESSIONS_DIR="${SESSIONS_DIR:-$SRC_DIR/profiles}"
 ICON_CACHE="$DEST_DIR/.cache/icons"
 THUMB_BASE="https://thumbnails.libretro.com"
@@ -273,7 +280,7 @@ json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 # Version de gbrecomp embarquée dans un firmware (voir meta_main.cpp) :
 # « gbrecomp-meta x.y.z » ou « gbrecomp-pokitto x.y.z ».
 firmware_version() {
-  grep -aoE "gbrecomp-$TARGET [0-9A-Za-z._+-]{1,32}" "$1" 2>/dev/null \
+  grep -aoE "(gbrecomp-$TARGET|m0boy-sg1000-$TARGET) [0-9A-Za-z._+-]{1,32}" "$1" 2>/dev/null \
     | head -n1 | cut -d' ' -f2
 }
 
@@ -305,7 +312,10 @@ PY
 # (« Tetris (World) (Rev 1).png »), un nom nettoyé seul ne suffit pas.
 thumb_listing() { # $1 = gbc ou "" -> fichier cache, ou échec
   local f url
-  if [ "$1" = gbc ]; then
+  if [ "$1" = sg ]; then
+    f="$ICON_CACHE/listing-sg.txt"
+    url="$THUMB_BASE/Sega%20-%20SG-1000/Named_Titles/"
+  elif [ "$1" = gbc ]; then
     f="$ICON_CACHE/listing-gbc.txt"
     url="$THUMB_BASE/Nintendo%20-%20Game%20Boy%20Color/Named_Titles/"
   else
@@ -380,6 +390,7 @@ fetch_icons() { # $1 dossier du jeu, $2 nom du jeu, $3 base du fichier ROM, $4 "
     # Les jeux Game Boy Color ont leur propre catalogue libretro.
     local sets=("$4" "")
     [ "$4" = gbc ] && sets=("" gbc)
+    [ "$4" = sg ] && sets=(sg)
     mkdir -p "$ICON_CACHE"
     for set in "${sets[@]}"; do
       enc=$(find_thumb "$2" "$set") && [ -n "$enc" ] && break
@@ -387,14 +398,17 @@ fetch_icons() { # $1 dossier du jeu, $2 nom du jeu, $3 base du fichier ROM, $4 "
     if [ -z "${enc:-}" ]; then
       # Catalogue inaccessible ou nom absent : essais directs en dernier
       # recours (nom nettoyé supposé identique au nom No-Intro).
-      for set in "Nintendo%20-%20Game%20Boy" "Nintendo%20-%20Game%20Boy%20Color"; do
+      local catalogs=("Nintendo%20-%20Game%20Boy" "Nintendo%20-%20Game%20Boy%20Color")
+      [ "$4" = sg ] && catalogs=("Sega%20-%20SG-1000")
+      for set in "${catalogs[@]}"; do
         url="$THUMB_BASE/$set/Named_Titles/$(url_quote "$2").png"
         if curl -fsSL --max-time 30 -o "$png" "$url" 2>/dev/null; then break; fi
         if wget -q -T 30 -O "$png" "$url" 2>/dev/null; then break; fi
         rm -f "$png"
       done
     else
-      if [ "$set" = gbc ]; then set="Nintendo%20-%20Game%20Boy%20Color"
+      if [ "$set" = sg ]; then set="Sega%20-%20SG-1000"
+      elif [ "$set" = gbc ]; then set="Nintendo%20-%20Game%20Boy%20Color"
       else set="Nintendo%20-%20Game%20Boy"; fi
       url="$THUMB_BASE/$set/Named_Titles/$enc.png"
       curl -fsSL --max-time 30 -o "$png" "$url" 2>/dev/null || \
@@ -419,11 +433,12 @@ fetch_icons() { # $1 dossier du jeu, $2 nom du jeu, $3 base du fichier ROM, $4 "
 # Entrées : $1 dossier du jeu, $2 sha1 de la ROM.  Sorties globales :
 # S_tag (affichage), S_todo (0 rien, 1 à faire, 2 à confirmer).
 assess() {
-  local dir="$1" sha="$2"
+  local dir="$1" sha="$2" system="${3:-gameboy}" expected_pack="$PACK"
+  [ "$system" = sg1000 ] && expected_pack=0
   local bin
   bin=$(game_bin "$DEST_DIR/$dir")
   local state="$DEST_DIR/$dir/.gbrmeta.json"
-  local ver="" state_sha="" state_pack="" state_compiler=""
+  local ver="" state_sha="" state_pack="" state_compiler="" state_system=""
   S_todo=1; S_tag="nouvelle"
   if [ -f "$bin" ]; then
     ver=$(firmware_version "$bin")
@@ -433,10 +448,13 @@ assess() {
     [ -f "$state" ] && state_sha=$(sed -n 's/.*"sha1":[[:space:]]*"\([^"]*\)".*/\1/p' "$state")
     [ -f "$state" ] && state_pack=$(sed -n 's/.*"pack":[[:space:]]*\([01]\).*/\1/p' "$state")
     [ -f "$state" ] && state_compiler=$(sed -n 's/.*"compiler":[[:space:]]*"\([^"]*\)".*/\1/p' "$state")
-    if [ -n "$state_sha" ] && [ "$state_sha" != "$sha" ]; then
+    [ -f "$state" ] && state_system=$(sed -n 's/.*"system":[[:space:]]*"\([^" ]*\)".*/\1/p' "$state")
+    if [ "${state_system:-gameboy}" != "$system" ]; then
+      S_tag="système ${state_system:-gameboy} -> $system"; S_todo=1
+    elif [ -n "$state_sha" ] && [ "$state_sha" != "$sha" ]; then
       S_tag="ROM modifiée"; S_todo=1
-    elif [ "${state_pack:-0}" != "$PACK" ]; then
-      S_tag="PACK=${state_pack:-0} -> PACK=$PACK"; S_todo=1
+    elif [ "${state_pack:-0}" != "$expected_pack" ]; then
+      S_tag="PACK=${state_pack:-0} -> PACK=$expected_pack"; S_todo=1
     elif [ "${state_compiler:-gcc}" != "$FIRMWARE_COMPILER" ]; then
       S_tag="compilateur ${state_compiler:-gcc} -> $FIRMWARE_COMPILER"; S_todo=1
     elif [ -z "$ver" ]; then
@@ -458,8 +476,56 @@ in_array() { # $1 valeur, $2... tableau
 }
 
 
-build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 sha1
+build_sg_game() { # SG-1000 owns its generator, profiles and build system.
   local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
+  local SRC_DIR="$(dirname "$rom_path")"
+  local SESSIONS_DIR="${SESSIONS_CUSTOM:-$SRC_DIR/profiles}"
+  local out_dir="out/sg1000/$TARGET/$prefix" game_dir="$DEST_DIR/$game_name"
+  local store="$SESSIONS_DIR/$rom_sha/sg1000" cov auto_frames
+  local cov_args=() firmware
+  [ "$FIRMWARE_COMPILER" = gcc ] || { echo "[x] Le frontend firmware SG-1000 utilise GCC (FIRMWARE_COMPILER=gcc)."; return 1; }
+  mkdir -p "$out_dir" "$store" "$game_dir" || return 1
+  if [ "$PLAY" = 1 ]; then
+    [ -x ./build/bin/sg1000_play ] || { echo "[x] Lecteur SG absent : construire sg1000_play avec SDL2."; return 1; }
+    ./build/bin/sg1000_play "$rom_path" || return 1
+  fi
+  if [ "$AUTO" = 1 ] && { [ "$AUTO_REDO" = 1 ] || [ ! -f "$store/coverage-auto.cov" ]; }; then
+    [ -x ./build/bin/sg1000_host ] || { echo "[x] Construire sg1000_host avec CMake/Ninja."; return 1; }
+    auto_frames="${SG_AUTO_FRAMES:-$((AUTO_SECONDS * 60))}"
+    case "$auto_frames" in ''|*[!0-9]*|0) echo "[x] SG_AUTO_FRAMES doit être un entier positif."; return 1 ;; esac
+    echo "[i] Profil SG-1000 : $auto_frames images NTSC, bouton 1 pour démarrer et tirer"
+    ./build/bin/sg1000_host "$rom_path" --frames "$auto_frames" --buttons 16 --start-frame 30 \
+      --coverage "$store/coverage-auto.tmp" || return 1
+    mv "$store/coverage-auto.tmp" "$store/coverage-auto.cov" || return 1
+  fi
+  for cov in "$store"/*.cov "$PROFILES_DIR/$rom_sha"/*.cov; do
+    [ -f "$cov" ] || continue
+    [ "$(head -n1 "$cov")" = '# m0boy.sg1000.coverage.v1' ] && cov_args+=(--coverage "$cov")
+  done
+  "$GBRECOMP" "$rom_path" --system sg1000 --target "$TARGET" --output-prefix "$prefix" \
+    "${cov_args[@]}" -o "$out_dir" || return 1
+  if [ "$TARGET" = pokitto ]; then
+    cmake -G Ninja -S "$out_dir" -B "$out_dir/build" -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake || return 1
+    ninja -C "$out_dir/build" -j"$NPROC" || return 1
+    firmware="$out_dir/build/firmware.bin"
+    cp "$firmware" "$game_dir/$game_name.bin" || return 1
+  else
+    pio run -d "$out_dir" || return 1
+    firmware="$out_dir/.pio/build/meta/firmware.bin"
+    rm -f "$game_dir"/*.bin "$game_dir"/*.BIN
+    cp "$firmware" "$game_dir/$(meta_bin "$out_dir/src/gbl_config.h" "$prefix")" || return 1
+    fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" sg || echo "[i] (jeu conservé sans icône)"
+  fi
+  printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "system": "sg1000",\n  "pack": 0,\n  "compiler": "gcc"\n}\n' \
+    "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" > "$game_dir/.gbrmeta.json"
+  echo "[i] Firmware SG-1000 $TARGET v$CUR_VERSION : $game_dir"
+}
+
+build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 sha1
+  case "${1##*.}" in sg|SG|sG|Sg) build_sg_game "$@"; return $? ;; esac
+  local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
+  local SRC_DIR="$(dirname "$rom_path")"
+  local SESSIONS_DIR="${SESSIONS_CUSTOM:-$SRC_DIR/profiles}"
   local game_dir="$DEST_DIR/$game_name"
   local out_dir="$OUT_ROOT/$prefix"
   local flags_file="$game_dir/build_flags" extra_flags=""
@@ -754,25 +820,28 @@ PY
 
 
 shopt -s nullglob nocaseglob
-roms=("$SRC_DIR"/*.gb "$SRC_DIR"/*.gbc)
+roms=("$SRC_DIR"/*.gb "$SRC_DIR"/*.gbc "$SRC_DIR"/*.sg
+      "$SRC_DIR"/gb/*.gb "$SRC_DIR"/gb/*.gbc "$SRC_DIR"/sg/*.sg)
 shopt -u nullglob nocaseglob
 
 if [ ${#roms[@]} -eq 0 ]; then
-  echo "Aucun fichier .gb ou .gbc trouvé dans '$SRC_DIR'."
+  echo "Aucun fichier .gb, .gbc ou .sg trouvé dans '$SRC_DIR'."
   exit 0
 fi
 
 # ---- Inventaire : nom propre, préfixe C, sha1, état -----------------------
 
-declare -a R_path R_base R_clean R_prefix R_sha R_status R_ver
+declare -a R_path R_base R_clean R_prefix R_sha R_status R_ver R_system
 declare -a used_prefixes=() used_dirs=() used_shas=()
 n=0
 n_dup=0
 for rom_path in "${roms[@]}"; do
+  system=gameboy
+  case "${rom_path##*.}" in sg|SG|sG|Sg) system=sg1000 ;; esac
   sha=$(sha1_of "$rom_path")
   dup=0
   for ((i = 0; i < n; i++)); do
-    [ "${R_sha[i]}" = "$sha" ] && { dup=1; break; }
+    [ "${R_sha[i]}" = "$sha" ] && [ "${R_system[i]}" = "$system" ] && { dup=1; break; }
   done
   if [ "$dup" = 1 ]; then
     echo "[-] Doublon (même sha1 que ${R_clean[i]}) : $(basename "$rom_path")"
@@ -799,7 +868,8 @@ for rom_path in "${roms[@]}"; do
   case "$prefix" in [0-9]*) prefix="g$prefix" ;; esac
   while in_array "$prefix" ${used_prefixes[@]+"${used_prefixes[@]}"}; do prefix="${prefix}_2"; done
 
-  assess "$dir" "$sha"
+  assess "$dir" "$sha" "$system"
+  R_system[n]="$system"
   R_path[n]="$rom_path"; R_base[n]="$(basename "$rom_path")"
   R_clean[n]="$dir"; R_prefix[n]="$prefix"; R_sha[n]="$sha"
   R_status[n]="$S_todo"; R_ver[n]="${S_tag}"
@@ -920,8 +990,8 @@ for index in ${SEL[@]+"${SEL[@]}"}; do
   if [ "${R_status[i]}" = 0 ] && [ "$FORCE" != 1 ]; then
     # Déjà à jour : on ne recompile pas ; icônes manquantes complétées.
     gbc=""
-    case "${R_base[i]##*.}" in gbc|GBC) gbc=gbc ;; esac
-    if fetch_icons "$DEST_DIR/${R_clean[i]}" "${R_clean[i]}" "${R_base[i]}" "$gbc"; then
+    case "${R_base[i]##*.}" in gbc|GBC) gbc=gbc ;; sg|SG|sG|Sg) gbc=sg ;; esac
+    if (SRC_DIR="$(dirname "${R_path[i]}")"; fetch_icons "$DEST_DIR/${R_clean[i]}" "${R_clean[i]}" "${R_base[i]}" "$gbc"); then
       echo "[=] ${R_clean[i]} : déjà à jour (v$CUR_VERSION), ignoré"
     else
       echo "[=] ${R_clean[i]} : déjà à jour (v$CUR_VERSION), ignoré (icône absente)"
@@ -942,12 +1012,14 @@ for index in ${SEL[@]+"${SEL[@]}"}; do
     fi
     echo ""
   else
-    mkdir -p "$OUT_ROOT/$prefix"
+    log_dir="$OUT_ROOT/$prefix"
+    [ "${R_system[i]}" = sg1000 ] && log_dir="out/sg1000/$TARGET/$prefix"
+    mkdir -p "$log_dir"
     (
-      if run_one "$rom_path" "$prefix" "$dir" "${R_sha[i]}" "$i" > "$OUT_ROOT/$prefix/compile.log" 2>&1; then
+      if run_one "$rom_path" "$prefix" "$dir" "${R_sha[i]}" "$i" > "$log_dir/compile.log" 2>&1; then
         echo "[+] $dir"
       else
-        echo "[x] $dir (voir $OUT_ROOT/$prefix/compile.log)"
+        echo "[x] $dir (voir $log_dir/compile.log)"
       fi
     ) &
     running=$((running + 1))

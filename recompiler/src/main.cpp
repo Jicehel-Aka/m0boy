@@ -5,6 +5,7 @@
 
 #include "m0boy/system.h"
 #include "m0boy/sg1000.h"
+#include "m0boy/sg1000_generator.h"
 #include "m0boy/cpu/z80/decoder.h"
 #include "recompiler/rom.h"
 #include "recompiler/decoder.h"
@@ -2240,6 +2241,34 @@ int main(int argc, char* argv[]) {
             offset += instruction.length;
             ++count;
         }
+        return 0;
+    }
+    if (source.id == m0boy::SystemId::sg1000) {
+        if (analyze_only || meta_thumb || meta_compiler != "gcc" || g_meta_pack ||
+            g_meta_stream != -1 || !g_rom_profiles.empty() || g_meta_resident ||
+            emit_android_project || !native_patch_manifest_path.empty() ||
+            !symbol_file_path.empty() || !annotation_file_path.empty() ||
+            specific_bank > 0 || !manual_entry_points.empty() || !trace_file_path.empty()) {
+            std::cerr << "Error: unsupported SG-1000 option; use --coverage, --target and --meta-code-budget for native generation\n";
+            return 1;
+        }
+        m0boy::sg1000::GenerateOptions options;
+        options.target = *m0boy::parse_target(target);
+        options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string()) : output_prefix;
+        if (options.name.empty() || sanitize_prefix(options.name) != options.name) {
+            std::cerr << "Error: invalid SG-1000 output prefix\n";
+            return 1;
+        }
+        options.output = output_dir.empty() ? fs::path(options.name + "_sg1000_" + target) : fs::path(output_dir);
+        options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
+        options.coverage = coverage_paths;
+        if (g_meta_code_budget) options.compiled_limit = std::min<size_t>(1024, g_meta_code_budget / 160);
+        std::string error;
+        if (!m0boy::sg1000::generate(rom_path, options, error)) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        std::cout << "Generated experimental SG-1000 project for " << target << ": " << options.output << "\n";
         return 0;
     }
     if (!source.supports(*m0boy::parse_target(target))) {

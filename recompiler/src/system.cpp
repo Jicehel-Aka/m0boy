@@ -17,7 +17,7 @@ constexpr std::array system_table = {
     SystemDescriptor{SystemId::gameboy, "gameboy", CpuId::sm83, 0x0100,
                      8192, gameboy::inspect, gameboy_targets},
     SystemDescriptor{SystemId::sg1000, "sg1000", CpuId::z80, 0x0000,
-                     1024, sg1000::inspect, {}},
+                     1024, sg1000::inspect, gameboy_targets},
 };
 }
 

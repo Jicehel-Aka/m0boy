@@ -2,9 +2,13 @@
 
 Source CPU, source console (`--system`) and destination (`--target`) now have
 separate identities. An initial SG-1000/Z80 frontend loads, inspects and
-disassembles unbanked cartridges (`m0recomp game.sg --disasm`); execution and native
-generation are not implemented yet. See the
+disassembles unbanked cartridges and generates experimental native META/Pokitto
+projects. A host harness compares generated instructions with a Z80 interpreter;
+SG-1000 tone/noise synthesis drives the META and Pokitto DACs. See the
 [multi-system architecture notes (French)](docs/MULTI_SYSTEM.fr.md).
+A native SDL2 player is available as `build/bin/sg1000_play game.sg` (arrows, Space/Ctrl, Enter, `*`).
+`tools/sg1000/package.py` builds Windows and Linux archives with SDL2 included;
+see the [desktop distribution instructions](docs/MULTI_SYSTEM.fr.md#jouer-sur-pc).
 
 **Game Boy games recompiled into native firmwares for two Cortex-M0+
 handhelds: the Gamebuino META and the Pokitto.**
@@ -31,7 +35,7 @@ recompiler and adds everything needed to run on chips with 32 KiB of RAM,
 | Memory | 32 KiB RAM, 240 KiB flash for the firmware | 32 + 2 + 2 KiB RAM, 228 KiB flash below the loader |
 | Screen | 160×128: the 144 Game Boy lines blended into 128 | 220×176: picture 1:1, or enlarged to 200×176 |
 | Firmware build | PlatformIO | `make` with arm-none-eabi-gcc |
-| Version | 0.7.2 | 0.7.2 |
+| Version | 0.8.1 | 0.8.1 |
 | Status | Games run on the console | Tested in an emulator only. A first tester on a real Pokitto reports an upside-down picture; the cause is being investigated |
 
 ## What was built

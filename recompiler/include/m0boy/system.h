@@ -42,7 +42,7 @@ struct SystemDescriptor {
     size_t work_ram_bytes;
     InspectCartridge inspect;
     std::span<const TargetId> codegen_targets;
-    // True only when the complete existing code generation pipeline exists.
+    // Whether a native project generator exists for this destination.
     bool supports(TargetId target) const;
 };
 

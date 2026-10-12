@@ -15,3 +15,7 @@
 *.elf
 node_modules/
 *.sg
+
+!/roms/sg/
+/roms/sg/*
+!/roms/sg/README.txt

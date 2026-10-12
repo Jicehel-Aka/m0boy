@@ -21,10 +21,51 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 add_subdirectory(recompiler)
 
+add_library(m0boy_z80_runtime STATIC targets/sg1000/runtime/z80.c)
+target_include_directories(m0boy_z80_runtime PUBLIC targets/sg1000/runtime)
+add_library(m0boy_sg1000_runtime STATIC targets/sg1000/runtime/sg1000.c targets/sg1000/runtime/sg_audio.c targets/sg1000/runtime/tms9918.c)
+target_link_libraries(m0boy_sg1000_runtime PUBLIC m0boy_z80_runtime)
+add_executable(sg1000_host targets/sg1000/host/sg_host.c)
+target_link_libraries(sg1000_host PRIVATE m0boy_sg1000_runtime)
+# Desktop play is optional; firmware and the reference harness remain headless.
+find_package(SDL2 QUIET)
+if(TARGET SDL2::SDL2)
+    add_executable(sg1000_play targets/sg1000/host/sg_player.c)
+    if(TARGET SDL2::SDL2main)
+        target_link_libraries(sg1000_play PRIVATE SDL2::SDL2main)
+    endif()
+    target_link_libraries(sg1000_play PRIVATE m0boy_sg1000_runtime SDL2::SDL2)
+endif()
+
+
 option(BUILD_TESTS "Build the META and Pokitto target tests" OFF)
 if(BUILD_TESTS)
     enable_testing()
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME compile_batch_source_systems
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_compile_batch.py")
+    add_executable(test_z80_execution tests/test_z80_execution.cpp)
+    target_link_libraries(test_z80_execution PRIVATE m0boy_z80_runtime m0boy_cpu_z80)
+    add_test(NAME z80_execution_reference COMMAND test_z80_execution)
+    add_executable(test_sg1000_runtime tests/test_sg1000_runtime.c)
+    target_link_libraries(test_sg1000_runtime PRIVATE m0boy_sg1000_runtime)
+    add_test(NAME sg1000_runtime_devices COMMAND test_sg1000_runtime)
+    add_test(NAME sg1000_native_end_to_end
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_sg1000_e2e.py"
+                --recompiler "$<TARGET_FILE:m0recomp>" --host "$<TARGET_FILE:sg1000_host>")
+    set_tests_properties(sg1000_native_end_to_end PROPERTIES TIMEOUT 300)
+    if(TARGET sg1000_play)
+        add_executable(test_sg1000_input tests/test_sg1000_input.c)
+        target_include_directories(test_sg1000_input PRIVATE targets/sg1000/host)
+        target_link_libraries(test_sg1000_input PRIVATE SDL2::SDL2)
+        if(TARGET SDL2::SDL2main)
+            target_link_libraries(test_sg1000_input PRIVATE SDL2::SDL2main)
+        endif()
+        add_test(NAME sg1000_keyboard_controls COMMAND test_sg1000_input)
+        add_test(NAME sg1000_desktop_player
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_sg1000_player.py"
+                    "$<TARGET_FILE:sg1000_play>" "$<TARGET_FILE:sg1000_host>")
+    endif()
     add_executable(test_source_systems tests/test_source_systems.cpp)
     target_link_libraries(test_source_systems PRIVATE m0boy_frontends)
     add_test(NAME source_system_profiles COMMAND test_source_systems)

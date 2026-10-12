@@ -24,6 +24,7 @@ add_library(gbrecomp_core STATIC
     src/system/gameboy/analyzer.cpp
     src/system/gameboy/bank_tracker.cpp
     src/system/gameboy/decode_bank.cpp
+    src/system/sg1000/generator.cpp
     src/symbol_table.cpp
     src/native_patch.cpp
     src/generator.cpp
@@ -34,7 +35,7 @@ add_library(gbrecomp_core STATIC
     src/codegen/meta_emitter.cpp
 )
 
-target_link_libraries(gbrecomp_core PUBLIC m0boy_frontends m0boy_cpu_sm83)
+target_link_libraries(gbrecomp_core PUBLIC m0boy_frontends m0boy_cpu_sm83 m0boy_cpu_z80 m0boy_z80_runtime)
 
 target_include_directories(gbrecomp_core
     PUBLIC

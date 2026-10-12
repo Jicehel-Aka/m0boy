@@ -14,7 +14,7 @@ def run(*args, ok=True, contains=""):
     return result.stdout
 
 
-listing = run("--list-systems", contains="sg1000 cpu=z80 inspect=yes disasm=yes codegen=unavailable")
+listing = run("--list-systems", contains="sg1000 cpu=z80 inspect=yes disasm=yes codegen=desktop,meta,pokitto")
 assert "gameboy cpu=sm83 inspect=yes disasm=yes codegen=desktop,meta,pokitto" in listing
 run("--system", ok=False, contains="requires a value")
 run("--cpu", "68000", ok=False, contains="unknown --cpu")
@@ -29,10 +29,10 @@ with tempfile.TemporaryDirectory() as temporary:
     run(sg, "--cpu", "z80", "--info", contains="mapper=unbanked")
     run(sg, "--info", "--disasm", ok=False, contains="cannot be combined")
     for target in ("desktop", "meta", "pokitto"):
-        run(sg, "--target", target, "-o", root / "project", ok=False,
-            contains="not implemented yet")
-        assert not (root / "project").exists()
-    run(sg, "--analyze", ok=False, contains="not implemented yet")
+        project = root / ("project-" + target)
+        run(sg, "--target", target, "-o", project, contains="Generated experimental SG-1000")
+        assert (project / "src" / "sg_gen.c").is_file()
+    run(sg, "--analyze", ok=False, contains="unsupported SG-1000 option")
     run(sg, "--disasm", "--limit", "1", contains="0000  JP $0000")
     run(sg, "--disasm", "--bank", "1", ok=False, contains="only have bank 0")
     raw = root / "synthetic.bin"

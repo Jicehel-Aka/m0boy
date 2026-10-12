@@ -2,9 +2,13 @@
 
 L’architecture sépare maintenant CPU, console d’origine (`--system`) et
 destination (`--target`). La SG-1000/Z80 dispose d’un premier frontend de
-chargement, d’inspection et de désassemblage (`m0recomp jeu.sg --disasm`) ; son exécution et sa
-génération native restent à implémenter. Voir
+chargement, d’inspection, de désassemblage et de génération native expérimentale
+pour META/Pokitto. Le harness hôte compare le code généré à l’interpréteur Z80 ;
+le PSG SG-1000 produit le son sur les DAC META et Pokitto. Voir
 [l’architecture multi-console](docs/MULTI_SYSTEM.fr.md).
+Un lecteur natif SDL2 est disponible : `build/bin/sg1000_play jeu.sg` (flèches, Espace/Ctrl, Entrée, `*`).
+Les paquets Windows et Linux avec SDL2 inclus se construisent avec
+`tools/sg1000/package.py` ; voir [la distribution PC](docs/MULTI_SYSTEM.fr.md#jouer-sur-pc).
 
 **Les jeux Game Boy recompilés en firmwares natifs pour deux consoles
 Cortex-M0+ : la Gamebuino META et la Pokitto.**
@@ -32,7 +36,7 @@ puces à 32 Kio de RAM, 256 Kio de flash et sans division matérielle.
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le firmware | 32 + 2 + 2 Kio de RAM, 228 Kio de flash sous le loader |
 | Écran | 160×128 : les 144 lignes du Game Boy fusionnées en 128 | 220×176 : image 1:1, ou agrandie en 200×176 |
 | Build du firmware | PlatformIO | `make` avec arm-none-eabi-gcc |
-| Version | 0.7.2 | 0.7.2 |
+| Version | 0.8.1 | 0.8.1 |
 | État | Jeux lancés sur la console | Testée en émulateur seulement. Un premier testeur sur vraie Pokitto signale une image à l'envers, cause en cours d'analyse |
 
 ## Le travail réalisé

@@ -16,7 +16,7 @@ int main() {
                 sg.work_ram_bytes == 1024, "SG-1000 profile incorrect");
         require(cpu_descriptor(sg.cpu).decoder_available, "Z80 decoder missing");
         for (auto target : {TargetId::desktop, TargetId::meta, TargetId::pokitto}) {
-            require(!sg.supports(target), "SG-1000 codegen advertised prematurely");
+            require(sg.supports(target), "SG-1000 target missing");
             require(system_descriptor(SystemId::gameboy).supports(target), "Lost GB target");
         }
         require(detect_system("game.SG") == SystemId::sg1000, "SG detection failed");

@@ -15,8 +15,10 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
   analysis. Legacy `recompiler/rom.h` and `recompiler/decoder.h` are forwarding
   includes. `recompiler/src/cpu/z80/`: Z80 disassembly, sharing encoding
   helpers with SM83 in `include/m0boy/cpu/encoding.h`.
-  `recompiler/src/system/sg1000/`: unbanked cartridge inspection; Z80
-  execution and firmware generation are not implemented yet.
+  `recompiler/src/system/sg1000/`: unbanked cartridge inspection and native
+  project generation. `targets/sg1000/`: Z80 reference execution, SG bus,
+  scanline TMS9918A, host harness and experimental META/Pokitto frontend.
+  SN76489 tone/noise synthesis feeds emulated-time samples to both DAC drivers.
 - `recompiler/`: `gbrecomp`, from gb-recompiled. The M0 backend is
   `recompiler/src/codegen/meta_emitter.cpp` (`--target meta`, `--target pokitto`).
 - `targets/meta/runtime/`: the `gbl` runtime shared by both consoles; every

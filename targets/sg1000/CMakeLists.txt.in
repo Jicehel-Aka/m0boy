@@ -1,0 +1,26 @@
+cmake_minimum_required(VERSION 3.20)
+project(@NAME@_sg1000_firmware C CXX)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 11)
+if(NOT CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR "Use -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake for firmware, or build host/ for the native harness")
+endif()
+set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+file(GLOB PLATFORM_C ${SRC}/pokitto_*.c)
+add_executable(firmware ${SRC}/z80.c ${SRC}/sg1000.c ${SRC}/sg_audio.c ${SRC}/tms9918.c ${SRC}/sg_gen.c ${SRC}/sg_rom.c ${SRC}/sg_main.cpp ${PLATFORM_C})
+target_include_directories(firmware PRIVATE ${SRC})
+target_compile_options(firmware PRIVATE -O2 -ffunction-sections -fdata-sections -fno-common -Wall
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions> $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld
+    COMMAND ${CMAKE_C_COMPILER} -E -P -x c -I${SRC} ${CMAKE_CURRENT_SOURCE_DIR}/pokitto.ld -o ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/pokitto.ld ${SRC}/gbl_profile.h)
+add_custom_target(linker_script DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld)
+add_dependencies(firmware linker_script)
+target_link_options(firmware PRIVATE -nostartfiles --specs=nano.specs --specs=nosys.specs
+    -Wl,--gc-sections -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/firmware.map -T${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld)
+set_target_properties(firmware PROPERTIES SUFFIX ".elf" LINK_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld)
+find_program(OBJCOPY arm-none-eabi-objcopy REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_custom_command(TARGET firmware POST_BUILD
+    COMMAND ${OBJCOPY} -O binary $<TARGET_FILE:firmware> ${CMAKE_CURRENT_BINARY_DIR}/firmware.bin
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/checksum.py ${CMAKE_CURRENT_BINARY_DIR}/firmware.bin)

@@ -1,0 +1,8 @@
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR arm)
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+find_program(CMAKE_C_COMPILER arm-none-eabi-gcc REQUIRED)
+find_program(CMAKE_CXX_COMPILER arm-none-eabi-g++ REQUIRED)
+set(CMAKE_ASM_COMPILER "${CMAKE_C_COMPILER}")
+set(CMAKE_C_FLAGS_INIT "-mcpu=cortex-m0plus -mthumb")
+set(CMAKE_CXX_FLAGS_INIT "-mcpu=cortex-m0plus -mthumb")
