@@ -83,6 +83,11 @@ def clang_command(gcc, language, arguments):
             continue
         filtered.append(arg)
         i += 1
+    # Clang defaults to DWARF 5, whose `.file 0` and MD5 line directives older
+    # GNU assemblers reject (binutils 2.29 in PlatformIO's GCC 7.2 toolchain).
+    if any(a.startswith('-g') and a != '-g0' for a in filtered) and \
+            not any(a.startswith('-gdwarf') for a in filtered):
+        filtered.append('-gdwarf-4')
     return command + filtered
 
 
