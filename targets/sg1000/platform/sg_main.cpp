@@ -41,6 +41,9 @@ static uint32_t deadline;
 #endif
 static int skip_video;
 static unsigned skipped_run;
+#ifdef SG_SELFTEST
+extern "C" { volatile unsigned sg_selftest_result; }
+#endif
 static const char version[] __attribute__((used)) = "m0boy-sg1000-" META_TARGET_NAME " " SG_GEN_VERSION;
 
 static unsigned display_row(unsigned y) {
@@ -111,7 +114,9 @@ static void frame(void *) {
     skip_video = (int32_t)(meta_micros() - deadline) > 0 && skipped_run < SG_MAX_SKIP;
     skipped_run = skip_video ? skipped_run + 1 : 0;
     while ((int32_t)(meta_micros() - deadline) < 0) meta_audio_idle();
-    if ((int32_t)(meta_micros() - deadline) > 33376) deadline = meta_micros();
+    /* behind by more than 6 frames (a stall): restart from now instead of
+     * running fast to catch up; smaller debts are paid back */
+    if ((int32_t)(meta_micros() - deadline) > 100128) deadline = meta_micros();
 }
 int main() {
 #if META_TARGET_POKITTO
@@ -146,6 +151,10 @@ int main() {
         if (stack < reserve + 1024) reserve = stack > 2048 ? stack - 1024 : stack / 2;
         sg_stack_limit = (uintptr_t)&end + reserve;
     }
+#ifdef SG_SELFTEST
+    sg_selftest_result = sg1000_render_selftest() + 1; /* read back by a debugger or gm0 */
+    for (;;) {}
+#endif
     meta_audio_init();
     deadline = meta_micros();
     /* Keep an inspectable source/target version stamp in the firmware. */

@@ -260,6 +260,8 @@ void Emitter::plan() {
     for (auto& reg : regions_) { Ins& f = ins_[reg.front()]; f.label = f.sw_case = true; }
     for (uint16_t v : { 0x0000, 0x0038, 0x0066 })
         if (Ins* t = find(v)) t->label = t->sw_case = true;
+    for (uint16_t v : opt_.entries) /* pushed return addresses, jump tables */
+        if (Ins* t = find(v)) t->label = t->sw_case = true;
     for (auto& [a, in] : ins_) {
         if (in.falls()) {
             if (Ins* n = find(in.next())) {
@@ -365,6 +367,8 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
     const z80_decoded_t& d = in.d;
     const unsigned op = d.opcode, x = op >> 6, y = (op >> 3) & 7, z = op & 7, p = y >> 1, q = y & 1;
     const bool ixhl = d.index != 0; /* H/L name IXH/IXL unless memory is involved */
+    const uint8_t need = in.def & in.live_out; /* flags read later (all in precise mode) */
+    const uint8_t SZXY = FS | FZ | FX | FY;
     auto ok = [&](unsigned r, bool plain) { return !(ixhl && !plain && (r == 4 || r == 5)); };
     std::string s;
     if (d.group == 1) {
@@ -426,6 +430,19 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
         if (x == 2) { if (!ok(z, z == 6)) return false; v = reg8(z, d); }
         else v = hex(d.immediate & 255, 2);
         static const char* alu[8] = { "sg_add", "sg_adc", "sg_sub", "sg_sbc", "sg_and", "sg_xor", "sg_or", "sg_cp" };
+        if (flags && !(need & ~(SZXY | FC))) { /* only S/Z/X/Y and carry read: inline */
+            switch (y) {
+            case 0: case 2: case 7: /* ADD, SUB, CP */
+                if (need & ~(FZ | FC)) break;
+                o << "    { uint32_t v_ = (uint32_t)Z.a " << (y ? "-" : "+") << " " << v << "; Z.f = (uint8_t)(((v_ >> 8) & 1) | ((uint8_t)v_ ? 0 : 0x40));"
+                  << (y == 7 ? "" : " Z.a = (uint8_t)v_;") << " }\n";
+                return true;
+            case 4: case 5: case 6: /* AND, XOR, OR: carry cleared */
+                o << "    Z.a " << (y == 4 ? "&" : y == 5 ? "^" : "|") << "= " << v << "; Z.f = z80_sz(Z.a);\n";
+                return true;
+            default: break;
+            }
+        }
         if (flags) { o << "    " << alu[y] << "(" << v << ");\n"; return true; }
         switch (y) {
         case 0: o << "    Z.a = (uint8_t)(Z.a + " << v << ");\n"; break;
@@ -479,13 +496,16 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
     case 4: case 5: {
         if (!ok(y, false)) return false;
         const bool dec = z == 5;
+        const bool sz = flags && !(need & ~SZXY); /* only S/Z/X/Y read: inline */
         if (y == 6) {
             o << "    { uint16_t a_ = " << addr_hl(d) << "; ";
-            if (flags) o << "sg_wr(a_, " << (dec ? "sg_dec" : "sg_inc") << "(sg_rd(a_))); }\n";
+            if (sz) o << "uint8_t v_ = (uint8_t)(sg_rd(a_) " << (dec ? "- 1" : "+ 1") << "); sg_wr(a_, v_); Z.f = (uint8_t)((Z.f & ~0xe8) | z80_sz(v_)); }\n";
+            else if (flags) o << "sg_wr(a_, " << (dec ? "sg_dec" : "sg_inc") << "(sg_rd(a_))); }\n";
             else o << "sg_wr(a_, (uint8_t)(sg_rd(a_) " << (dec ? "- 1" : "+ 1") << ")); }\n";
         } else {
             const std::string r = reg8(y, d);
-            if (flags) o << "    " << r << " = " << (dec ? "sg_dec(" : "sg_inc(") << r << ");\n";
+            if (sz) o << "    " << r << (dec ? "--" : "++") << "; Z.f = (uint8_t)((Z.f & ~0xe8) | z80_sz(" << r << "));\n";
+            else if (flags) o << "    " << r << " = " << (dec ? "sg_dec(" : "sg_inc(") << r << ");\n";
             else o << "    " << r << (dec ? "--" : "++") << ";\n";
         }
         return true;

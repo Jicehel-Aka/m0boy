@@ -12,6 +12,7 @@ struct EmitOptions {
     bool cart_ram = false;      ///< 8 KiB of cartridge RAM at 8000-BFFF
     size_t max_instructions = 6000; ///< flash budget, in instructions
     size_t max_region_instructions = 200;
+    std::vector<uint16_t> entries; ///< dynamic jump targets seen by profiling
 };
 
 struct EmitStats {

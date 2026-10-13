@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(@NAME@_sg1000_firmware C CXX)
+project(@NAME@_sg1000_firmware C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 11)
 if(NOT CMAKE_CROSSCOMPILING)
@@ -7,7 +7,7 @@ if(NOT CMAKE_CROSSCOMPILING)
 endif()
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 file(GLOB PLATFORM_C ${SRC}/pokitto_*.c)
-add_executable(firmware ${SRC}/z80.c ${SRC}/sg1000.c ${SRC}/sg_audio.c ${SRC}/tms9918.c ${SRC}/sg_gen.c ${SRC}/sg_rom.c ${SRC}/sg_main.cpp ${PLATFORM_C})
+add_executable(firmware ${SRC}/z80.c ${SRC}/sg1000.c ${SRC}/sg_audio.c ${SRC}/tms9918.c ${SRC}/sg_gen.c ${SRC}/sg_rom.c ${SRC}/sg_main.cpp ${SRC}/sg_render_asm.S ${PLATFORM_C})
 target_include_directories(firmware PRIVATE ${SRC})
 # Firmware compiler: gcc, or clang through toolchain/arm_clang.py (C/C++
 # only; assembly, the linker script and the link stay with the GNU tools).

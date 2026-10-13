@@ -42,6 +42,11 @@ static inline uint16_t fold(uint32_t s) {
     s = ((s + 0x00802004u) >> 3) & 0x07e0f81fu;
     return (uint16_t)(s | (s >> 16));
 }
+/* sums of sixteenths (two lines) */
+static inline uint16_t fold16(uint32_t s) {
+    s = ((s + 0x01004008u) >> 4) & 0x07e0f81fu;
+    return (uint16_t)(s | (s >> 16));
+}
 /* five source pixels -> five device pixels, from 8 spread colours */
 static inline void filter8(const uint32_t *s, uint16_t *o) {
     o[0] = panel(fold(5 * s[0] + 3 * s[1]));
@@ -51,7 +56,7 @@ static inline void filter8(const uint32_t *s, uint16_t *o) {
     o[4] = panel(fold(3 * s[6] + 5 * s[7]));
 }
 /* five weights of a pattern byte, as byte offsets 2w in 5-bit fields */
-static const uint32_t tile_w[256] = {
+const uint32_t sg_tile_w[256] = {
     0x0000000, 0x0a00000, 0x0620000, 0x1020000, 0x0050000, 0x0a50000,
     0x0670000, 0x1070000, 0x0012000, 0x0a12000, 0x0632000, 0x1032000,
     0x0062000, 0x0a62000, 0x0682000, 0x1082000, 0x0002040, 0x0a02040,
@@ -97,7 +102,7 @@ static const uint32_t tile_w[256] = {
     0x0064210, 0x0a64210, 0x0684210, 0x1084210,
 };
 /* the same weights w (0-8) in 5-bit fields: two lines add without carry */
-static const uint32_t tile_wv[256] = {
+const uint32_t sg_tile_wv[256] = {
     0x0000000, 0x0500000, 0x0310000, 0x0810000, 0x0028000, 0x0528000,
     0x0338000, 0x0838000, 0x0009000, 0x0509000, 0x0319000, 0x0819000,
     0x0031000, 0x0531000, 0x0341000, 0x0841000, 0x0001020, 0x0501020,
@@ -145,7 +150,7 @@ static const uint32_t tile_wv[256] = {
 /* mix_row(c): the 9 blends of colour byte c (byte-addressed: entry w at
  * offset 2w); mix_prepare first, once per line.  A full table (4.5 KiB) or,
  * with cartridge RAM (SG_LOW_RAM), a 16-entry cache filled on demand. */
-static uint16_t mix_palette[16];
+static uint16_t mix_backdrop;
 static uint8_t mix_ready;
 static inline void mix_fill(uint16_t *row, unsigned c, const uint16_t *pal, uint16_t bd) {
     uint32_t f = spread((c >> 4) ? pal[c >> 4] : bd), b = spread((c & 15) ? pal[c & 15] : bd);
@@ -174,73 +179,132 @@ static inline const uint8_t *mix_row(unsigned c) {
     return (const uint8_t *)mix[slot];
 }
 #endif
+/* machine.palette is set by sg1000_init only, which calls this */
+static uint32_t spal[16];
+static unsigned spal_backdrop = ~0u;
+void sg1000_palette_changed(void) {
+    mix_ready = 0;
+    spal_backdrop = ~0u;
+}
 static void mix_prepare(const uint16_t *pal, uint16_t bd) {
-    int stale = !mix_ready || mix_palette[0] != bd;
-    for (unsigned i = 1; i < 16 && !stale; i++) stale = mix_palette[i] != pal[i];
-    if (!stale) return;
+    if (mix_ready && mix_backdrop == bd) return;
     mix_reset(pal, bd);
-    for (unsigned i = 1; i < 16; i++) mix_palette[i] = pal[i];
-    mix_palette[0] = bd;
+    mix_backdrop = bd;
     mix_ready = 1;
 }
+
+#define tile_w sg_tile_w
+#define tile_wv sg_tile_wv
+
+/* Thumb-1 tile loops (sg_render_asm.S), with the full blend table only. */
+#if defined(__ARM_ARCH_6M__) && !SG_LOW_RAM && !defined(SG_NO_RENDER_ASM)
+#define SG_RENDER_ASM 1
+typedef struct {
+    uint16_t *out;
+    const uint8_t *names, *pt, *ct;
+    const void *mix;
+    uint32_t third, pmask, cmask;
+} sg_tile_args;
+void sg_tiles_g1(const sg_tile_args *);
+void sg_tiles_g2(const sg_tile_args *);
+void sg_pair_g1(const sg_tile_args *);
+void sg_pair_g2(const sg_tile_args *);
+#else
+#define SG_RENDER_ASM 0
+#endif
+/* SG_SELFTEST: both paths built, chosen at run time (render selftest) */
+#ifdef SG_SELFTEST
+static int sg_render_c;
+#define SG_USE_C sg_render_c
+#else
+#define SG_USE_C 0
+#endif
 
 /* Sprites covering each line, as a mask of sprite numbers, rebuilt when a
  * sprite Y, the terminator, the size or the table moves (sprites_dirty). */
 #if SG_LOW_RAM
-/* no room for the per-line table: the sprite table is scanned per line */
-static uint32_t scan_mask(unsigned y) {
-    const sg1000_t *m = &machine;
-    const uint8_t *table = m->vram + m->sat_base;
-    int span = (int)(((m->vdp[1] & 2) ? 16u : 8u) << (m->vdp[1] & 1));
-    uint32_t mask = 0;
-    for (unsigned i = 0; i < 32; i++) {
-        unsigned sy = table[i * 4];
-        if (sy == 208) break;
-        int top = (int)sy + 1;
-        if (sy > 208) top -= 256;
-        if ((int)y >= top && (int)y < top + span) mask |= 1u << i;
-    }
-    return mask;
-}
+/* no room for the per-line table: masks per band of 8 lines, filtered per
+ * line on the sprites' Y */
+#define SG_MASK_ROWS (SG_HEIGHT / 8)
+#define SG_MASK_SHIFT 3
 #else
-static uint32_t line_mask[SG_HEIGHT];
+#define SG_MASK_ROWS SG_HEIGHT
+#define SG_MASK_SHIFT 0
+#endif
+static uint32_t line_mask[SG_MASK_ROWS];
+static unsigned sat_end; /* sprites before the terminator */
 
+static inline int sprite_top(unsigned sy) { return sy > 208 ? (int)sy - 255 : (int)sy + 1; }
+static void span_bits(unsigned sy, unsigned span, uint32_t bit, int set) {
+    const int top = sprite_top(sy);
+    int first = top < 0 ? 0 : top, last = top + (int)span;
+    if (last > SG_HEIGHT) last = SG_HEIGHT;
+    if (first >= last) return;
+    first >>= SG_MASK_SHIFT;
+    last = ((last - 1) >> SG_MASK_SHIFT) + 1;
+    if (set) for (int r = first; r < last; r++) line_mask[r] |= bit;
+    else for (int r = first; r < last; r++) line_mask[r] &= ~bit;
+}
 static void build_masks(void) {
     sg1000_t *m = &machine;
-    for (unsigned y = 0; y < SG_HEIGHT; y++) line_mask[y] = 0;
+    for (unsigned r = 0; r < SG_MASK_ROWS; r++) line_mask[r] = 0;
     const uint8_t *table = m->vram + m->sat_base;
     unsigned span = ((m->vdp[1] & 2) ? 16u : 8u) << (m->vdp[1] & 1);
-    for (unsigned i = 0; i < 32; i++) {
-        unsigned sy = table[i * 4];
-        if (sy == 208) break;
-        int top = (int)sy + 1;
-        if (sy > 208) top -= 256;
-        int first = top < 0 ? 0 : top, last = top + (int)span;
-        if (last > SG_HEIGHT) last = SG_HEIGHT;
-        for (int y = first; y < last; y++) line_mask[y] |= 1u << i;
-    }
+    unsigned i = 0;
+    for (; i < 32 && table[i * 4] != 208; i++) span_bits(table[i * 4], span, 1u << i, 1);
+    sat_end = i;
     m->sprites_dirty = 0;
 }
-#endif
+
+/* Sprite i's Y goes from old to value (before the VRAM write): its lines
+ * move; the terminator (208) appearing or going rebuilds everything.  With
+ * bands, a sprite keeps the bit of a band its other lines still cover:
+ * clearing first and setting after is exact as each sprite has its bit. */
+void sg1000_sprite_y(unsigned i, unsigned old, unsigned value) {
+    sg1000_t *m = &machine;
+    if (m->sprites_dirty || old == value) return;
+    if (old == 208 || value == 208) { m->sprites_dirty = 1; return; }
+    if (i >= sat_end) return;
+    const unsigned span = ((m->vdp[1] & 2) ? 16u : 8u) << (m->vdp[1] & 1);
+    span_bits(old, span, 1u << i, 0);
+    span_bits(value, span, 1u << i, 1);
+}
+
+/* number of the single bit set in low */
+static inline unsigned sg_bit_index(uint32_t low) {
+    static const uint8_t debruijn[32] = { 0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
+                                          31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9 };
+    return debruijn[(low * 0x077cb531u) >> 27];
+}
 
 /* The first four sprites on line y (colour 0 ones count but are dropped);
  * with status, also the fifth-sprite flag and number. */
 static unsigned line_sprites(unsigned y, sprite_t *out, int status) {
     sg1000_t *m = &machine;
-#if SG_LOW_RAM
-    uint32_t mask = scan_mask(y);
-#else
     if (m->sprites_dirty) build_masks();
-    uint32_t mask = line_mask[y];
-#endif
+    uint32_t mask = line_mask[y >> SG_MASK_SHIFT];
     if (!mask) return 0;
     const uint8_t *vram = m->vram;
     unsigned base = (m->vdp[6] & 7u) << 11;
     unsigned size = (m->vdp[1] & 2) ? 16 : 8, shift = m->vdp[1] & 1;
+#if SG_LOW_RAM
+    { /* the band's sprites that cover line y */
+        const unsigned span = size << shift;
+        uint32_t exact = 0;
+        for (uint32_t b = mask; b;) {
+            const uint32_t low = b & (0u - b);
+            b ^= low;
+            const unsigned i = sg_bit_index(low);
+            if ((unsigned)((int)y - sprite_top(vram[m->sat_base + i * 4])) < span) exact |= low;
+        }
+        if (!(mask = exact)) return 0;
+    }
+#endif
     unsigned count = 0, n = 0;
-    for (unsigned i = 0; mask; i++, mask >>= 1) {
-        while (!(mask & 0xff)) { mask >>= 8; i += 8; }
-        if (!(mask & 1)) continue;
+    while (mask) { /* sprite numbers in order: lowest set bit first */
+        const uint32_t low = mask & (0u - mask);
+        const unsigned i = sg_bit_index(low);
+        mask ^= low;
         const uint8_t *e = vram + m->sat_base + i * 4;
         if (++count == 5) {
             if (status && !(m->vdp_status & 64)) m->vdp_status = (uint8_t)((m->vdp_status & 0xa0) | 64 | i);
@@ -248,8 +312,7 @@ static unsigned line_sprites(unsigned y, sprite_t *out, int status) {
         }
         unsigned attr = e[3], color = attr & 15;
         if (!color) continue;
-        int top = (int)e[0] + 1;
-        if (e[0] > 208) top -= 256;
+        const int top = sprite_top(e[0]);
         unsigned prow = (unsigned)((int)y - top) >> shift;
         unsigned tile = e[2];
         if (size == 16) tile &= ~3u;
@@ -388,19 +451,52 @@ static uint32_t sprite_overlay(const sprite_t *spr, unsigned n, uint8_t *over) {
         }
     return touched;
 }
-/* Tile tx of line y composed with sprites (over, or none), filtered. */
-static void tile_filtered(unsigned y, unsigned tx, const uint8_t *over, uint16_t *o) {
-    const uint16_t *pal = machine.palette;
-    const uint16_t bd = pal[machine.vdp[7] & 15];
+/* Tiles under sprites (and pairs of differing colour bytes): the source
+ * pixels as spread colours (spal: palette with the backdrop as colour 0),
+ * filtered; a pair sums its two lines first, the exact 8 x 2 box. */
+static const uint32_t *spread_palette(void) {
+    const unsigned bd = machine.vdp[7] & 15;
+    if (bd != spal_backdrop) {
+        spal_backdrop = bd;
+        for (unsigned c = 0; c < 16; c++) spal[c] = spread(machine.palette[c ? c : bd]);
+    }
+    return spal;
+}
+/* the 8 pixels of tile tx of line y, stored in src (add: added to it) */
+static inline void tile_spread(unsigned y, unsigned tx, const uint8_t *over, const uint32_t *sp, uint32_t *src, int add) {
     unsigned pattern, colors;
     tile_bytes(y, tx, &pattern, &colors);
-    const uint32_t f = spread((colors >> 4) ? pal[colors >> 4] : bd), b = spread((colors & 15) ? pal[colors & 15] : bd);
+    const uint32_t f = sp[colors >> 4], b = sp[colors & 15];
+    if (over) {
+        over += tx * 8;
+        for (unsigned i = 0; i < 8; i++, pattern <<= 1) {
+            const unsigned c = over[i];
+            const uint32_t v = c ? sp[c] : (pattern & 0x80) ? f : b;
+            src[i] = add ? src[i] + v : v;
+        }
+    } else
+        for (unsigned i = 0; i < 8; i++, pattern <<= 1) {
+            const uint32_t v = (pattern & 0x80) ? f : b;
+            src[i] = add ? src[i] + v : v;
+        }
+}
+/* tile tx of line y with sprites (over, or none) */
+static void tile_filtered(unsigned y, unsigned tx, const uint8_t *over, uint16_t *o) {
     uint32_t src[8];
-    for (unsigned i = 0; i < 8; i++) {
-        unsigned c = over ? over[tx * 8 + i] : 0;
-        src[i] = c ? spread(pal[c]) : ((pattern << i) & 0x80) ? f : b;
-    }
+    tile_spread(y, tx, over, spread_palette(), src, 0);
     filter8(src, o);
+}
+/* tile tx of lines ya and ya + 1, sprites per line (or none) */
+static void pair_filtered(unsigned ya, unsigned tx, const uint8_t *over_a, const uint8_t *over_b, uint16_t *o) {
+    const uint32_t *sp = spread_palette();
+    uint32_t s[8];
+    tile_spread(ya, tx, over_a, sp, s, 0);
+    tile_spread(ya + 1, tx, over_b, sp, s, 1);
+    o[0] = panel(fold16(5 * s[0] + 3 * s[1]));
+    o[1] = panel(fold16(2 * s[1] + 5 * s[2] + s[3]));
+    o[2] = panel(fold16(4 * s[3] + 4 * s[4]));
+    o[3] = panel(fold16(s[4] + 5 * s[5] + 2 * s[6]));
+    o[4] = panel(fold16(3 * s[6] + 5 * s[7]));
 }
 
 /* Device renderer: SG_OUT_WIDTH RGB565 pixels, box-filtered. */
@@ -435,6 +531,13 @@ static void out_line(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n)
         pmask = cmask = third = 0;
     }
     const int g2 = (m->vdp[0] & 2) != 0;
+#if SG_RENDER_ASM
+    if (!SG_USE_C) {
+        const sg_tile_args args = { out, names, pt, ct, mix, third, pmask, cmask };
+        if (g2) sg_tiles_g2(&args); else sg_tiles_g1(&args);
+    } else
+#endif
+    {
     uint16_t *o = out;
     for (unsigned tx = 0; tx < 32; tx++, o += 5) {
         unsigned tile = names[tx], pattern, colors;
@@ -449,6 +552,7 @@ static void out_line(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n)
         o[3] = SG_MIX((w >> 15) & 31);
         o[4] = SG_MIX(w >> 20);
 #undef SG_MIX
+    }
     }
     if (n) {
         uint8_t over[SG_WIDTH] __attribute__((aligned(4)));
@@ -480,8 +584,9 @@ static inline uint16_t avg565(uint32_t a, uint32_t b) { /* both in panel order *
 
 /* Device row from two source lines (ya, ya + 1) of one tile row: tiles
  * whose two lines share their colour byte are filtered once with the mean
- * weight, (w_a + w_b + 1) / 2 eighths; other tiles, sprite tiles and the
- * text/multicolour modes average the two filtered lines. */
+ * weight, (w_a + w_b + 1) / 2 eighths; other tiles and sprite tiles take
+ * the exact 8 x 2 box (pair_filtered); the text/multicolour modes average
+ * the two filtered lines. */
 static void out_pair(unsigned ya, uint16_t *out, const sprite_t *spr_b, unsigned n_b) {
     sg1000_t *m = &machine;
     const unsigned yb = ya + 1;
@@ -516,6 +621,8 @@ static void out_pair(unsigned ya, uint16_t *out, const sprite_t *spr_b, unsigned
         ct = vram + ((unsigned)m->vdp[3] << 6);
     }
     uint16_t *o = out;
+    /* mean of two weights rounded up: (w_a + w_b + 1) / 2 as the byte offset
+     * 2 * that, i.e. (w_a + w_b + 1) with its low bit cleared */
 #if SG_LOW_RAM /* ca's blends copied: with the cache, cb may evict them */
 #define SG_ROWS_AB(ca, cb) uint16_t ra_[9]; const uint8_t *row_ = mix_row(ca); \
     for (unsigned i_ = 0; i_ < 9; i_++) ra_[i_] = ((const uint16_t *)row_)[i_]; \
@@ -523,8 +630,6 @@ static void out_pair(unsigned ya, uint16_t *out, const sprite_t *spr_b, unsigned
 #else
 #define SG_ROWS_AB(ca, cb) const uint8_t *ma = mix_row(ca), *mb = mix_row(cb)
 #endif
-    /* mean of two weights rounded up: (w_a + w_b + 1) / 2 as the byte offset
-     * 2 * that, i.e. (w_a + w_b + 1) with its low bit cleared */
 #define SG_PAIR_TILE(pa, pb, ca, cb) do { \
         if (ca == cb) { \
             const uint32_t w = tile_wv[pa] + tile_wv[pb] + 0x0108421u; \
@@ -541,6 +646,13 @@ static void out_pair(unsigned ya, uint16_t *out, const sprite_t *spr_b, unsigned
                 o[k_] = avg565(*(const uint16_t *)(ma + ((wa >> (5 * k_)) & 31)), *(const uint16_t *)(mb + ((wb >> (5 * k_)) & 31))); \
         } \
     } while (0)
+#if SG_RENDER_ASM
+    if (!SG_USE_C) {
+        const sg_tile_args args = { out, names, pt, ct, mix, third, pmask, cmask };
+        if (g2) sg_pair_g2(&args);
+        else sg_pair_g1(&args);
+    } else
+#endif
     if (g2) {
         for (unsigned tx = 0; tx < 32; tx++, o += 5) {
             const unsigned off = names[tx] * 8u | third;
@@ -563,10 +675,7 @@ static void out_pair(unsigned ya, uint16_t *out, const sprite_t *spr_b, unsigned
         uint32_t touched = ta | tb;
         for (unsigned tx = 0; touched; tx++, touched >>= 1) {
             if (!(touched & 1)) continue;
-            uint16_t la[5], lb[5];
-            tile_filtered(ya, tx, (ta >> tx) & 1 ? over_a : 0, la);
-            tile_filtered(yb, tx, (tb >> tx) & 1 ? over_b : 0, lb);
-            for (unsigned i = 0; i < 5; i++) out[tx * 5 + i] = avg565(la[i], lb[i]);
+            pair_filtered(ya, tx, (ta >> tx) & 1 ? over_a : 0, (tb >> tx) & 1 ? over_b : 0, out + tx * 5);
         }
     }
 }
@@ -623,3 +732,36 @@ void sg1000_render_pair(unsigned ya, uint16_t *out) {
     unsigned n = (machine.vdp[1] & 64) && !(machine.vdp[1] & 16) ? line_sprites(ya + 1, spr, 0) : 0;
     out_pair(ya, out, spr, n);
 }
+
+#ifdef SG_SELFTEST
+/* Device renderer, Thumb-1 against C, on random VRAM (both graphics modes,
+ * sprite sizes, backdrops): returns the number of differing lines. */
+unsigned sg1000_render_selftest(void) {
+    sg1000_t *m = &machine;
+    uint32_t r = 12345;
+    unsigned bad = 0;
+    uint16_t a[SG_OUT_WIDTH], b[SG_OUT_WIDTH];
+    for (unsigned round = 0; round < 8; round++) {
+        for (unsigned i = 0; i < 16384; i++) { r = r * 1103515245u + 12345u; m->vram[i] = (uint8_t)(r >> 16); }
+        for (unsigned i = 0; i < 32; i++) m->vram[0x3b00 + i * 4] = (uint8_t)(m->vram[0x3b00 + i * 4] % 200);
+        if (round & 4) m->vram[0x3b00 + 6 * 4] = 208;
+        m->vdp[0] = (round & 1) ? 2 : 0;
+        m->vdp[1] = (uint8_t)(0x60 | ((round >> 1) & 3));
+        m->vdp[2] = 0x0e; m->vdp[3] = (round & 1) ? 0xff : 0x80; m->vdp[4] = (round & 1) ? 3 : 0;
+        m->vdp[5] = 0x76; m->vdp[6] = 0; m->vdp[7] = (uint8_t)(round * 3 + 1);
+        m->sat_base = 0x3b00; m->sprites_dirty = 1;
+        for (unsigned y = 0; y < SG_HEIGHT; y++) {
+            sg_render_c = 0; sg1000_render_out(y, a);
+            sg_render_c = 1; sg1000_render_out(y, b);
+            bad += !!memcmp(a, b, sizeof a);
+            if ((y & 7) != 7) {
+                sg_render_c = 0; sg1000_render_pair(y, a);
+                sg_render_c = 1; sg1000_render_pair(y, b);
+                bad += !!memcmp(a, b, sizeof a);
+            }
+        }
+    }
+    sg_render_c = 0;
+    return bad;
+}
+#endif

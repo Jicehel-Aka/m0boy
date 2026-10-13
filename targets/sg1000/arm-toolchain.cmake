@@ -10,3 +10,4 @@ find_program(CMAKE_CXX_COMPILER arm-none-eabi-g++ HINTS ${SG_ARM_HINTS} REQUIRED
 set(CMAKE_ASM_COMPILER "${CMAKE_C_COMPILER}")
 set(CMAKE_C_FLAGS_INIT "-mcpu=cortex-m0plus -mthumb")
 set(CMAKE_CXX_FLAGS_INIT "-mcpu=cortex-m0plus -mthumb")
+set(CMAKE_ASM_FLAGS_INIT "-mcpu=cortex-m0plus -mthumb")

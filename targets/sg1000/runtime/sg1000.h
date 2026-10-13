@@ -81,6 +81,9 @@ typedef struct {
     sg_fn (*lookup)(uint16_t pc); /* generated entry table, or NULL */
     uint32_t interpreted, compiled; /* statistics: instructions / region entries */
     uint32_t *coverage;           /* host: per-pc hit counters (65536), or NULL */
+    uint8_t *entries;             /* host: targets of RET / JP (HL) seen (65536), or NULL */
+    uint16_t irq_sp[8];           /* host: stack of interrupt return slots, for entries */
+    uint8_t irq_depth;
     uint8_t cart_ram_used;        /* a write reached 8000-BFFF */
 } sg1000_t;
 
@@ -122,10 +125,13 @@ int sg_step(uint16_t after);         /* one interpreted instruction; 1: continue
 
 /* Video */
 void sg1000_vdp_catchup(void);       /* render the lines that ended before cyc */
+void sg1000_palette_changed(void);                  /* after writing machine.palette */
+void sg1000_sprite_y(unsigned i, unsigned old, unsigned value); /* bus: SAT Y write */
 void sg1000_render_line(unsigned y, uint8_t *pixels); /* reference: 256 indices or status only */
 void sg1000_render_out(unsigned y, uint16_t *out);    /* device: 160 RGB565, box-filtered */
 void sg1000_filter_line(const uint8_t *pixels, uint16_t *out); /* 256 indices -> 160 RGB565 */
 void sg1000_render_pair(unsigned ya, uint16_t *out);  /* device row from lines ya and ya + 1 */
+unsigned sg1000_render_selftest(void);              /* SG_SELFTEST: Thumb-1 vs C */
 
 /* Audio: unsigned 8-bit samples at rate, following emulated time */
 void sg1000_audio_rate(unsigned rate);

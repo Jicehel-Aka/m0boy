@@ -8,7 +8,7 @@
 #   Un dossier explicite accepte .gb/.gbc/.sg (ou ses sous-dossiers gb/ et sg/).
 #   SG-1000 : code Z80 recompilé (projets out/sg1000/<cible>/<jeu>/), GCC ou Clang, couverture NTSC automatique
 #   de AUTO_SECONDS secondes émulées (SG_AUTO_FRAMES pour choisir les images) :
-#   bouton 1 maintenu, plus SG_SEEDS parties aléatoires (défaut 8).
+#   bouton 1 maintenu, une partie sans touche (logos, démo), plus SG_SEEDS parties aléatoires (défaut 8).
 #   PLAY=1 utilise le lecteur natif SG ; PACK et les sauvegardes GB ne s’appliquent pas.
 #   (le .elf de débogage reste dans out/<jeu>/.pio/build/meta/)
 #
@@ -495,9 +495,13 @@ build_sg_game() { # SG-1000 owns its generator, profiles and build system.
     auto_frames="${SG_AUTO_FRAMES:-$((AUTO_SECONDS * 60))}"
     case "$auto_frames" in ''|*[!0-9]*|0) echo "[x] SG_AUTO_FRAMES doit être un entier positif."; return 1 ;; esac
     local seeds="${SG_SEEDS:-8}" seed pids=()
-    echo "[i] Profil SG-1000 : $auto_frames images NTSC, bouton 1 pour démarrer et tirer, $seeds parties aléatoires"
+    echo "[i] Profil SG-1000 : $auto_frames images NTSC, bouton 1 pour démarrer et tirer, sans touche, $seeds parties aléatoires"
     ./build/bin/sg1000_host "$rom_path" --frames "$auto_frames" --buttons 16 --start-frame 30 \
       --coverage "$store/coverage-auto.tmp" > /dev/null &
+    pids+=($!)
+    # no input at all: logos, title and demo, which the others skip
+    ./build/bin/sg1000_host "$rom_path" --frames "$auto_frames" \
+      --coverage "$store/coverage-idle.tmp" > /dev/null &
     pids+=($!)
     for ((seed = 1; seed <= seeds; seed++)); do
       ./build/bin/sg1000_host "$rom_path" --frames "$auto_frames" --start-frame 30 --random "$seed" \
@@ -506,6 +510,7 @@ build_sg_game() { # SG-1000 owns its generator, profiles and build system.
     done
     for seed in "${pids[@]}"; do wait "$seed" || return 1; done
     mv "$store/coverage-auto.tmp" "$store/coverage-auto.cov" || return 1
+    mv "$store/coverage-idle.tmp" "$store/coverage-idle.cov" || return 1
     for ((seed = 1; seed <= seeds; seed++)); do
       mv "$store/coverage-rand$seed.tmp" "$store/coverage-rand$seed.cov" || return 1
     done

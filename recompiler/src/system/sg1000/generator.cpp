@@ -35,8 +35,8 @@ std::string replace(std::string s, const std::string& what, const std::string& v
 }
 
 /* Hottest first, across files (first occurrence wins); "# cart-ram" when
- * the profiled run wrote to 8000-BFFF. */
-std::vector<uint16_t> read_coverage(const std::vector<fs::path>& files, bool& cart_ram) {
+ * the profiled run wrote to 8000-BFFF; "# entry XXXX": a dynamic jump target. */
+std::vector<uint16_t> read_coverage(const std::vector<fs::path>& files, bool& cart_ram, std::vector<uint16_t>& entries) {
     std::vector<uint16_t> hot;
     std::set<uint16_t> seen;
     for (const auto& path : files) {
@@ -47,6 +47,13 @@ std::vector<uint16_t> read_coverage(const std::vector<fs::path>& files, bool& ca
         while (std::getline(file, line)) {
             if (line.empty()) continue;
             if (line == "# cart-ram") { cart_ram = true; continue; }
+            if (line.rfind("# entry ", 0) == 0) { /* target of a RET or JP (HL) */
+                size_t used = 0;
+                const unsigned long value = std::stoul(line.substr(8), &used, 16);
+                if (used != line.size() - 8 || value > 0xffff) throw std::runtime_error("Invalid SG-1000 coverage entry");
+                entries.push_back(static_cast<uint16_t>(value));
+                continue;
+            }
             if (line[0] == '#') continue;
             size_t used = 0;
             unsigned long value = std::stoul(line, &used, 16);
@@ -74,7 +81,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         if (!fs::is_regular_file(tpl / "runtime" / "sg_gen.h"))
             throw std::runtime_error("SG-1000 templates missing next to targets/meta");
         bool cart_ram = false;
-        const auto hot = read_coverage(o.coverage, cart_ram);
+        std::vector<uint16_t> entries;
+        const auto hot = read_coverage(o.coverage, cart_ram, entries);
         const size_t rom_size = cartridge->bytes().size();
         cart_ram = cart_ram && rom_size <= 0x8000; /* 40/48 KiB boards: ROM at 8000 */
 
@@ -98,6 +106,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         EmitOptions eo;
         eo.precise = o.precise;
         eo.cart_ram = cart_ram;
+        eo.entries = entries;
         size_t budget = o.code_budget_bytes;
         if (!budget && o.target != TargetId::desktop) {
             const size_t area = o.target == TargetId::pokitto ? 0x39000 : 240 * 1024;

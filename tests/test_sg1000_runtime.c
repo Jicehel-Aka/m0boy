@@ -81,8 +81,14 @@ int main(void) {
     machine.vdp_status = 31; machine.cyc = SG_LINE_CYCLES; sg1000_vdp_catchup();
     REQUIRE(machine.render_line == 1 && (machine.vdp_status & 32));
     /* a sprite moved through the data port is seen on the next line */
+    sg1000_render_line(0, pixels); const uint8_t before = pixels[0];
     address(0x1b00, 1); sg1000_out(0xbe, 20);
-    REQUIRE(machine.sprites_dirty);
+    sg1000_render_line(21, pixels); REQUIRE(pixels[0] == 3);
+    sg1000_render_line(0, pixels); REQUIRE(pixels[0] != before);
+    /* the terminator written over a sprite's Y hides it and those after */
+    address(0x1b00, 1); sg1000_out(0xbe, 208);
+    sg1000_render_line(21, pixels); REQUIRE(pixels[0] != 3);
+    address(0x1b00, 1); sg1000_out(0xbe, 20);
     sg1000_render_line(21, pixels); REQUIRE(pixels[0] == 3);
 
     /* device renderer = reference, Graphics I and II, random VRAM */
@@ -98,7 +104,7 @@ int main(void) {
 
     /* line pairs: equal lines give the single line; a tile half foreground,
      * half background (same colours) gives the mean weight; otherwise
-     * (here: sprites) the two filtered lines are averaged */
+     * (here: sprites) the exact box over both lines */
     {
         sg1000_reset();
         reg(0, 0); reg(1, 0x40); reg(2, 6); reg(3, 0x80); reg(4, 0); reg(5, 0x36); reg(7, 1);
@@ -118,9 +124,20 @@ int main(void) {
         for (unsigned i = 0; i < 5; i++) REQUIRE(pair[i] == (uint16_t)(r << 11 | gr << 5 | bl));
         machine.vram[0x1b00] = 3; machine.vram[0x1b01] = 40; machine.vram[0x1b02] = 2; machine.vram[0x1b03] = 9;
         machine.vram[0x1b04] = 208; machine.vram[0x10] = 0xa5; machine.vram[0x11] = 0x3c; machine.sprites_dirty = 1;
-        sg1000_render_pair(4, pair); sg1000_render_out(4, a); sg1000_render_out(5, b);
-        for (unsigned i = 25; i < 30; i++) /* the sprite's tile (x 40-47) */
-            REQUIRE(pair[i] == (uint16_t)((a[i] & b[i]) + (((a[i] ^ b[i]) & 0xf7deu) >> 1)));
+        sg1000_render_pair(4, pair);
+        uint8_t la[256], lb[256];
+        sg1000_render_line(4, la); sg1000_render_line(5, lb);
+        static const uint8_t box[5][8] = { {5, 3}, {0, 2, 5, 1}, {0, 0, 0, 4, 4}, {0, 0, 0, 0, 1, 5, 2}, {0, 0, 0, 0, 0, 0, 3, 5} };
+        for (unsigned k = 0; k < 5; k++) { /* the sprite's tile (x 40-47): the exact 8 x 2 box */
+            unsigned sr = 8, sg = 8, sb = 8;
+            for (unsigned i = 0; i < 8; i++) {
+                const uint16_t pa = machine.palette[la[40 + i] & 15], pb = machine.palette[lb[40 + i] & 15];
+                sr += box[k][i] * ((pa >> 11) + (pb >> 11));
+                sg += box[k][i] * (((pa >> 5) & 63) + ((pb >> 5) & 63));
+                sb += box[k][i] * ((pa & 31) + (pb & 31));
+            }
+            REQUIRE(pair[25 + k] == (uint16_t)((sr / 16) << 11 | (sg / 16) << 5 | sb / 16));
+        }
     }
 
     /* HALT with interrupts off: whole refresh periods up to each event */

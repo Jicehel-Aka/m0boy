@@ -76,10 +76,12 @@ elif name=='nproc':print('4')
     run('roms/sg', 'output/sg card', TARGET='pokitto', AUTO='1', AUTO_SECONDS='2', FORCE='1', SG_SEEDS='2')
     calls=[json.loads(line) for line in (root/'calls.jsonl').read_text().splitlines()]
     profiles=[args for name,args in calls if name=='sg1000_host']
-    # per cartridge: button 1 held, then SG_SEEDS random games
-    assert len(profiles)==6 and all(args[args.index('--frames')+1]=='120' for args in profiles)
+    # per cartridge: button 1 held, no input, then SG_SEEDS random games
+    assert len(profiles)==8 and all(args[args.index('--frames')+1]=='120' for args in profiles)
     assert sum('--random' in args for args in profiles)==4
+    assert sum('--buttons' not in args and '--random' not in args for args in profiles)==2
     assert len(list((root/'roms/sg/profiles').glob('*/sg1000/coverage-auto.cov')))==2
+    assert len(list((root/'roms/sg/profiles').glob('*/sg1000/coverage-idle.cov')))==2
     assert len(list((root/'roms/sg/profiles').glob('*/sg1000/coverage-rand*.cov')))==4
     assert len(list((root/'output/sg card').glob('*/.gbrmeta.json')))==2
     assert all('--coverage' in args for name,args in calls if name=='gbrecomp' and '--system' in args)

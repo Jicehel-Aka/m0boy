@@ -77,7 +77,8 @@ void sg1000_out(uint8_t port, uint8_t value) {
         if (!(port & 1)) {
             m->vdp_pending = 0;
             sg1000_vdp_catchup();
-            if ((uint16_t)(m->vdp_address - m->sat_base) < 128) m->sprites_dirty = 1;
+            const unsigned entry = (uint16_t)(m->vdp_address - m->sat_base);
+            if (entry < 128 && !(entry & 3)) sg1000_sprite_y(entry >> 2, m->vram[m->vdp_address], value);
             m->vram[m->vdp_address] = value;
             m->vdp_buffer = value;
             m->vdp_address = (m->vdp_address + 1) & 0x3fff;
@@ -88,9 +89,11 @@ void sg1000_out(uint8_t port, uint8_t value) {
             m->vdp_pending = 0;
             if (value & 128) {
                 sg1000_vdp_catchup();
-                m->vdp[value & 7] = m->vdp_latch;
+                const unsigned r = value & 7, before = m->vdp[r];
+                m->vdp[r] = m->vdp_latch;
                 m->sat_base = (uint16_t)((m->vdp[5] & 127u) << 7);
-                m->sprites_dirty = 1;
+                /* the sprite lines depend on the size (register 1) and the table */
+                if ((r == 1 && ((before ^ m->vdp_latch) & 3)) || (r == 5 && before != m->vdp_latch)) m->sprites_dirty = 1;
                 sg_irq_update();
             } else {
                 m->vdp_address = (uint16_t)(((value & 63) << 8) | m->vdp_latch);
@@ -122,6 +125,7 @@ void sg1000_init(const uint8_t *rom, size_t size, uint8_t *cart_ram) {
         uint32_t rgb = sg1000_palette[i];
         m->palette[i] = (uint16_t)(((rgb >> 8) & 0xf800) | ((rgb >> 5) & 0x07e0) | ((rgb >> 3) & 0x001f));
     }
+    sg1000_palette_changed();
     m->cpu.user = m;
     m->cpu.read = bus_read; m->cpu.write = bus_write;
     m->cpu.in = bus_in; m->cpu.out = bus_out;
@@ -206,12 +210,14 @@ static int irq_enter(void) {
         c->nmi = 0;
         c->iff2 = c->iff1; c->iff1 = 0;
         z80_push(c, c->pc);
+        if (m->entries && m->irq_depth < 8) m->irq_sp[m->irq_depth++] = c->sp;
         c->pc = 0x66;
         cycles = 11;
     } else if (c->irq && c->iff1 && !c->ei_delay) {
         c->iff1 = c->iff2 = 0;
         if (c->im == 0 && (c->irq_vector & 0xc7) != 0xc7) { c->fault = 1; m->stop = 1; return 0; }
         z80_push(c, c->pc);
+        if (m->entries && m->irq_depth < 8) m->irq_sp[m->irq_depth++] = c->sp;
         c->pc = c->im == 2 ? z80_word(c, (uint16_t)((c->i << 8) | c->irq_vector))
               : c->im == 0 ? (uint16_t)(c->irq_vector & 0x38) : 0x38;
         cycles = c->im == 2 ? 19 : 13;
@@ -290,6 +296,19 @@ void sg1000_run(void) {
 
 /* One interpreted instruction, after a device sync; 0: stop the block
  * (control transfer, HALT, stop or fault). */
+/* Profiling: a RET, RETI/RETN or JP (HL/IX/IY) went to pc; returns from
+ * interrupts (arbitrary points) are left out.  The recompiler makes these
+ * region entries (pushed return addresses, jump tables). */
+static void note_dynamic(const z80_decoded_t *d, uint16_t sp, uint16_t pc) {
+    sg1000_t *m = &machine;
+    const unsigned op = d->opcode;
+    const int ret = d->group == 0 ? op == 0xc9 || (op & 0xc7) == 0xc0 : d->group == 2 && (op & 0xc7) == 0x45;
+    if (!ret && !(d->group == 0 && op == 0xe9)) return;
+    while (m->irq_depth && sp > m->irq_sp[m->irq_depth - 1]) m->irq_depth--; /* unwound */
+    if (ret && m->irq_depth && sp == m->irq_sp[m->irq_depth - 1]) { m->irq_depth--; return; }
+    m->entries[pc] = 1;
+}
+
 static int interp_one(void) {
     sg1000_t *m = &machine;
     z80_t *c = &m->cpu;
@@ -298,8 +317,10 @@ static int interp_one(void) {
     if (m->coverage) m->coverage[pc]++;
     z80_decoded_t d;
     if (!z80_decode(c, &d)) { c->fault = 1; m->stop = 1; return 0; }
+    const uint16_t sp = c->sp;
     m->cyc += z80_execute(c, &d);
     m->interpreted++;
+    if (m->entries && c->pc != (uint16_t)(pc + d.length)) note_dynamic(&d, sp, c->pc);
     if (c->ei_delay && --c->ei_delay == 0 && c->irq) m->next_evt = m->cyc;
     if (c->halted) {
         sg_halt();

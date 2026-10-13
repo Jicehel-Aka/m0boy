@@ -21,6 +21,7 @@ static uint32_t audio_samples;
 static int audio_error;
 static unsigned frames = 300, buttons, start_frame = ~0u, pause_frame = ~0u;
 static uint32_t hits[65536];
+static uint8_t entries[65536];
 static uint16_t coverage_order[65536];
 
 static void le32(FILE *f, uint32_t v) { for (unsigned i = 0; i < 4; i++) fputc((v >> (8 * i)) & 255, f); }
@@ -170,7 +171,7 @@ int main(int argc, char **argv) {
     machine.row_out = out_row;
     machine.ref_row = ref_row;
     machine.frame = frame;
-    if (coverage) machine.coverage = hits;
+    if (coverage) { machine.coverage = hits; machine.entries = entries; }
     if (wav_path) {
         audio = fopen(wav_path, "wb");
         if (!audio) { perror(wav_path); if (coverage) fclose(coverage); free(loaded); return 1; }
@@ -191,6 +192,8 @@ int main(int argc, char **argv) {
     if (coverage) {
         fprintf(coverage, "# m0boy.sg1000.coverage.v1\n");
         if (machine.cart_ram_used) fprintf(coverage, "# cart-ram\n");
+        for (unsigned pc = 0; pc < 65536; pc++) /* dynamic jump targets: region entries */
+            if (entries[pc]) fprintf(coverage, "# entry %04x\n", pc);
         unsigned n = 0;
         for (unsigned pc = 0; pc < 65536; pc++) if (hits[pc]) coverage_order[n++] = (uint16_t)pc;
         qsort(coverage_order, n, sizeof *coverage_order, hot_first);
