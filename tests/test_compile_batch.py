@@ -64,8 +64,16 @@ elif name=='nproc':print('4')
     assert all(args[args.index('--meta-compiler')+1]=='gcc' for args in sg)  # recompiled Z80: firmware compiler forwarded
     assert any(name=='make' for name,args in calls)  # GB pipeline unchanged
     assert any(name=='cmake' and '-DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake' in args for name,args in calls)
-    states = list((root/'roms').glob('*/**/.gbrmeta.json'))
-    assert len(states)==6, states
+    # Un .zip par jeu, le répertoire du jeu (avec .gbrmeta.json) dedans.
+    zips = list((root/'roms').glob('*/*/*.zip'))
+    assert len(zips)==6, zips
+    import zipfile as zf
+    for z in zips:
+        with zf.ZipFile(z) as a:
+            names = a.namelist()
+            game = z.stem
+            assert f'{game}/{game}.BIN' in names or f'{game}/{game}.bin' in names, names
+            assert f'{game}/.gbrmeta.json' in names, names
     (root/'calls.jsonl').write_text('')
     output=run(PACK='1')  # SG ignores GB packing, already-built SG stays cached
     calls=[json.loads(line) for line in (root/'calls.jsonl').read_text().splitlines()]
@@ -83,6 +91,10 @@ elif name=='nproc':print('4')
     assert len(list((root/'roms/sg/profiles').glob('*/sg1000/coverage-auto.cov')))==2
     assert len(list((root/'roms/sg/profiles').glob('*/sg1000/coverage-idle.cov')))==2
     assert len(list((root/'roms/sg/profiles').glob('*/sg1000/coverage-rand*.cov')))==4
-    assert len(list((root/'output/sg card').glob('*/.gbrmeta.json')))==2
+    assert len(list((root/'output/sg card').glob('sg/*.zip')))==2
+    # games nested by source platform under each destination
+    assert len(list((root/'roms/meta/gb').glob('*.zip')))==1
+    assert len(list((root/'roms/meta/sg').glob('*.zip')))==2
+    assert len(list((root/'roms/pokitto/sg').glob('*.zip')))==2
     assert all('--coverage' in args for name,args in calls if name=='gbrecomp' and '--system' in args)
 print('batch: mixed source systems, both targets, duplicate filtering, caching and SG profiles pass')

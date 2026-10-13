@@ -241,9 +241,11 @@ sinon GCC. `-DM0BOY_PREFER_CLANG=OFF` privilégie GCC ; `CC`, `CXX` et une
 toolchain explicite restent prioritaires. Un répertoire déjà configuré
 conserve son compilateur. Voir [le guide des compilateurs](docs/COMPILATEURS.fr.md).
 
-Chaque jeu arrive dans `roms/meta/<Jeu>/` ou `roms/pokitto/<Jeu>/`. Copie
-ce dossier tel quel à la racine de la carte SD, puis lance-le depuis le
-loader de la console. Le guide complet est [docs/GUIDE.fr.md](docs/GUIDE.fr.md) ;
+Chaque jeu arrive dans `roms/meta/<source>/<Jeu>/` ou
+`roms/pokitto/<source>/<Jeu>/`, `<source>` étant la plateforme de la ROM
+(`gb`, `sg`, `gg` ou `sms`). Copie ce dossier tel quel à la racine de la
+carte SD, puis lance-le depuis le loader de la console. Le guide complet
+est [docs/GUIDE.fr.md](docs/GUIDE.fr.md) ;
 les notes techniques (en anglais) sont dans [targets/meta/README.md](targets/meta/README.md).
 
 Tests :

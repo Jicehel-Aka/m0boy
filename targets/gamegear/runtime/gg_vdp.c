@@ -14,6 +14,8 @@
 #endif
 static inline uint16_t panel(uint32_t c) {
 #if GG_PANEL_SWAP
+    /* META : octets du poids fort d'abord ; le croisement R/B de la dalle
+     * BGR est corrigé par le bit BGR du MADCTL de l'init de l'écran. */
     return __builtin_bswap16((uint16_t)c);
 #else
     return (uint16_t)c;

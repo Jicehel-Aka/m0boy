@@ -62,6 +62,7 @@
 #define ST7735_GMCTRN1 0xE1
 #define MADCTL_MX 0x40
 #define MADCTL_MV 0x20
+#define MADCTL_BGR 0x08 /* dalle câblée BGR : couleurs natives du firmware */
 #define DELAY 0x80
 
 static const uint8_t cmd_reset[] = {
@@ -83,7 +84,7 @@ static const uint8_t cmd_init[] = {
     ST7735_PWCTR5, 2, 0x8A, 0xEE,
     ST7735_VMCTR1, 1, 0x0E,
     ST7735_INVOFF, 0,
-    ST7735_MADCTL, 1, MADCTL_MX | MADCTL_MV, /* landscape, as ST7735_ROTATE_DOWN */
+    ST7735_MADCTL, 1, MADCTL_MX | MADCTL_MV | MADCTL_BGR, /* paysage, dalle BGR */
     ST7735_COLMOD, 1, LCD_COLMOD,
     ST7735_GMCTRP1, 16, 0x02, 0x1c, 0x07, 0x12, 0x37, 0x32, 0x29, 0x2d,
                         0x29, 0x25, 0x2B, 0x39, 0x00, 0x01, 0x03, 0x10,

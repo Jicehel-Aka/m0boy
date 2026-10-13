@@ -34,9 +34,10 @@
 #define META_SCREEN_ROWS 144 /* rows of the picture the menu draws on */
 #define META_SWAP_AB_DEFAULT 0 /* Pokitto A (right) is Game Boy A already */
 /* LPC11U68 : 50 MHz max (datasheet), 48 MHz nominal (PokittoLib, SYSPLLCTRL
- * 0x23 : M = 4, P = 2).  Le menu « Processeur » permet le 72 MHz (_OSCT=2,
- * hors spec), mais le défaut reste la fréquence nominale de la console. */
-#define META_CLOCK_DEFAULT 48
+ * 0x23 : M = 4, P = 2).  POKITTO_HC (gbl_profile.h) démarre à 72 MHz
+ * (_OSCT=2, hors spécification mais overclock standard de la console) ; le
+ * menu « Processeur » permet la bascule 48 <-> 72 dans tous les cas. */
+#define META_CLOCK_DEFAULT (POKITTO_HC ? 72 : 48)
 /* Panel colours: native RGB565 on the 16-bit bus. */
 #define META_COLOR(rgb) \
     ((uint16_t)((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)))
@@ -55,7 +56,8 @@
  * two of them into three bytes as each row goes out (meta_lcd_pack.h). */
 #define META_COLOR(rgb) ((uint16_t)((((rgb) >> 12) & 0xF00u) | (((rgb) >> 8) & 0x0F0u) | (((rgb) >> 4) & 0x00Fu)))
 #else
-/* Panel colours: RGB565 byte-swapped (the SPI sends the high byte first). */
+/* Panel colours: RGB565 byte-swapped (the SPI sends the high byte first);
+ * the glass's BGR wiring is corrected by the MADCTL BGR bit of the LCD init. */
 #define META_COLOR(rgb)                                                                          \
     ((uint16_t)(((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) >> 8 | \
                 ((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) << 8))

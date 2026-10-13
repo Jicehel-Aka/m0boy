@@ -58,7 +58,7 @@ uint32_t meta_lcd_done_seq(void) { return sent; }
 static const uint32_t rgb[4] = {0xE0F8D0, 0x88C070, 0x346856, 0x081820};
 
 /* The panel's pixel format: byte-swapped RGB565, or 0x0RGB with
- * META_LCD_12BPP. */
+ * META_LCD_12BPP (the MADCTL BGR bit of the init corrects the glass). */
 static uint16_t be565(uint32_t c) {
 #if META_LCD_12BPP
     return (uint16_t)(((c >> 12) & 0xF00) | ((c >> 8) & 0xF0) | ((c >> 4) & 0xF));

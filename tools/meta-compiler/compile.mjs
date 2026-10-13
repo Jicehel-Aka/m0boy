@@ -8,11 +8,13 @@
  *
  * Usage :
  *   node tools/meta-compiler/compile.mjs [dossier_roms] [dossier_sortie]
- *   Par défaut : toutes les ROMs de ./roms/gb/, jeux dans ./roms/meta/<Jeu>/
+ *   Par défaut : toutes les ROMs de ./roms/gb/, jeux dans ./roms/meta/gb/<Jeu>/
+ *   (le sous-dossier gb/ range les jeux par plateforme source, comme
+ *   compile.sh : gb, sg, gg ou sms — ce convertisseur ne fait que la GB)
  *   (le .elf de débogage reste dans out/<jeu>/.pio/build/meta/)
  *
  * Chaque jeu devient un dossier à copier tel quel à la racine de la carte SD :
- *   <Jeu>/<Jeu>.bin        le firmware (nommé simplement : « Zerd (J) [!] »
+ *   gb/<Jeu>/<Jeu>.bin     le firmware (nommé simplement : « Zerd (J) [!] »
  *                          -> « Zerd » ; c'est ce nom que montre le loader)
  *   <Jeu>/ICON.BMP         icône 32x32 du menu (grille)
  *   <Jeu>/TITLESCREEN.BMP  écran titre 80x64 du menu (détail)
@@ -106,6 +108,9 @@ const IS_WIN = process.platform === 'win32';
 const EXE = IS_WIN ? '.exe' : '';
 const GBRECOMP = path.join(ROOT, 'build', 'bin', `gbrecomp${EXE}`);
 const THUMB_BASE = 'https://thumbnails.libretro.com';
+/* Les jeux sont rangés par plateforme source dans le dossier de sortie
+ * (compile.sh : gb, sg, gg, sms ; ce convertisseur ne produit que la GB). */
+const SYS_DIR = 'gb';
 
 /* ---------------------------------------------------------------- options */
 
@@ -510,12 +515,12 @@ async function fetchIcons(gameDir, name, romBase, gbc, cfg, log) {
 /* État d'un jeu : tag lisible + décision de (re)construction.
  * todo : 0 rien, 1 à faire, 2 à confirmer. */
 function assess(game, cfg, curVersion) {
-  const bin = path.join(cfg.destDir, game.dir, `${game.dir}.bin`);
+  const bin = path.join(cfg.destDir, SYS_DIR, game.dir, `${game.dir}.bin`);
   game.todo = 1;
   game.tag = 'nouvelle';
   if (!fs.existsSync(bin)) return;
   let ver = firmwareVersion(bin);
-  const state = readState(path.join(cfg.destDir, game.dir));
+  const state = readState(path.join(cfg.destDir, SYS_DIR, game.dir));
   if (!ver && state.version) ver = String(state.version);
   if (state.sha1 && state.sha1 !== game.sha) {
     game.tag = 'ROM modifiée';
@@ -589,7 +594,7 @@ function copyGlobIfMissing(dir, pattern, dstDir) {
 
 async function buildGame(game, cfg, curVersion, log) {
   const { romPath, prefix, dir: gameName, sha } = game;
-  const gameDir = path.join(cfg.destDir, gameName);
+  const gameDir = path.join(cfg.destDir, SYS_DIR, gameName);
   const outDir = path.join(ROOT, 'out', prefix);
   const store = path.join(cfg.sessionsDir, sha);
   const gbc = /\.(gbc)$/i.test(romPath);
@@ -1183,7 +1188,7 @@ async function main() {
 
   const processOne = async (i) => {
     const g = games[i];
-    const gameDir = path.join(cfg.destDir, g.dir);
+    const gameDir = path.join(cfg.destDir, SYS_DIR, g.dir);
     if (g.todo === 0 && !cfg.force) {
       /* Déjà à jour : on ne recompile pas ; icônes manquantes complétées. */
       const withLog = (line) => {

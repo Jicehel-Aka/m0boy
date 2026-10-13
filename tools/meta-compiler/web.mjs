@@ -179,13 +179,15 @@ function runJob(id) {
           return;
         }
         const meta = path.join(dir, 'meta');
-        /* .cache (icônes) et autres dot-dirs ne sont pas des jeux */
-        const gameName = fs.readdirSync(meta)
-          .find((n) => !n.startsWith('.') && fs.statSync(path.join(meta, n)).isDirectory());
+        /* .cache (icônes) et autres dot-dirs ne sont pas des jeux ; les jeux
+         * sont rangés par plateforme source (gb/), comme compile.sh */
+        const sysDir = path.join(meta, 'gb');
+        const gameName = fs.readdirSync(sysDir)
+          .find((n) => !n.startsWith('.') && fs.statSync(path.join(sysDir, n)).isDirectory());
         if (!gameName) throw new Error('aucun répertoire de jeu produit');
         job.game = gameName;
         job.zipPath = path.join(dir, 'job.zip');
-        fs.writeFileSync(job.zipPath, zipGameDir(path.join(meta, gameName), gameName));
+        fs.writeFileSync(job.zipPath, zipGameDir(path.join(sysDir, gameName), gameName));
         job.state = 'done';
         job.lines.push(`[i] Zip prêt : ${gameName}.zip`);
       } catch (err) {

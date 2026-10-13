@@ -145,7 +145,11 @@ les cinq pixels d'une tuile, (5,3) (2,5,1) (4,4) (1,5,2) (3,5). Une tuile n'a
 que deux couleurs : chaque pixel vaut le mélange encre/fond au poids des bits
 d'encre, lu dans une table de 9 mélanges par octet de couleur, au format du
 panneau (`mix`, reconstruite quand la couleur de fond change ; la palette du
-TMS9918 est fixe). Verticalement, deux lignes source qui tombent sur la même
+TMS9918 est fixe). Le format du panneau META : RGB565 natif, octets du poids
+fort d'abord (`SG_PANEL_SWAP`/`GG_PANEL_SWAP` à 1 sur META, 0 sur Pokitto
+dont le bus est parallèle 16 bits natif) ; le câblage BGR de la dalle est
+corrigé par le bit BGR du registre MADCTL, posé par l'init de l'écran — les
+couleurs du firmware restent natives, aucune permutation logicielle. Verticalement, deux lignes source qui tombent sur la même
 ligne d'écran sont rendues ensemble : poids moyen quand leurs couleurs sont
 égales (une seule lecture), sinon moyenne des deux mélanges. Les tuiles sous
 sprites prennent la boîte exacte 8×2 (couleurs étalées, une table de 16 avec

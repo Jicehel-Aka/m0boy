@@ -21,7 +21,9 @@ if(SG_COMPILER STREQUAL "clang")
 elseif(NOT SG_COMPILER STREQUAL "gcc")
     message(FATAL_ERROR "SG_COMPILER must be gcc or clang")
 endif()
+set(EXTRA_DEFS "" CACHE STRING "extra compile definitions, e.g. -DPOKITTO_HC=1")
 target_compile_options(firmware PRIVATE -O2 -ffunction-sections -fdata-sections -fno-common -Wall
+    ${EXTRA_DEFS}
     $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions> $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld
     COMMAND ${CMAKE_C_COMPILER} -E -P -x c -I${SRC} ${CMAKE_CURRENT_SOURCE_DIR}/pokitto.ld -o ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld

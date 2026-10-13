@@ -3,12 +3,17 @@
  *
  * 48 MHz is PokittoLib's SystemInit (SYSPLLCTRL 0x23: M = 4, P = 2); 72 MHz
  * its _OSCT=2 overclock (0x25: M = 6, FCCO 288 MHz), past the LPC11U68's
- * 50 MHz rating but what Pokitto programs commonly run at (gm0 too).  The
- * flash wait states stay at their reset value, as in PokittoLib and gm0,
- * which run at 72 MHz that way.  SysTick counts milliseconds;
- * meta_micros adds the fraction of the current one.  A clock change runs
- * the core from the 12 MHz IRC while the PLL relocks, then rescales the
- * SysTick, the audio sample timer and the SD card's SPI divider.
+ * 50 MHz rating but what Pokitto programs commonly run at (gm0 too; the
+ * Pokitto wiki documents it as safe).  The flash wait states stay at their
+ * reset value — FLASHTIM 0x2, three system clocks, already the largest
+ * setting the flash accelerator documents (UM10732 table 354: "for system
+ * clock frequencies of up to 50 MHz"); at 72 MHz the flash runs past its
+ * rated clock exactly like PokittoLib's overclocked builds, and the hot
+ * loops run from SRAM.  SysTick counts milliseconds; meta_micros adds the
+ * fraction of the current one.  A clock change runs the core from the 12 MHz
+ * IRC while the PLL relocks, then rescales the SysTick, the audio sample
+ * timer and the SD card's SPI divider (the SSP redivides: 24 MHz at 48,
+ * 18 MHz at 72 — both under the SD Default Speed limit of 25 MHz).
  */
 #include "meta_clock.h"
 

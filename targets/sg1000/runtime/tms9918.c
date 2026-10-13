@@ -27,7 +27,9 @@ typedef struct {
  * mix the 9 blends of a colour byte (rebuilt when the palette or the
  * backdrop changes).  Both paths compute the same values. */
 static inline uint32_t spread(uint32_t c) { return (c | (c << 16)) & 0x07e0f81fu; }
-/* Panel order: the META's SPI sends the high byte first (SG_PANEL_SWAP). */
+/* Panel order: the META's SPI sends the high byte first (SG_PANEL_SWAP); the
+ * glass's BGR wiring is corrected by the MADCTL BGR bit of the LCD init, so
+ * colours are native. */
 #ifndef SG_PANEL_SWAP
 #define SG_PANEL_SWAP 0
 #endif

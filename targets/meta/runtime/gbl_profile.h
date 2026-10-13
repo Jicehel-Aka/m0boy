@@ -54,6 +54,18 @@
 #if defined(GBL_TARGET_POKITTO) && GBL_TARGET_POKITTO
 /* ======================================================= Pokitto (LPC11U68) */
 
+/* POKITTO_HC : démarrer à 72 MHz au lieu des 48 MHz nominaux.  Le
+ * LPC11U68 est spécifié jusqu'à 50 MHz ; 72 MHz (PLL M = 6, FCCO 288 MHz)
+ * est l'overclock standard de la console (wiki Pokitto : « _OSCT=2 »,
+ * Pokitto Magazine vol. 1) et tourne aussi dans gm0.  À cette vitesse le
+ * SSP redivise (carte SD à 18 MHz, sous la limite Default Speed de 25 MHz
+ * du SPI), les tempos flash restent sur leur valeur de réinitialisation
+ * (3 horloges, le maximum documenté).  Le menu « Processeur » garde la
+ * bascule 48 <-> 72. */
+#ifndef POKITTO_HC
+#define POKITTO_HC 0
+#endif
+
 /* Its two 2 KiB RAM banks hold the line signatures, the audio queue, the
  * PPU's BGP table and the dispatch cache (pokitto.ld); the main RAM this
  * frees pays for the larger stream cache.  0 keeps everything in main RAM

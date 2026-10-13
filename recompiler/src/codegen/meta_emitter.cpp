@@ -176,12 +176,6 @@ std::string stream_name(const std::string& project) {
     return n.empty() ? "ROM" : n;
 }
 
-std::string stream_name83(const std::string& project) {
-    std::string n = stream_name(project);
-    n.resize(8, ' ');
-    return n + "GB ";
-}
-
 uint8_t cond_use(uint8_t op) {
     return ((op >> 3) & 3) < 2 ? FZ : FC;
 }
@@ -1961,9 +1955,8 @@ std::string Generator::emit_config(std::string& error) const {
       << (stream_ ? "#define GBL_ROM_STREAM 1\n#define GBL_ROM_CHUNKS " +
                         std::to_string(chunk_weight_.size()) + "\n" +
                         (pack_ ? std::string("#define GBL_ROM_PACKED 1\n")
-                               : "#define GBL_STREAM_NAME \"" + stream_name(opt_.name) +
-                                     ".GB\"\n#define GBL_STREAM_NAME83 \"" +
-                                     stream_name83(opt_.name) + "\"\n")
+                               : "#define GBL_STREAM_NAME \"ROM.GB\"\n"
+                                 "#define GBL_STREAM_NAME83 \"ROM     GB\"\n")
                   : std::string())
       /* The console; its optimisation switches are in gbl_profile.h. */
       << (opt_.pokitto ? "#define GBL_TARGET_POKITTO 1\n" : "")

@@ -228,8 +228,9 @@ New CMake builds prefer Clang when available, falling back to GCC.
 take precedence. Existing build directories keep their compiler. See the
 [compiler guide](docs/COMPILATEURS.fr.md).
 
-Each game lands in `roms/meta/<Game>/` or `roms/pokitto/<Game>/`. Copy that
-folder as is to the root of the SD card and start it from the console's
+Each game lands in `roms/meta/<source>/<Game>/` or `roms/pokitto/<source>/<Game>/`,
+where `<source>` is the ROM platform (`gb`, `sg`, `gg` or `sms`). Copy that
+game folder as is to the root of the SD card and start it from the console's
 loader. The full guide (in French) is [docs/GUIDE.fr.md](docs/GUIDE.fr.md);
 the technical notes are in [targets/meta/README.md](targets/meta/README.md).
 
