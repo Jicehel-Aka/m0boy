@@ -9,6 +9,18 @@ set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 file(GLOB PLATFORM_C ${SRC}/pokitto_*.c)
 add_executable(firmware ${SRC}/z80.c ${SRC}/sg1000.c ${SRC}/sg_audio.c ${SRC}/tms9918.c ${SRC}/sg_gen.c ${SRC}/sg_rom.c ${SRC}/sg_main.cpp ${PLATFORM_C})
 target_include_directories(firmware PRIVATE ${SRC})
+# Firmware compiler: gcc, or clang through toolchain/arm_clang.py (C/C++
+# only; assembly, the linker script and the link stay with the GNU tools).
+set(SG_COMPILER "@COMPILER@" CACHE STRING "Firmware C/C++ compiler: gcc or clang")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+if(SG_COMPILER STREQUAL "clang")
+    set(SG_WRAPPER ${CMAKE_CURRENT_SOURCE_DIR}/toolchain/arm_clang.py)
+    set_target_properties(firmware PROPERTIES
+        C_COMPILER_LAUNCHER "${Python3_EXECUTABLE};${SG_WRAPPER};--launcher;--language;c;--"
+        CXX_COMPILER_LAUNCHER "${Python3_EXECUTABLE};${SG_WRAPPER};--launcher;--language;c++;--")
+elseif(NOT SG_COMPILER STREQUAL "gcc")
+    message(FATAL_ERROR "SG_COMPILER must be gcc or clang")
+endif()
 target_compile_options(firmware PRIVATE -O2 -ffunction-sections -fdata-sections -fno-common -Wall
     $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions> $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld
@@ -20,7 +32,6 @@ target_link_options(firmware PRIVATE -nostartfiles --specs=nano.specs --specs=no
     -Wl,--gc-sections -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/firmware.map -T${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld)
 set_target_properties(firmware PROPERTIES SUFFIX ".elf" LINK_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld)
 find_program(OBJCOPY arm-none-eabi-objcopy REQUIRED)
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
 add_custom_command(TARGET firmware POST_BUILD
     COMMAND ${OBJCOPY} -O binary $<TARGET_FILE:firmware> ${CMAKE_CURRENT_BINARY_DIR}/firmware.bin
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/checksum.py ${CMAKE_CURRENT_BINARY_DIR}/firmware.bin)

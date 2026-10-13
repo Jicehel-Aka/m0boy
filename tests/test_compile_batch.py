@@ -60,7 +60,8 @@ elif name=='nproc':print('4')
     sg = [args for args in generations if '--system' in args]
     assert len(sg)==4, sg  # two SG cartridges, both destinations
     assert all(args[args.index('--system')+1]=='sg1000' for args in sg)
-    assert all(not any(flag in args for flag in ('--meta-pack','--meta-static','--meta-compiler','--meta-bytes-per-instruction')) for args in sg)
+    assert all(not any(flag in args for flag in ('--meta-pack','--meta-static','--meta-bytes-per-instruction')) for args in sg)
+    assert all(args[args.index('--meta-compiler')+1]=='gcc' for args in sg)  # recompiled Z80: firmware compiler forwarded
     assert any(name=='make' for name,args in calls)  # GB pipeline unchanged
     assert any(name=='cmake' and '-DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake' in args for name,args in calls)
     states = list((root/'roms').glob('*/**/.gbrmeta.json'))

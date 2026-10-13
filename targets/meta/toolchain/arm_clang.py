@@ -95,9 +95,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--gcc', default=None)
     ap.add_argument('--language', choices=('c', 'c++'), default='c')
+    ap.add_argument('--launcher', action='store_true',
+                    help='CMake compiler launcher: the first argument is the GNU compiler')
     ap.add_argument('arguments', nargs=argparse.REMAINDER)
     args = ap.parse_args()
     arguments = args.arguments[1:] if args.arguments[:1] == ['--'] else args.arguments
+    if args.launcher and arguments:
+        args.gcc = args.gcc or arguments[0]
+        arguments = arguments[1:]
     try:
         return subprocess.call(clang_command(args.gcc, args.language, arguments))
     except (ValueError, OSError, subprocess.CalledProcessError) as error:

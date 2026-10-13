@@ -6,7 +6,7 @@
 # Usage : ./compile.sh [dossier_roms] [dossier_sortie]
 #   Par défaut : ./roms/gb/ et ./roms/sg/, jeux dans ./roms/meta/<Jeu>/
 #   Un dossier explicite accepte .gb/.gbc/.sg (ou ses sous-dossiers gb/ et sg/).
-#   SG-1000 : projets out/sg1000/<cible>/<jeu>/, GCC, couverture NTSC automatique
+#   SG-1000 : code Z80 recompilé (projets out/sg1000/<cible>/<jeu>/), GCC ou Clang, couverture NTSC automatique
 #   de AUTO_SECONDS secondes émulées (SG_AUTO_FRAMES pour choisir les images).
 #   PLAY=1 utilise le lecteur natif SG ; PACK et les sauvegardes GB ne s’appliquent pas.
 #   (le .elf de débogage reste dans out/<jeu>/.pio/build/meta/)
@@ -483,7 +483,6 @@ build_sg_game() { # SG-1000 owns its generator, profiles and build system.
   local out_dir="out/sg1000/$TARGET/$prefix" game_dir="$DEST_DIR/$game_name"
   local store="$SESSIONS_DIR/$rom_sha/sg1000" cov auto_frames
   local cov_args=() firmware
-  [ "$FIRMWARE_COMPILER" = gcc ] || { echo "[x] Le frontend firmware SG-1000 utilise GCC (FIRMWARE_COMPILER=gcc)."; return 1; }
   mkdir -p "$out_dir" "$store" "$game_dir" || return 1
   if [ "$PLAY" = 1 ]; then
     local sg_player="${SG_PLAYER:-../gm0/build/bin/gm0}"
@@ -504,11 +503,14 @@ build_sg_game() { # SG-1000 owns its generator, profiles and build system.
     [ "$(head -n1 "$cov")" = '# m0boy.sg1000.coverage.v1' ] && cov_args+=(--coverage "$cov")
   done
   "$GBRECOMP" "$rom_path" --system sg1000 --target "$TARGET" --output-prefix "$prefix" \
-    "${cov_args[@]}" -o "$out_dir" || return 1
+    --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" -o "$out_dir" || return 1
   if [ "$TARGET" = pokitto ]; then
-    cmake -G Ninja -S "$out_dir" -B "$out_dir/build" -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake || return 1
-    ninja -C "$out_dir/build" -j"$NPROC" || return 1
-    firmware="$out_dir/build/firmware.bin"
+    local sg_build="$out_dir/build"
+    [ "$FIRMWARE_COMPILER" = clang ] && sg_build="$out_dir/build-clang"
+    cmake -G Ninja -S "$out_dir" -B "$sg_build" -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake \
+      -DSG_COMPILER="$FIRMWARE_COMPILER" || return 1
+    ninja -C "$sg_build" -j"$NPROC" || return 1
+    firmware="$sg_build/firmware.bin"
     cp "$firmware" "$game_dir/$game_name.bin" || return 1
   else
     pio run -d "$out_dir" || return 1
@@ -517,8 +519,8 @@ build_sg_game() { # SG-1000 owns its generator, profiles and build system.
     cp "$firmware" "$game_dir/$(meta_bin "$out_dir/src/gbl_config.h" "$prefix")" || return 1
     fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" sg || echo "[i] (jeu conservé sans icône)"
   fi
-  printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "system": "sg1000",\n  "pack": 0,\n  "compiler": "gcc"\n}\n' \
-    "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" > "$game_dir/.gbrmeta.json"
+  printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "system": "sg1000",\n  "pack": 0,\n  "compiler": "%s"\n}\n' \
+    "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$FIRMWARE_COMPILER" > "$game_dir/.gbrmeta.json"
   echo "[i] Firmware SG-1000 $TARGET v$CUR_VERSION : $game_dir"
 }
 
