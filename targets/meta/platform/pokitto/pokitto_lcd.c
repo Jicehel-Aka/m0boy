@@ -35,9 +35,11 @@ void pokitto_push200(const uint16_t *px);
 
 static uint32_t seq;
 
+/* Register writes hold WR low two cycles, as PokittoLib's CLR_WR_SLOW;
+ * the pixel loops keep one. */
 static inline void strobe(void) {
     GPIO_CLR(1) = WR_BIT;
-    __asm__ volatile("nop");
+    __asm__ volatile("nop\n\tnop");
     GPIO_SET(1) = WR_BIT;
 }
 
@@ -155,7 +157,11 @@ void meta_lcd_init(void) {
     GPIO_CLR(1) = RES_BIT;
     delay(10);
     GPIO_SET(1) = RES_BIT;
-    delay(10);
+    /* PokittoLib waits 10 ms here; a register write lost to a panel still
+     * coming out of reset (R01's SS above all, which flips the 176-row
+     * axis: picture upside down, seen on a real Pokitto) costs more than
+     * the wait. */
+    delay(120);
     /* PokittoLib's lcdInit sequence. */
     reg(0x01, 0x011C); /* driver output: SS, 220 lines */
     reg(0x02, 0x0100); /* line inversion */
@@ -194,6 +200,7 @@ void meta_lcd_init(void) {
     reg(0xFF, 0x0000);
     reg(0x07, 0x1017); /* display on */
     delay(200);
+    reg(0x01, 0x011C); /* SS again, in case the first write was lost */
     reg(0x03, 0x1038); /* writes advance along a row (lcdPrepareRefresh) */
     pokitto_lcd_fill_all(0);
 }
