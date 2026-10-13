@@ -6,7 +6,7 @@ disassembles unbanked cartridges and generates experimental native META/Pokitto
 projects. A host harness compares generated instructions with a Z80 interpreter;
 SG-1000 tone/noise synthesis drives the META and Pokitto DACs. See the
 [multi-system architecture notes (French)](docs/MULTI_SYSTEM.fr.md).
-SG-1000 uses the shared [gm0](../gm0/) frontend: `gm0 game.sg` (arrows,
+SG-1000 uses the shared [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80) frontend: `gm0 game.sg` (arrows,
 Space/Ctrl, Enter, `*`; F8 filters, F10 scaling, F11 fullscreen).
 `tools/sg1000/package.py` builds Windows and Linux archives with SDL2 included;
 see the [desktop distribution instructions](docs/MULTI_SYSTEM.fr.md#jouer-sur-pc).

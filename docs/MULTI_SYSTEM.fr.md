@@ -165,7 +165,7 @@ et la [carte des ports SG-1000](https://www.smspower.org/Development/IOPortMapSG
 
 ## Jouer sur PC
 
-Le frontal commun `gm0` charge directement les cartouches `.sg` dans le noyau
+Le frontal commun `gm0`, sur sa [branche `z80`](https://github.com/r043v/gm0/tree/z80), charge directement les cartouches `.sg` dans le noyau
 Z80/TMS9918A/PSG, sans seconde émulation Cortex-M0 sur PC. Il partage les
 filtres F8, l’échelle F10, le plein écran F11, les manettes, F5, le titre et le
 build WebAssembly avec META/Pokitto. Le petit lecteur `sg1000_play` reste un
@@ -197,7 +197,9 @@ hors présentation et synchronisation). 100 % représente la vitesse NTSC normal
 la capacité possible n’est pas plafonnée, en natif comme dans le HUD WebAssembly.
 
 Les distributions PC sont générées par `tools/sg1000/package.py` avec CMake et
-Ninja. Elles contiennent le lecteur, SDL2, les licences, une notice et un
+Ninja, avec les sources de la branche `z80` de gm0 (`git switch z80` dans
+le dépôt gm0). La branche `main` de gm0 exécute les firmwares META/Pokitto ;
+la lecture directe des `.sg` est réservée à `z80`. Elles contiennent le lecteur, SDL2, les licences, une notice et un
 manifeste SHA-256, sans cartouche. Linux fournit `sg1000-play` et `play.sh` ;
 Windows fournit `sg1000_play.exe` et `SDL2.dll`. Sans argument, le lecteur
 attend une cartouche déposée dans sa fenêtre.

@@ -6,7 +6,7 @@ chargement, d’inspection, de désassemblage et de génération native expérim
 pour META/Pokitto. Le harness hôte compare le code généré à l’interpréteur Z80 ;
 le PSG SG-1000 produit le son sur les DAC META et Pokitto. Voir
 [l’architecture multi-console](docs/MULTI_SYSTEM.fr.md).
-La lecture SG-1000 utilise le frontal commun [gm0](../gm0/) : `gm0 jeu.sg`
+La lecture SG-1000 utilise le frontal commun [gm0, branche `z80`](https://github.com/r043v/gm0/tree/z80) : `gm0 jeu.sg`
 (flèches, Espace/Ctrl, Entrée, `*` ; filtres F8, échelle F10, plein écran F11).
 Les paquets Windows et Linux avec SDL2 inclus se construisent avec
 `tools/sg1000/package.py` ; voir [la distribution PC](docs/MULTI_SYSTEM.fr.md#jouer-sur-pc).
