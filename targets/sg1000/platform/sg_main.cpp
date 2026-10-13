@@ -17,6 +17,7 @@ extern const uint8_t sg_rom[];
 extern const size_t sg_rom_size;
 sg_fn sg_gen_lookup(uint16_t pc);
 extern char end; /* end of .bss: the C stack grows down to it */
+extern char __StackTop;
 #if META_TARGET_POKITTO
 void pokitto_sd_clock_changed(uint32_t) {}
 #endif
@@ -140,7 +141,11 @@ int main() {
     /* Below the guard, runtime calls made from a region still need stack:
      * sync, line rendering, audio catch-up, LCD/audio drivers and
      * interrupts (about 2 KiB, -fstack-usage); the rest is for nesting. */
-    sg_stack_limit = (uintptr_t)&end + 2560;
+    {   /* at least 1 KiB left for nesting when RAM is tight (cartridge RAM) */
+        uintptr_t stack = (uintptr_t)&__StackTop - (uintptr_t)&end, reserve = 2560;
+        if (stack < reserve + 1024) reserve = stack > 2048 ? stack - 1024 : stack / 2;
+        sg_stack_limit = (uintptr_t)&end + reserve;
+    }
     meta_audio_init();
     deadline = meta_micros();
     /* Keep an inspectable source/target version stamp in the firmware. */
