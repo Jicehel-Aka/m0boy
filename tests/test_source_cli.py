@@ -18,7 +18,8 @@ listing = run("--list-systems", contains="sg1000 cpu=z80 inspect=yes disasm=yes 
 assert "gameboy cpu=sm83 inspect=yes disasm=yes codegen=desktop,meta,pokitto" in listing
 run("--system", ok=False, contains="requires a value")
 run("--cpu", "68000", ok=False, contains="unknown --cpu")
-run("--system", "sms", ok=False, contains="unknown --system")
+run("--system", "nes", ok=False, contains="unknown --system")
+assert "sms cpu=z80" in listing and "gg cpu=z80" in listing
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
     sg = root / "synthetic.SG"

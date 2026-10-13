@@ -1,0 +1,207 @@
+"""Synthetic Game Gear cartridge (64 KiB, four pages) for the runtime and
+end-to-end tests: Sega mapper with code called in two pages of slot 2, a
+pushed return address (RET to a constant), mode 4 tiles with scrolling,
+priority and flips, sprites (overflow and collision), CRAM, the frame and
+line interrupts, the V counter, the PSG and the START button.
+
+No ROM or ROM-derived data: everything is assembled here."""
+from z80asm import Asm
+
+SOURCE = r"""
+org 0
+    di
+    im 1
+    ld sp,0xdff0
+    jp main
+
+org 0x38
+irq:
+    push af
+    push hl
+    in a,(0xbf)            ; status (clears frame and line flags)
+    ld (0xc010),a
+    bit 7,a
+    jr z,line_irq
+    ld hl,(0xc000)         ; frame counter
+    inc hl
+    ld (0xc000),hl
+    ld a,(0xc004)          ; scroll the background
+    inc a
+    ld (0xc004),a
+    out (0xbf),a
+    ld a,0x88
+    out (0xbf),a
+    jr irq_end
+line_irq:
+    ld hl,(0xc002)         ; line interrupt counter
+    inc hl
+    ld (0xc002),hl
+    in a,(0x7e)            ; V counter at the interrupt
+    ld (0xc011),a
+irq_end:
+    pop hl
+    pop af
+    ei
+    reti
+
+org 0x66
+    retn
+
+org 0x100
+main:
+    ld hl,vdp_regs         ; registers 0-10
+    ld b,11
+    ld c,0x80
+regs:
+    ld a,(hl)
+    out (0xbf),a
+    ld a,c
+    out (0xbf),a
+    inc hl
+    inc c
+    djnz regs
+    ld a,0x00              ; CRAM from 0
+    out (0xbf),a
+    ld a,0xc0
+    out (0xbf),a
+    ld hl,palette
+    ld b,64
+    ld c,0xbe
+    otir
+    ld a,0x00              ; VRAM 0000: tiles 0-3
+    out (0xbf),a
+    ld a,0x40
+    out (0xbf),a
+    ld hl,tiles
+    ld b,128
+    otir
+    ld a,0x00              ; name table 3800: a pattern of tiles and attributes
+    out (0xbf),a
+    ld a,0x78
+    out (0xbf),a
+    ld de,0x380            ; 32 x 28 entries, two bytes each
+names:
+    ld a,e
+    and 3
+    out (0xbe),a           ; tile 0-3
+    ld a,e
+    and 0x1e
+    out (0xbe),a           ; flips, palette, priority bits
+    dec de
+    ld a,d
+    or e
+    jr nz,names
+    ld a,0x00              ; sprite table 3f00: Y then X/tile
+    out (0xbf),a
+    ld a,0x7f
+    out (0xbf),a
+    ld hl,sprite_y
+    ld b,16
+    otir
+    ld a,0x80
+    out (0xbf),a
+    ld a,0x7f
+    out (0xbf),a
+    ld hl,sprite_xn
+    ld b,32
+    otir
+    ld a,0x81              ; PSG: tone 0, volume 0; noise white, volume 4
+    out (0x7f),a
+    ld a,0x10
+    out (0x7f),a
+    ld a,0x90
+    out (0x7f),a
+    ld a,0xe4
+    out (0x7f),a
+    ld a,0xf4
+    out (0x7f),a
+    ld a,2                 ; page 2 in slot 2: its routine
+    ld (0xffff),a
+    call 0x8000
+    ld a,3                 ; page 3 in slot 2: another routine, same address
+    ld (0xffff),a
+    call 0x8000
+    ld hl,after_push       ; RET to a pushed constant
+    push hl
+    ret
+after_push:
+    ld a,(0xc020)
+    inc a
+    ld (0xc020),a
+    ei
+loop:
+    halt
+    in a,(0x00)            ; START
+    ld (0xc012),a
+    in a,(0xdc)            ; pad
+    ld (0xc013),a
+    ld a,(0xc014)          ; move sprite 0 with the frames
+    inc a
+    ld (0xc014),a
+    ld c,a
+    ld a,0x00
+    out (0xbf),a
+    ld a,0x7f
+    out (0xbf),a
+    ld a,c
+    and 0x7f
+    add a,24
+    out (0xbe),a
+    ld a,(0xc000)          ; every 8 frames: other page in slot 2, call it
+    and 7
+    jr nz,loop
+    ld a,(0xc015)
+    xor 1
+    ld (0xc015),a
+    add a,2
+    ld (0xffff),a
+    call 0x8000
+    jr loop
+
+vdp_regs:
+    db 0x36,0xe0,0xff,0xff,0xff,0xff,0xfb,0x01,0x00,0x00,0x30
+palette:
+    dw 0x000,0x00f,0x0f0,0xf00,0x0ff,0xf0f,0xff0,0xfff,0x888,0x008,0x080,0x800,0x088,0x808,0x880,0x444
+    dw 0x000,0x0af,0x5f0,0xf50,0x5ff,0xf5f,0xff5,0xaaa,0x111,0x226,0x262,0x622,0x266,0x626,0x662,0xccc
+tiles:
+    db 0xff,0x00,0x00,0x00, 0x81,0x7e,0x00,0x00, 0x81,0x00,0x7e,0x00, 0x81,0x00,0x00,0x7e
+    db 0xf0,0x0f,0xf0,0x0f, 0x0f,0xf0,0x0f,0xf0, 0xaa,0x55,0xaa,0x55, 0x55,0xaa,0x55,0xaa
+    db 0x18,0x18,0x18,0x18, 0x3c,0x3c,0x00,0x00, 0x7e,0x00,0x7e,0x00, 0xff,0x00,0x00,0xff
+    db 0xff,0xff,0x00,0x00, 0x7e,0x7e,0x00,0x00, 0x3c,0x00,0x3c,0x00, 0x18,0x18,0x18,0x18
+    db 0x01,0x03,0x07,0x0f, 0x1f,0x3f,0x7f,0xff, 0x80,0xc0,0xe0,0xf0, 0xf8,0xfc,0xfe,0xff
+    db 0x11,0x22,0x44,0x88, 0x11,0x22,0x44,0x88, 0x00,0xff,0x00,0xff, 0x00,0xff,0x00,0xff
+    db 0x3c,0x42,0x81,0x81, 0x81,0x81,0x42,0x3c, 0x3c,0x7e,0xff,0xff, 0xff,0xff,0x7e,0x3c
+    db 0xc3,0xc3,0x3c,0x3c, 0x3c,0x3c,0xc3,0xc3, 0x99,0x66,0x99,0x66, 0x66,0x99,0x66,0x99
+sprite_y:
+    db 40,40,40,40,40,40,40,40,40,60,60,80,100,120,0xd0,0
+sprite_xn:
+    db 50,0, 56,1, 62,2, 68,3, 74,0, 80,1, 86,2, 92,3, 98,0, 100,1, 104,2, 120,3, 140,0, 160,1, 0,0, 0,0
+
+org 0x8000                 ; page 2, run from slot 2
+page2:
+    ld hl,(0xc006)
+    inc hl
+    ld (0xc006),hl
+    ld a,0x9f              ; tone 0 quiet
+    out (0x7f),a
+    ret
+
+org 0xc000                 ; page 3, run from slot 2
+page3:
+    ld hl,(0xc008)
+    ld de,0x0101
+    add hl,de
+    ld (0xc008),hl
+    ld a,0x90              ; tone 0 loud
+    out (0x7f),a
+    ret
+"""
+
+
+def fixture():
+    return bytes(Asm(0x10000).assemble(SOURCE))
+
+
+if __name__ == '__main__':
+    import sys
+    open(sys.argv[1], 'wb').write(fixture())

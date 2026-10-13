@@ -27,6 +27,12 @@ add_library(m0boy_sg1000_runtime STATIC targets/sg1000/runtime/sg1000.c targets/
 target_link_libraries(m0boy_sg1000_runtime PUBLIC m0boy_z80_runtime)
 add_executable(sg1000_host targets/sg1000/host/sg_host.c)
 target_link_libraries(sg1000_host PRIVATE m0boy_sg1000_runtime)
+add_library(m0boy_gg_runtime STATIC targets/gamegear/runtime/gg.c targets/gamegear/runtime/gg_vdp.c targets/gamegear/runtime/gg_psg.c)
+target_include_directories(m0boy_gg_runtime PUBLIC targets/gamegear/runtime)
+target_link_libraries(m0boy_gg_runtime PUBLIC m0boy_z80_runtime)
+target_compile_definitions(m0boy_gg_runtime PUBLIC GG_ROM_TRACE=1) # host profiling of ROM data reads
+add_executable(gg_host targets/gamegear/host/gg_host.c)
+target_link_libraries(gg_host PRIVATE m0boy_gg_runtime)
 # Desktop play is optional; firmware and the reference harness remain headless.
 find_package(SDL2 QUIET)
 if(TARGET SDL2::SDL2)
@@ -54,6 +60,10 @@ if(BUILD_TESTS)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_sg1000_e2e.py"
                 --recompiler "$<TARGET_FILE:m0recomp>" --host "$<TARGET_FILE:sg1000_host>")
     set_tests_properties(sg1000_native_end_to_end PROPERTIES TIMEOUT 300)
+    add_test(NAME gg_native_end_to_end
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_gg_e2e.py"
+                --recompiler "$<TARGET_FILE:m0recomp>" --host "$<TARGET_FILE:gg_host>")
+    set_tests_properties(gg_native_end_to_end PROPERTIES TIMEOUT 300)
     if(TARGET sg1000_play)
         add_executable(test_sg1000_input tests/test_sg1000_input.c)
         target_include_directories(test_sg1000_input PRIVATE targets/sg1000/host)

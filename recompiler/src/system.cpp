@@ -18,6 +18,10 @@ constexpr std::array system_table = {
                      8192, gameboy::inspect, gameboy_targets},
     SystemDescriptor{SystemId::sg1000, "sg1000", CpuId::z80, 0x0000,
                      1024, sg1000::inspect, gameboy_targets},
+    SystemDescriptor{SystemId::gamegear, "gg", CpuId::z80, 0x0000,
+                     8192, sg1000::inspect_gamegear, gameboy_targets},
+    SystemDescriptor{SystemId::mastersystem, "sms", CpuId::z80, 0x0000,
+                     8192, sg1000::inspect_mastersystem, gameboy_targets},
 };
 }
 
@@ -61,6 +65,8 @@ std::optional<SystemId> detect_system(const std::filesystem::path& path) {
     std::transform(ext.begin(), ext.end(), ext.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     if (ext == ".sg") return SystemId::sg1000;
+    if (ext == ".gg") return SystemId::gamegear;
+    if (ext == ".sms") return SystemId::mastersystem;
     if (ext == ".gb" || ext == ".gbc" || ext == ".sgb") return SystemId::gameboy;
     return std::nullopt;
 }

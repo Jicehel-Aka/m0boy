@@ -10,7 +10,13 @@ static void require(bool condition, const char* message) {
 int main() {
     using namespace m0boy;
     try {
-        require(systems().size() == 2, "Source registry incomplete");
+        require(systems().size() == 4, "Source registry incomplete");
+        require(detect_system("game.sms") == SystemId::mastersystem && parse_system("sms") == SystemId::mastersystem,
+                "Master System detection failed");
+        const auto& gg = system_descriptor(SystemId::gamegear);
+        require(gg.cpu == CpuId::z80 && gg.work_ram_bytes == 8192 && parse_system("gg") == SystemId::gamegear,
+                "Game Gear profile incorrect");
+        require(detect_system("game.GG") == SystemId::gamegear, "GG detection failed");
         const auto& sg = system_descriptor(SystemId::sg1000);
         require(sg.cpu == CpuId::z80 && sg.reset_address == 0 &&
                 sg.work_ram_bytes == 1024, "SG-1000 profile incorrect");
@@ -22,7 +28,7 @@ int main() {
         require(detect_system("game.SG") == SystemId::sg1000, "SG detection failed");
         require(detect_system("game.sgb") == SystemId::gameboy, "SGB is a GB cartridge");
         require(!detect_system("game.bin"), "Raw binary falsely identified");
-        require(!parse_cpu("arm") && !parse_system("sms"), "Unknown ids accepted");
+        require(!parse_cpu("arm") && !parse_system("nes"), "Unknown ids accepted");
         std::string error;
         require(!sg1000::Cartridge::from_bytes({}, error) && !error.empty(), "Empty ROM accepted");
         require(!sg1000::Cartridge::from_bytes(std::vector<uint8_t>(0xc001), error),

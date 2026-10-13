@@ -5,7 +5,7 @@ void z80_reset(z80_t *c) {
     memset(c,0,offsetof(z80_t,user));c->sp=0xffff;c->irq_vector=0xff;
 }
 int z80_decode(const z80_t *c,z80_decoded_t *d) {
-    memset(d,0,sizeof(*d));
+    d->immediate=0;d->index=0;d->group=0;d->displacement=0;d->extra_cycles=0; /* no memset call */
     uint32_t pos=0,prefixes=0;
 #define BYTE() c->read(c->user,(uint16_t)(c->pc+pos++))
     unsigned op=BYTE();

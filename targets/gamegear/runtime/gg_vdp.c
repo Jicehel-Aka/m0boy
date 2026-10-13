@@ -1,0 +1,712 @@
+/* Game Gear VDP (TMS9918 derivative, mode 4): ports, CRAM, line counter,
+ * sprites and the 160x144 window, drawn 1:1.
+ *
+ * A tile row is four bit-plane bytes; one table lookup per plane spreads
+ * its bits into eight 4-bit fields (gg_tables.h), so a row is decoded with
+ * four loads, three shifts and three ORs, then each pixel is a field
+ * extraction and a palette read (CRAM kept as panel RGB565). */
+#include "gg.h"
+#include "gg_tables.h"
+#include <string.h>
+
+#ifndef GG_PANEL_SWAP
+#define GG_PANEL_SWAP 0
+#endif
+static inline uint16_t panel(uint32_t c) {
+#if GG_PANEL_SWAP
+    return __builtin_bswap16((uint16_t)c);
+#else
+    return (uint16_t)c;
+#endif
+}
+
+/* ---- CRAM ----------------------------------------------------------------- */
+
+/* Master System: the CRAM spread for the box filter (true RGB565), and the
+ * blends of palette 0 pairs (below) */
+static uint32_t spal[32];
+static uint16_t pair53[2][256];
+static uint8_t pairs_stale = 1;
+static inline uint32_t spread(uint32_t c) { return (c | c << 16) & 0x07e0f81fu; }
+static inline uint16_t fold(uint32_t s) {
+    s = ((s + 0x00802004u) >> 3) & 0x07e0f81fu;
+    return (uint16_t)(s | s >> 16);
+}
+/* Master System colour: 6 bits, --BBGGRR */
+static void cram_colour_sms(unsigned i) {
+    static const uint8_t c5[4] = { 0, 10, 21, 31 }, c6[4] = { 0, 21, 42, 63 };
+    gg_t *m = &machine;
+    const unsigned c = m->cram[i];
+    const uint32_t rgb = (uint32_t)c5[c & 3] << 11 | (uint32_t)c6[(c >> 2) & 3] << 5 | c5[(c >> 4) & 3];
+    m->pal[i] = panel(rgb);
+    spal[i] = spread(rgb);
+    pairs_stale = 1;
+}
+
+/* Game Gear colour: 12 bits, ----BBBBGGGGRRRR (little endian pair) */
+static void cram_colour(unsigned i) {
+    gg_t *m = &machine;
+    const unsigned w = m->cram[2 * i] | (m->cram[2 * i + 1] << 8);
+    const unsigned r = w & 15, g = (w >> 4) & 15, b = (w >> 8) & 15;
+    m->pal[i] = panel(((r << 1 | r >> 3) << 11) | ((g << 2 | g >> 2) << 5) | (b << 1 | b >> 3));
+}
+
+/* ---- sprites -------------------------------------------------------------- */
+
+/* Sprites covering each band of 8 lines (64 sprites: two words), kept up to
+ * date on every Y write; terminator, size or table changes rebuild. */
+#define GG_BANDS (GG_ACTIVE / 8)
+static uint32_t band_mask[GG_BANDS][2];
+static unsigned sat_end;
+
+static inline int sprite_top(unsigned sy) { return sy >= 0xe0 ? (int)sy - 255 : (int)sy + 1; }
+static inline unsigned sprite_span(void) {
+    return ((machine.vdp[1] & 2) ? 16u : 8u) << (machine.vdp[1] & 1);
+}
+static void span_bits(unsigned sy, unsigned span, unsigned i, int set) {
+    const int top = sprite_top(sy);
+    int first = top < 0 ? 0 : top, last = top + (int)span;
+    if (last > GG_ACTIVE) last = GG_ACTIVE;
+    if (first >= last) return;
+    const uint32_t bit = 1u << (i & 31);
+    for (int b = first >> 3; b <= (last - 1) >> 3; b++) {
+        if (set) band_mask[b][i >> 5] |= bit;
+        else band_mask[b][i >> 5] &= ~bit;
+    }
+}
+static void build_masks(void) {
+    gg_t *m = &machine;
+    memset(band_mask, 0, sizeof band_mask);
+    const uint8_t *table = m->vram + m->sat_base;
+    const unsigned span = sprite_span();
+    unsigned i = 0;
+    for (; i < 64 && table[i] != 0xd0; i++) span_bits(table[i], span, i, 1);
+    sat_end = i;
+    m->sprites_dirty = 0;
+}
+static void sprite_y(unsigned i, unsigned old, unsigned value) {
+    gg_t *m = &machine;
+    if (m->sprites_dirty || old == value) return;
+    if (old == 0xd0 || value == 0xd0) { m->sprites_dirty = 1; return; }
+    if (i >= sat_end) return;
+    const unsigned span = sprite_span();
+    span_bits(old, span, i, 0);
+    span_bits(value, span, i, 1);
+}
+
+typedef struct {
+    int16_t x;
+    uint8_t planes[4]; /* pattern row */
+} sprite_t;
+
+static inline unsigned bit_index(uint32_t low) {
+    static const uint8_t debruijn[32] = { 0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
+                                          31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9 };
+    return debruijn[(low * 0x077cb531u) >> 27];
+}
+
+/* The first eight sprites on line y (the ninth sets the overflow flag). */
+static unsigned line_sprites(unsigned y, sprite_t *out) {
+    gg_t *m = &machine;
+    if (m->sprites_dirty) build_masks();
+    const uint32_t *band = band_mask[y >> 3];
+    if (!(band[0] | band[1])) return 0;
+    const uint8_t *vram = m->vram, *sat = vram + m->sat_base;
+    const unsigned zoom = m->vdp[1] & 1, tall = m->vdp[1] & 2, span = sprite_span();
+    const unsigned base = (m->vdp[6] & 4u) << 6; /* tile 0 or 256 */
+    const int shift = (m->vdp[0] & 8) ? 8 : 0;
+    unsigned n = 0;
+    for (unsigned w = 0; w < 2; w++)
+        for (uint32_t bits = band[w]; bits;) {
+            const uint32_t low = bits & (0u - bits);
+            bits ^= low;
+            const unsigned i = w * 32 + bit_index(low);
+            const unsigned row = (unsigned)((int)y - sprite_top(sat[i]));
+            if (row >= span) continue;
+            if (n == 8) { m->vdp_status |= 64; return n; }
+            unsigned tile = base | sat[0x81 + 2 * i], r = row >> zoom;
+            if (tall) tile = (tile & ~1u) + (r >> 3);
+            const uint8_t *p = vram + ((tile * 32 + (r & 7) * 4) & 0x3fff);
+            sprite_t *s = &out[n++];
+            s->x = (int16_t)(sat[0x80 + 2 * i] - shift);
+            memcpy(s->planes, p, 4);
+        }
+    return n;
+}
+
+/* Two opaque sprite pixels on one screen pixel: the collision flag. */
+static void collisions(const sprite_t *spr, unsigned n) {
+    gg_t *m = &machine;
+    if (n < 2 || (m->vdp_status & 32)) return;
+    const unsigned zoom = m->vdp[1] & 1;
+    uint32_t seen[9];
+    for (unsigned i = 0; i < 9; i++) ((volatile uint32_t *)seen)[i] = 0; /* no memset call */
+    for (unsigned k = 0; k < n; k++) {
+        unsigned bits = spr[k].planes[0] | spr[k].planes[1] | spr[k].planes[2] | spr[k].planes[3];
+        if (!bits) continue;
+        uint32_t row = bits;
+        if (zoom) { /* each pixel doubled: 16 bits */
+            row = 0;
+            for (unsigned b = 0; b < 8; b++) if (bits & (0x80u >> b)) row |= 0xc000u >> (2 * b);
+            row <<= 16;
+        } else row <<= 24;
+        int x = spr[k].x;
+        if (x < 0) { row <<= -x; x = 0; }
+        const unsigned word = (unsigned)x >> 5, off = (unsigned)x & 31;
+        const uint32_t a = row >> off, b = off ? row << (32 - off) : 0;
+        if ((seen[word] & a) || (seen[word + 1] & b)) { m->vdp_status |= 32; return; }
+        seen[word] |= a;
+        seen[word + 1] |= b;
+    }
+}
+
+/* ---- rendering ------------------------------------------------------------ */
+
+static inline uint32_t row_fields(const uint8_t *p, int flip) {
+    const uint32_t *t = flip ? gg_planes_flip : gg_planes;
+    return t[p[0]] | t[p[1]] << 1 | t[p[2]] << 2 | t[p[3]] << 3;
+}
+
+/* count tiles of one name row from column tx into out (8 pixels each), row
+ * tr of each tile; returns the tiles (bit k) with priority and a pixel. */
+typedef struct {
+    const uint8_t *vram;
+    uint32_t tr;
+    const uint16_t *pal;
+    const uint32_t *planes;
+    uint32_t count;
+} gg_bg_args;
+#if defined(__ARM_ARCH_6M__) && !defined(GG_NO_RENDER_ASM)
+#define GG_RENDER_ASM 1
+unsigned gg_bg_tiles(uint16_t *out, const uint8_t *names_row, unsigned tx, const gg_bg_args *args);
+#else
+#define GG_RENDER_ASM 0
+#endif
+#if !GG_RENDER_ASM || defined(GG_SELFTEST)
+static unsigned gg_bg_tiles_c(uint16_t *o, const uint8_t *names_row, unsigned tx, const gg_bg_args *args) {
+    unsigned prio = 0;
+    for (unsigned k = 0; k < args->count; k++, o += 8, tx = (tx + 1) & 31) {
+        const unsigned entry = names_row[2 * tx] | (names_row[2 * tx + 1] << 8);
+        const unsigned tr = (entry & 0x400) ? 7 - args->tr : args->tr;
+        const uint32_t w = row_fields(args->vram + (entry & 0x1ff) * 32 + tr * 4, entry & 0x200);
+        const uint16_t *pal = args->pal + ((entry & 0x800) ? 16 : 0);
+        o[0] = pal[w & 15];
+        o[1] = pal[(w >> 4) & 15];
+        o[2] = pal[(w >> 8) & 15];
+        o[3] = pal[(w >> 12) & 15];
+        o[4] = pal[(w >> 16) & 15];
+        o[5] = pal[(w >> 20) & 15];
+        o[6] = pal[(w >> 24) & 15];
+        o[7] = pal[w >> 28];
+        if ((entry & 0x1000) && w) prio |= 1u << k;
+    }
+    return prio;
+}
+#endif
+#ifdef GG_SELFTEST
+static int render_c; /* the self test renders both ways */
+#define BG_TILES(o, n, t, a) (render_c ? gg_bg_tiles_c(o, n, t, a) : gg_bg_tiles(o, n, t, a))
+#elif GG_RENDER_ASM
+#define BG_TILES gg_bg_tiles
+#else
+#define BG_TILES gg_bg_tiles_c
+#endif
+
+/* Background of window line y into out[-7 .. 167]; bg_prio: pixels of
+ * priority tiles that are not colour 0 (bit x + 8), returns whether any. */
+static int background(unsigned y, uint16_t *out, uint32_t *bg_prio) {
+    gg_t *m = &machine;
+    const uint8_t *vram = m->vram;
+    const unsigned names = (m->vdp[2] & 0x0eu) << 10;
+    const unsigned hs = (y < 16 && (m->vdp[0] & 0x40)) ? 0 : m->vdp[8];
+    const unsigned first = (GG_LEFT - hs) & 255, fine = first & 7, tx0 = first >> 3;
+    const unsigned slot0 = fine ? 5 : 6; /* VDP column of the first tile */
+    unsigned row = y + m->vscroll;
+    if (row >= 224) row -= 224;
+    /* tiles from VDP column 24 on ignore the vertical scroll (R0 bit 7) */
+    const unsigned locked = (m->vdp[0] & 0x80) ? 24 - slot0 : 21;
+    gg_bg_args args = { vram, row & 7, m->pal, &gg_planes_tab[0][0], locked };
+    uint16_t *o = out - (int)fine;
+    unsigned prio = BG_TILES(o, vram + names + (row >> 3) * 64, tx0, &args);
+    if (locked < 21) {
+        args.tr = y & 7;
+        args.count = 21 - locked;
+        prio |= BG_TILES(o + 8 * locked, vram + names + (y >> 3) * 64, (tx0 + locked) & 31, &args) << locked;
+    }
+    if (!prio) return 0;
+    for (unsigned k = 0; k < 21; k++) { /* rare: the pixels of priority tiles */
+        if (!(prio >> k & 1)) continue;
+        const unsigned r = k >= locked ? y : row, tx = (tx0 + k) & 31;
+        const uint8_t *e = vram + names + ((r >> 3) * 32 + tx) * 2;
+        const unsigned entry = e[0] | (e[1] << 8);
+        const unsigned tr = (entry & 0x400) ? 7 - (r & 7) : (r & 7);
+        const uint32_t w = row_fields(vram + (entry & 0x1ff) * 32 + tr * 4, entry & 0x200);
+        const unsigned x0 = 8 * k + 8 - fine; /* bit of o[0] */
+        for (unsigned px = 0; px < 8; px++)
+            if ((w >> (4 * px)) & 15) bg_prio[(x0 + px) >> 5] |= 1u << ((x0 + px) & 31);
+    }
+    return 1;
+}
+
+static void draw_sprites(const sprite_t *spr, unsigned n, uint16_t *out, const uint32_t *bg_prio, int prio) {
+    gg_t *m = &machine;
+    const unsigned zoom = m->vdp[1] & 1;
+    const uint16_t *pal = m->pal + 16;
+    for (unsigned k = n; k-- > 0;) { /* lower numbers drawn last: on top */
+        const uint32_t w = row_fields(spr[k].planes, 0);
+        if (!w) continue;
+        const int x0 = spr[k].x - GG_LEFT;
+        for (unsigned px = 0; px < 8; px++) {
+            const unsigned c = (w >> (4 * px)) & 15;
+            if (!c) continue;
+            for (unsigned z = 0; z <= zoom; z++) {
+                const int x = x0 + (int)((px << zoom) + z);
+                if (x < 0 || x >= GG_WIDTH) continue;
+                if (prio && (bg_prio[(unsigned)(x + 8) >> 5] >> ((x + 8) & 31) & 1)) continue;
+                out[x] = pal[c];
+            }
+        }
+    }
+}
+
+static void sms_render(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n);
+static uint32_t sms_bg_fast(unsigned y, uint16_t *out);
+static void render(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n) {
+    gg_t *m = &machine;
+    if (GG_IS_SMS) { sms_render(y, out, spr, n); return; }
+    if (!(m->vdp[1] & 0x40)) { /* display off: backdrop */
+        const uint16_t bd = m->pal[16 + (m->vdp[7] & 15)];
+        for (unsigned i = 0; i < GG_WIDTH; i++) out[i] = bd;
+        return;
+    }
+    uint32_t bg_prio[6];
+    for (unsigned i = 0; i < 6; i++) ((volatile uint32_t *)bg_prio)[i] = 0;
+    const int prio = background(y, out, bg_prio);
+    if (n) draw_sprites(spr, n, out, bg_prio, prio);
+}
+
+/* ---- Master System: the whole line, box-filtered ------------------------- *
+ *
+ * 256 -> 160: each group of 8 screen pixels gives five, blends of two
+ * neighbours in eighths: (5,3) (3,5) (4,4) (5,3) (3,5) on pixels 0-1, 1-2,
+ * 3-4, 5-6, 6-7 (the box filter's (2,5,1) and (1,5,2) without their
+ * smallest weight; the (4,4) blend rounds down).  Background groups of one
+ * palette come straight from the tile rows: two neighbouring 4-bit pixels
+ * form an 8-bit index into a table of (5,3) blends (pair53, per palette:
+ * 1 KiB, rebuilt when the CRAM changes).  The groups under sprites, mixing
+ * palettes or blanked go through colour indices. */
+
+static void pairs_build(void) {
+    for (unsigned h = 0; h < 2; h++)
+        for (unsigned a = 0; a < 16; a++)
+            for (unsigned b = 0; b < 16; b++) pair53[h][a | b << 4] = panel(fold(5 * spal[16 * h + a] + 3 * spal[16 * h + b]));
+    pairs_stale = 0;
+}
+
+/* (a + b) / 2 per channel, rounded down, of two spread colours */
+static inline uint16_t mean2(uint32_t a, uint32_t b) {
+    const uint32_t s = ((a + b) >> 1) & 0x07e0f81fu;
+    return panel(s | s >> 16);
+}
+
+/* five pixels from a group's 4-bit fields (one palette) */
+static inline void group_out(uint32_t w, unsigned half, uint16_t *o) {
+    const uint16_t *t = pair53[half];
+    const uint32_t *sp = spal + 16 * half;
+    o[0] = t[w & 0xff];
+    o[1] = t[((w >> 8) & 15) | (w & 0xf0)];
+    o[2] = mean2(sp[(w >> 12) & 15], sp[(w >> 16) & 15]);
+    o[3] = t[(w >> 20) & 0xff];
+    o[4] = t[(w >> 28) | ((w >> 20) & 0xf0)];
+}
+
+/* the same from colour indices (both palettes) */
+static void group_filter(const uint8_t *px, uint16_t *o) {
+    uint32_t s[8];
+    for (unsigned i = 0; i < 8; i++) s[i] = spal[px[i] & 31];
+    o[0] = panel(fold(5 * s[0] + 3 * s[1]));
+    o[1] = panel(fold(3 * s[1] + 5 * s[2]));
+    o[2] = mean2(s[3], s[4]);
+    o[3] = panel(fold(5 * s[5] + 3 * s[6]));
+    o[4] = panel(fold(3 * s[6] + 5 * s[7]));
+}
+
+/* Background colour indices of the tiles in mask (bit k: tile k, at screen
+ * 8k - fine) into line[8 + ...] (bit 7: priority over sprites). */
+static void sms_bg_indices(unsigned y, uint8_t *line, uint64_t tiles) {
+    gg_t *m = &machine;
+    const uint8_t *vram = m->vram;
+    const unsigned names = (m->vdp[2] & 0x0eu) << 10;
+    const unsigned hs = (y < 16 && (m->vdp[0] & 0x40)) ? 0 : m->vdp[8];
+    const unsigned first = (0u - hs) & 255, fine = first & 7, tx0 = first >> 3;
+    unsigned row = y + m->vscroll;
+    if (row >= 224) row -= 224;
+    for (unsigned k = 0; k < 33; k++) {
+        if (!(tiles >> k & 1)) continue;
+        uint8_t *o = line + 8 - fine + 8 * k;
+        const int column = (int)k - (fine ? 1 : 0);
+        const unsigned r = ((m->vdp[0] & 0x80) && column >= 24) ? y : row, tx = (tx0 + k) & 31;
+        const uint8_t *e = vram + names + ((r >> 3) * 32 + tx) * 2;
+        const unsigned entry = e[0] | (e[1] << 8);
+        const unsigned tr = (entry & 0x400) ? 7 - (r & 7) : (r & 7);
+        const uint32_t w = row_fields(vram + (entry & 0x1ff) * 32 + tr * 4, entry & 0x200);
+        const unsigned base = (entry & 0x800) ? 16 : 0, prio = (entry & 0x1000) ? 0x80 : 0;
+        for (unsigned px = 0; px < 8; px++) {
+            const unsigned c = (w >> (4 * px)) & 15;
+            o[px] = (uint8_t)((base + c) | (c ? prio : 0));
+        }
+    }
+}
+
+/* Background groups of one palette straight into out; returns the groups
+ * left to the indexed path (two palettes across a tile boundary).  The
+ * Thumb-1 gg_sms_bg (gg_render_asm.S) does the same from these. */
+typedef struct {
+    const uint8_t *names, *lock_names;
+    uint32_t tr, lock_tr, lock, tx0, sh;
+    const uint8_t *vram;
+    const uint32_t *planes;
+    const uint16_t *pairs;
+    const uint32_t *spal;
+} gg_sms_args;
+#if GG_RENDER_ASM
+uint32_t gg_sms_bg(uint16_t *out, const gg_sms_args *a);
+#endif
+static uint32_t sms_bg_fast_c(unsigned y, uint16_t *out) {
+    gg_t *m = &machine;
+    const uint8_t *vram = m->vram;
+    const unsigned names = (m->vdp[2] & 0x0eu) << 10;
+    const unsigned hs = (y < 16 && (m->vdp[0] & 0x40)) ? 0 : m->vdp[8];
+    const unsigned first = (0u - hs) & 255, fine = first & 7, tx0 = first >> 3, sh = 4 * fine;
+    unsigned row = y + m->vscroll;
+    if (row >= 224) row -= 224;
+    const unsigned lock = (m->vdp[0] & 0x80) ? 24 + (fine ? 1 : 0) : 33; /* first tile with the vertical lock */
+    uint32_t slow = 0, prev = 0, prev_pal = 0;
+    for (unsigned k = 0; k < 33; k++) {
+        const unsigned r = k >= lock ? y : row, tx = (tx0 + k) & 31;
+        const uint8_t *e = vram + names + ((r >> 3) * 32 + tx) * 2;
+        const unsigned entry = e[0] | (e[1] << 8);
+        const unsigned tr = (entry & 0x400) ? 7 - (r & 7) : (r & 7);
+        const uint32_t w = row_fields(vram + (entry & 0x1ff) * 32 + tr * 4, entry & 0x200);
+        const uint32_t pal = entry & 0x800;
+        if (k) { /* group k - 1: the end of tile k - 1, the start of tile k */
+            const unsigned g = k - 1;
+            if (fine && pal != prev_pal) slow |= 1u << g;
+            else group_out(fine ? prev >> sh | w << (32 - sh) : prev, prev_pal ? 1 : 0, out + 5 * g);
+        }
+        if (!fine && k == 32) break;
+        prev = w;
+        prev_pal = pal;
+    }
+    return slow;
+}
+
+static void sms_compose(unsigned y, uint8_t *line, const sprite_t *spr, unsigned n, uint32_t groups);
+void gg_render_indices(unsigned y, uint8_t *pixels) {
+    gg_t *m = &machine;
+    sprite_t spr[8];
+    uint8_t line[8 + 256 + 8];
+    const uint8_t bd = (uint8_t)(16 + (m->vdp[7] & 15));
+    const unsigned n = (m->vdp[1] & 0x40) ? line_sprites(y, spr) : 0;
+    if (!(m->vdp[1] & 0x40)) memset(line, bd, sizeof line);
+    else sms_compose(y, line, spr, n, 0xffffffffu);
+    if (m->vdp[0] & 0x20) memset(line + 8, bd, 8);
+    for (unsigned i = 0; i < 256; i++) pixels[i] = line[8 + i] & 31;
+}
+
+void gg_render_line(unsigned y, uint16_t *out) {
+    sprite_t spr[8];
+    const unsigned n = (machine.vdp[1] & 0x40) ? line_sprites(y, spr) : 0;
+    render(y, out, spr, n);
+}
+
+/* a = (a + b) / 2 per channel, two pixels per word (rows are word-aligned) */
+static inline uint32_t rev16(uint32_t v) {
+#if GG_PANEL_SWAP && defined(__arm__)
+    __asm__("rev16 %0, %0" : "+l"(v));
+#elif GG_PANEL_SWAP
+    v = ((v >> 8) & 0x00ff00ffu) | ((v << 8) & 0xff00ff00u);
+#endif
+    return v;
+}
+static void average_rows(uint16_t *a, const uint16_t *b) {
+    uint32_t *wa = (uint32_t *)a;
+    const uint32_t *wb = (const uint32_t *)b;
+    for (unsigned i = 0; i < GG_WIDTH / 2; i++) {
+        const uint32_t x = rev16(wa[i]), y = rev16(wb[i]);
+        wa[i] = rev16((x & y) + (((x ^ y) & 0xf7def7deu) >> 1));
+    }
+}
+
+static void vdp_line(unsigned y) {
+    gg_t *m = &machine;
+    sprite_t spr[8];
+    unsigned n = 0;
+    if (m->vdp[1] & 0x40) {
+        n = line_sprites(y, spr);
+        collisions(spr, n);
+    }
+    if (y < GG_WIN_TOP || y >= GG_WIN_TOP + GG_WIN_LINES || !m->row || !m->row_out) return;
+    const int draw = m->draw_line ? m->draw_line(m->platform, y) : 1;
+    if (!draw) return;
+    if (draw == 2 && m->row_tmp) {
+        render(y, m->row_tmp, spr, n);
+        average_rows(m->row_out, m->row_tmp);
+    } else render(y, m->row_out, spr, n);
+    if (draw != 3) m->row(m->platform, y, m->row_out);
+}
+
+void gg_vdp_catchup(void) {
+    gg_t *m = &machine;
+    while (m->render_line < GG_ACTIVE && (int32_t)(m->cyc - m->render_at) >= 0) {
+        const unsigned y = m->render_line++;
+        m->render_at += GG_LINE_CYCLES;
+        vdp_line(y);
+    }
+}
+
+/* ---- line counter --------------------------------------------------------- */
+
+/* Counted near the end of each line (GG_LINE_IRQ_AT): lines 0-192
+ * decrement it, an underflow reloads R10 and raises the line interrupt;
+ * later lines reload it. */
+void gg_line_counter_catchup(void) {
+    gg_t *m = &machine;
+    while (m->lc_line < GG_LINES &&
+           (int32_t)(m->cyc - (m->frame_start + (uint32_t)m->lc_line * GG_LINE_CYCLES + GG_LINE_IRQ_AT)) >= 0) {
+        if (m->lc_line <= GG_ACTIVE) {
+            if (!m->lc_count) { m->lc_count = m->vdp[10]; m->line_irq = 1; }
+            else m->lc_count--;
+        } else m->lc_count = m->vdp[10];
+        m->lc_line++;
+    }
+}
+
+uint32_t gg_vdp_next_event(void) {
+    gg_t *m = &machine;
+    if (!(m->vdp[0] & 16) || m->line_irq || m->lc_line > GG_ACTIVE) return 0;
+    const unsigned line = m->lc_line + m->lc_count;
+    if (line > GG_ACTIVE) return 0;
+    return m->frame_start + (uint32_t)line * GG_LINE_CYCLES + GG_LINE_IRQ_AT;
+}
+
+void gg_vdp_frame_start(void) {
+    machine.vscroll = machine.vdp[9];
+    machine.lc_line = 0;
+}
+
+/* ---- ports ---------------------------------------------------------------- */
+
+uint8_t gg_vcounter(void) {
+    gg_t *m = &machine;
+    const uint32_t t = m->cyc - m->frame_start;
+    /* t / 228 for t < 77000 (a frame and a bit): multiply and shift */
+    uint32_t line = t < 77000u ? ((t >> 2) * 18397u) >> 20 : t / GG_LINE_CYCLES;
+    if (line >= GG_LINES) line = GG_LINES - 1;
+    return (uint8_t)(line <= 0xda ? line : line - 6);
+}
+
+uint8_t gg_vdp_status_read(void) {
+    gg_t *m = &machine;
+    m->vdp_pending = 0;
+    gg_vdp_catchup();
+    gg_line_counter_catchup();
+    const uint8_t v = (uint8_t)(m->vdp_status | 31);
+    m->vdp_status = 0;
+    m->line_irq = 0;
+    gg_irq_update();
+    m->next_evt = m->cyc; /* the next line interrupt is scheduled again */
+    return v;
+}
+
+uint8_t gg_vdp_data_read(void) {
+    gg_t *m = &machine;
+    m->vdp_pending = 0;
+    const uint8_t v = m->vdp_buffer;
+    m->vdp_buffer = m->vram[m->vdp_address];
+    m->vdp_address = (m->vdp_address + 1) & 0x3fff;
+    return v;
+}
+
+void gg_vdp_data_write(uint8_t v) {
+    gg_t *m = &machine;
+    m->vdp_pending = 0;
+    gg_vdp_catchup();
+    if (m->vdp_code == 3 && GG_IS_SMS) { /* CRAM: 32 bytes */
+        m->cram[m->vdp_address & 31] = v;
+        cram_colour_sms(m->vdp_address & 31);
+    } else if (m->vdp_code == 3) { /* CRAM: even bytes latched, odd bytes write the pair */
+        const unsigned a = m->vdp_address & 63;
+        if (!(a & 1)) m->cram_latch = v;
+        else {
+            m->cram[a - 1] = m->cram_latch;
+            m->cram[a] = v;
+            cram_colour(a >> 1);
+        }
+    } else {
+        const unsigned a = m->vdp_address, entry = (uint16_t)(a - m->sat_base);
+        if (entry < 64) sprite_y(entry, m->vram[a], v);
+        m->vram[a] = v;
+    }
+    m->vdp_buffer = v;
+    m->vdp_address = (m->vdp_address + 1) & 0x3fff;
+}
+
+void gg_vdp_control_write(uint8_t v) {
+    gg_t *m = &machine;
+    if (!m->vdp_pending) {
+        m->vdp_latch = v;
+        m->vdp_address = (uint16_t)((m->vdp_address & 0x3f00) | v);
+        m->vdp_pending = 1;
+        return;
+    }
+    m->vdp_pending = 0;
+    m->vdp_code = v >> 6;
+    m->vdp_address = (uint16_t)(((v & 63) << 8) | m->vdp_latch);
+    if (m->vdp_code == 0) { /* read setup: prefetch */
+        m->vdp_buffer = m->vram[m->vdp_address];
+        m->vdp_address = (m->vdp_address + 1) & 0x3fff;
+    } else if (m->vdp_code == 2) {
+        const unsigned r = v & 15;
+        if (r > 10) return;
+        gg_vdp_catchup();
+        gg_line_counter_catchup();
+        const uint8_t before = m->vdp[r];
+        m->vdp[r] = m->vdp_latch;
+        if (r == 5) {
+            m->sat_base = (uint16_t)((m->vdp_latch & 0x7e) << 7);
+            if (before != m->vdp_latch) m->sprites_dirty = 1;
+        }
+        if (r == 1 && ((before ^ m->vdp_latch) & 3)) m->sprites_dirty = 1;
+        if (r <= 1) {
+            gg_irq_update();
+            m->next_evt = m->cyc; /* interrupt enables: schedule again */
+        }
+    }
+}
+
+/* ---- self test ------------------------------------------------------------ */
+
+#ifdef GG_SELFTEST
+/* Background tiles, Thumb-1 against C, on random VRAM, CRAM, scrolls and
+ * locks: the number of differing lines (both palettes, flips, priority). */
+unsigned gg_render_selftest(void) {
+#if GG_RENDER_ASM
+    gg_t *m = &machine;
+    uint32_t r = 12345;
+    unsigned bad = 0;
+    uint16_t a[GG_ROW_STRIDE], b[GG_ROW_STRIDE];
+    for (unsigned round = 0; round < 16; round++) {
+        for (unsigned i = 0; i < 16384; i++) { r = r * 1103515245u + 12345u; m->vram[i] = (uint8_t)(r >> 16); }
+        for (unsigned i = 0; i < 32; i++) { r = r * 1103515245u + 12345u; m->pal[i] = (uint16_t)(r >> 8); }
+        r = r * 1103515245u + 12345u;
+        m->vdp[0] = (uint8_t)(0x06 | ((r >> 16) & 0xc0));
+        m->vdp[1] = 0x00; /* no sprites: the background only */
+        m->vdp[2] = (uint8_t)(0x0e & (r >> 8));
+        m->vdp[8] = (uint8_t)(r >> 20);
+        m->vscroll = (uint8_t)((r >> 24) % 224);
+        for (unsigned y = GG_TOP; y < GG_TOP + GG_HEIGHT; y++) {
+            uint32_t pa[6] = { 0 }, pb[6] = { 0 };
+            memset(a, 0, sizeof a); memset(b, 0, sizeof b);
+            render_c = 0; const int qa = background(y, a + GG_ROW_PAD, pa);
+            render_c = 1; const int qb = background(y, b + GG_ROW_PAD, pb);
+            bad += qa != qb || memcmp(a, b, sizeof a) || memcmp(pa, pb, sizeof pa);
+        }
+    }
+    /* Master System background: random CRAM (pair tables), scrolls, locks */
+    m->sms = 1;
+    for (unsigned round = 0; round < 16; round++) {
+        for (unsigned i = 0; i < 16384; i++) { r = r * 1103515245u + 12345u; m->vram[i] = (uint8_t)(r >> 16); }
+        for (unsigned i = 0; i < 32; i++) { r = r * 1103515245u + 12345u; m->cram[i] = (uint8_t)(r >> 16) & 63; cram_colour_sms(i); }
+        pairs_build();
+        r = r * 1103515245u + 12345u;
+        m->vdp[0] = (uint8_t)(0x06 | ((r >> 16) & 0xc0));
+        m->vdp[2] = (uint8_t)(0x0e & (r >> 8));
+        m->vdp[8] = (uint8_t)(r >> 20);
+        m->vscroll = (uint8_t)((r >> 24) % 224);
+        for (unsigned y = 0; y < GG_ACTIVE; y++) {
+            memset(a, 0, sizeof a); memset(b, 0, sizeof b);
+            render_c = 0; const uint32_t qa = sms_bg_fast(y, a + GG_ROW_PAD);
+            render_c = 1; const uint32_t qb = sms_bg_fast(y, b + GG_ROW_PAD);
+            for (unsigned g = 0; g < 32; g++) /* groups left to the C path: not drawn here */
+                if (qa >> g & 1) memset(a + GG_ROW_PAD + 5 * g, 0, 10), memset(b + GG_ROW_PAD + 5 * g, 0, 10);
+            bad += qa != qb || memcmp(a, b, sizeof a);
+        }
+    }
+    m->sms = 0;
+    render_c = 0;
+    return bad;
+#else
+    return 0;
+#endif
+}
+#endif
+
+/* Colour indices of the groups in mask (bit g: screen pixels 8g-8g+7) in
+ * line[8 + ...]: background, then sprites (bit 7 of the background: its
+ * priority over them). */
+static void sms_compose(unsigned y, uint8_t *line, const sprite_t *spr, unsigned n, uint32_t groups) {
+    gg_t *m = &machine;
+    const unsigned zoom = m->vdp[1] & 1;
+    const unsigned hs = (y < 16 && (m->vdp[0] & 0x40)) ? 0 : m->vdp[8], fine = (0u - hs) & 7;
+    uint64_t tiles = 0; /* group g covers tiles g and g + 1 (fine scroll) */
+    for (unsigned g = 0; g < 32; g++) if (groups >> g & 1) tiles |= (uint64_t)(fine ? 3 : 1) << g;
+    sms_bg_indices(y, line, tiles);
+    for (unsigned k = n; k-- > 0;) { /* lower numbers drawn last: on top */
+        const uint32_t w = row_fields(spr[k].planes, 0);
+        if (!w) continue;
+        for (unsigned px = 0; px < 8; px++) {
+            const unsigned c = (w >> (4 * px)) & 15;
+            if (!c) continue;
+            for (unsigned z = 0; z <= zoom; z++) {
+                const int x = spr[k].x + (int)((px << zoom) + z);
+                if (x < 0 || x >= 256 || (line[8 + x] & 0x80)) continue;
+                line[8 + x] = (uint8_t)(16 + c);
+            }
+        }
+    }
+}
+
+static uint32_t sms_bg_fast(unsigned y, uint16_t *out) {
+#if GG_RENDER_ASM
+#ifdef GG_SELFTEST
+    if (render_c) return sms_bg_fast_c(y, out);
+#endif
+    gg_t *m = &machine;
+    const unsigned names = (m->vdp[2] & 0x0eu) << 10;
+    const unsigned hs = (y < 16 && (m->vdp[0] & 0x40)) ? 0 : m->vdp[8];
+    const unsigned first = (0u - hs) & 255, fine = first & 7;
+    unsigned row = y + m->vscroll;
+    if (row >= 224) row -= 224;
+    const gg_sms_args a = { m->vram + names + (row >> 3) * 64, m->vram + names + (y >> 3) * 64, row & 7, y & 7,
+                            (m->vdp[0] & 0x80) ? 24u + (fine ? 1u : 0u) : 33u, first >> 3, 4 * fine,
+                            m->vram, &gg_planes_tab[0][0], &pair53[0][0], spal };
+    return gg_sms_bg(out, &a);
+#else
+    return sms_bg_fast_c(y, out);
+#endif
+}
+
+/* A Master System line: the fast background, then the groups under
+ * sprites, of palette 1 or blanked through colour indices. */
+static void sms_render(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n) {
+    gg_t *m = &machine;
+    const uint16_t bd = m->pal[16 + (m->vdp[7] & 15)];
+    if (!(m->vdp[1] & 0x40)) { for (unsigned i = 0; i < GG_WIDTH; i++) out[i] = bd; return; }
+    if (pairs_stale) pairs_build();
+    uint32_t slow = sms_bg_fast(y, out);
+    const unsigned zoom = m->vdp[1] & 1;
+    for (unsigned k = 0; k < n; k++) { /* groups the sprites touch */
+        const int x0 = spr[k].x, x1 = x0 + (8 << zoom) - 1;
+        if (x1 < 0 || x0 > 255) continue;
+        for (int g = (x0 < 0 ? 0 : x0) >> 3; g <= (x1 > 255 ? 255 : x1) >> 3; g++) slow |= 1u << g;
+    }
+    const int blank = (m->vdp[0] & 0x20) != 0;
+    if (blank) slow &= ~1u;
+    if (slow) {
+        uint8_t line[8 + 256 + 8];
+        sms_compose(y, line, spr, n, slow);
+        for (unsigned g = 0; g < 32; g++) if (slow >> g & 1) group_filter(line + 8 + 8 * g, out + 5 * g);
+    }
+    if (blank) for (unsigned i = 0; i < 5; i++) out[i] = bd; /* left column */
+}

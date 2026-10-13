@@ -25,11 +25,23 @@ constexpr uint8_t FC = 1, FN = 2, FPV = 4, FX = 8, FH = 16, FY = 32, FZ = 64, FS
 
 enum class Flow { Seq, Jump, JumpCond, Djnz, Call, CallCond, Ret, RetCond, Reti, JumpDyn, Halt, Repeat, Ei, Bad };
 
+constexpr Loc NOLOC = 0xffffffffu;
+/* Where control goes: a location, and a slot whose page must be checked at
+ * run time (guard_slot < 0: none; loc NOLOC: dispatch). */
+struct Dest {
+    Loc loc = NOLOC;
+    int guard_slot = -1;
+    unsigned guard_page = 0;
+};
+
 struct Ins {
     uint16_t addr = 0;
+    Loc loc = 0;
     z80_decoded_t d{};
     Flow flow = Flow::Seq;
     uint16_t target = 0;
+    Dest next_dest, target_dest;
+    bool remap = false;              ///< writes a mapper register: leave the region after it
     unsigned cycles = 0, taken = 0; ///< not taken (or only) / taken
     uint8_t use = 0, def = 0;
     bool timed = false;              ///< observes machine.cyc or R: flush before
@@ -53,17 +65,38 @@ std::string hex(unsigned v, int w = 4) {
     o << "0x" << std::hex << std::setw(w) << std::setfill('0') << v;
     return o.str();
 }
-std::string lab(uint16_t a) {
+std::string lab(Loc a) {
     std::ostringstream o;
-    o << "L_" << std::hex << std::setw(4) << std::setfill('0') << a;
+    o << "L_" << std::hex << std::setw(a > 0xffff ? 6 : 4) << std::setfill('0') << a;
     return o.str();
 }
+std::string hexloc(Loc a) { return a > 0xffff ? hex(a, 6) : hex(a); }
 
 /* ---- sandbox: the interpreter measures cycles and flow ------------------ */
 struct Sandbox {
-    uint8_t mem[65536];
+    std::span<const uint8_t> rom;
+    bool banked = false, fixed_kib = true;
+    unsigned page = 0;      ///< page of the decoded instruction's slot
+    int slot = -1;          ///< its slot (-1: fixed area)
+    int defaults[3] = { 0, 1, 2 };
+    /* Bus of the decoded instruction: its own slot at its page, the others
+     * at their usual pages; RAM reads 0. */
+    uint8_t read(uint16_t a) const {
+        const size_t n = rom.size();
+        if (!banked) {
+            if (a >= 0xc000) return 0;
+            if (n && !(n & (n - 1))) return rom[a & (n - 1)];
+            return a < n ? rom[a] : 0xff;
+        }
+        if (a >= 0xc000) return 0;
+        if (a < 0x400 && fixed_kib) return a < n ? rom[a] : 0xff;
+        const int s = a >> 14;
+        const unsigned page = s == slot ? this->page : static_cast<unsigned>(defaults[s] < 0 ? s : defaults[s]);
+        const size_t off = static_cast<size_t>(page) * 0x4000 + (a & 0x3fff);
+        return n ? rom[off % n] : 0xff;
+    }
 };
-uint8_t sb_read(void* u, uint16_t a) { return static_cast<Sandbox*>(u)->mem[a]; }
+uint8_t sb_read(void* u, uint16_t a) { return static_cast<Sandbox*>(u)->read(a); }
 void sb_write(void*, uint16_t, uint8_t) {}
 uint8_t sb_in(void*, uint16_t) { return 0xff; }
 void sb_out(void*, uint16_t, uint8_t) {}
@@ -149,33 +182,53 @@ void flag_info(const z80_decoded_t& d, uint8_t& use, uint8_t& def, bool& timed) 
 
 class Emitter {
 public:
-    Emitter(const Cartridge& cart, const EmitOptions& opt) : cart_(cart), opt_(opt) {
+    Emitter(std::span<const uint8_t> rom, const EmitOptions& opt) : rom_(rom), opt_(opt) {
         /* a sync per instruction makes large functions very costly to compile */
         if (opt_.precise) opt_.max_region_instructions = std::min<size_t>(opt_.max_region_instructions, 32);
-        std::memset(sb_.mem, 0, sizeof sb_.mem);
-        for (uint32_t a = 0; a < 0xc000; a++) sb_.mem[a] = rom(static_cast<uint16_t>(a));
+        sb_.rom = rom;
+        sb_.banked = opt.banked;
+        sb_.fixed_kib = opt.fixed_kib;
     }
-    std::string run(const std::vector<uint16_t>& hot, EmitStats& stats);
+    std::string run(const std::vector<Loc>& hot, EmitStats& stats);
 
 private:
-    const Cartridge& cart_;
+    std::span<const uint8_t> rom_;
     EmitOptions opt_;
     Sandbox sb_;
-    std::map<uint16_t, Ins> ins_;
-    std::vector<std::vector<uint16_t>> regions_;
+    std::map<Loc, Ins> ins_;
+    std::vector<std::vector<Loc>> regions_;
+    int defaults_[3] = { -1, -1, -1 }; ///< usual page of each slot (banked), -1: unknown
     uint32_t pend_cy_ = 0, pend_rf_ = 0;
     EmitStats* stats_ = nullptr;
 
-    uint32_t rom_size() const { return static_cast<uint32_t>(cart_.bytes().size()); }
-    uint8_t rom(uint16_t a) const { /* bus semantics of sg1000_read for 0000-BFFF */
-        const auto b = cart_.bytes();
-        const size_t n = b.size();
-        if (n && !(n & (n - 1))) return b[a & (n - 1)];
-        return a < n ? b[a] : 0xff;
+    static uint16_t addr_of(Loc l) { return static_cast<uint16_t>(l); }
+    static unsigned page_of(Loc l) { return l >> 16; }
+    int slot_of(uint16_t a) const { return (a < 0x400 && opt_.fixed_kib) || a >= 0xc000 ? -1 : a >> 14; }
+    /* ROM byte at a location (bus semantics of the runtime) */
+    uint8_t rom_at(Loc l) const {
+        const uint16_t a = addr_of(l);
+        if (!opt_.banked) return sb_.read(a);
+        const size_t n = rom_.size();
+        if (a < 0x400 && opt_.fixed_kib) return a < n ? rom_[a] : 0xff;
+        const size_t off = static_cast<size_t>(page_of(l)) * 0x4000 + (a & 0x3fff);
+        return n ? rom_[off % n] : 0xff;
     }
-    bool rom_const(uint16_t a) const { return a < (opt_.cart_ram ? 0x8000u : 0xc000u); }
-    bool decode(uint16_t addr, Ins& in);
-    Ins* find(uint16_t a) { auto it = ins_.find(a); return it == ins_.end() ? nullptr : &it->second; }
+    bool in_rom(Loc l) const {
+        const uint16_t a = addr_of(l);
+        if (a >= 0xc000) return false;
+        if (!opt_.banked) return a < rom_.size();
+        if (a < 0x400 && opt_.fixed_kib) return a < rom_.size();
+        return static_cast<size_t>(page_of(l)) * 0x4000 < rom_.size();
+    }
+    /* Constant reads that can be folded: unbanked ROM, or the fixed first KiB */
+    bool rom_const(uint16_t a) const {
+        if (opt_.banked) return opt_.fixed_kib && a < 0x400 && a < rom_.size();
+        return a < (opt_.cart_ram ? 0x8000u : 0xc000u);
+    }
+    Dest resolve(const Ins& from, uint16_t a) const;
+    bool decode(Loc loc, Ins& in);
+    bool remaps(uint16_t pc, uint16_t a, unsigned n) const;
+    Ins* find(Loc a) { auto it = ins_.find(a); return it == ins_.end() ? nullptr : &it->second; }
     void plan();
     void flush(std::ostringstream& o) {
         if (pend_cy_ || pend_rf_) {
@@ -185,7 +238,16 @@ private:
         pend_cy_ = pend_rf_ = 0;
     }
     std::string region_name(int r) const { return "r_" + std::to_string(r); }
-    void transfer(std::ostringstream& o, const Ins& from, uint16_t target);
+    std::string guard(const Dest& d) const {
+        return "machine.page[" + std::to_string(d.guard_slot) + "] == " + std::to_string(d.guard_page);
+    }
+    /* still in the caller's page after a call or an event (banked slots) */
+    std::string page_check(const Ins& in) const {
+        const int s = opt_.banked ? slot_of(in.addr) : -1;
+        if (s < 0) return "";
+        return " || machine.page[" + std::to_string(s) + "] != " + std::to_string(page_of(in.loc));
+    }
+    void transfer(std::ostringstream& o, const Ins& from, uint16_t target, const Dest& dest);
     void emit_region(std::ostringstream& o, int r);
     void emit_ins(std::ostringstream& o, Ins& in, const Ins* following);
     bool emit_native(std::ostringstream& o, const Ins& in, bool flags);
@@ -198,12 +260,55 @@ private:
     static std::string decoded(const z80_decoded_t& d);
 };
 
-bool Emitter::decode(uint16_t addr, Ins& in) {
+/* Destination of a transfer to address a from instruction from.  Banked: the
+ * fixed area is page 0; the caller's own slot keeps its page; another slot
+ * takes its usual page, checked at run time; RAM and unknown pages go
+ * through the dispatcher. */
+Dest Emitter::resolve(const Ins& from, uint16_t a) const {
+    Dest d;
+    if (!opt_.banked) { if (a < 0xc000) d.loc = a; return d; }
+    if (a >= 0xc000) return d;
+    if (a < 0x400 && opt_.fixed_kib) { d.loc = a; return d; }
+    const int s = a >> 14;
+    if (slot_of(from.addr) == s) { d.loc = (Loc(page_of(from.loc)) << 16) | a; return d; }
+    if (defaults_[s] < 0) return d;
+    d.loc = (Loc(defaults_[s]) << 16) | a;
+    d.guard_slot = s;
+    d.guard_page = static_cast<unsigned>(defaults_[s]);
+    return d;
+}
+
+/* A constant store of n bytes at a that pages the slot of the code at pc:
+ * FFFD slot 0, FFFE slot 1, FFFF and FFFC (cartridge RAM) slot 2;
+ * Codemasters: 0000, 4000, 8000. */
+bool Emitter::remaps(uint16_t pc, uint16_t a, unsigned n) const {
+    const int s = opt_.banked ? slot_of(pc) : -1;
+    if (s < 0) return false;
+    for (unsigned k = 0; k < n; k++) {
+        const uint16_t b = static_cast<uint16_t>(a + k);
+        if (!opt_.fixed_kib) { if (b < 0xc000 && !(b & 0x3fff) && (b >> 14) == s) return true; continue; }
+        if (b < 0xfffc) continue;
+        if ((b == 0xfffd ? 0 : b == 0xfffe ? 1 : 2) == s) return true;
+    }
+    return false;
+}
+
+bool Emitter::decode(Loc loc, Ins& in) {
+    const uint16_t addr = addr_of(loc);
+    if (!in_rom(loc)) return false;
+    sb_.slot = opt_.banked ? slot_of(addr) : -1;
+    sb_.page = page_of(loc);
+    for (int s = 0; s < 3; s++) sb_.defaults[s] = defaults_[s];
     z80_t c{};
     c.user = &sb_; c.read = sb_read;
     c.pc = addr;
     in.addr = addr;
-    if (!z80_decode(&c, &in.d) || addr + in.d.length > rom_size()) return false;
+    in.loc = loc;
+    if (!z80_decode(&c, &in.d)) return false;
+    if (!opt_.banked && addr + in.d.length > rom_.size()) return false;
+    /* banked: an instruction must not straddle two slots (or leave the fixed KiB) */
+    const uint16_t last = static_cast<uint16_t>(addr + in.d.length - 1);
+    if (opt_.banked && (slot_of(addr) != slot_of(last) || last < addr)) return false;
     const z80_decoded_t& d = in.d;
     const unsigned op = d.opcode, x = op >> 6, y = (op >> 3) & 7, z = op & 7, p = y >> 1, q = y & 1;
     flag_info(d, in.use, in.def, in.timed);
@@ -223,10 +328,15 @@ bool Emitter::decode(uint16_t addr, Ins& in) {
         case 7: in.flow = Flow::Call; in.target = static_cast<uint16_t>(y * 8); break;
         default: break;
         }
+        /* LD (nn),A / LD (nn),HL onto the mapper register of this code's slot */
+        if (x == 0 && z == 2 && !q && p >= 2) in.remap = remaps(addr, d.immediate, p == 2 ? 2 : 1);
     } else if (d.group == 2) {
         if (x == 1 && z == 5) in.flow = Flow::Reti;
         else if (x == 2 && y >= 6 && z <= 3) in.flow = Flow::Repeat;
+        if (x == 1 && z == 3 && !q) in.remap = remaps(addr, d.immediate, 2); /* LD (nn),rr */
     }
+    in.next_dest = resolve(in, next);
+    if (in.jumps() || in.calls()) in.target_dest = resolve(in, in.target);
     /* Cycles from the interpreter: both outcomes of a condition. */
     Run a = measure(sb_, d, addr, 0x00, 0x0101), b = measure(sb_, d, addr, 0xff, 0x0201);
     switch (in.flow) {
@@ -247,9 +357,11 @@ void Emitter::plan() {
     /* Regions: runs of nearby instructions. */
     const Ins* prev = nullptr;
     for (auto& [a, in] : ins_) {
-        bool split = !prev || in.addr > prev->next() + 32;
+        /* banked: one slot (and page) per region */
+        bool split = !prev || in.loc > prev->loc + prev->d.length + 32 ||
+                     (opt_.banked && slot_of(in.addr) != slot_of(prev->addr));
         if (!split && regions_.back().size() >= opt_.max_region_instructions &&
-            !(prev->falls() && prev->next() == in.addr))
+            !(prev->falls() && prev->next_dest.loc == in.loc))
             split = true;
         if (split) regions_.emplace_back();
         in.region = static_cast<int>(regions_.size() - 1);
@@ -258,24 +370,24 @@ void Emitter::plan() {
         prev = &in;
     }
     for (auto& reg : regions_) { Ins& f = ins_[reg.front()]; f.label = f.sw_case = true; }
-    for (uint16_t v : { 0x0000, 0x0038, 0x0066 })
+    for (Loc v : { 0x0000u, 0x0038u, 0x0066u })
         if (Ins* t = find(v)) t->label = t->sw_case = true;
-    for (uint16_t v : opt_.entries) /* pushed return addresses, jump tables */
+    for (Loc v : opt_.entries) /* pushed return addresses, jump tables */
         if (Ins* t = find(v)) t->label = t->sw_case = true;
     for (auto& [a, in] : ins_) {
         if (in.falls()) {
-            if (Ins* n = find(in.next())) {
+            if (Ins* n = find(in.next_dest.loc)) {
                 const bool adjacent = n->region == in.region && n->order == in.order + 1;
                 if (!adjacent) { n->label = true; if (n->region != in.region) n->sw_case = true; }
-                /* resumption points: after a call returns, after HALT and
-                 * after the instruction that follows EI */
-                if (in.calls() || in.flow == Flow::Halt) n->label = n->sw_case = true;
-                if (in.flow == Flow::Ei) if (Ins* m = find(n->next())) m->label = m->sw_case = true;
+                /* resumption points: after a call returns, after HALT, after
+                 * the instruction that follows EI, after a mapper write */
+                if (in.calls() || in.flow == Flow::Halt || in.remap) n->label = n->sw_case = true;
+                if (in.flow == Flow::Ei) if (Ins* m = find(n->next_dest.loc)) m->label = m->sw_case = true;
             }
         }
         if (in.flow == Flow::Repeat) in.label = in.sw_case = in.loop_head = true;
         if (in.jumps() || in.calls()) {
-            if (Ins* t = find(in.target)) {
+            if (Ins* t = find(in.target_dest.loc)) {
                 t->label = true;
                 if (in.calls() || t->region != in.region) t->sw_case = true;
                 if (!in.calls() && t->region == in.region && t->order <= in.order) t->loop_head = t->sw_case = true;
@@ -290,13 +402,13 @@ void Emitter::plan() {
             for (size_t k = reg.size(); k-- > 0;) {
                 Ins& in = ins_[reg[k]];
                 uint8_t out = 0;
-                if (opt_.precise || in.calls() || in.flow == Flow::Ei || in.flow == Flow::Bad) out = FALL;
+                if (opt_.precise || in.calls() || in.remap || in.flow == Flow::Ei || in.flow == Flow::Bad) out = FALL;
                 if (in.falls()) {
-                    Ins* n = find(in.next());
+                    Ins* n = find(in.next_dest.loc);
                     out |= (n && n->region == in.region) ? n->live_in : FALL;
                 }
                 if (in.jumps()) {
-                    Ins* t = find(in.target);
+                    Ins* t = find(in.target_dest.loc);
                     out |= (t && t->region == in.region) ? t->live_in : FALL;
                 }
                 if (in.flow == Flow::Ret || in.flow == Flow::RetCond || in.flow == Flow::Reti || in.flow == Flow::JumpDyn)
@@ -330,13 +442,23 @@ std::string Emitter::pair(unsigned p, const z80_decoded_t& d) const {
     return "Z.sp";
 }
 
-/* Constant addresses: ROM folded, RAM indexed directly. */
+/* Constant addresses: ROM folded, RAM indexed directly.  Banked: only the
+ * fixed KiB folds; paged ROM is read through the map, and the mapper
+ * registers (FFFC-FFFF) and the cartridge window are written by the bus. */
 std::string Emitter::mem_read(uint16_t a) const {
-    if (rom_const(a)) return hex(rom(a), 2);
+    if (rom_const(a)) return hex(rom_at(a), 2);
+    if (opt_.banked) {
+        if (a >= 0xc000) return "machine.ram[" + hex(a & 8191u) + "]";
+        return "RD(" + hex(a) + ")";
+    }
     if (a >= 0xc000) return "machine.ram[" + hex(a & 1023u, 3) + "]";
     return "machine.cart_ram[" + hex(a & 8191u) + "]";
 }
 std::string Emitter::mem_write(uint16_t a, const std::string& v) const {
+    if (opt_.banked) {
+        if (a >= 0xc000 && a < 0xfffc) return "machine.ram[" + hex(a & 8191u) + "] = " + v + ";";
+        return "sg_wr(" + hex(a) + ", " + v + ");";
+    }
     if (rom_const(a)) return "/* ROM */";
     if (a >= 0xc000) return "machine.ram[" + hex(a & 1023u, 3) + "] = " + v + ";";
     return "machine.cart_ram[" + hex(a & 8191u) + "] = " + v + ";";
@@ -348,11 +470,14 @@ std::string Emitter::decoded(const z80_decoded_t& d) {
     return o.str();
 }
 
-void Emitter::transfer(std::ostringstream& o, const Ins& from, uint16_t target) {
-    const Ins* t = find(target);
-    if (t && t->region == from.region) { o << "    goto " << lab(target) << ";\n"; return; }
+void Emitter::transfer(std::ostringstream& o, const Ins& from, uint16_t target, const Dest& dest) {
+    const Ins* t = find(dest.loc);
+    if (t && t->region == from.region && dest.guard_slot < 0) { o << "    goto " << lab(dest.loc) << ";\n"; return; }
     o << "    Z.pc = " << hex(target) << ";";
-    if (t) o << " " << region_name(t->region) << "();";
+    if (t) {
+        if (dest.guard_slot >= 0) o << " if (" << guard(dest) << ")";
+        o << " " << region_name(t->region) << "();";
+    }
     o << " return;\n";
 }
 
@@ -410,6 +535,22 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
     if (d.group == 2) {
         if (x == 1 && z == 4) { o << (flags ? "    sg_neg();\n" : "    Z.a = (uint8_t)-Z.a;\n"); return true; }
         if (x == 1 && z == 2) { o << "    sg_hl16(" << q << ", " << pair(p, d) << ");\n"; return true; }
+        if (x == 1 && z == 1) { /* OUT (C),r: port C (OUT (C),0 for y 6) */
+            o << "    " << opt_.io_out << "(Z.c, " << (y == 6 ? std::string("0") : reg8(y, d)) << ");\n";
+            return true;
+        }
+        if (x == 1 && z == 0) { /* IN r,(C) (IN F,(C) for y 6: flags only) */
+            o << "    { uint8_t v_ = " << opt_.io_in << "(Z.c);" << (y == 6 ? "" : " " + reg8(y, d) + " = v_;")
+              << (flags ? " Z.f = (uint8_t)((Z.f & 1) | z80_szp(v_));" : "") << " }\n";
+            return true;
+        }
+        if (x == 1 && z == 3) { /* LD (nn),rr / LD rr,(nn) */
+            const uint16_t nn = d.immediate, n1 = static_cast<uint16_t>(nn + 1);
+            const std::string rr = pair(p, d);
+            if (!q) o << "    " << mem_write(nn, "(uint8_t)" + rr) << " " << mem_write(n1, "(uint8_t)(" + rr + " >> 8)") << "\n";
+            else o << "    " << rr << " = (uint16_t)(" << mem_read(nn) << " | (" << mem_read(n1) << " << 8));\n";
+            return true;
+        }
         if (x == 2 && (y == 4 || y == 5) && z == 0 && !flags) { /* LDI / LDD */
             const char* step = y == 4 ? "++" : "--";
             o << "    { uint8_t v_ = sg_rd(Z.hl); sg_wr(Z.de, v_); Z.hl" << step << "; Z.de" << step << "; Z.bc--; }\n";
@@ -443,7 +584,19 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
             default: break;
             }
         }
-        if (flags) { o << "    " << alu[y] << "(" << v << ");\n"; return true; }
+        if (flags) switch (y) { /* all flags, inline (ADC/SBC keep the helper) */
+        case 0: case 2: case 7: { /* ADD, SUB, CP (CP: X/Y from the operand) */
+            const char* op = y ? "-" : "+";
+            o << "    { uint32_t a_ = Z.a, b_ = " << v << ", r_ = a_ " << op << " b_; Z.f = (uint8_t)((r_ & 0x80) | ((uint8_t)r_ ? 0 : 0x40) | ("
+              << (y == 7 ? "b_" : "r_") << " & 0x28) | ((a_ ^ b_ ^ r_) & 0x10) | (((" << (y ? "(a_ ^ b_)" : "~(a_ ^ b_)")
+              << " & (a_ ^ r_)) >> 5) & 4) | " << (y ? "2 | " : "") << "((r_ >> 8) & 1));" << (y == 7 ? "" : " Z.a = (uint8_t)r_;") << " }\n";
+            return true;
+        }
+        case 4: o << "    Z.a &= " << v << "; Z.f = (uint8_t)(z80_szp(Z.a) | 0x10);\n"; return true;
+        case 5: o << "    Z.a ^= " << v << "; Z.f = z80_szp(Z.a);\n"; return true;
+        case 6: o << "    Z.a |= " << v << "; Z.f = z80_szp(Z.a);\n"; return true;
+        default: o << "    " << alu[y] << "(" << v << ");\n"; return true;
+        }
         switch (y) {
         case 0: o << "    Z.a = (uint8_t)(Z.a + " << v << ");\n"; break;
         case 1: o << "    Z.a = (uint8_t)(Z.a + " << v << " + (Z.f & 1));\n"; break;
@@ -514,8 +667,8 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
         switch (y) {
         case 0: o << "    { uint8_t r_ = (uint8_t)((Z.a << 1) | (Z.a >> 7)); Z.a = r_;" << (flags ? " Z.f = (uint8_t)((Z.f & 0xc4) | (r_ & 0x29));" : "") << " }\n"; break;
         case 1: o << "    { uint8_t c_ = Z.a & 1, r_ = (uint8_t)((Z.a >> 1) | (c_ << 7)); Z.a = r_;" << (flags ? " Z.f = (uint8_t)((Z.f & 0xc4) | (r_ & 0x28) | c_);" : "") << " }\n"; break;
-        case 2: o << "    { uint8_t c_ = Z.a >> 7, r_ = (uint8_t)((Z.a << 1) | (Z.f & 1)); Z.a = r_;" << (flags ? " Z.f = (uint8_t)((Z.f & 0xc4) | (r_ & 0x28) | c_);" : "") << " }\n"; break;
-        case 3: o << "    { uint8_t c_ = Z.a & 1, r_ = (uint8_t)((Z.a >> 1) | ((Z.f & 1) << 7)); Z.a = r_;" << (flags ? " Z.f = (uint8_t)((Z.f & 0xc4) | (r_ & 0x28) | c_);" : "") << " }\n"; break;
+        case 2: o << "    { " << (flags ? "uint8_t c_ = Z.a >> 7; " : "") << "uint8_t r_ = (uint8_t)((Z.a << 1) | (Z.f & 1)); Z.a = r_;" << (flags ? " Z.f = (uint8_t)((Z.f & 0xc4) | (r_ & 0x28) | c_);" : "") << " }\n"; break;
+        case 3: o << "    { " << (flags ? "uint8_t c_ = Z.a & 1; " : "") << "uint8_t r_ = (uint8_t)((Z.a >> 1) | ((Z.f & 1) << 7)); Z.a = r_;" << (flags ? " Z.f = (uint8_t)((Z.f & 0xc4) | (r_ & 0x28) | c_);" : "") << " }\n"; break;
         case 4: o << "    sg_daa();\n"; break;
         case 5: o << "    Z.a = (uint8_t)~Z.a;" << (flags ? " Z.f = (uint8_t)((Z.f & 0xc5) | 0x12 | (Z.a & 0x28));" : "") << "\n"; break;
         case 6: if (flags) o << "    Z.f = (uint8_t)((Z.f & 0xc4) | 0x01 | (Z.a & 0x28));\n"; break;
@@ -545,8 +698,8 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
         if (p == 3) { o << "    Z.sp = " << pair(2, d) << ";\n"; return true; }
         return false;
     case 3:
-        if (y == 2) { o << "    sg1000_out(" << hex(d.immediate & 255, 2) << ", Z.a);\n"; return true; }
-        if (y == 3) { o << "    Z.a = sg1000_in(" << hex(d.immediate & 255, 2) << ");\n"; return true; }
+        if (y == 2) { o << "    " << opt_.io_out << "(" << hex(d.immediate & 255, 2) << ", Z.a);\n"; return true; }
+        if (y == 3) { o << "    Z.a = " << opt_.io_in << "(" << hex(d.immediate & 255, 2) << ");\n"; return true; }
         if (y == 5) { o << "    { uint16_t t_ = Z.de; Z.de = Z.hl; Z.hl = t_; }\n"; return true; }
         if (y == 4) {
             const std::string hl = pair(2, d);
@@ -569,7 +722,7 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
     const uint16_t next = in.next();
     if (in.label) {
         flush(o);
-        o << lab(in.addr) << ":\n";
+        o << lab(in.loc) << ":\n";
         if (in.loop_head && !opt_.precise) o << "    SYNC(" << hex(in.addr) << ");\n";
     }
     if (opt_.precise) { flush(o); o << "    SYNC(" << hex(in.addr) << ");\n"; }
@@ -591,7 +744,7 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
     case Flow::Jump:
         pend_cy_ += in.cycles; pend_rf_ += d.refresh;
         flush(o);
-        transfer(o, in, in.target);
+        transfer(o, in, in.target, in.target_dest);
         return;
     case Flow::JumpCond: case Flow::Djnz: {
         pend_rf_ += d.refresh;
@@ -599,7 +752,7 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
         if (in.flow == Flow::Djnz) o << "    if (--Z.b) {\n";
         else o << "    if (" << cond_expr(in.d.group == 0 && (d.opcode >> 6) == 0 ? ((d.opcode >> 3) & 7) - 4 : (d.opcode >> 3) & 7) << ") {\n";
         o << "    CY(" << in.taken << ");\n";
-        transfer(o, in, in.target);
+        transfer(o, in, in.target, in.target_dest);
         o << "    }\n";
         pend_cy_ += in.cycles;
         break;
@@ -607,11 +760,13 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
     case Flow::Call: case Flow::CallCond: {
         pend_rf_ += d.refresh;
         flush(o);
-        const Ins* t = find(in.target);
+        const Ins* t = find(in.target_dest.loc);
         if (in.flow == Flow::CallCond) o << "    if (" << cond_expr((d.opcode >> 3) & 7) << ") {\n";
         o << "    CY(" << in.taken << "); sg_push(" << hex(next) << "); Z.pc = " << hex(in.target) << ";\n";
-        o << "    " << (t ? region_name(t->region) + "()" : std::string("sg_exec()")) << ";\n";
-        o << "    if (Z.pc != " << hex(next) << " || SG_STOPPED()) return;\n";
+        if (t && in.target_dest.guard_slot >= 0)
+            o << "    if (" << guard(in.target_dest) << ") " << region_name(t->region) << "(); else sg_exec();\n";
+        else o << "    " << (t ? region_name(t->region) + "()" : std::string("sg_exec()")) << ";\n";
+        o << "    if (Z.pc != " << hex(next) << page_check(in) << " || SG_STOPPED()) return;\n";
         if (in.flow == Flow::CallCond) o << "    } else CY(" << in.cycles << ");\n";
         break;
     }
@@ -646,15 +801,21 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
          * (their flags unread), still interruptible between iterations. */
         flush(o);
         const unsigned op = d.opcode, y = (op >> 3) & 7, z = op & 7;
-        if (!opt_.precise && !(in.def & in.live_out) && (z == 0 || z == 3)) {
+        const bool block_flags = (in.def & in.live_out) != 0;
+        if (!opt_.precise && (z == 0 || z == 3)) {
             const char* step = (y & 1) ? "--" : "++";
             o << "    for (;;) {\n";
-            if (z == 0) {
+            if (z == 0) { /* flags (if read) as LDI's with BC 0: P/V clear, X/Y from A + value */
                 o << "        uint8_t v_ = sg_rd(Z.hl); sg_wr(Z.de, v_); Z.hl" << step << "; Z.de" << step << "; Z.bc--;\n"
-                  << "        if (!Z.bc) { ADV(16, " << unsigned(d.refresh) << "); break; }\n";
+                  << "        if (!Z.bc) { ADV(16, " << unsigned(d.refresh) << ");"
+                  << (block_flags ? " { uint8_t n_ = (uint8_t)(Z.a + v_); Z.f = (uint8_t)((Z.f & 0xc1) | (n_ & 0x08) | ((n_ & 0x02) << 4)); }" : "")
+                  << " break; }\n";
             } else {
-                o << "        uint8_t v_ = sg_rd(Z.hl); Z.b--; Z.hl" << step << "; sg1000_out(Z.c, v_);\n"
-                  << "        if (!Z.b) { ADV(16, " << unsigned(d.refresh) << "); break; }\n";
+                /* flags (if read) as OUTI's with B 0 */
+                o << "        uint8_t v_ = sg_rd(Z.hl); Z.b--; Z.hl" << step << "; " << opt_.io_out << "(Z.c, v_);\n"
+                  << "        if (!Z.b) { ADV(16, " << unsigned(d.refresh) << ");"
+                  << (block_flags ? " { unsigned s_ = v_ + Z.l; Z.f = (uint8_t)(0x40 | (v_ & 0x80 ? 2 : 0) | (s_ > 255 ? 0x11 : 0) | z80_parity(s_ & 7)); }" : "")
+                  << " break; }\n";
             }
             o << "        ADV(21, " << unsigned(d.refresh) << ");\n"
               << "        if (EVT() && sg_event(" << hex(in.addr) << ")) return;\n    }\n";
@@ -663,7 +824,7 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
         }
         o << "    Z.pc = " << hex(in.addr) << ";\n";
         o << "    { static const z80_decoded_t d_ = " << decoded(d) << "; CY(sg_op(&d_)); }\n";
-        o << "    if (Z.pc == " << hex(in.addr) << ") goto " << lab(in.addr) << ";\n";
+        o << "    if (Z.pc == " << hex(in.addr) << ") goto " << lab(in.loc) << ";\n";
         stats_->generic++;
         break;
     }
@@ -673,7 +834,7 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
         pend_cy_ += in.cycles; pend_rf_ += d.refresh;
         flush(o);
         o << "    Z.iff1 = Z.iff2 = 1; Z.ei_delay = 1;\n";
-        const Ins* n = find(next);
+        const Ins* n = in.next_dest.guard_slot < 0 ? find(in.next_dest.loc) : nullptr;
         if (!n) { o << "    Z.pc = " << hex(next) << "; return;\n"; return; }
         const uint16_t after = n->next();
         if (n->flow == Flow::Jump || n->flow == Flow::Ret || n->flow == Flow::Reti) {
@@ -685,7 +846,7 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
             o << "    EI_DONE();\n";
             if (n->flow == Flow::Jump) {
                 if (!opt_.precise) o << "    SYNC(" << hex(n->target) << ");\n";
-                transfer(o, in, n->target);
+                transfer(o, in, n->target, n->target_dest);
             } else {
                 o << "    Z.pc = sg_pop();" << (n->flow == Flow::Reti ? " Z.iff1 = Z.iff2;" : "") << " return;\n";
             }
@@ -704,19 +865,24 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
             flush(o);
             o << "    EI_DONE();\n";
             if (!opt_.precise) o << "    SYNC(" << hex(after) << ");\n";
-            transfer(o, in, after);
+            transfer(o, in, after, n->next_dest);
             return;
         }
         o << "    Z.pc = " << hex(next) << "; if (!sg_step(" << hex(after) << ")) return;\n";
         o << "    SYNC(" << hex(after) << ");\n";
-        transfer(o, in, after);
+        transfer(o, in, after, n->next_dest);
         return;
     }
     }
     /* Fall through to the next instruction, inline or by transfer. */
-    if (!following || following->addr != next) {
+    if (in.remap) { /* the mapper may have moved this code: back to the dispatcher */
         flush(o);
-        transfer(o, in, next);
+        o << "    Z.pc = " << hex(next) << "; return;\n";
+        return;
+    }
+    if (!following || following->loc != in.next_dest.loc || in.next_dest.guard_slot >= 0) {
+        flush(o);
+        transfer(o, in, next, in.next_dest);
     }
 }
 
@@ -726,7 +892,7 @@ void Emitter::emit_region(std::ostringstream& o, int r) {
     o << "\nvoid " << region_name(r) << "(void) {\n    ENTER();\n";
     if (!opt_.precise) o << "    SYNC(Z.pc);\n";
     o << "    switch (Z.pc) {\n";
-    for (uint16_t a : reg) if (ins_[a].sw_case) o << "    case " << hex(a) << ": goto " << lab(a) << ";\n";
+    for (Loc a : reg) if (ins_[a].sw_case) o << "    case " << hex(addr_of(a)) << ": goto " << lab(a) << ";\n";
     o << "    default: return;\n    }\n";
     for (size_t k = 0; k < reg.size(); k++) {
         Ins& in = ins_[reg[k]];
@@ -738,75 +904,94 @@ void Emitter::emit_region(std::ostringstream& o, int r) {
     o << "}\n";
 }
 
-std::string Emitter::run(const std::vector<uint16_t>& hot, EmitStats& stats) {
+std::string Emitter::run(const std::vector<Loc>& hot, EmitStats& stats) {
     stats_ = &stats;
+    if (opt_.banked) { /* usual page of each slot: the most played one */
+        std::map<unsigned, size_t> count[3];
+        for (Loc l : hot) { const int s = slot_of(addr_of(l)); if (s >= 0) count[s][page_of(l)]++; }
+        for (int s = 0; s < 3; s++) {
+            size_t best = 0;
+            defaults_[s] = s; /* power-on mapping */
+            for (auto& [page, n] : count[s]) if (n > best) { best = n; defaults_[s] = static_cast<int>(page); }
+        }
+    }
     /* Played instructions first (hottest first), then what they reach. */
-    std::deque<uint16_t> work;
-    auto add = [&](uint16_t a, bool covered) {
-        if (ins_.size() >= opt_.max_instructions || a >= rom_size() || ins_.count(a)) return;
+    std::deque<Loc> work;
+    auto add = [&](Loc a, bool covered) {
+        if (ins_.size() >= opt_.max_instructions || a == NOLOC || ins_.count(a)) return;
         Ins in;
         if (!decode(a, in)) return;
         in.covered = covered;
         ins_[a] = in;
         work.push_back(a);
     };
-    for (uint16_t a : hot) add(a, true);
+    for (Loc a : hot) add(a, true);
     stats.covered = ins_.size();
     /* Static reach stops at padding: four equal bytes 00 (NOP) or FF (RST 38). */
-    auto padding = [&](uint16_t a) {
-        const uint8_t v = rom(a);
+    auto padding = [&](Loc a) {
+        const uint8_t v = rom_at(a);
         if (v != 0x00 && v != 0xff) return false;
-        for (unsigned k = 1; k < 4; k++) if (rom(static_cast<uint16_t>(a + k)) != v) return false;
+        for (unsigned k = 1; k < 4; k++) if (rom_at(a + k) != v) return false;
         return true;
     };
-    auto reach = [&](uint16_t a) { if (!ins_.count(a) && !padding(a)) add(a, false); };
-    for (uint16_t v : { 0x0000, 0x0038, 0x0066 }) reach(v);
+    auto reach = [&](Loc a) { if (a != NOLOC && !ins_.count(a) && in_rom(a) && !padding(a)) add(a, false); };
+    for (Loc v : { 0x0000u, 0x0038u, 0x0066u }) reach(v);
     while (!work.empty()) {
         Ins in = ins_[work.front()];
         work.pop_front();
-        if (in.falls()) reach(in.next());
-        if (in.jumps() || in.calls()) reach(in.target);
+        if (in.falls()) reach(in.next_dest.loc);
+        if (in.jumps() || in.calls()) reach(in.target_dest.loc);
     }
     stats.compiled = ins_.size();
     stats.speculative = stats.compiled - stats.covered;
     plan();
     std::ostringstream o;
-    o << "/* Generated by m0recomp --system sg1000. Do not edit. */\n#include \"sg_gen.h\"\n"
+    o << "/* Generated by m0recomp --system " << (opt_.banked ? "gg" : "sg1000") << ". Do not edit. */\n#include \"sg_gen.h\"\n"
       << "#pragma GCC diagnostic ignored \"-Wunused-label\"\n";
     /* noinline: regions call each other; inlining chains of them explodes
      * compile time and flash. */
     for (size_t r = 0; r < regions_.size(); r++)
         o << "void " << region_name(static_cast<int>(r)) << "(void) __attribute__((noinline));\n";
     for (size_t r = 0; r < regions_.size(); r++) emit_region(o, static_cast<int>(r));
-    /* Entry table: sorted pc -> region, direct-mapped cache in front. */
+    /* Entry table: sorted location -> region, direct-mapped cache in front. */
     std::vector<const Ins*> entries;
     for (auto& [a, in] : ins_) if (in.sw_case) entries.push_back(&in);
     stats.regions = regions_.size();
     stats.entries = entries.size();
-    o << "\nstatic const uint16_t entry_pc[" << std::max<size_t>(entries.size(), 1) << "] = {";
-    for (size_t i = 0; i < entries.size(); i++) o << (i % 12 ? " " : "\n    ") << hex(entries[i]->addr) << ",";
+    const char* key = opt_.banked ? "uint32_t" : "uint16_t";
+    o << "\nstatic const " << key << " entry_pc[" << std::max<size_t>(entries.size(), 1) << "] = {";
+    for (size_t i = 0; i < entries.size(); i++)
+        o << (i % 12 ? " " : "\n    ") << (opt_.banked ? hex(entries[i]->loc, 6) : hex(entries[i]->addr)) << ",";
     if (entries.empty()) o << "0";
     o << "\n};\nstatic const sg_fn entry_fn[" << std::max<size_t>(entries.size(), 1) << "] = {";
     for (size_t i = 0; i < entries.size(); i++) o << (i % 8 ? " " : "\n    ") << region_name(entries[i]->region) << ",";
     if (entries.empty()) o << "0";
     o << "\n};\n"
-      << "sg_fn sg_gen_lookup(uint16_t pc) {\n"
-      << "    static uint16_t cache_pc[64];\n    static sg_fn cache_fn[64];\n"
-      << "    unsigned h = (pc ^ (pc >> 6)) & 63;\n"
-      << "    if (cache_fn[h] && cache_pc[h] == pc) return cache_fn[h];\n"
+      << "sg_fn sg_gen_lookup(uint16_t pc) {\n";
+    if (opt_.banked) /* the location of pc under the current mapping; RAM: interpreter */
+        o << "    if (pc >= 0xc000) return 0;\n"
+          << (opt_.fixed_kib ? "    const uint32_t loc = pc < 0x400 ? pc : (uint32_t)machine.page[pc >> 14] << 16 | pc;\n"
+                             : "    const uint32_t loc = (uint32_t)machine.page[pc >> 14] << 16 | pc;\n")
+          << "    static uint32_t cache_pc[32];\n    static sg_fn cache_fn[32];\n" /* RAM is short */
+          << "    unsigned h = (loc ^ (loc >> 5) ^ (loc >> 16)) & 31;\n";
+    else
+        o << "    const uint16_t loc = pc;\n"
+          << "    static uint16_t cache_pc[64];\n    static sg_fn cache_fn[64];\n"
+          << "    unsigned h = (pc ^ (pc >> 6)) & 63;\n";
+    o << "    if (cache_fn[h] && cache_pc[h] == loc) return cache_fn[h];\n"
       << "    unsigned lo = 0, hi = " << entries.size() << ";\n"
-      << "    while (lo < hi) { unsigned mid = (lo + hi) / 2; if (entry_pc[mid] < pc) lo = mid + 1; else hi = mid; }\n"
-      << "    if (lo == " << entries.size() << " || entry_pc[lo] != pc) return 0;\n"
-      << "    cache_pc[h] = pc; cache_fn[h] = entry_fn[lo];\n"
+      << "    while (lo < hi) { unsigned mid = (lo + hi) / 2; if (entry_pc[mid] < loc) lo = mid + 1; else hi = mid; }\n"
+      << "    if (lo == " << entries.size() << " || entry_pc[lo] != loc) return 0;\n"
+      << "    cache_pc[h] = loc; cache_fn[h] = entry_fn[lo];\n"
       << "    return entry_fn[lo];\n}\n";
     return o.str();
 }
 
 } // namespace
 
-std::string emit_code(const Cartridge& cartridge, const std::vector<uint16_t>& hot_first,
+std::string emit_code(std::span<const uint8_t> rom, const std::vector<Loc>& hot_first,
                       const EmitOptions& options, EmitStats& stats) {
-    Emitter e(cartridge, options);
+    Emitter e(rom, options);
     return e.run(hot_first, stats);
 }
 

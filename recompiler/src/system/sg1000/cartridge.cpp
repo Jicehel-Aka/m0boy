@@ -54,4 +54,21 @@ std::optional<CartridgeInfo> inspect(const std::filesystem::path& path,
     return CartridgeInfo{SystemId::sg1000, path.stem().string(),
                          cartridge->bytes().size(), 0, "unbanked"};
 }
+std::optional<CartridgeInfo> inspect_gamegear(const std::filesystem::path& path, std::string& error) {
+    error.clear();
+    std::error_code code;
+    const auto size = std::filesystem::file_size(path, code);
+    if (code || size < 0x400 || size > 0x400000) {
+        error = "Game Gear cartridge must contain 1 KiB to 4 MiB: " + path.string();
+        return std::nullopt;
+    }
+    return CartridgeInfo{SystemId::gamegear, path.stem().string(), static_cast<size_t>(size), 0, "sega"};
+}
+std::optional<CartridgeInfo> inspect_mastersystem(const std::filesystem::path& path, std::string& error) {
+    auto info = inspect_gamegear(path, error);
+    if (!info) return info;
+    info->system = SystemId::mastersystem;
+    if ((info->rom_bytes & 0x3fff) == 512) info->rom_bytes -= 512; /* copier header */
+    return info;
+}
 } // namespace m0boy::sg1000

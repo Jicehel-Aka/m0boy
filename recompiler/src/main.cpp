@@ -146,7 +146,7 @@ void print_usage(const char* program) {
     std::cout << "  --trace               Trace execution analysis (very verbose)\n";
     std::cout << "  --limit <n>           Limit analysis to n instructions\n";
     std::cout << "  -j, --jobs <n>        Parallel workers for codegen and batch generation (0=auto)\n";
-    std::cout << "  --system auto|gameboy|sg1000  Source console (default auto; legacy GB fallback)\n";
+    std::cout << "  --system auto|gameboy|sg1000|gg|sms  Source console (default auto; legacy GB fallback)\n";
     std::cout << "  --cpu sm83|z80       Check the CPU required by the source console\n";
     std::cout << "  --list-systems       List source consoles, CPUs and available pipelines\n";
     std::cout << "  --info               Inspect a cartridge without generating code\n";
@@ -1975,6 +1975,7 @@ int main(int argc, char* argv[]) {
     bool meta_precise = false;
     bool meta_static = false;
     size_t meta_bpi = 20;
+    bool meta_bpi_set = false;
     fs::path meta_dir;
     
     for (int i = 1; i < argc; i++) {
@@ -2137,6 +2138,7 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--meta-bytes-per-instruction") {
             if (i + 1 < argc) {
                 meta_bpi = std::stoul(argv[++i]);
+                meta_bpi_set = true;
             }
         } else if (arg == "--meta-pack") {
             g_meta_pack = true;
@@ -2243,26 +2245,33 @@ int main(int argc, char* argv[]) {
         }
         return 0;
     }
-    if (source.id == m0boy::SystemId::sg1000) {
+    if (source.id == m0boy::SystemId::sg1000 || source.id == m0boy::SystemId::gamegear ||
+        source.id == m0boy::SystemId::mastersystem) {
+        const bool mastersystem = source.id == m0boy::SystemId::mastersystem;
+        const bool gamegear = source.id == m0boy::SystemId::gamegear || mastersystem;
+        const char* system_label = mastersystem ? "Master System" : gamegear ? "Game Gear" : "SG-1000";
         if (analyze_only || meta_thumb || g_meta_pack ||
             g_meta_stream != -1 || !g_rom_profiles.empty() || g_meta_resident ||
             emit_android_project || !native_patch_manifest_path.empty() ||
             !symbol_file_path.empty() || !annotation_file_path.empty() ||
             specific_bank > 0 || !manual_entry_points.empty() || !trace_file_path.empty()) {
-            std::cerr << "Error: unsupported SG-1000 option; use --coverage, --target, --meta-precise, --meta-compiler and --meta-code-budget\n";
+            std::cerr << "Error: unsupported " << system_label << " option; use --coverage, --target, --meta-precise, --meta-compiler, --meta-code-budget and --meta-bytes-per-instruction\n";
             return 1;
         }
         m0boy::sg1000::GenerateOptions options;
+        options.gamegear = gamegear;
+        options.mastersystem = mastersystem;
         options.target = *m0boy::parse_target(target);
         options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string()) : output_prefix;
         if (options.name.empty() || sanitize_prefix(options.name) != options.name) {
-            std::cerr << "Error: invalid SG-1000 output prefix\n";
+            std::cerr << "Error: invalid " << system_label << " output prefix\n";
             return 1;
         }
-        options.output = output_dir.empty() ? fs::path(options.name + "_sg1000_" + target) : fs::path(output_dir);
+        options.output = output_dir.empty() ? fs::path(options.name + (mastersystem ? "_sms_" : gamegear ? "_gg_" : "_sg1000_") + target) : fs::path(output_dir);
         options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
         options.coverage = coverage_paths;
         options.code_budget_bytes = g_meta_code_budget;
+        if (meta_bpi_set) options.bytes_per_instruction = meta_bpi;
         options.precise = meta_precise;
         options.compiler = meta_compiler;
         std::string error;
@@ -2271,11 +2280,14 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: " << error << "\n";
             return 1;
         }
-        std::cout << "Generated SG-1000 project for " << target << ": " << options.output << "\n"
+        std::cout << "Generated " << system_label << " project for " << target << ": " << options.output << "\n"
                   << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played, "
                   << stats.speculative << " reached statically)\n"
                   << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
-                  << (stats.cart_ram ? "  cartridge RAM:      8 KiB at 8000-BFFF\n" : "")
+                  << (stats.cart_ram ? (gamegear ? (target == "desktop" ? "  cartridge RAM:      32 KiB, 16 KiB window at 8000-BFFF\n"
+                                                                            : "  cartridge RAM:      32 KiB in the save file on the SD card\n")
+                                                 : "  cartridge RAM:      8 KiB at 8000-BFFF\n") : "")
+                  << (stats.streamed_pages ? "  ROM streaming:      " + std::to_string(stats.streamed_pages) + " pages of 16 KiB read from the SD card\n" : std::string())
                   << (meta_precise ? "  mode:               precise (sync per instruction)\n" : "");
         return 0;
     }

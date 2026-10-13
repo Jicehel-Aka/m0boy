@@ -19,3 +19,4 @@ node_modules/
 !/roms/sg/
 /roms/sg/*
 !/roms/sg/README.txt
+__pycache__/

@@ -5,10 +5,12 @@
 #
 # Usage : ./compile.sh [dossier_roms] [dossier_sortie]
 #   Par défaut : ./roms/gb/ et ./roms/sg/, jeux dans ./roms/meta/<Jeu>/
-#   Un dossier explicite accepte .gb/.gbc/.sg (ou ses sous-dossiers gb/ et sg/).
+#   Un dossier explicite accepte .gb/.gbc/.sg/.gg (ou ses sous-dossiers gb/, sg/ et gg/).
 #   SG-1000 : code Z80 recompilé (projets out/sg1000/<cible>/<jeu>/), GCC ou Clang, couverture NTSC automatique
 #   de AUTO_SECONDS secondes émulées (SG_AUTO_FRAMES pour choisir les images) :
 #   bouton 1 maintenu, une partie sans touche (logos, démo), plus SG_SEEDS parties aléatoires (défaut 8).
+#   Game Gear : même chaîne (projets out/gg/<cible>/<jeu>/), parties 3 fois plus longues ; une grosse ROM
+#   laisse des pages sur la carte (<NOM>.GG copié à côté du .bin), la RAM de cartouche vit dans <NOM>.SAV.
 #   PLAY=1 utilise le lecteur natif SG ; PACK et les sauvegardes GB ne s’appliquent pas.
 #   (le .elf de débogage reste dans out/<jeu>/.pio/build/meta/)
 #
@@ -281,7 +283,7 @@ json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 # Version de gbrecomp embarquée dans un firmware (voir meta_main.cpp) :
 # « gbrecomp-meta x.y.z » ou « gbrecomp-pokitto x.y.z ».
 firmware_version() {
-  grep -aoE "(gbrecomp-$TARGET|m0boy-sg1000-$TARGET) [0-9A-Za-z._+-]{1,32}" "$1" 2>/dev/null \
+  grep -aoE "(gbrecomp-$TARGET|m0boy-sg1000-$TARGET|m0boy-gg-$TARGET) [0-9A-Za-z._+-]{1,32}" "$1" 2>/dev/null \
     | head -n1 | cut -d' ' -f2
 }
 
@@ -392,6 +394,8 @@ fetch_icons() { # $1 dossier du jeu, $2 nom du jeu, $3 base du fichier ROM, $4 "
     local sets=("$4" "")
     [ "$4" = gbc ] && sets=("" gbc)
     [ "$4" = sg ] && sets=(sg)
+    [ "$4" = gg ] && sets=(gg)
+    [ "$4" = sms ] && sets=(sms)
     mkdir -p "$ICON_CACHE"
     for set in "${sets[@]}"; do
       enc=$(find_thumb "$2" "$set") && [ -n "$enc" ] && break
@@ -401,6 +405,8 @@ fetch_icons() { # $1 dossier du jeu, $2 nom du jeu, $3 base du fichier ROM, $4 "
       # recours (nom nettoyé supposé identique au nom No-Intro).
       local catalogs=("Nintendo%20-%20Game%20Boy" "Nintendo%20-%20Game%20Boy%20Color")
       [ "$4" = sg ] && catalogs=("Sega%20-%20SG-1000")
+      [ "$4" = gg ] && catalogs=("Sega%20-%20Game%20Gear")
+      [ "$4" = sms ] && catalogs=("Sega%20-%20Master%20System%20-%20Mark%20III")
       for set in "${catalogs[@]}"; do
         url="$THUMB_BASE/$set/Named_Titles/$(url_quote "$2").png"
         if curl -fsSL --max-time 30 -o "$png" "$url" 2>/dev/null; then break; fi
@@ -409,6 +415,8 @@ fetch_icons() { # $1 dossier du jeu, $2 nom du jeu, $3 base du fichier ROM, $4 "
       done
     else
       if [ "$set" = sg ]; then set="Sega%20-%20SG-1000"
+      elif [ "$set" = gg ]; then set="Sega%20-%20Game%20Gear"
+      elif [ "$set" = sms ]; then set="Sega%20-%20Master%20System%20-%20Mark%20III"
       elif [ "$set" = gbc ]; then set="Nintendo%20-%20Game%20Boy%20Color"
       else set="Nintendo%20-%20Game%20Boy"; fi
       url="$THUMB_BASE/$set/Named_Titles/$enc.png"
@@ -435,7 +443,7 @@ fetch_icons() { # $1 dossier du jeu, $2 nom du jeu, $3 base du fichier ROM, $4 "
 # S_tag (affichage), S_todo (0 rien, 1 à faire, 2 à confirmer).
 assess() {
   local dir="$1" sha="$2" system="${3:-gameboy}" expected_pack="$PACK"
-  [ "$system" = sg1000 ] && expected_pack=0
+  [ "$system" = sg1000 ] || [ "$system" = gg ] || [ "$system" = sms ] && expected_pack=0
   local bin
   bin=$(game_bin "$DEST_DIR/$dir")
   local state="$DEST_DIR/$dir/.gbrmeta.json"
@@ -477,12 +485,17 @@ in_array() { # $1 valeur, $2... tableau
 }
 
 
-build_sg_game() { # SG-1000 owns its generator, profiles and build system.
+build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and build system.
   local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
   local SRC_DIR="$(dirname "$rom_path")"
   local SESSIONS_DIR="${SESSIONS_CUSTOM:-$SRC_DIR/profiles}"
-  local out_dir="out/sg1000/$TARGET/$prefix" game_dir="$DEST_DIR/$game_name"
-  local store="$SESSIONS_DIR/$rom_sha/sg1000" cov auto_frames
+  local sys=sg1000 host=./build/bin/sg1000_host label=SG-1000 icons=sg
+  case "${rom_path##*.}" in
+    gg|GG|gG|Gg) sys=gg host=./build/bin/gg_host label="Game Gear" icons=gg ;;
+    sms|SMS) sys=sms host=./build/bin/gg_host label="Master System" icons=sms ;;
+  esac
+  local out_dir="out/$sys/$TARGET/$prefix" game_dir="$DEST_DIR/$game_name"
+  local store="$SESSIONS_DIR/$rom_sha/$sys" cov auto_frames
   local cov_args=() firmware
   mkdir -p "$out_dir" "$store" "$game_dir" || return 1
   if [ "$PLAY" = 1 ]; then
@@ -491,20 +504,21 @@ build_sg_game() { # SG-1000 owns its generator, profiles and build system.
     "$sg_player" "$rom_path" || return 1
   fi
   if [ "$AUTO" = 1 ] && { [ "$AUTO_REDO" = 1 ] || [ ! -f "$store/coverage-auto.cov" ]; }; then
-    [ -x ./build/bin/sg1000_host ] || { echo "[x] Construire sg1000_host avec CMake/Ninja."; return 1; }
+    [ -x "$host" ] || { echo "[x] Construire $(basename "$host") avec CMake/Ninja."; return 1; }
     auto_frames="${SG_AUTO_FRAMES:-$((AUTO_SECONDS * 60))}"
+    [ "$sys" != sg1000 ] && auto_frames="${SG_AUTO_FRAMES:-$((AUTO_SECONDS * 180))}" # longer games: 3x
     case "$auto_frames" in ''|*[!0-9]*|0) echo "[x] SG_AUTO_FRAMES doit être un entier positif."; return 1 ;; esac
     local seeds="${SG_SEEDS:-8}" seed pids=()
-    echo "[i] Profil SG-1000 : $auto_frames images NTSC, bouton 1 pour démarrer et tirer, sans touche, $seeds parties aléatoires"
-    ./build/bin/sg1000_host "$rom_path" --frames "$auto_frames" --buttons 16 --start-frame 30 \
+    echo "[i] Profil $label : $auto_frames images NTSC, bouton 1 pour démarrer et tirer, sans touche, $seeds parties aléatoires"
+    "$host" "$rom_path" --frames "$auto_frames" --buttons 16 --start-frame 30 \
       --coverage "$store/coverage-auto.tmp" > /dev/null &
     pids+=($!)
     # no input at all: logos, title and demo, which the others skip
-    ./build/bin/sg1000_host "$rom_path" --frames "$auto_frames" \
+    "$host" "$rom_path" --frames "$auto_frames" \
       --coverage "$store/coverage-idle.tmp" > /dev/null &
     pids+=($!)
     for ((seed = 1; seed <= seeds; seed++)); do
-      ./build/bin/sg1000_host "$rom_path" --frames "$auto_frames" --start-frame 30 --random "$seed" \
+      "$host" "$rom_path" --frames "$auto_frames" --start-frame 30 --random "$seed" \
         --coverage "$store/coverage-rand$seed.tmp" > /dev/null &
       pids+=($!)
     done
@@ -517,32 +531,85 @@ build_sg_game() { # SG-1000 owns its generator, profiles and build system.
   fi
   for cov in "$store"/*.cov "$PROFILES_DIR/$rom_sha"/*.cov; do
     [ -f "$cov" ] || continue
-    [ "$(head -n1 "$cov")" = '# m0boy.sg1000.coverage.v1' ] && cov_args+=(--coverage "$cov")
+    [ "$(head -n1 "$cov")" = "# m0boy.$sys.coverage.v1" ] && cov_args+=(--coverage "$cov")
   done
-  "$GBRECOMP" "$rom_path" --system sg1000 --target "$TARGET" --output-prefix "$prefix" \
-    --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" -o "$out_dir" || return 1
+  # Firmware filling the flash: a first build measures the generated code
+  # per instruction (sg_gen.o), the second generates with that measure;
+  # when it overflows, a few bytes more per instruction until it fits.
+  local sg_build="$out_dir/build" gen_log build_log bpi="" tries=0 rc text compiled
+  [ "$FIRMWARE_COMPILER" = clang ] && sg_build="$out_dir/build-clang"
+  local size_bin
+  size_bin=$(command -v arm-none-eabi-size || echo "$HOME/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size")
+  sg_build_once() { # 0 ok, 1 flash full, 2 error
+    gen_log=$("$GBRECOMP" "$rom_path" --system "$sys" --target "$TARGET" --output-prefix "$prefix" \
+      --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} -o "$out_dir") || return 2
+    if [ "$TARGET" = pokitto ]; then
+      cmake -G Ninja -S "$out_dir" -B "$sg_build" -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake \
+        -DSG_COMPILER="$FIRMWARE_COMPILER" > /dev/null || return 2
+      build_log=$(ninja -C "$sg_build" -j"$NPROC" 2>&1) && return 0
+    else
+      build_log=$(pio run -d "$out_dir" 2>&1) && return 0
+    fi
+    echo "$build_log" | grep -q -E "overflowed|greater than maximum allowed" && return 1
+    echo "$build_log" | tail -20
+    return 2
+  }
+  sg_code_bpi() { # measured flash per compiled instruction, rounded up
+    local obj
+    if [ "$TARGET" = pokitto ]; then obj=$(ls "$sg_build"/CMakeFiles/firmware.dir/src/sg_gen.c.o* 2>/dev/null | head -n1)
+    else obj="$out_dir/.pio/build/meta/src/sg_gen.o"; fi
+    compiled=$(echo "$gen_log" | sed -n 's/.*instructions: *\([0-9]*\) compiled.*/\1/p')
+    [ -f "$obj" ] && [ -n "$compiled" ] && [ "$compiled" -gt 0 ] || return 1
+    text=$("$size_bin" "$obj" 2>/dev/null | tail -n1 | awk '{print $1}')
+    [ -n "$text" ] || return 1
+    echo $(( (text + compiled - 1) / compiled + 1 ))
+  }
+  sg_build_once; rc=$?
+  [ $rc -eq 2 ] && return 1
+  if bpi=$(sg_code_bpi); then
+    while :; do
+      sg_build_once; rc=$?
+      [ $rc -eq 0 ] && break
+      [ $rc -eq 2 ] && return 1
+      tries=$((tries + 1)); bpi=$((bpi + 3))
+      [ $tries -le 6 ] || { echo "[x] Le firmware ne tient pas en flash."; return 1; }
+    done
+  elif [ $rc -ne 0 ]; then
+    echo "[x] Le firmware ne tient pas en flash."; return 1
+  fi
+  echo "$gen_log"
+  echo "$build_log" | grep -E "^(RAM|Flash):" || true
+  [ -n "$bpi" ] && echo "[i] Code généré : $bpi octets de flash par instruction"
+  local stream_name
+  stream_name=$(sed -n 's/^#define GG_STREAM_NAME "\(.*\)"$/\1/p' "$out_dir/src/sg_config.h")
   if [ "$TARGET" = pokitto ]; then
-    local sg_build="$out_dir/build"
-    [ "$FIRMWARE_COMPILER" = clang ] && sg_build="$out_dir/build-clang"
-    cmake -G Ninja -S "$out_dir" -B "$sg_build" -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake \
-      -DSG_COMPILER="$FIRMWARE_COMPILER" || return 1
-    ninja -C "$sg_build" -j"$NPROC" || return 1
     firmware="$sg_build/firmware.bin"
     cp "$firmware" "$game_dir/$game_name.bin" || return 1
   else
-    pio run -d "$out_dir" || return 1
     firmware="$out_dir/.pio/build/meta/firmware.bin"
     rm -f "$game_dir"/*.bin "$game_dir"/*.BIN
     cp "$firmware" "$game_dir/$(meta_bin "$out_dir/src/gbl_config.h" "$prefix")" || return 1
-    fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" sg || echo "[i] (jeu conservé sans icône)"
+    fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" "$icons" || echo "[i] (jeu conservé sans icône)"
   fi
-  printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "system": "sg1000",\n  "pack": 0,\n  "compiler": "%s"\n}\n' \
-    "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$FIRMWARE_COMPILER" > "$game_dir/.gbrmeta.json"
-  echo "[i] Firmware SG-1000 $TARGET v$CUR_VERSION : $game_dir"
+  local save_name
+  save_name=$(sed -n 's/^#define GG_SAVE_NAME "\(.*\)"$/\1/p' "$out_dir/src/sg_config.h")
+  if [ -n "$save_name" ]; then # cartridge RAM: created once, never overwritten
+    [ -f "$game_dir/$save_name" ] || head -c 32768 /dev/zero | tr '\0' '\377' > "$game_dir/$save_name"
+    echo "[i] Sauvegarde : $game_name/$save_name (déjà sur la carte : ne plus y toucher)"
+  fi
+  if [ -n "$stream_name" ]; then
+    if [ $(( $(stat -c %s "$rom_path") % 16384 )) -eq 512 ]; then # copier header: the card holds the ROM itself
+      tail -c +513 "$rom_path" > "$game_dir/$stream_name" || return 1
+    else cp "$rom_path" "$game_dir/$stream_name" || return 1; fi
+    echo "[i] Pages de ROM lues depuis la carte SD : $game_name/$stream_name (racine ou un dossier)"
+  fi
+  printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "system": "%s",\n  "pack": 0,\n  "compiler": "%s"\n}\n' \
+    "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$sys" "$FIRMWARE_COMPILER" > "$game_dir/.gbrmeta.json"
+  echo "[i] Firmware $label $TARGET v$CUR_VERSION : $game_dir"
 }
 
 build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 sha1
-  case "${1##*.}" in sg|SG|sG|Sg) build_sg_game "$@"; return $? ;; esac
+  case "${1##*.}" in sg|SG|sG|Sg|gg|GG|gG|Gg|sms|SMS) build_sg_game "$@"; return $? ;; esac
   local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
   local SRC_DIR="$(dirname "$rom_path")"
   local SESSIONS_DIR="${SESSIONS_CUSTOM:-$SRC_DIR/profiles}"
@@ -840,12 +907,12 @@ PY
 
 
 shopt -s nullglob nocaseglob
-roms=("$SRC_DIR"/*.gb "$SRC_DIR"/*.gbc "$SRC_DIR"/*.sg
-      "$SRC_DIR"/gb/*.gb "$SRC_DIR"/gb/*.gbc "$SRC_DIR"/sg/*.sg)
+roms=("$SRC_DIR"/*.gb "$SRC_DIR"/*.gbc "$SRC_DIR"/*.sg "$SRC_DIR"/*.gg "$SRC_DIR"/*.sms
+      "$SRC_DIR"/gb/*.gb "$SRC_DIR"/gb/*.gbc "$SRC_DIR"/sg/*.sg "$SRC_DIR"/gg/*.gg "$SRC_DIR"/sms/*.sms)
 shopt -u nullglob nocaseglob
 
 if [ ${#roms[@]} -eq 0 ]; then
-  echo "Aucun fichier .gb, .gbc ou .sg trouvé dans '$SRC_DIR'."
+  echo "Aucun fichier .gb, .gbc, .sg, .gg ou .sms trouvé dans '$SRC_DIR'."
   exit 0
 fi
 
@@ -857,7 +924,7 @@ n=0
 n_dup=0
 for rom_path in "${roms[@]}"; do
   system=gameboy
-  case "${rom_path##*.}" in sg|SG|sG|Sg) system=sg1000 ;; esac
+  case "${rom_path##*.}" in sg|SG|sG|Sg) system=sg1000 ;; gg|GG|gG|Gg) system=gg ;; sms|SMS) system=sms ;; esac
   sha=$(sha1_of "$rom_path")
   dup=0
   for ((i = 0; i < n; i++)); do
@@ -1034,6 +1101,8 @@ for index in ${SEL[@]+"${SEL[@]}"}; do
   else
     log_dir="$OUT_ROOT/$prefix"
     [ "${R_system[i]}" = sg1000 ] && log_dir="out/sg1000/$TARGET/$prefix"
+    [ "${R_system[i]}" = gg ] && log_dir="out/gg/$TARGET/$prefix"
+    [ "${R_system[i]}" = sms ] && log_dir="out/sms/$TARGET/$prefix"
     mkdir -p "$log_dir"
     (
       if run_one "$rom_path" "$prefix" "$dir" "${R_sha[i]}" "$i" > "$log_dir/compile.log" 2>&1; then

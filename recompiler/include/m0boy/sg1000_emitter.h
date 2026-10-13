@@ -2,17 +2,28 @@
 #include "m0boy/sg1000.h"
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
 namespace m0boy::sg1000 {
 
+/// Code location: ROM page << 16 | Z80 address.  Unbanked boards (SG-1000)
+/// and the fixed areas of banked ones use page 0, so a location is then
+/// the address itself.
+using Loc = uint32_t;
+
 struct EmitOptions {
     bool precise = false;       ///< sync before every instruction (differential tests)
     bool cart_ram = false;      ///< 8 KiB of cartridge RAM at 8000-BFFF
+    /// Sega mapper (Game Gear): 0000-03FF fixed, three 16 KiB slots paged
+    /// by FFFD-FFFF, 8 KiB of RAM at C000-FFFF.
+    bool banked = false;
+    bool fixed_kib = true; ///< banked: 0000-03FF always page 0 (Sega); false: Codemasters
+    std::string io_out = "sg1000_out", io_in = "sg1000_in";
     size_t max_instructions = 6000; ///< flash budget, in instructions
     size_t max_region_instructions = 200;
-    std::vector<uint16_t> entries; ///< dynamic jump targets seen by profiling
+    std::vector<Loc> entries; ///< dynamic jump targets seen by profiling
 };
 
 struct EmitStats {
@@ -20,9 +31,9 @@ struct EmitStats {
     size_t native = 0, generic = 0;
 };
 
-/// Z80 -> C for the SG-1000 runtime (sg_gen.h): regions of native code for
-/// the played (hot first) and statically reachable instructions.
-std::string emit_code(const Cartridge& cartridge, const std::vector<uint16_t>& hot_first,
+/// Z80 -> C for the Sega Z80 runtimes (sg_gen.h): regions of native code
+/// for the played (hot first) and statically reachable instructions.
+std::string emit_code(std::span<const uint8_t> rom, const std::vector<Loc>& hot_first,
                       const EmitOptions& options, EmitStats& stats);
 
 } // namespace m0boy::sg1000
