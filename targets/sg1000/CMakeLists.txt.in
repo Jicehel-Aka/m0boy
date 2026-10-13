@@ -31,7 +31,8 @@ add_dependencies(firmware linker_script)
 target_link_options(firmware PRIVATE -nostartfiles --specs=nano.specs --specs=nosys.specs
     -Wl,--gc-sections -Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/firmware.map -T${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld)
 set_target_properties(firmware PROPERTIES SUFFIX ".elf" LINK_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld)
-find_program(OBJCOPY arm-none-eabi-objcopy REQUIRED)
+get_filename_component(SG_ARM_BIN "${CMAKE_C_COMPILER}" DIRECTORY)
+find_program(OBJCOPY arm-none-eabi-objcopy HINTS "${SG_ARM_BIN}" REQUIRED)
 add_custom_command(TARGET firmware POST_BUILD
     COMMAND ${OBJCOPY} -O binary $<TARGET_FILE:firmware> ${CMAKE_CURRENT_BINARY_DIR}/firmware.bin
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/checksum.py ${CMAKE_CURRENT_BINARY_DIR}/firmware.bin)
