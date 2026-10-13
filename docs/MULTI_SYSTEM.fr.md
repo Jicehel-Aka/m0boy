@@ -165,21 +165,24 @@ et la [carte des ports SG-1000](https://www.smspower.org/Development/IOPortMapSG
 
 ## Jouer sur PC
 
-Avec SDL2 installé, CMake construit aussi `build/bin/sg1000_play`. Le lecteur
-natif utilise le même noyau Z80/TMS9918A/PSG que les firmwares et évite le coût
-d’une seconde émulation Cortex-M0 sur PC :
+Le frontal commun `gm0` charge directement les cartouches `.sg` dans le noyau
+Z80/TMS9918A/PSG, sans seconde émulation Cortex-M0 sur PC. Il partage les
+filtres F8, l’échelle F10, le plein écran F11, les manettes, F5, le titre et le
+build WebAssembly avec META/Pokitto. Le petit lecteur `sg1000_play` reste un
+harness SDL de référence pour les tests du noyau :
 
 ```bash
-build/bin/sg1000_play jeu.sg
+../gm0/build/bin/gm0 jeu.sg
 ```
 
 Flèches : déplacement ; Espace : bouton 1 (A), Ctrl : bouton 2 (B).
 Entrée : Start (bouton 1, utilisé pour démarrer Galaga) ; `*` : Select (Pause SG-1000,
 également avec le `*` du pavé numérique) ;
-Échap : quitter. L’image est redimensionnable et le son mono tourne à 22050 Hz.
+Échap : quitter en natif. L’image est redimensionnable et le PSG produit ses
+échantillons à 22050 Hz, rééchantillonnés par la sortie commune à 48000 Hz.
 La cadence suit les 59736 T-states d’une trame NTSC à 3,579545 MHz.
-`--frames N` permet un essai SDL sans attente ; `--start-frame N` et `--shot`
-sont disponibles pour les vérifications automatiques.
+`EMU_NOPACE=1` permet un essai sans attente ; `--frames N`, `--shot`, `--wav`
+et `EMU_INPUT` sont disponibles pour les vérifications automatiques.
 
 Le frontend des firmwares évite les divisions logicielles pour redimensionner
 l’image, ne calcule le fond que pour les lignes réellement affichées, et saute
@@ -191,8 +194,7 @@ de lignes et le DMA LCD pour recouvrir le calcul et le transfert.
 Le titre indique « actuel » (cadence émulée / temps mural, attente et affichage
 inclus) et « possible » (cadence émulée / temps passé dans le noyau et le son,
 hors présentation et synchronisation). 100 % représente la vitesse NTSC normale ;
-la capacité possible n’est pas plafonnée. `--frames N --realtime` conserve
-l’attente de synchronisation pendant un essai borné.
+la capacité possible n’est pas plafonnée, en natif comme dans le HUD WebAssembly.
 
 Les distributions PC sont générées par `tools/sg1000/package.py` avec CMake et
 Ninja. Elles contiennent le lecteur, SDL2, les licences, une notice et un
@@ -202,9 +204,13 @@ attend une cartouche déposée dans sa fenêtre.
 
 ```bash
 python3 tools/sg1000/package.py \
+  --frontend-root /chemin/gm0 \
   --sdl-linux-prefix /chemin/SDL2-linux \
   --sdl-mingw-root /chemin/SDL2/x86_64-w64-mingw32 \
   --mingw-root /chemin/llvm-mingw \
+  --zlib-linux-prefix /chemin/zlib-linux \
+  --zlib-mingw-prefix /chemin/zlib-mingw \
+  --zlib-license /chemin/zlib/LICENSE \
   --linux-sysroot /chemin/sysroot-ubuntu22
 ```
 
@@ -215,6 +221,9 @@ L’option `--rom /chemin/jeu.sg --name galaga` intègre la cartouche fournie da
 les exécutables, sans l’ajouter aux sources suivies. Dans ce mode, le `.exe`
 Windows inclut aussi SDL2 statiquement et démarre le jeu sans argument ni DLL
 SDL2 externe. La distribution générique reste dépourvue de cartouche.
+Le build web est celui de `gm0` : `emcmake cmake -G Ninja -S /chemin/gm0
+-B build-wasm -DGM0_WEB_GAME=/chemin/Galaga.sg`, puis `cmake --build build-wasm`.
+Il produit un seul `gm0.html` contenant le module et le jeu, sans réseau requis.
 
 `./compile.sh` détecte par défaut les jeux de `roms/gb/` et `roms/sg/`. Un dossier
 explicite accepte également des `.gb`, `.gbc` et `.sg`, ou les sous-dossiers

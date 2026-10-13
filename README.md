@@ -6,7 +6,8 @@ disassembles unbanked cartridges and generates experimental native META/Pokitto
 projects. A host harness compares generated instructions with a Z80 interpreter;
 SG-1000 tone/noise synthesis drives the META and Pokitto DACs. See the
 [multi-system architecture notes (French)](docs/MULTI_SYSTEM.fr.md).
-A native SDL2 player is available as `build/bin/sg1000_play game.sg` (arrows, Space/Ctrl, Enter, `*`).
+SG-1000 uses the shared [gm0](../gm0/) frontend: `gm0 game.sg` (arrows,
+Space/Ctrl, Enter, `*`; F8 filters, F10 scaling, F11 fullscreen).
 `tools/sg1000/package.py` builds Windows and Linux archives with SDL2 included;
 see the [desktop distribution instructions](docs/MULTI_SYSTEM.fr.md#jouer-sur-pc).
 

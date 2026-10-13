@@ -486,8 +486,9 @@ build_sg_game() { # SG-1000 owns its generator, profiles and build system.
   [ "$FIRMWARE_COMPILER" = gcc ] || { echo "[x] Le frontend firmware SG-1000 utilise GCC (FIRMWARE_COMPILER=gcc)."; return 1; }
   mkdir -p "$out_dir" "$store" "$game_dir" || return 1
   if [ "$PLAY" = 1 ]; then
-    [ -x ./build/bin/sg1000_play ] || { echo "[x] Lecteur SG absent : construire sg1000_play avec SDL2."; return 1; }
-    ./build/bin/sg1000_play "$rom_path" || return 1
+    local sg_player="${SG_PLAYER:-../gm0/build/bin/gm0}"
+    [ -x "$sg_player" ] || { echo "[x] Lecteur gm0 absent : construire gm0 ou définir SG_PLAYER."; return 1; }
+    "$sg_player" "$rom_path" || return 1
   fi
   if [ "$AUTO" = 1 ] && { [ "$AUTO_REDO" = 1 ] || [ ! -f "$store/coverage-auto.cov" ]; }; then
     [ -x ./build/bin/sg1000_host ] || { echo "[x] Construire sg1000_host avec CMake/Ninja."; return 1; }
