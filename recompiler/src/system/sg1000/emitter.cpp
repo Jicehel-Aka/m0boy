@@ -656,6 +656,22 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
         const Ins* n = find(next);
         if (!n) { o << "    Z.pc = " << hex(next) << "; return;\n"; return; }
         const uint16_t after = n->next();
+        if (n->flow == Flow::Jump || n->flow == Flow::Ret || n->flow == Flow::Reti) {
+            /* EI; JP/JR/RET/RETI: the delay ends with the transfer (the idle
+             * loop EI / JP $-1 and the handler end EI / RETI) */
+            if (opt_.precise) o << "    SYNC(" << hex(next) << ");\n";
+            pend_cy_ += n->cycles; pend_rf_ += n->d.refresh;
+            flush(o);
+            o << "    EI_DONE();\n";
+            if (n->flow == Flow::Jump) {
+                if (!opt_.precise) o << "    SYNC(" << hex(n->target) << ");\n";
+                transfer(o, in, n->target);
+            } else {
+                o << "    Z.pc = sg_pop();" << (n->flow == Flow::Reti ? " Z.iff1 = Z.iff2;" : "") << " return;\n";
+            }
+            stats_->native++;
+            return;
+        }
         if (n->flow == Flow::Seq) {
             /* EI; N; ...: N inline, then the delay ends and a sync takes a
              * pending interrupt before the instruction after N (the usual

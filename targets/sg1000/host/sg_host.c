@@ -29,8 +29,31 @@ static void wav_header(FILE *f, uint32_t n) {
     fputc(1, f); fputc(0, f); fputc(1, f); fputc(0, f); le32(f, 22050); le32(f, 22050);
     fputc(1, f); fputc(0, f); fputc(8, f); fputc(0, f); fwrite("data", 1, 4, f); le32(f, n);
 }
+/* --input "frame:mask:frames,...": buttons held from frame for frames */
+static const char *input_script;
+static unsigned scripted(unsigned frame) {
+    unsigned keys = 0;
+    for (const char *p = input_script; p && *p;) {
+        unsigned at = 0, mask = 0, len = 0;
+        if (sscanf(p, "%u:%u:%u", &at, &mask, &len) == 3 && frame >= at && frame < at + len) keys |= mask;
+        p = strchr(p, ',');
+        if (p) p++;
+    }
+    return keys;
+}
+/* --random seed: buttons redrawn every 16 frames (coverage profiling) */
+static uint32_t random_state;
+static unsigned random_keys;
+static unsigned randomized(unsigned frame) {
+    if (!random_state) return 0;
+    if (frame % 16 == 0) {
+        random_state = random_state * 1103515245u + 12345u;
+        random_keys = (random_state >> 16) & 63;
+    }
+    return random_keys;
+}
 static void inputs(void) {
-    unsigned keys = buttons;
+    unsigned keys = buttons | scripted(machine.frames) | randomized(machine.frames);
     if (machine.frames >= start_frame && machine.frames < start_frame + 10) keys |= 16;
     sg1000_buttons(0, (uint8_t)keys);
     sg1000_pause(machine.frames == pause_frame);
@@ -110,6 +133,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--buttons") && i + 1 < argc) buttons = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--start-frame") && i + 1 < argc) start_frame = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--pause-frame") && i + 1 < argc) pause_frame = (unsigned)strtoul(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_script = argv[++i];
+        else if (!strcmp(argv[i], "--random") && i + 1 < argc) random_state = (uint32_t)strtoul(argv[++i], 0, 0) | 1u;
         else if (argv[i][0] != '-' && !rom_path) rom_path = argv[i];
         else { fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]); return 1; }
     }

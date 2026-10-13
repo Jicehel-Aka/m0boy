@@ -114,7 +114,7 @@ SG_HELPER unsigned sg_op(const z80_decoded_t *d) { return z80_execute(&Z, d); }
 #define SG_STOPPED() 0
 #endif
 /* EI takes effect after the next instruction: force a sync there. */
-#define EI_DONE() do { Z.ei_delay = 0; machine.next_evt = machine.cyc; } while (0)
+#define EI_DONE() do { Z.ei_delay = 0; if (Z.irq) machine.next_evt = machine.cyc; } while (0)
 
 /* Region entry: a guest that recurses without returning (stack reset and
  * jump back to its main loop from a handler) would overflow the C stack;

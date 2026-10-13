@@ -126,7 +126,10 @@ int main() {
     machine.row_out = line_buffers[0][0];
 #endif
     machine.frame = frame;
-    sg_stack_limit = (uintptr_t)&end + 256;
+    /* Below the guard, runtime calls made from a region still need stack:
+     * sync, line rendering, audio catch-up, LCD/audio drivers and
+     * interrupts (about 1 KiB, -fstack-usage); the rest is for nesting. */
+    sg_stack_limit = (uintptr_t)&end + 1536;
     meta_audio_init();
     deadline = meta_micros();
     /* Keep an inspectable source/target version stamp in the firmware. */

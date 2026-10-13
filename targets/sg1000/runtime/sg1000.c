@@ -300,7 +300,7 @@ static int interp_one(void) {
     if (!z80_decode(c, &d)) { c->fault = 1; m->stop = 1; return 0; }
     m->cyc += z80_execute(c, &d);
     m->interpreted++;
-    if (c->ei_delay && --c->ei_delay == 0) m->next_evt = m->cyc;
+    if (c->ei_delay && --c->ei_delay == 0 && c->irq) m->next_evt = m->cyc;
     if (c->halted) {
         sg_halt();
         if (!m->stop) (void)sg_event(c->pc);
