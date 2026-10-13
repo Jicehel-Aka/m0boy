@@ -133,14 +133,22 @@ VBlank, avec l’état VDP de ce moment : aucun test par ligne dans le code
 généré, et une ligne voit toujours les écritures faites avant sa fin. Le PSG
 est rattrapé de la même façon, avant chaque écriture et en fin de trame.
 
-Le rendu des consoles produit directement 160 pixels RGB565 par ligne
-(5 pixels sur 8 de chaque tuile, le plus proche voisin 256 → 160) : deux
-tuiles donnent cinq mots de deux pixels, tirés d’une table par octet de
-couleur (4 Kio). Les sprites de chaque ligne viennent d’un masque par ligne,
-recalculé quand un Y de sprite, le terminateur, la taille ou la table change.
-Les modes texte et multicolore passent par le rendu de référence (256 pixels),
-qui sert aussi aux captures de l’hôte. Les projets avec RAM de cartouche
-(`SG_LOW_RAM`) se passent de la table de couleurs.
+Le rendu des consoles réduit 256×192 en 160×120 (META) par un filtre boîte
+exact, poids en huitièmes : chaque pixel couvre 1,6 pixel source, soit, pour
+les cinq pixels d'une tuile, (5,3) (2,5,1) (4,4) (1,5,2) (3,5). Une tuile n'a
+que deux couleurs : chaque pixel vaut le mélange encre/fond au poids des bits
+d'encre, lu dans une table de 9 mélanges par octet de couleur, au format du
+panneau (`mix`, reconstruite quand la couleur de fond change ; la palette du
+TMS9918 est fixe). Verticalement, deux lignes source qui tombent sur la même
+ligne d'écran sont rendues ensemble : poids moyen quand leurs couleurs sont
+égales (une seule lecture), sinon moyenne des deux lignes filtrées. Les tuiles
+sous sprites et les modes texte/multicolore passent par le même filtre, sous
+forme générique. Les masques de sprites par ligne sont recalculés quand un Y
+de sprite, le terminateur, la taille ou la table change. Le rendu de
+référence (256 pixels) sert aux captures et aux tests de l'hôte. Les projets
+avec RAM de cartouche (`SG_LOW_RAM`) remplacent la table par un cache de 16
+mélanges et parcourent la table des sprites à chaque ligne. Le cadenceur peut
+sauter jusqu'à deux présentations de suite : le jeu garde sa vitesse.
 
 ## Vérification
 
@@ -183,22 +191,22 @@ comprises) : images SG-1000 produites pendant 30,1 s émulées, 59,92 images/s
 console.
 
 Le 13 octobre 2026, sur les 68 cartouches d'une collection SG-1000, firmwares
-META construits par `compile.sh` (GCC 7.2, profil automatique, 1800 trames
-avec des appuis scriptés) :
+META construits par `compile.sh` (GCC 7.2, profil automatique, rendu filtré,
+1800 trames avec des appuis scriptés) :
 
 | Vitesse NTSC | Cartouches |
 | --- | --- |
-| 97 % et plus | 58 |
-| 90 à 97 % | 7 (C-So!, Champion Billiards, Girl's Garden, Sega-Galaga, Space Slalom, The Castle, Yamato) |
-| 75 à 90 % | 3 (Pachinko II 82 %, Zippy Race 88 %, Championship Lode Runner 90 %) |
+| 97 % et plus | 55 |
+| 90 à 97 % | 7 |
+| 77 à 90 % | 6 (Space Slalom 78 %, Pachinko II 78 %, Yamato 81 %, Zippy Race 86 %, C-So! 88 %, Championship Lode Runner 89 %) |
 
-Moyenne 97,6 %. Sur Pokitto (72 MHz, écran piloté par le CPU), les jeux
-mesurés (Flicky, Wonder Boy, Star Jacker, Monaco GP, Home Mahjong, The
-Castle) sont entre 96 et 99 %. Avant la recompilation, l'émulation du Z80
-atteignait environ 32 % (Flicky, Wonder Boy).
+Moyenne 96,9 % (97,6 % avec l'ancien échantillonnage d'une colonne et d'une
+ligne sur deux ou trois). Sur Pokitto, les jeux mesurés sont entre 73 et 99 %.
+Avant la recompilation, l'émulation du Z80 atteignait environ 32 % (Flicky,
+Wonder Boy).
 
-Le firmware rattrape son retard en sautant au plus une présentation sur deux ;
-le Z80, le PSG et l’état des sprites restent exacts. Clang 23 produit des
+En retard, le firmware saute jusqu'à deux présentations de suite ; le Z80, le
+PSG et l'état des sprites restent exacts. Clang 23 produit des
 firmwares un peu plus petits et de 1 à 5 % plus lents que GCC 7.2 sur ces jeux.
 
 ## Limites

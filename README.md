@@ -42,7 +42,8 @@ pipeline: the Z80 code is recompiled, not emulated.
   what was never seen.
 - **Runtime**: two device events per frame instead of a check per
   instruction. TMS9918A lines are drawn when the program touches the VDP or
-  at VBlank, straight into 160 RGB565 pixels for the LCD; the SN76489 is
+  at VBlank, box-filtered from 256×192 to the LCD (exact 8-to-5 weights,
+  table-driven: two colours per tile); the SN76489 is
   caught up before each write. 8 KiB cartridge RAM (The Castle) is detected
   while profiling.
 - **Checked**: built with `--meta-precise`, the recompiled code reproduces
@@ -50,9 +51,8 @@ pipeline: the Z80 code is recompiled, not emulated.
   cartridges of a collection. The Z80 core passes ZEXDOC and 66 of 67 ZEXALL
   tests.
 - **Speed**, measured in the gm0 emulator (not on hardware): on the META,
-  58 of those 68 games run at 97 % or more of NTSC speed, 7 at 90-97 %,
-  3 at 80-90 %; average 97.6 % (about 32 % with the former emulation).
-  The Pokitto games measured run at 96-99 %.
+  55 of those 68 games run at 97 % or more of NTSC speed, 7 at 90-97 %,
+  6 at 77-90 %; average 96.9 % (about 32 % with the former emulation).
 
 Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
 `gm0 game.sg`. Details (French): [docs/MULTI_SYSTEM.fr.md](docs/MULTI_SYSTEM.fr.md).

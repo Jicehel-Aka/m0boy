@@ -44,7 +44,8 @@ même chaîne : le code Z80 est recompilé, pas émulé.
   exécute ce qui n'a jamais été vu.
 - **Runtime** : deux événements par trame au lieu d'un test par
   instruction. Les lignes TMS9918A sont dessinées quand le programme touche
-  le VDP ou au VBlank, directement en 160 pixels RGB565 pour l'écran ; le
+  le VDP ou au VBlank, réduites de 256×192 par un filtre boîte exact (poids
+  8 → 5 en table : deux couleurs par tuile) ; le
   SN76489 est rattrapé avant chaque écriture. La RAM de cartouche de 8 Kio
   (The Castle) est détectée au profilage.
 - **Vérifié** : avec `--meta-precise`, le code recompilé reproduit
@@ -52,9 +53,9 @@ même chaîne : le code Z80 est recompilé, pas émulé.
   68 cartouches d'une collection. Le noyau Z80 passe ZEXDOC et 66 tests
   ZEXALL sur 67.
 - **Vitesse**, mesurée dans l'émulateur gm0 (pas sur console) : sur META,
-  58 de ces 68 jeux tournent à 97 % ou plus de la vitesse NTSC, 7 entre 90
-  et 97 %, 3 entre 80 et 90 % ; moyenne 97,6 % (environ 32 % avec
-  l'ancienne émulation). Les jeux mesurés sur Pokitto sont entre 96 et 99 %.
+  55 de ces 68 jeux tournent à 97 % ou plus de la vitesse NTSC, 7 entre 90
+  et 97 %, 6 entre 77 et 90 % ; moyenne 96,9 % (environ 32 % avec
+  l'ancienne émulation).
 
 Sur PC, la lecture passe par la [branche `z80` de gm0](https://github.com/r043v/gm0/tree/z80) :
 `gm0 jeu.sg`. Détails : [docs/MULTI_SYSTEM.fr.md](docs/MULTI_SYSTEM.fr.md).
