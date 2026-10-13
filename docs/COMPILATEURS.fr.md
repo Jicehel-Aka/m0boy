@@ -61,6 +61,14 @@ et Clang déclenche une reconstruction, même si la ROM et la version sont
 identiques. Un ancien état sans ce champ est considéré comme produit par GCC.
 La version Node conserve son périmètre META existant.
 
+## SG-1000
+
+Les projets SG-1000 suivent le même choix : `compile.sh` transmet
+`FIRMWARE_COMPILER` à `m0recomp --meta-compiler`. META passe par PlatformIO
+comme le Game Boy ; Pokitto par CMake, où `-DSG_COMPILER=clang` place
+`toolchain/arm_clang.py --launcher` devant le compilateur C/C++ (objets dans
+`build-clang/`).
+
 ## Prérequis et composants conservés
 
 Clang nécessite `clang` et `clang++` dans PATH. Les variables `CLANG` et
@@ -135,6 +143,18 @@ synthétique, donne 388 277 cycles estimés/trame avec GCC 14.2.1 et
 393 079 avec Clang 23.1.1 : Clang utilise environ 1,2 % de cycles en plus
 sur ce cas. Le code du benchmark passe de 127 376 à 130 076 octets.
 Ce seul programme ne permet pas de conclure pour les jeux commerciaux.
+
+Le 13 octobre 2026, avec la seule toolchain GNU ARM de PlatformIO (GCC 7.2,
+binutils 2.29) : Clang émettait du DWARF 5 (`.file 0`, MD5) que cet
+assembleur refuse, et aucun firmware Pokitto Clang ne se construisait.
+`arm_clang.py` impose maintenant `-gdwarf-4` dès qu'une option `-g` est
+présente. Sur Super Mario Land, Kirby's Dream Land et Tetris (600 trames,
+entrées d'une partie automatique), l'estimateur donne pour Clang 23.1.1
+face à GCC 7.2 : META +1,4 %, +0,2 %, +2,1 % de cycles par trame ;
+Pokitto −0,9 %, −0,8 %, +1,2 %. Dans gm0 (firmware META complet, 1800
+trames, attentes flash comprises), Clang consomme 2,5 % (Mario) et 3,6 %
+(Tetris) de cycles utiles en plus. Les firmwares Clang sont 2 à 5 % plus
+gros. Ce sont des estimations et des mesures d'émulateur.
 
 Le 12 octobre 2026, les builds CMake/Ninja natifs ont été validés avec
 Clang et GCC. Les 16 tests CTest passent avec le build Clang, y compris

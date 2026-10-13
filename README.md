@@ -1,10 +1,10 @@
 # m0boy
 
 Source CPU, source console (`--system`) and destination (`--target`) now have
-separate identities. An initial SG-1000/Z80 frontend loads, inspects and
-disassembles unbanked cartridges and generates experimental native META/Pokitto
-projects. A host harness compares generated instructions with a Z80 interpreter;
-SG-1000 tone/noise synthesis drives the META and Pokitto DACs. See the
+separate identities. SG-1000 cartridges (unbanked, up to 48 KiB) are recompiled
+too: Z80 code becomes C regions for the META and the Pokitto, on a runtime with
+lazy TMS9918A rendering and SN76489 sound; `compile.sh` handles `.sg` files. In
+precise mode the recompiled code reproduces the Z80 interpreter exactly. See the
 [multi-system architecture notes (French)](docs/MULTI_SYSTEM.fr.md).
 SG-1000 uses the shared [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80) frontend: `gm0 game.sg` (arrows,
 Space/Ctrl, Enter, `*`; F8 filters, F10 scaling, F11 fullscreen).

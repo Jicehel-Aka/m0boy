@@ -1,11 +1,11 @@
 # m0boy
 
 L’architecture sépare maintenant CPU, console d’origine (`--system`) et
-destination (`--target`). La SG-1000/Z80 dispose d’un premier frontend de
-chargement, d’inspection, de désassemblage et de génération native expérimentale
-pour META/Pokitto. Le harness hôte compare le code généré à l’interpréteur Z80 ;
-le PSG SG-1000 produit le son sur les DAC META et Pokitto. Voir
-[l’architecture multi-console](docs/MULTI_SYSTEM.fr.md).
+destination (`--target`). Les cartouches SG-1000 (sans mapper, 48 Kio au plus)
+sont recompilées elles aussi : le code Z80 devient des régions de C pour la META
+et la Pokitto, sur un runtime à rendu TMS9918A différé et son SN76489 ;
+`compile.sh` accepte les `.sg`. En mode précis, le code recompilé reproduit
+exactement l’interpréteur Z80. Voir [l’architecture multi-console](docs/MULTI_SYSTEM.fr.md).
 La lecture SG-1000 utilise le frontal commun [gm0, branche `z80`](https://github.com/r043v/gm0/tree/z80) : `gm0 jeu.sg`
 (flèches, Espace/Ctrl, Entrée, `*` ; filtres F8, échelle F10, plein écran F11).
 Les paquets Windows et Linux avec SDL2 inclus se construisent avec

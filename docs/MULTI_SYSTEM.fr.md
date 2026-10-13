@@ -6,8 +6,8 @@ La sélection d’un jeu comporte désormais trois identités indépendantes :
 | --- | --- | --- |
 | Console d’origine (`--system`) | `gameboy` | `sg1000` |
 | CPU requis (`--cpu`, contrôle facultatif) | `sm83` | `z80` |
-| Destination (`--target`) | `desktop`, `meta`, `pokitto` | Projets natifs expérimentaux `desktop`, `meta`, `pokitto` |
-| État actuel | Pipeline existant | Exécution Z80, TMS9918A et génération native des cartouches sans mapper |
+| Destination (`--target`) | `desktop`, `meta`, `pokitto` | `desktop` (harness), `meta`, `pokitto` |
+| État actuel | Pipeline existant | Code Z80 recompilé, runtime TMS9918A/SN76489, cartouches sans mapper |
 
 `--target sg1000` n’est pas une destination : la SG-1000 est la machine
 dont on traduit le programme. META et Pokitto restent les machines sur
@@ -28,22 +28,27 @@ lesquelles les firmwares Game Boy s’exécutent.
   La bibliothèque CMake `m0boy_cpu_sm83` se construit sans le parseur Nintendo.
 - `recompiler/src/system/gameboy/` : cartouche Game Boy, analyse des banques,
   suivi des mappers et balayage du code par banque.
-- `recompiler/src/system/sg1000/`, `include/m0boy/sg1000.h` : cartouche SG-1000.
+- `recompiler/src/system/sg1000/`, `include/m0boy/sg1000*.h` : cartouche
+  SG-1000, recompilation Z80 → C (`emitter.cpp`) et génération des projets.
 - `m0boy_frontends` : chargement et métadonnées des consoles d’origine.
 - `gbrecomp_core` : analyse, IR et générateurs Game Boy existants.
 - `targets/meta/` : runtime Game Boy et pilotes des destinations existantes.
-- `targets/sg1000/` : noyau Z80 C, bus SG-1000, TMS9918A et frontend natif.
-  La génération réutilise les pilotes écran, horloge, démarrage et boutons de
-  META/Pokitto, avec une configuration matérielle minimale.
+- `targets/sg1000/runtime/` : runtime SG-1000 commun au code recompilé et à
+  l’interpréteur Z80 de repli (bus, événements, TMS9918A, SN76489,
+  `sg_gen.h` pour le code généré). `targets/sg1000/platform/` : frontend des
+  consoles, qui réutilise les pilotes écran, son, horloge, démarrage et
+  boutons de META/Pokitto. `targets/sg1000/host/` : harness et lecteur SDL.
 
 Les anciens includes `recompiler/rom.h` et `recompiler/decoder.h`, le namespace
 `gbrecomp` et l’exécutable `gbrecomp` restent utilisables. Le nouvel exécutable
-`m0recomp` utilise exactement la même CLI. `compile.sh` et le frontend Node
-continuent à utiliser le pipeline Game Boy.
+`m0recomp` utilise exactement la même CLI. `compile.sh` traite aussi les
+`.sg` ; le frontend Node reste limité au Game Boy.
 
-L’IR, les optimisations et les générateurs Game Boy gardent leur sémantique
-SM83/Game Boy. Ils ne constituent pas encore un IR commun au Z80. Le runtime
-`gbl` reste propre à la Game Boy ; aucun périphérique SG-1000 n’y est ajouté.
+L’émetteur Z80 reprend la structure de l’émetteur Game Boy (régions,
+répartition, vivacité des drapeaux, cycles par lots, synchronisation aux
+têtes de boucle) sans la partager encore : une couche commune (instruction
+décodée, flux, cibles, cycles, drapeaux lus et écrits) est l’étape suivante
+pour unifier les deux. Le runtime `gbl` reste propre à la Game Boy.
 
 ## Utilisation
 
@@ -68,96 +73,147 @@ sg1000`. `.sgb` désigne toujours une cartouche Game Boy, pas une SG-1000.
 La sélection du CPU contrôle la cohérence avec la console, elle ne change
 pas son matériel.
 
-Une cartouche SG-1000 n’a pas besoin d’un en-tête Nintendo. Le premier profil
-accepte de 1 à 48 Kio de ROM brute, sans mapper ni RAM de cartouche. Les tailles
-supérieures sont refusées avec un diagnostic explicite. Le lecteur statique
-expose les octets du fichier à partir de l’adresse zéro ; il retourne `0xff`
-hors du fichier et pour toute banque autre que zéro. Ce lecteur ne simule
-pas les miroirs électriques de ROM ou la RAM de la console.
+Une cartouche SG-1000 n’a pas besoin d’un en-tête Nintendo. Le profil
+accepte de 1 à 48 Kio de ROM brute, sans mapper. Les tailles supérieures sont
+refusées avec un diagnostic explicite. Les cartes en puissance de deux sont
+reflétées dans `0000–BFFF` ; les dumps de 40 et 48 Kio sont lus tels quels,
+`FF` au-delà. Une cartouche de 32 Kio au plus peut porter 8 Kio de RAM en
+`8000–BFFF` (The Castle) : le profilage la détecte (écriture dans cette zone,
+ligne `# cart-ram` de la couverture) et le projet l’active alors.
 
 Le profil déclare le reset Z80 à `0000` et 1 Kio de RAM système. La
 [carte mémoire SG-1000](https://www.smspower.org/Development/MemoryMap)
 place la cartouche dans `0000–BFFF` et la RAM dans `C000–C3FF`, avec des
-miroirs jusqu’à `FFFF`. Les extensions et cartouches qui remplacent cette
-carte mémoire demanderont leurs propres profils.
+miroirs jusqu’à `FFFF`.
 
-Le désassemblage est un balayage linéaire : des données peuvent apparaître
-comme des instructions. `--limit` limite le nombre d’instructions affichées.
-L’analyse de contrôle de flux Z80 indépendante (`--analyze`) n’est pas encore
-exposée. La génération suit les branches statiques ou les adresses exécutées
-d’une couverture SG-1000 v1. Elle accepte au maximum 1024 entrées natives par
-projet ; les autres instructions et tout code en RAM passent par l’interpréteur.
-`--meta-code-budget` peut réduire ce nombre, avec une estimation conservatrice
-à 160 octets par entrée ; le rapport du linker reste la vérification réelle.
-Le harness classe les adresses par fréquence ; les entrées les plus chaudes
-sont retenues en premier quand le budget est limité. Les couvertures Game Boy
-sont refusées.
+Le désassemblage (`--disasm`) est un balayage linéaire : des données peuvent
+apparaître comme des instructions. `--limit` limite le nombre d’instructions
+affichées.
 
-Les instructions natives spécialisent les opérations de `z80_ops.h` avec les
-opcodes et opérandes constants du programme. Le compilateur C élimine le
-décodage et les branches des autres instructions. L’interpréteur appelle ces
-mêmes opérations avec des instructions décodées au moment de l’exécution.
-Le code natif regroupe les instructions contiguës jusqu’au prochain événement
-vidéo. Les accès aux ports et le délai EI restent exécutés instruction par
-instruction, pour conserver les interruptions et les écritures PSG dans le temps.
-Les instructions de bloc restent interruptibles entre leurs répétitions.
+## Recompilation Z80
 
-Le harness généré se construit avec CMake/Ninja dans `host/` et accepte
-`--interp`, `--frames`, `--coverage`, `--buttons`, `--start-frame`,
-`--pause-frame`, `--shot` et `--wav` (PCM mono 8 bits, 22050 Hz). Les bits de `--buttons` sont Haut, Bas, Gauche,
-Droite, bouton 1 et bouton 2 (bits 0 à 5). `--start-frame` tient le bouton 1
-pendant dix images. Le `run_hash` compare les registres, cycles, mémoire,
-état VDP/PSG et pixels ; il exclut les compteurs de répartition natif/interprété.
+Le code SG-1000 est recompilé, comme celui de la Game Boy : le générateur
+(`recompiler/src/system/sg1000/emitter.cpp`) reprend l’architecture de
+l’émetteur META.
 
-Chaque projet possède un seul système de destination. Utiliser un répertoire
-séparé pour META et Pokitto. Pour META, la génération produit `platformio.ini` :
-`pio run -d output/jeu-meta`. Pour Pokitto, le firmware est produit par le
-CMake/Ninja ci-dessus, avec le checksum de vecteurs LPC vérifié après liaison.
-La sortie d’image conserve le rapport 4:3 : 160×120 au centre du META et
-200×150 au centre du Pokitto. MENU/C fournit une impulsion NMI à l’adresse 66.
-Le son et le menu de configuration Game Boy ne sont pas repris dans ce premier
-frontend SG-1000.
+- **Sélection** : les instructions jouées pendant le profilage (les plus
+  exécutées d’abord), puis celles qu’elles atteignent statiquement (suites,
+  sauts, appels, `RST`, vecteurs `0000/0038/0066`), dans la limite de la
+  flash (32 octets estimés par instruction, `--meta-code-budget` pour la
+  fixer). L’exploration statique s’arrête sur le remplissage (quatre octets
+  `00` ou `FF`). Le code en RAM et le reste passent par l’interpréteur.
+- **Régions** : les instructions voisines forment des fonctions C, avec des
+  `goto` internes et un `switch` sur `pc` à l’entrée. `CALL` devient un appel
+  C suivi d’un contrôle du retour ; les autres sorties posent `pc` et
+  enchaînent sur la région cible ou rendent la main au répartiteur, qui
+  cherche `pc` dans la table d’entrées triée (cache direct devant).
+- **Drapeaux** : une analyse de vivacité par région ne calcule les drapeaux
+  que lorsqu’une instruction suivante peut les lire (sinon, l’opération seule ;
+  après `ADD HL,rr`, la seule retenue quand elle suffit).
+- **Temps** : cycles et rafraîchissement `R` sont ajoutés par lots, avant tout
+  ce qui les observe (ports, `LD A,R`, synchronisation, transferts). `SYNC`
+  aux têtes de boucle, à l’entrée des régions et entre les itérations des
+  instructions de bloc traite les événements et prend les interruptions.
+- **Traduction** : les instructions courantes sont écrites en C (chargements,
+  ALU, `INC/DEC`, `ADD HL`, rotations, `BIT/SET/RES`, piles, sauts, ports,
+  `LDIR/LDDR/OTIR/OTDR` en boucles) ; les rares passent par la sémantique de
+  l’interpréteur (`z80_ops.h`, opérandes constants). Accès mémoire,
+  pile et drapeaux complets sont des fonctions hors ligne (taille de flash),
+  les adresses constantes sont résolues à la génération (ROM repliée, RAM
+  indexée directement).
+- **EI** : l’instruction qui suit `EI` est émise en ligne, puis le délai prend
+  fin et une synchronisation prend l’interruption en attente (la fenêtre
+  `EI / NOP / DI` ne coûte rien de plus). Une reprise pendant un délai passe
+  par l’interpréteur.
 
-Le SM83 est apparenté au Z80, mais n’est pas un Z80 interchangeable. Les
-codes de registres et certains encodages sont communs ; les décodeurs les
-partagent sans partager les drapeaux ni les timings. Les préfixes indexés,
-les registres alternatifs et les ports d’E/S restent propres au Z80 ; les
-instructions `LDH`, `STOP` et `SWAP` restent propres au SM83. Le décodeur Z80
-marque les encodages non documentés, dont `SLL` et les accès `IXH/IYH`. Il
-fournit des métadonnées de désassemblage ; le noyau C fournit les opérations
-exécutables partagées par les chemins natif et interprété.
+Le runtime (`targets/sg1000/runtime/`) compte le temps en T-states avec deux
+événements par trame (VBlank en ligne 192, fin de trame en ligne 262). Les
+lignes sont rendues à la demande, quand le programme touche le VDP ou au
+VBlank, avec l’état VDP de ce moment : aucun test par ligne dans le code
+généré, et une ligne voit toujours les écritures faites avant sa fin. Le PSG
+est rattrapé de la même façon, avant chaque écriture et en fin de trame.
 
-## État et limites de cette première exécution
+Le rendu des consoles produit directement 160 pixels RGB565 par ligne
+(5 pixels sur 8 de chaque tuile, le plus proche voisin 256 → 160) : deux
+tuiles donnent cinq mots de deux pixels, tirés d’une table par octet de
+couleur (4 Kio). Les sprites de chaque ligne viennent d’un masque par ligne,
+recalculé quand un Y de sprite, le terminateur, la taille ou la table change.
+Les modes texte et multicolore passent par le rendu de référence (256 pixels),
+qui sert aussi aux captures de l’hôte. Les projets avec RAM de cartouche
+(`SG_LOW_RAM`) se passent de la table de couleurs.
 
-- Cartouches sans mapper, au plus 48 Kio ; miroirs de ROM pour les tailles
-  puissance de deux, octets absents à `FF` pour les tailles irrégulières.
-- Noyau Z80 : instructions principales et préfixes `CB/ED/DD/FD`, registres
-  alternatifs et indexés, interruption IM1/IM2, IM0 limité aux instructions
-  RST, NMI, inhibition EI et rafraîchissement R. Pas de wait states de bus.
-- TMS9918A : modes graphiques I/II, texte et multicolore, sprites, priorité,
-  collision, cinquième sprite, ports à latch/read-ahead et IRQ de VBlank.
-  Le rendu est effectué par ligne, pas par pixel au moment du bus VRAM.
-  Les combinaisons de modes non documentées ne sont pas validées.
+## Vérification
+
+Le harness généré (`host/`) accepte `--interp`, `--frames`, `--coverage`,
+`--buttons`, `--start-frame`, `--pause-frame`, `--shot` et `--wav` (PCM mono
+8 bits, 22050 Hz). Les bits de `--buttons` sont Haut, Bas, Gauche, Droite,
+bouton 1 et bouton 2 (bits 0 à 5) ; `--start-frame` tient le bouton 1 pendant
+dix images. Le `run_hash` couvre registres, cycles, RAM, VRAM, état VDP/PSG,
+RAM de cartouche et image ; chaque ligne du rendu des consoles est comparée
+au rendu de référence (`out_mismatch`).
+
+`--meta-precise` synchronise avant chaque instruction et calcule tous les
+drapeaux : le code recompilé doit alors donner exactement le `run_hash` de
+l’interpréteur. Le 13 octobre 2026, c’était le cas pour les 68 cartouches
+d’une collection SG-1000 (900 images, pause à l’image 500), et le rendu
+160 pixels égalait le rendu de référence sur toutes les lignes. Les tests
+CTest le vérifient sur un programme synthétique (repli sur un budget presque
+vide compris) ; le noyau Z80 passe ZEXDOC et 66 tests ZEXALL sur 67 (seul
+`BIT n,(HL)` diffère : ses bits X/Y viennent de MEMPTR, non modélisé).
+
+Le build normal (synchronisation aux têtes de boucle, drapeaux utiles
+seulement) peut placer une interruption quelques instructions plus tard ; il
+n’est donc comparé qu’à l’exécution (images, son, absence de faute).
+
+Chaque projet possède un seul système de destination. Pour META, la
+génération produit `platformio.ini` : `pio run -d output/jeu-meta`. Pour
+Pokitto, `cmake -G Ninja -S output/jeu-pokitto -B output/jeu-pokitto/build
+-DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake` puis Ninja, avec le checksum de
+vecteurs LPC vérifié après liaison ; `-DSG_COMPILER=clang` compile le C/C++ avec
+Clang (`toolchain/arm_clang.py`). `compile.sh` fait tout cela, avec
+`FIRMWARE_COMPILER=gcc|clang`. L’image garde le rapport 4:3 : 160×120 au
+centre du META, 200×150 au centre du Pokitto. MENU/C fournit l’impulsion NMI
+de la touche Pause.
+
+## Vitesse
+
+Mesurée dans gm0 (émulation Cortex-M0+ au cycle, attentes flash et DMA LCD
+comprises) : images SG-1000 produites pendant 30,1 s émulées, 59,92 images/s
+étant la vitesse NTSC. Ce sont des mesures d’émulateur, pas des mesures sur
+console.
+
+Le 13 octobre 2026, sur les 68 cartouches d'une collection SG-1000, firmwares
+META construits par `compile.sh` (GCC 7.2, profil automatique, 1800 trames
+avec des appuis scriptés) :
+
+| Vitesse NTSC | Cartouches |
+| --- | --- |
+| 97 % et plus | 58 |
+| 90 à 97 % | 7 (C-So!, Champion Billiards, Girl's Garden, Sega-Galaga, Space Slalom, The Castle, Yamato) |
+| 75 à 90 % | 3 (Pachinko II 82 %, Zippy Race 88 %, Championship Lode Runner 90 %) |
+
+Moyenne 97,6 %. Sur Pokitto (72 MHz, écran piloté par le CPU), les jeux
+mesurés (Flicky, Wonder Boy, Star Jacker, Monaco GP, Home Mahjong, The
+Castle) sont entre 96 et 99 %. Avant la recompilation, l'émulation du Z80
+atteignait environ 32 % (Flicky, Wonder Boy).
+
+Le firmware rattrape son retard en sautant au plus une présentation sur deux ;
+le Z80, le PSG et l’état des sprites restent exacts. Clang 23 produit des
+firmwares un peu plus petits et de 1 à 5 % plus lents que GCC 7.2 sur ces jeux.
+
+## Limites
+
+- Cartouches sans mapper, au plus 48 Kio ; RAM de cartouche limitée au cas
+  8 Kio en `8000–BFFF`. Pas de SC-3000 (clavier), ni d’extension.
 - Baseline NTSC : 262 lignes de 228 T-states. PAL n’est pas pris en charge.
-- Synthèse SN76489 : trois tons, bruit TI, atténuation 2 dB, écritures
-  horodatées dans la trame ; DAC META/Pokitto et capture WAV hôte.
-  Sortie 8 bits à environ 22 kHz, sans filtre analogique ni suréchantillonnage.
-- Les effets Z80 non documentés dépendant de MEMPTR/Q ne sont pas validés.
-  Aucun résultat ZEXALL ou mesure de vitesse sur une console physique.
+- TMS9918A : rendu par ligne, pas au pixel près au moment du bus VRAM ; les
+  combinaisons de modes non documentées ne sont pas validées.
+- SN76489 : trois tons, bruit TI, atténuation 2 dB, sortie 8 bits à environ
+  22 kHz, sans filtre analogique ni suréchantillonnage.
+- Effets non documentés dépendant de MEMPTR/Q non modélisés ; pas de wait
+  states de bus.
 
-Les tests utilisent des programmes synthétiques : référence exhaustive de
-l’arithmétique 8 bits, BCD, prefixes, cycles, interruptions, bus et ports VDP,
-comparaisons des pixels et `run_hash` entre chemins natif/interprété, repli
-sur un budget natif presque vide, et liaison Cortex-M0+ Pokitto quand la
-chaîne ARM est disponible. Le programme utilisateur Galaga est conservé dans
-les sorties locales ignorées : après 300 images, les chemins natif/interprété
-ont le même hash et la même capture. Les firmwares META et Pokitto sont liés
-et essayés dans gm0, qui conserve son architecture META/Pokitto.
-
-La suite prioritaire est la validation Z80 avec des exercisers indépendants,
-la lecture d’entrées interactive sur le harness hôte,
-et l’optimisation des boucles avant d’affirmer une compatibilité ou une vitesse
-sur matériel réel. Les spécifications utilisées sont le
+Les spécifications utilisées sont le
 [manuel Zilog](https://www.zilog.com/docs/z80/z80cpu_um.pdf), les observations
 [Z80 de Sean Young](https://www.smspower.org/uploads/Development/z80-documented.pdf),
 le [manuel TI TMS9918A](https://www.smspower.org/uploads/Development/TMS9918.pdf)
