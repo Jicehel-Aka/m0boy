@@ -2,12 +2,12 @@
 
 La sélection d’un jeu comporte désormais trois identités indépendantes :
 
-| Axe | Game Boy | SG-1000 |
-| --- | --- | --- |
-| Console d’origine (`--system`) | `gameboy` | `sg1000` |
-| CPU requis (`--cpu`, contrôle facultatif) | `sm83` | `z80` |
-| Destination (`--target`) | `desktop`, `meta`, `pokitto` | `desktop` (harness), `meta`, `pokitto` |
-| État actuel | Pipeline existant | Code Z80 recompilé, runtime TMS9918A/SN76489, cartouches sans mapper |
+| Axe | Game Boy | SG-1000 | Game Gear | Master System |
+| --- | --- | --- | --- | --- |
+| Console d’origine (`--system`) | `gameboy` | `sg1000` | `gg` | `sms` |
+| CPU requis (`--cpu`, contrôle facultatif) | `sm83` | `z80` | `z80` | `z80` |
+| Destination (`--target`) | `desktop`, `meta`, `pokitto` | `desktop` (harness), `meta`, `pokitto` | idem | idem |
+| État actuel | Pipeline existant | Code Z80 recompilé, runtime TMS9918A/SN76489, cartouches sans mapper | Code Z80 recompilé par banques, runtime VDP mode 4/PSG, mappers Sega et Codemasters, ROM et RAM de cartouche sur la carte SD | Runtime Game Gear, image entière réduite 256 → 160 |
 
 `--target sg1000` n’est pas une destination : la SG-1000 est la machine
 dont on traduit le programme. META et Pokitto restent les machines sur
@@ -38,6 +38,12 @@ lesquelles les firmwares Game Boy s’exécutent.
   `sg_gen.h` pour le code généré). `targets/sg1000/platform/` : frontend des
   consoles, qui réutilise les pilotes écran, son, horloge, démarrage et
   boutons de META/Pokitto. `targets/sg1000/host/` : harness et lecteur SDL.
+- `targets/gamegear/` : runtime Game Gear (`gg.c` bus, mapper, ports et
+  moteur ; `gg_vdp.c` VDP mode 4 ; `gg_psg.c` ; `gg_render_asm.S` ;
+  `sg_gen.h` pour le code généré), frontend des consoles
+  (`platform/gg_main.cpp`, `gg_stream.c` pour la carte SD) et harness
+  (`host/gg_host.c`). Le noyau Z80 et le recompilateur sont ceux du
+  SG-1000.
 
 Les anciens includes `recompiler/rom.h` et `recompiler/decoder.h`, le namespace
 `gbrecomp` et l’exécutable `gbrecomp` restent utilisables. Le nouvel exécutable
@@ -229,10 +235,133 @@ En retard, le firmware saute jusqu'à deux présentations de suite ; le Z80, le
 PSG et l'état des sprites restent exacts. Clang 23 produit des
 firmwares un peu plus petits et de 1 à 5 % plus lents que GCC 7.2 sur ces jeux.
 
+## Game Gear
+
+Les cartouches `.gg` passent par le même recompilateur Z80 et la même
+organisation de runtime que le SG-1000 (événements par trame, lignes
+dessinées à la demande, PSG rattrapé avant chaque écriture, interpréteur de
+repli), avec ce qui distingue la Game Gear :
+
+- **Mapper Sega** : `0000–03FF` fixe, trois fenêtres de 16 Kio paginées par
+  `FFFD–FFFF`, RAM de cartouche (fenêtre de 16 Kio en `8000–BFFF`, deux
+  banques par le bit 2 de `FFFC`). **Mapper Codemasters** (C.J. Elephant
+  Fugitive, Cosmic Spacehead, Micro Machines 1 et 2) : pages écrites en
+  `0000`, `4000` et `8000`, sans Kio fixe ; détecté par la somme de contrôle
+  Codemasters en `7FE6`.
+- **Recompilation par banques** : une instruction est identifiée par sa page
+  et son adresse (`page << 16 | pc`). Une région ne couvre qu'une fenêtre et
+  une page ; un saut vers la même fenêtre garde la page, un saut vers une
+  autre fenêtre suppose la page la plus jouée de celle-ci et la vérifie
+  (`machine.page[s] == p`) avant l'appel direct, sinon le répartiteur cherche
+  la région de la page courante. Après un appel, le code d'une fenêtre
+  paginée vérifie aussi que sa page n'a pas changé. Une écriture constante
+  dans le registre de sa propre fenêtre rend la main au répartiteur ; tout
+  autre changement de page (copie de bloc sur les registres, gestionnaire
+  d'interruption) force un événement, et la synchronisation suivante revient
+  au répartiteur. Le Kio fixe et les lectures de ROM constantes y sont
+  repliées à la génération ; les autres passent par des pointeurs de
+  fenêtre. Le code exécuté en RAM, ou dans la RAM de cartouche, reste
+  interprété.
+- **VDP mode 4** : tuiles de 4 plans, 512 motifs, retournements, palette de
+  sprites, priorité, défilement horizontal et vertical (verrouillages des
+  deux lignes du haut et des huit colonnes de droite), 64 sprites (8 par
+  ligne, 8×16 et zoom, débordement et collision), CRAM de 32 couleurs sur
+  12 bits, compteur de lignes (interruption de ligne en fin de ligne, avant
+  celle de trame), compteurs V et H. Seule la fenêtre de 160×144 (colonnes
+  48–207, lignes 24–167) est dessinée, au pixel près : pas de filtre
+  horizontal. Un octet de plan donne, par une table, ses huit pixels en
+  champs de 4 bits ; la boucle des tuiles est en Thumb-1 exécutée en SRAM
+  (`gg_render_asm.S`, contrôlée contre le C par un firmware `GG_SELFTEST`).
+  L'interruption de trame est levée à la ligne 193 (compteur V `C1`) : des
+  jeux attendent `C0` avant elle.
+- **PSG Sega** : bruit sur 16 bits (prises 0 et 3), période 0 ou 1 tenue
+  haute (lecture d'échantillons par le volume). Le stéréo de la Game Gear
+  (port 6) est ignoré : sortie mono.
+- **Ports Game Gear** : START et région au port 0 ; port série et parallèle
+  (1–5) mémorisés comme sur la console sans partenaire.
+
+Sur META (160×128), deux lignes sur neuf sont moyennées : 144 → 128.
+Sur Pokitto (220×176), l'image est agrandie en 200×176 (5:4 en largeur,
+deux lignes sur neuf répétées en hauteur).
+
+### ROM et RAM de cartouche sur la carte SD
+
+La META a 240 Kio de flash et 32 Kio de RAM, dont 25 Kio pour la console
+d'origine (16 Kio de VRAM, 8 Kio de RAM). Une ROM qui ne tient pas en flash
+avec son code recompilé garde en flash la page 0 et les pages les plus lues
+comme données au profilage (lignes `# read secteur images` de la
+couverture) ; les autres sont lues dans le fichier ROM copié sur la carte
+(`NOM.GG`, à côté du `.bin`) par un cache de deux secteurs de 512 octets.
+Le code recompilé n'a pas besoin de ses propres octets : seules les données
+et le code interprété lisent la carte. La RAM de cartouche (jeux à
+sauvegarde) vit de même dans `NOM.SAV` (32 Kio, créé une fois par
+`compile.sh`, jamais écrasé), par le même cache, réécrit quand le jeu
+désactive la RAM et deux secondes après la dernière écriture. Erreurs au
+démarrage : écran rouge (pas de carte), magenta (fichier ROM absent), jaune
+(fichier fragmenté : le recopier), bleu (autre ROM).
+
+`compile.sh` construit deux fois chaque firmware : la première mesure la
+taille du code généré par instruction (`sg_gen.o`), la seconde remplit la
+flash avec cette mesure (pages résidentes et budget de code compris). Le
+profilage Game Gear joue trois fois plus longtemps que celui du SG-1000
+(3 600 images par partie).
+
+### Vérification et vitesse
+
+Avec `--meta-precise`, le code recompilé reproduit exactement
+l'interpréteur (registres, mémoire, mapper, VDP, CRAM, PSG, image) sur les
+225 cartouches d'une collection Game Gear, et sur les trois cartouches
+Master System essayées. `tests/test_gg_e2e.py` le vérifie sur une
+cartouche synthétique en banques (`tests/gg_fixture.py`, assemblée par
+`tests/z80asm.py`), firmwares compris.
+
+Vitesse mesurée dans gm0 (pas sur console), à 48 MHz, sur les jeux essayés :
+Columns, Pac-Man, GG Aleste, Fantasy Zone tournent à pleine vitesse sur
+META comme sur Pokitto (98 à 99 %, le plafond de la mesure comptant le
+démarrage) ; Aladdin, lu en grande partie sur la carte, atteint 94 % sur
+META et 98 % sur Pokitto. Les 225 firmwares META et Pokitto se
+construisent ; ils n'ont pas tous été mesurés.
+
+## Master System
+
+Les cartouches `.sms` (`--system sms`) utilisent le recompilateur, le mapper
+(Sega ou Codemasters), la lecture sur carte et le PSG de la Game Gear ; le
+runtime est commun (`GG_SMS`). Ce qui change :
+
+- toute l'image de 256×192 est montrée, réduite à 160 pixels par groupes de
+  8 → 5, comme le fait le VDP de la Game Gear en mode SMS (l'adaptateur
+  Master Gear est passif) ; une ligne sur 8/5 est dessinée : 120 rangées sur
+  META, les mêmes agrandies en 200×150 sur Pokitto ;
+- CRAM de 32 octets (6 bits par couleur), colonne de gauche masquable ;
+- ports de manette et registre d'E/S (lignes TH relues : machine export),
+  PAUSE sur la NMI (MENU sur META, C sur Pokitto), pas de ports Game Gear ;
+- l'en-tête de copieur de 512 octets de certains dumps est retiré.
+
+Réduction horizontale : chaque groupe de 8 pixels donne 5 mélanges de deux
+voisins, en huitièmes (5,3) (3,5) (4,4) (5,3) (3,5). Pour le fond, deux
+pixels voisins de 4 bits forment un index de 8 bits dans une table de
+mélanges par palette (1 Kio, refaite quand la CRAM change) : quatre
+lectures de table et une moyenne par groupe, en Thumb-1 (`gg_sms_bg`,
+`gg_render_asm.S`, contrôlé contre le C par `GG_SELFTEST`). Les groupes sous
+sprites, à cheval sur deux palettes ou masqués passent par les indices de
+couleur, avec les mêmes poids : les deux chemins donnent les mêmes pixels.
+
+Vitesse (gm0, 48 MHz) : Alex Kidd in Miracle World, Shinobi et Wonder Boy
+III tournent à 97–99 % sur META et 98–99 % sur Pokitto.
+
+
 ## Limites
 
-- Cartouches sans mapper, au plus 48 Kio ; RAM de cartouche limitée au cas
-  8 Kio en `8000–BFFF`. Pas de SC-3000 (clavier), ni d’extension.
+- SG-1000 : cartouches sans mapper, au plus 48 Kio ; RAM de cartouche
+  limitée au cas 8 Kio en `8000–BFFF`. Pas de SC-3000 (clavier), ni
+  d’extension.
+- Game Gear : pas de mode Master System (cartouches SMS jouées sur Game
+  Gear), pas de câble de liaison, pas d'EEPROM série 93C46 (World Series
+  Baseball, World Series Baseball '95 restent sur un écran noir) ; son mono ;
+  ROM de 4 Mio au plus.
+- Master System : pas de son FM (YM2413), pas de mode 224 lignes, pas de
+  pistolet ni de second joueur ; pas de mélange vertical (une ligne sur
+  8/5).
 - Baseline NTSC : 262 lignes de 228 T-states. PAL n’est pas pris en charge.
 - TMS9918A : rendu par ligne, pas au pixel près au moment du bus VRAM ; les
   combinaisons de modes non documentées ne sont pas validées.

@@ -64,7 +64,11 @@ ctest --test-dir build --output-on-failure
   `targets/meta/tools/m0bench/where.py` when an estimator run never finishes.
   SG-1000 renderer asm (`sg_render_asm.S`): build a firmware with
   `-DSG_SELFTEST` and read `sg_selftest_result` (1 = no differing line) in gm0;
-  check both panel orders (`SG_PANEL_SWAP` 0 and 1).
+  check both panel orders (`SG_PANEL_SWAP` 0 and 1).  Game Gear background
+  asm (`gg_render_asm.S`): `-DGG_SELFTEST`, `gg_selftest_result`, likewise.
+- Game Gear changes: `tests/test_gg_e2e.py` (synthetic banked cartridge,
+  `tests/gg_fixture.py`) and, with ROMs, precise native = interpreter on the
+  whole collection.
 - Label `m0_estimate.py` numbers as estimates, never as device measurements.
 - Bump `targets/meta/VERSION` (META) or `targets/meta/platform/pokitto/VERSION`
   when a change alters what that console's firmwares do.

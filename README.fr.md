@@ -1,7 +1,8 @@
 # m0boy
 
-**Les jeux Game Boy et SG-1000 recompilés en firmwares natifs pour deux
-consoles Cortex-M0+ : la Gamebuino META et la Pokitto.**
+**Les jeux Game Boy, SG-1000, Game Gear et Master System recompilés en
+firmwares natifs pour deux consoles Cortex-M0+ : la Gamebuino META et la
+Pokitto.**
 
 *English version: [README.md](README.md).*
 
@@ -26,7 +27,7 @@ puces à 32 Kio de RAM, 256 Kio de flash et sans division matérielle.
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le firmware | 32 + 2 + 2 Kio de RAM, 228 Kio de flash sous le loader |
 | Écran | 160×128 : les 144 lignes du Game Boy fusionnées en 128 | 220×176 : image 1:1, ou agrandie en 200×176 |
 | Build du firmware | PlatformIO | `make` avec arm-none-eabi-gcc |
-| Version | 0.9.1 | 0.9.1 |
+| Version | 0.10.0 | 0.10.0 |
 | État | Jeux lancés sur la console | Testée en émulateur seulement. Un premier testeur sur vraie Pokitto signale une image à l'envers, cause en cours d'analyse |
 
 ## SG-1000
@@ -61,6 +62,44 @@ même chaîne : le code Z80 est recompilé, pas émulé.
   67 de ces 68 jeux tournent à pleine vitesse NTSC sur META comme sur
   Pokitto (H.E.R.O. ralentit seulement au démarrage) ; environ 32 % avec
   l'ancienne émulation.
+
+## Game Gear
+
+Les cartouches Game Gear (`.gg`) passent par le même recompilateur Z80,
+étendu au code en banques :
+
+- **Recompilateur** (`--system gg`) : une instruction est une page et une
+  adresse ; une région couvre une fenêtre de 16 Kio d'une page. Un appel
+  vers une autre fenêtre vérifie sa page avant d'y sauter directement, sinon
+  le répartiteur trouve la région de la bonne page ; le code rend la main
+  dès que le mapper déplace la page d'où il s'exécute. Mappers Sega et
+  Codemasters.
+- **Runtime** : VDP mode 4 (tuiles, défilement et verrouillages, sprites,
+  priorité, interruptions de ligne, CRAM 12 bits) dessiné 1:1 dans la
+  fenêtre de 160×144, tuiles de fond en assembleur Thumb-1 ; PSG Sega (mono).
+- **Grosses ROM et sauvegardes** : une ROM qui ne tient pas en flash avec
+  son code y garde ses pages les plus lues et lit les autres dans une copie
+  sur la carte SD ; la RAM de cartouche des jeux à sauvegarde vit dans un
+  fichier `.SAV` sur la carte. Les deux partagent un cache de deux secteurs :
+  les 24 Kio de RAM vidéo et de travail de la console d'origine laissent peu
+  de place.
+- **Vérifié** : avec `--meta-precise`, le code recompilé reproduit
+  exactement l'interpréteur sur les 225 cartouches d'une collection Game Gear.
+- **Vitesse**, mesurée dans gm0 à 48 MHz sur les jeux essayés : pleine
+  vitesse sur les deux consoles (Columns, Pac-Man, GG Aleste, Fantasy Zone ;
+  Aladdin, lu en grande partie sur la carte, 94 % sur META et 98 % sur
+  Pokitto).
+
+## Master System
+
+Les cartouches Master System (`.sms`, `--system sms`) partagent le
+recompilateur et le runtime de la Game Gear. Toute l'image de 256×192 est
+montrée, réduite de 8 à 5 en largeur comme le fait la Game Gear en mode
+SMS : deux pixels voisins de 4 bits indexent une table de mélanges par
+palette, la boucle du fond en Thumb-1. Une ligne sur 8/5 est dessinée
+(160×120 sur META, 200×150 sur Pokitto). PAUSE est MENU / C. Alex Kidd in
+Miracle World, Shinobi et Wonder Boy III tournent à 97–99 % de la vitesse sur
+les deux consoles (gm0). Pas encore de son FM.
 
 Sur PC, la lecture passe par la [branche `z80` de gm0](https://github.com/r043v/gm0/tree/z80) :
 `gm0 jeu.sg`. Détails : [docs/MULTI_SYSTEM.fr.md](docs/MULTI_SYSTEM.fr.md).
