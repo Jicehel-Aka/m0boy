@@ -2244,12 +2244,12 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     if (source.id == m0boy::SystemId::sg1000) {
-        if (analyze_only || meta_thumb || meta_compiler != "gcc" || g_meta_pack ||
+        if (analyze_only || meta_thumb || g_meta_pack ||
             g_meta_stream != -1 || !g_rom_profiles.empty() || g_meta_resident ||
             emit_android_project || !native_patch_manifest_path.empty() ||
             !symbol_file_path.empty() || !annotation_file_path.empty() ||
             specific_bank > 0 || !manual_entry_points.empty() || !trace_file_path.empty()) {
-            std::cerr << "Error: unsupported SG-1000 option; use --coverage, --target and --meta-code-budget for native generation\n";
+            std::cerr << "Error: unsupported SG-1000 option; use --coverage, --target, --meta-precise, --meta-compiler and --meta-code-budget\n";
             return 1;
         }
         m0boy::sg1000::GenerateOptions options;
@@ -2262,13 +2262,21 @@ int main(int argc, char* argv[]) {
         options.output = output_dir.empty() ? fs::path(options.name + "_sg1000_" + target) : fs::path(output_dir);
         options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
         options.coverage = coverage_paths;
-        if (g_meta_code_budget) options.compiled_limit = std::min<size_t>(1024, g_meta_code_budget / 160);
+        options.code_budget_bytes = g_meta_code_budget;
+        options.precise = meta_precise;
+        options.compiler = meta_compiler;
         std::string error;
-        if (!m0boy::sg1000::generate(rom_path, options, error)) {
+        m0boy::sg1000::GenerateStats stats;
+        if (!m0boy::sg1000::generate(rom_path, options, stats, error)) {
             std::cerr << "Error: " << error << "\n";
             return 1;
         }
-        std::cout << "Generated experimental SG-1000 project for " << target << ": " << options.output << "\n";
+        std::cout << "Generated SG-1000 project for " << target << ": " << options.output << "\n"
+                  << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played, "
+                  << stats.speculative << " reached statically)\n"
+                  << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
+                  << (stats.cart_ram ? "  cartridge RAM:      8 KiB at 8000-BFFF\n" : "")
+                  << (meta_precise ? "  mode:               precise (sync per instruction)\n" : "");
         return 0;
     }
     if (!source.supports(*m0boy::parse_target(target))) {

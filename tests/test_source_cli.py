@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory() as temporary:
     run(sg, "--info", "--disasm", ok=False, contains="cannot be combined")
     for target in ("desktop", "meta", "pokitto"):
         project = root / ("project-" + target)
-        run(sg, "--target", target, "-o", project, contains="Generated experimental SG-1000")
+        run(sg, "--target", target, "-o", project, contains="Generated SG-1000 project")
         assert (project / "src" / "sg_gen.c").is_file()
     run(sg, "--analyze", ok=False, contains="unsupported SG-1000 option")
     run(sg, "--disasm", "--limit", "1", contains="0000  JP $0000")

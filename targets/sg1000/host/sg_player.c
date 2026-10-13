@@ -8,7 +8,7 @@
 #ifdef SG_EMBEDDED_ROM
 #include "sg_embedded_rom.h"
 #endif
-static sg1000_t machine;
+static uint8_t cart_ram[SG_CART_RAM_SIZE];
 static uint32_t pixels[SG_WIDTH*SG_HEIGHT];
 static uint8_t sound[8192];
 static unsigned head,tail;
@@ -26,8 +26,8 @@ static void audio_callback(void *ctx,Uint8 *stream,int length){
     }
 }
 static void frame(void *ctx){
-    (void)ctx;uint8_t buffer[512];unsigned n=(machine.audio_head-machine.audio_tail)&511;
-    sg1000_audio_render(&machine,buffer,n);
+    (void)ctx;machine.stop=1;uint8_t buffer[512];unsigned n=sg1000_audio_available();
+    sg1000_audio_render(buffer,n);
     if(!device)return;
     SDL_LockAudioDevice(device);
     for(unsigned i=0;i<n;i++){
@@ -104,7 +104,7 @@ int main(int argc,char **argv){
     SDL_AudioSpec desired={0};desired.freq=22050;desired.format=AUDIO_U8;desired.channels=1;desired.samples=512;desired.callback=audio_callback;
     device=SDL_OpenAudioDevice(0,0,&desired,0,0);
     if(!device)fprintf(stderr,"Audio: %s\n",SDL_GetError());
-    sg1000_init(&machine,rom,size);machine.row=row;machine.frame=frame;sg1000_audio_rate(&machine,22050);
+    sg1000_init(rom,size,cart_ram);machine.ref_row=row;machine.frame=frame;sg1000_audio_rate(22050);
     if(device)SDL_PauseAudioDevice(device,0);
     uint64_t frequency=SDL_GetPerformanceFrequency(),deadline=SDL_GetPerformanceCounter(),fraction=0;
     uint64_t run_start=deadline,stats_start=deadline,active_ticks=0,stats_active=0;
@@ -119,9 +119,9 @@ int main(int argc,char **argv){
         const Uint8 *keys=SDL_GetKeyboardState(0);
         uint8_t buttons=sg_input_buttons(keys);
         if(machine.frames>=start&&machine.frames-start<10)buttons|=16;
-        sg1000_buttons(&machine,0,buttons);sg1000_pause(&machine,sg_input_pause(&input,keys));
+        sg1000_buttons(0,buttons);sg1000_pause(sg_input_pause(&input,keys));
         uint64_t active_start=SDL_GetPerformanceCounter();
-        unsigned target=machine.frames+1;while(machine.frames<target&&!machine.cpu.fault)if(!sg1000_step(&machine))break;
+        machine.stop=0;sg1000_run();
         /* Capacity measures the core and sound queue, excluding presentation
          * and pacing. Current speed includes the entire real-time loop. */
         uint64_t active=SDL_GetPerformanceCounter()-active_start;
@@ -148,7 +148,7 @@ int main(int argc,char **argv){
         speed_percent(machine.frames,elapsed,frequency),speed_percent(machine.frames,active_ticks,frequency));
     status=machine.cpu.fault?1:0;
     if(shot&&!screenshot(shot)){perror(shot);status=1;}
-    printf("frames=%u cycles=%llu pc=%04x\n",machine.frames,(unsigned long long)machine.cpu.cycles,machine.cpu.pc);
+    printf("frames=%u cycles=%u pc=%04x\n",machine.frames,machine.cyc,machine.cpu.pc);
 cleanup:
     if(device)SDL_CloseAudioDevice(device);
     SDL_DestroyTexture(texture);SDL_DestroyRenderer(renderer);SDL_DestroyWindow(window);

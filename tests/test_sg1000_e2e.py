@@ -67,9 +67,11 @@ def main():
         baseline = run(args.host, rom, '--frames', 24, '--pause-frame', 8,
                        '--coverage', coverage, '--shot', root / 'reference.ppm', '--wav', root / 'reference.wav')
         for target in ('desktop', 'meta', 'pokitto'):
+            # Precise build (sync before every instruction): the recompiled
+            # code must reproduce the interpreter exactly.
             output = root / target
             run(args.recompiler, rom, '--target', target, '--coverage', coverage,
-                '--output-prefix', 'synthetic', '-o', output)
+                '--meta-precise', '--output-prefix', 'synthetic', '-o', output)
             host = output / 'host/build'
             run('cmake', '-G', 'Ninja', '-S', output / 'host', '-B', host)
             run('ninja', '-C', host)
@@ -82,22 +84,33 @@ def main():
             assert (root / 'native.ppm').read_bytes() == (root / 'reference.ppm').read_bytes()
             assert int(re.search(r'compiled=(\d+)', native)[1]) > 0
             # Force an almost-empty native budget: fallback must retain all state.
-            run(args.recompiler, rom, '--target', target, '--coverage', coverage,
+            run(args.recompiler, rom, '--target', target, '--coverage', coverage, '--meta-precise',
                 '--meta-code-budget', 160, '--output-prefix', 'synthetic', '-o', output)
             run('ninja', '-C', host)
             mixed = run(exe, '--frames', 24, '--pause-frame', 8)
             assert fingerprint(mixed) == fingerprint(baseline)
             assert int(re.search(r'interpreted=(\d+)', mixed)[1]) > 0
+            # Default build: syncs at loop heads, flags only where read.
+            fast_output = root / (target + '-fast')
+            run(args.recompiler, rom, '--target', target, '--coverage', coverage,
+                '--output-prefix', 'synthetic', '-o', fast_output)
+            fast_host = fast_output / 'host/build'
+            run('cmake', '-G', 'Ninja', '-S', fast_output / 'host', '-B', fast_host)
+            run('ninja', '-C', fast_host)
+            fast = run(fast_host / 'synthetic_host', '--frames', 24, '--pause-frame', 8, '--wav', root / 'fast.wav')
+            assert re.search(r'frames=24 ', fast) and 'out_mismatch=0' in fast
+            assert int(re.search(r'compiled=(\d+)', fast)[1]) > 0
+            assert len(set((root / 'fast.wav').read_bytes()[44:])) > 1
             if target == 'pokitto' and shutil.which('arm-none-eabi-gcc'):
-                build = output / 'build'
-                run('cmake', '-G', 'Ninja', '-S', output, '-B', build,
+                build = fast_output / 'build'
+                run('cmake', '-G', 'Ninja', '-S', fast_output, '-B', build,
                     '-DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake')
                 run('ninja', '-C', build)
                 binary = (build / 'firmware.bin').read_bytes()
                 assert len(binary) < 0x39000
                 assert sum(struct.unpack_from('<8I', binary)) & 0xffffffff == 0
                 # Linker assertions reserve 2 KiB of stack within the LPC RAM.
-            print(target + ': native/interpreter hashes, pixels and fallback match')
+            print(target + ': precise native = interpreter (hashes, pixels, audio, fallback); default build runs')
         invalid = root / 'wrong.cov'
         invalid.write_text('# gbl coverage\n0000\n')
         failed = subprocess.run([args.recompiler, str(rom), '--coverage', str(invalid),

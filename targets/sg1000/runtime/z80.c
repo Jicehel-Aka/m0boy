@@ -57,3 +57,6 @@ unsigned z80_step(z80_t *c) {
     z80_decoded_t d;if(!z80_decode(c,&d)){c->fault=1;return 0;}
     cycles=z80_execute(c,&d);z80_finish(c,cycles);return cycles;
 }
+/* Generic instance for tools (callbacks): the recompiler measures cycles and
+ * flow of each instruction with it. */
+unsigned z80_execute_decoded(z80_t *c, const z80_decoded_t *d) { return z80_execute(c, d); }

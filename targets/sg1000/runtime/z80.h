@@ -34,6 +34,7 @@ int z80_decode(const z80_t *cpu, z80_decoded_t *instruction);
 unsigned z80_service(z80_t *cpu);
 unsigned z80_step(z80_t *cpu);
 void z80_finish(z80_t *cpu, unsigned cycles);
+unsigned z80_execute_decoded(z80_t *cpu, const z80_decoded_t *instruction);
 #ifdef __cplusplus
 }
 #endif

@@ -25,6 +25,7 @@ add_library(gbrecomp_core STATIC
     src/system/gameboy/bank_tracker.cpp
     src/system/gameboy/decode_bank.cpp
     src/system/sg1000/generator.cpp
+    src/system/sg1000/emitter.cpp
     src/symbol_table.cpp
     src/native_patch.cpp
     src/generator.cpp
