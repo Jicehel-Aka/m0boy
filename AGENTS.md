@@ -62,6 +62,9 @@ ctest --test-dir build --output-on-failure
 - Assembly paths cannot run on the host: compare them with the C versions on
   the estimator with `--cflag=-DBENCH_PIXEL_HASH`, and use
   `targets/meta/tools/m0bench/where.py` when an estimator run never finishes.
+  SG-1000 renderer asm (`sg_render_asm.S`): build a firmware with
+  `-DSG_SELFTEST` and read `sg_selftest_result` (1 = no differing line) in gm0;
+  check both panel orders (`SG_PANEL_SWAP` 0 and 1).
 - Label `m0_estimate.py` numbers as estimates, never as device measurements.
 - Bump `targets/meta/VERSION` (META) or `targets/meta/platform/pokitto/VERSION`
   when a change alters what that console's firmwares do.

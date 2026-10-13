@@ -141,14 +141,26 @@ d'encre, lu dans une table de 9 mélanges par octet de couleur, au format du
 panneau (`mix`, reconstruite quand la couleur de fond change ; la palette du
 TMS9918 est fixe). Verticalement, deux lignes source qui tombent sur la même
 ligne d'écran sont rendues ensemble : poids moyen quand leurs couleurs sont
-égales (une seule lecture), sinon moyenne des deux lignes filtrées. Les tuiles
-sous sprites et les modes texte/multicolore passent par le même filtre, sous
-forme générique. Les masques de sprites par ligne sont recalculés quand un Y
-de sprite, le terminateur, la taille ou la table change. Le rendu de
-référence (256 pixels) sert aux captures et aux tests de l'hôte. Les projets
-avec RAM de cartouche (`SG_LOW_RAM`) remplacent la table par un cache de 16
-mélanges et parcourent la table des sprites à chaque ligne. Le cadenceur peut
-sauter jusqu'à deux présentations de suite : le jeu garde sa vitesse.
+égales (une seule lecture), sinon moyenne des deux mélanges. Les tuiles sous
+sprites prennent la boîte exacte 8×2 (couleurs étalées, une table de 16 avec
+le fond) ; les modes texte/multicolore moyennent deux lignes filtrées. Les
+boucles de tuiles des modes Graphics I et II sont en Thumb-1, exécutées en
+SRAM (`sg_render_asm.S`) ; `SG_NO_RENDER_ASM` garde le C, et un firmware
+construit avec `SG_SELFTEST` compare les deux sur VRAM aléatoire
+(`sg_selftest_result` = 1 + lignes différentes, lu par gm0 ou un débogueur).
+Les masques de sprites par ligne suivent chaque écriture d'un Y de sprite
+(déplacement de ses bits) ; terminateur, taille ou table les reconstruisent.
+Le rendu de référence (256 pixels) sert aux captures et aux tests de l'hôte.
+Les projets avec RAM de cartouche (`SG_LOW_RAM`) remplacent la table des
+mélanges par un cache de 16 et les masques par ligne par des masques par bande
+de 8 lignes, sans assembleur. Le cadenceur peut sauter jusqu'à deux
+présentations de suite et rattrape jusqu'à six images de retard : le jeu garde
+sa vitesse.
+
+Le PSG produit ses échantillons par blocs : un passage de Bresenham par bloc
+donne les ticks de chaque échantillon, partagés par les quatre canaux ; un
+canal muet n'avance que son compteur (une division). La sortie est identique
+au calcul échantillon par échantillon.
 
 ## Vérification
 
@@ -194,16 +206,24 @@ Le 13 octobre 2026, sur les 68 cartouches d'une collection SG-1000, firmwares
 META construits par `compile.sh` (GCC 7.2, profil automatique, rendu filtré,
 1800 trames avec des appuis scriptés) :
 
-| Vitesse NTSC | Cartouches |
-| --- | --- |
-| 97 % et plus | 55 |
-| 90 à 97 % | 7 |
-| 77 à 90 % | 6 (Space Slalom 78 %, Pachinko II 78 %, Yamato 81 %, Zippy Race 86 %, C-So! 88 %, Championship Lode Runner 89 %) |
+| Console | Au plafond | Autres |
+| --- | --- | --- |
+| META (48 MHz) | 67 sur 68 à 98,8 % | H.E.R.O. 98,0 % |
+| Pokitto (48 MHz) | 67 sur 68 à 99,0 % | H.E.R.O. 98,3 % |
 
-Moyenne 96,9 % (97,6 % avec l'ancien échantillonnage d'une colonne et d'une
-ligne sur deux ou trois). Sur Pokitto, les jeux mesurés sont entre 73 et 99 %.
-Avant la recompilation, l'émulation du Z80 atteignait environ 32 % (Flicky,
-Wonder Boy).
+Le plafond n'est pas 100 % : la mesure compte le démarrage du firmware, avant
+la première trame SG-1000. H.E.R.O. ne perd que pendant ses 150 premières
+images, puis tient la vitesse NTSC. Avant l'assembleur et ces profils (même
+jour), la moyenne META était de 96,9 %, Space Slalom à 78 % ; avant la
+recompilation, l'émulation du Z80 atteignait environ 32 % (Flicky, Wonder
+Boy).
+
+Le profilage de `compile.sh` joue une partie bouton 1 maintenu, une partie
+sans touche (logos, titre, démo) et huit parties aléatoires. L'interpréteur y
+note aussi les cibles des `RET`, `RETI`/`RETN` et `JP (HL)` (hors retours
+d'interruption) en lignes `# entry XXXX` : le recompilateur en fait des
+entrées de région (adresses de retour empilées, tables de sauts), sans quoi
+ce code repasserait par l'interpréteur. `AUTO_REDO=1` refait les profils.
 
 En retard, le firmware saute jusqu'à deux présentations de suite ; le Z80, le
 PSG et l'état des sprites restent exacts. Clang 23 produit des

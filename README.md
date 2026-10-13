@@ -25,7 +25,7 @@ recompiler and adds everything needed to run on chips with 32 KiB of RAM,
 | Memory | 32 KiB RAM, 240 KiB flash for the firmware | 32 + 2 + 2 KiB RAM, 228 KiB flash below the loader |
 | Screen | 160×128: the 144 Game Boy lines blended into 128 | 220×176: picture 1:1, or enlarged to 200×176 |
 | Firmware build | PlatformIO | `make` with arm-none-eabi-gcc |
-| Version | 0.9.0 | 0.9.0 |
+| Version | 0.9.1 | 0.9.1 |
 | Status | Games run on the console | Tested in an emulator only. A first tester on a real Pokitto reports an upside-down picture; the cause is being investigated |
 
 ## SG-1000
@@ -34,25 +34,29 @@ Sega SG-1000 cartridges (`.sg`, unbanked, up to 48 KiB) go through the same
 pipeline: the Z80 code is recompiled, not emulated.
 
 - **Recompiler** (`--system sg1000`): code played during automatic sessions
-  (button 1 held plus random games), then the code it reaches statically,
-  becomes C regions like the Game Boy backend's: gotos inside, `CALL` as a C
-  call, flags computed only where a later instruction reads them, cycles
-  added in batches, device sync at loop heads. Rare instructions use the
-  Z80 interpreter's semantics on constant operands; the interpreter runs
-  what was never seen.
+  (button 1 held, no input at all for logos and demos, random games), then
+  the code it reaches statically, becomes C regions like the Game Boy
+  backend's: gotos inside, `CALL` as a C call, flags computed only where a
+  later instruction reads them (common cases inline), cycles added in
+  batches, device sync at loop heads. Targets of `RET` and `JP (HL)` seen
+  while profiling (pushed return addresses, jump tables) become region
+  entries. Rare instructions use the Z80 interpreter's semantics on
+  constant operands; the interpreter runs what was never seen.
 - **Runtime**: two device events per frame instead of a check per
   instruction. TMS9918A lines are drawn when the program touches the VDP or
   at VBlank, box-filtered from 256×192 to the LCD (exact 8-to-5 weights,
-  table-driven: two colours per tile); the SN76489 is
-  caught up before each write. 8 KiB cartridge RAM (The Castle) is detected
-  while profiling.
+  table-driven: two colours per tile; tile loops in Thumb-1 assembly run
+  from RAM). Sprite line masks follow each sprite Y write. The SN76489 is
+  caught up before each write, in blocks shared by its four channels.
+  8 KiB cartridge RAM (The Castle) is detected while profiling.
 - **Checked**: built with `--meta-precise`, the recompiled code reproduces
   the interpreter exactly (registers, memory, VDP, PSG, picture) on all 68
   cartridges of a collection. The Z80 core passes ZEXDOC and 66 of 67 ZEXALL
   tests.
-- **Speed**, measured in the gm0 emulator (not on hardware): on the META,
-  55 of those 68 games run at 97 % or more of NTSC speed, 7 at 90-97 %,
-  6 at 77-90 %; average 96.9 % (about 32 % with the former emulation).
+- **Speed**, measured in the gm0 emulator (not on hardware), at 48 MHz:
+  67 of those 68 games run at full NTSC speed on both the META and the
+  Pokitto (H.E.R.O. only slows down while booting); about 32 % with the
+  former emulation.
 
 Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
 `gm0 game.sg`. Details (French): [docs/MULTI_SYSTEM.fr.md](docs/MULTI_SYSTEM.fr.md).

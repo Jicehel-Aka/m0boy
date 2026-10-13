@@ -26,7 +26,7 @@ puces à 32 Kio de RAM, 256 Kio de flash et sans division matérielle.
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le firmware | 32 + 2 + 2 Kio de RAM, 228 Kio de flash sous le loader |
 | Écran | 160×128 : les 144 lignes du Game Boy fusionnées en 128 | 220×176 : image 1:1, ou agrandie en 200×176 |
 | Build du firmware | PlatformIO | `make` avec arm-none-eabi-gcc |
-| Version | 0.9.0 | 0.9.0 |
+| Version | 0.9.1 | 0.9.1 |
 | État | Jeux lancés sur la console | Testée en émulateur seulement. Un premier testeur sur vraie Pokitto signale une image à l'envers, cause en cours d'analyse |
 
 ## SG-1000
@@ -35,27 +35,32 @@ Les cartouches Sega SG-1000 (`.sg`, sans mapper, 48 Kio au plus) suivent la
 même chaîne : le code Z80 est recompilé, pas émulé.
 
 - **Recompilateur** (`--system sg1000`) : le code joué pendant les parties
-  automatiques (bouton 1 maintenu et parties aléatoires), puis celui qu'il
-  atteint statiquement, devient des régions de C comme avec l'émetteur Game
-  Boy : `goto` internes, `CALL` en appel C, drapeaux calculés seulement
-  quand une instruction suivante les lit, cycles ajoutés par lots,
-  synchronisation aux têtes de boucle. Les instructions rares reprennent la
+  automatiques (bouton 1 maintenu, aucune touche pour les logos et les
+  démos, parties aléatoires), puis celui qu'il atteint statiquement,
+  devient des régions de C comme avec l'émetteur Game Boy : `goto`
+  internes, `CALL` en appel C, drapeaux calculés seulement quand une
+  instruction suivante les lit (cas courants en ligne), cycles ajoutés par
+  lots, synchronisation aux têtes de boucle. Les cibles de `RET` et de
+  `JP (HL)` vues au profilage (adresses de retour empilées, tables de sauts)
+  deviennent des entrées de région. Les instructions rares reprennent la
   sémantique de l'interpréteur Z80 sur opérandes constants ; l'interpréteur
   exécute ce qui n'a jamais été vu.
 - **Runtime** : deux événements par trame au lieu d'un test par
   instruction. Les lignes TMS9918A sont dessinées quand le programme touche
   le VDP ou au VBlank, réduites de 256×192 par un filtre boîte exact (poids
-  8 → 5 en table : deux couleurs par tuile) ; le
-  SN76489 est rattrapé avant chaque écriture. La RAM de cartouche de 8 Kio
-  (The Castle) est détectée au profilage.
+  8 → 5 en table : deux couleurs par tuile ; boucles de tuiles en
+  assembleur Thumb-1, exécutées en RAM). Les masques de sprites par ligne
+  suivent chaque écriture d'un Y de sprite. Le SN76489 est rattrapé avant
+  chaque écriture, par blocs partagés entre ses quatre canaux. La RAM de
+  cartouche de 8 Kio (The Castle) est détectée au profilage.
 - **Vérifié** : avec `--meta-precise`, le code recompilé reproduit
   exactement l'interpréteur (registres, mémoire, VDP, PSG, image) sur les
   68 cartouches d'une collection. Le noyau Z80 passe ZEXDOC et 66 tests
   ZEXALL sur 67.
-- **Vitesse**, mesurée dans l'émulateur gm0 (pas sur console) : sur META,
-  55 de ces 68 jeux tournent à 97 % ou plus de la vitesse NTSC, 7 entre 90
-  et 97 %, 6 entre 77 et 90 % ; moyenne 96,9 % (environ 32 % avec
-  l'ancienne émulation).
+- **Vitesse**, mesurée dans l'émulateur gm0 (pas sur console), à 48 MHz :
+  67 de ces 68 jeux tournent à pleine vitesse NTSC sur META comme sur
+  Pokitto (H.E.R.O. ralentit seulement au démarrage) ; environ 32 % avec
+  l'ancienne émulation.
 
 Sur PC, la lecture passe par la [branche `z80` de gm0](https://github.com/r043v/gm0/tree/z80) :
 `gm0 jeu.sg`. Détails : [docs/MULTI_SYSTEM.fr.md](docs/MULTI_SYSTEM.fr.md).
