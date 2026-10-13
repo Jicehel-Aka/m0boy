@@ -50,7 +50,9 @@ bool generate(const fs::path& path,const GenerateOptions& o,std::string& error){
             }
             if(!file.eof())throw std::runtime_error("Cannot read SG-1000 coverage");
         }
-        if(fs::exists(o.output)&&!fs::is_empty(o.output)&&!fs::exists(o.output/"sg1000-project.txt"))
+        // compile.sh writes its log into the project directory before generation.
+        auto foreign=[&]{for(const auto& e:fs::directory_iterator(o.output))if(e.path().filename()!="compile.log")return true;return false;};
+        if(fs::exists(o.output)&&!fs::exists(o.output/"sg1000-project.txt")&&foreign())
             throw std::runtime_error("Output directory is not an SG-1000 project; choose a fresh directory");
         fs::create_directories(o.output/"src");fs::create_directories(o.output/"host");
         const auto src=o.output/"src";
