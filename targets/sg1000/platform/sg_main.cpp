@@ -25,17 +25,21 @@ void pokitto_sd_clock_changed(uint32_t) {}
 static uint8_t cart_ram[SG_CART_RAM_SIZE];
 #endif
 #if META_TARGET_POKITTO
-static uint16_t line_buffer[SG_OUT_WIDTH];
+static uint16_t line_buffer[SG_OUT_WIDTH] __attribute__((aligned(4)));
 #else
 /* Displayed lines go to the LCD in batches of consecutive rows (one window
  * and one DMA chain per batch); two batches alternate. */
 #define SG_BATCH (SG_LOW_RAM ? 1 : 4)
-static uint16_t line_buffers[2][SG_BATCH][SG_OUT_WIDTH];
+static uint16_t line_buffers[2][SG_BATCH][SG_OUT_WIDTH] __attribute__((aligned(4)));
 static uint32_t line_sequences[2];
 static unsigned line_slot, batch_rows, batch_dest;
 #endif
 static uint32_t deadline;
+#ifndef SG_MAX_SKIP
+#define SG_MAX_SKIP 2
+#endif
 static int skip_video;
+static unsigned skipped_run;
 static const char version[] __attribute__((used)) = "m0boy-sg1000-" META_TARGET_NAME " " SG_GEN_VERSION;
 
 static unsigned display_row(unsigned y) {
@@ -45,8 +49,13 @@ static unsigned display_row(unsigned y) {
     return (y * 5) >> 3; /* 192 -> 120 */
 #endif
 }
+/* Every source line counts: two lines that land on the same screen row are
+ * drawn together as one row (the renderer averages them), so no line is
+ * dropped (192 -> 120: rows of 2,2,1,2,1 lines; 192 -> 150 alike). */
 static int draw_line(void *, unsigned y) {
-    return !skip_video && (!y || display_row(y) != display_row(y - 1));
+    if (skip_video) return 0;
+    if (y + 1 < SG_HEIGHT && display_row(y + 1) == display_row(y)) return 0; /* first of a pair */
+    return y && display_row(y - 1) == display_row(y) ? 2 : 1;
 }
 /* Lines are rendered straight into the buffer machine.row_out points to. */
 #if META_TARGET_POKITTO
@@ -93,10 +102,13 @@ static void frame(void *) {
 #endif
     sg1000_buttons(0, keys);
     sg1000_pause(pause);
-    /* NTSC: 59736 T-states at 3.579545 MHz.  Drop at most one presentation
-     * when late; CPU, PSG and sprite status keep full precision. */
+    /* NTSC: 59736 T-states at 3.579545 MHz.  CPU, PSG and sprite status
+     * keep full precision whatever is skipped. */
     deadline += 16688u;
-    skip_video = !skip_video && (int32_t)(meta_micros() - deadline) > 0;
+    /* Late: skip presentations, at most SG_MAX_SKIP in a row (as the Game
+     * Boy runtime's META_MAX_SKIP); the game itself keeps its speed. */
+    skip_video = (int32_t)(meta_micros() - deadline) > 0 && skipped_run < SG_MAX_SKIP;
+    skipped_run = skip_video ? skipped_run + 1 : 0;
     while ((int32_t)(meta_micros() - deadline) < 0) meta_audio_idle();
     if ((int32_t)(meta_micros() - deadline) > 33376) deadline = meta_micros();
 }
@@ -116,7 +128,6 @@ int main() {
 #else
     sg1000_init(sg_rom, sg_rom_size, 0);
 #endif
-    for (unsigned i = 0; i < 16; i++) machine.palette[i] = META_COLOR(sg1000_palette[i]);
     machine.lookup = sg_gen_lookup;
     machine.draw_line = draw_line;
     machine.row = row;
@@ -128,8 +139,8 @@ int main() {
     machine.frame = frame;
     /* Below the guard, runtime calls made from a region still need stack:
      * sync, line rendering, audio catch-up, LCD/audio drivers and
-     * interrupts (about 1 KiB, -fstack-usage); the rest is for nesting. */
-    sg_stack_limit = (uintptr_t)&end + 1536;
+     * interrupts (about 2 KiB, -fstack-usage); the rest is for nesting. */
+    sg_stack_limit = (uintptr_t)&end + 2560;
     meta_audio_init();
     deadline = meta_micros();
     /* Keep an inspectable source/target version stamp in the firmware. */

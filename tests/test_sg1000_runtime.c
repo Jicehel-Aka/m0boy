@@ -14,16 +14,14 @@ static void run_frames(unsigned n) { stop_at = machine.frames + n; machine.stop 
 static uint32_t lcg = 12345;
 static uint8_t rnd(void) { lcg = lcg * 1103515245u + 12345u; return (uint8_t)(lcg >> 16); }
 
-/* Device line = reference line sampled at tile pixels 0 1 3 4 6. */
+/* Device line = reference line through the generic box filter. */
 static int out_matches(unsigned y) {
-    static const uint8_t sample[5] = { 0, 1, 3, 4, 6 };
     uint8_t ref[SG_WIDTH];
-    uint16_t out[SG_OUT_WIDTH];
+    uint16_t out[SG_OUT_WIDTH], expected[SG_OUT_WIDTH];
     sg1000_render_line(y, ref);
     sg1000_render_out(y, out);
-    for (unsigned i = 0; i < SG_OUT_WIDTH; i++)
-        if (out[i] != machine.palette[ref[(i / 5) * 8 + sample[i % 5]]]) return 0;
-    return 1;
+    sg1000_filter_line(ref, expected);
+    return !memcmp(out, expected, sizeof out);
 }
 
 int main(void) {
@@ -66,6 +64,14 @@ int main(void) {
     uint8_t pixels[SG_WIDTH];
     sg1000_render_line(0, pixels); REQUIRE(pixels[0] == 15 && pixels[1] == 2);
     REQUIRE(out_matches(0));
+    { /* pattern 0x80: pixel 0 white (15), 1-7 green (2): o0 = (5 white + 3 green) / 8 */
+        uint16_t out[SG_OUT_WIDTH];
+        sg1000_render_out(0, out);
+        uint16_t w = machine.palette[15], g = machine.palette[2];
+        unsigned r = (5 * (w >> 11) + 3 * (g >> 11) + 4) / 8, gr = (5 * ((w >> 5) & 63) + 3 * ((g >> 5) & 63) + 4) / 8,
+                 bl = (5 * (w & 31) + 3 * (g & 31) + 4) / 8;
+        REQUIRE(out[0] == (uint16_t)(r << 11 | gr << 5 | bl) && out[1] == g);
+    }
     machine.vram[0x1b00] = 255; machine.vram[0x1b01] = 0; machine.vram[0x1b02] = 1; machine.vram[0x1b03] = 3;
     machine.vram[0x1b04] = 255; machine.vram[0x1b05] = 0; machine.vram[0x1b06] = 1; machine.vram[0x1b07] = 4;
     machine.vram[0x1b08] = 208; machine.vram[8] = 128; machine.sprites_dirty = 1;
@@ -88,6 +94,33 @@ int main(void) {
         reg(0, mode ? 2 : 0); reg(1, 0x63); reg(2, 0x0e); reg(3, mode ? 0xff : 0x80);
         reg(4, mode ? 3 : 0); reg(5, 0x76); reg(6, 0); reg(7, 0x14);
         for (unsigned y = 0; y < SG_HEIGHT; y++) REQUIRE(out_matches(y));
+    }
+
+    /* line pairs: equal lines give the single line; a tile half foreground,
+     * half background (same colours) gives the mean weight; otherwise
+     * (here: sprites) the two filtered lines are averaged */
+    {
+        sg1000_reset();
+        reg(0, 0); reg(1, 0x40); reg(2, 6); reg(3, 0x80); reg(4, 0); reg(5, 0x36); reg(7, 1);
+        for (unsigned i = 0; i < 0x800; i++) machine.vram[i] = rnd();
+        for (unsigned i = 0; i < 32; i++) machine.vram[0x2000 + i] = rnd();
+        for (unsigned i = 0; i < 0x300; i++) machine.vram[0x1800 + i] = (uint8_t)(i & 7) | (uint8_t)((i & 31) << 3);
+        machine.vram[0x1b00] = 208; machine.sprites_dirty = 1;
+        uint16_t pair[SG_OUT_WIDTH], a[SG_OUT_WIDTH], b[SG_OUT_WIDTH];
+        for (unsigned t = 0; t < 256; t++) machine.vram[t * 8 + 3] = machine.vram[t * 8 + 2];
+        sg1000_render_pair(2, pair); sg1000_render_out(2, a);
+        REQUIRE(!memcmp(pair, a, sizeof pair));
+        machine.vram[0x1800] = 0; machine.vram[0x2000] = 0xf2; machine.vram[0] = 0xff; machine.vram[1] = 0x00;
+        sg1000_render_pair(0, pair);
+        uint16_t w = machine.palette[15], g = machine.palette[2];
+        unsigned r = (4 * (w >> 11) + 4 * (g >> 11) + 4) / 8, gr = (4 * ((w >> 5) & 63) + 4 * ((g >> 5) & 63) + 4) / 8,
+                 bl = (4 * (w & 31) + 4 * (g & 31) + 4) / 8;
+        for (unsigned i = 0; i < 5; i++) REQUIRE(pair[i] == (uint16_t)(r << 11 | gr << 5 | bl));
+        machine.vram[0x1b00] = 3; machine.vram[0x1b01] = 40; machine.vram[0x1b02] = 2; machine.vram[0x1b03] = 9;
+        machine.vram[0x1b04] = 208; machine.vram[0x10] = 0xa5; machine.vram[0x11] = 0x3c; machine.sprites_dirty = 1;
+        sg1000_render_pair(4, pair); sg1000_render_out(4, a); sg1000_render_out(5, b);
+        for (unsigned i = 25; i < 30; i++) /* the sprite's tile (x 40-47) */
+            REQUIRE(pair[i] == (uint16_t)((a[i] & b[i]) + (((a[i] ^ b[i]) & 0xf7deu) >> 1)));
     }
 
     /* HALT with interrupts off: whole refresh periods up to each event */

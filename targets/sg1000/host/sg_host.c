@@ -74,9 +74,9 @@ static void row(void *ctx, unsigned y, uint16_t *pixels) { (void)ctx; (void)y; (
 static void ref_row(void *ctx, unsigned y, const uint8_t *pixels) {
     (void)ctx;
     memcpy(image[y], pixels, SG_WIDTH);
-    static const uint8_t sample[5] = { 0, 1, 3, 4, 6 };
-    for (unsigned i = 0; i < SG_OUT_WIDTH; i++)
-        if (out_row[i] != machine.palette[pixels[(i / 5) * 8 + sample[i % 5]] & 15]) { out_mismatch++; break; }
+    uint16_t expected[SG_OUT_WIDTH];
+    sg1000_filter_line(pixels, expected);
+    if (memcmp(out_row, expected, sizeof expected)) out_mismatch++;
 }
 static int hot_first(const void *a, const void *b) {
     unsigned x = *(const uint16_t *)a, y = *(const uint16_t *)b;

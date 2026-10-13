@@ -15,59 +15,147 @@ typedef struct {
     uint8_t color, width, shift;
 } sprite_t;
 
-/* Device pixels come in words of two (low half first, little endian).
- * color_pairs[c][k]: the word for colour byte c, k bit 0/1 = first/second
- * pixel in the foreground colour (colour 0 = backdrop), rebuilt when the
- * backdrop or the palette changes.
- * tile_pairs[pattern]: indices into it for the sampled pixels 7 6 4 3 1:
- * first tile of a pair, words 76 and 43 (bits 0-1, 2-3), pixel 1 as 0 or 3
- * (bits 4-5); second tile, pixel 7 as 0 or 3 (bits 6-7), words 64 and 31
- * (bits 8-9, 10-11). */
-#if !SG_LOW_RAM
-static uint32_t color_pairs[256][4];
-static uint16_t pairs_palette[16];
-static uint8_t pairs_ready;
-static void color_pairs_build(const uint16_t *pal, uint16_t bd) {
-    for (unsigned c = 0; c < 256; c++) {
-        uint32_t fg = (c >> 4) ? pal[c >> 4] : bd, bg = (c & 15) ? pal[c & 15] : bd;
-        color_pairs[c][0] = bg | bg << 16;
-        color_pairs[c][1] = fg | bg << 16;
-        color_pairs[c][2] = bg | fg << 16;
-        color_pairs[c][3] = fg | fg << 16;
-    }
-    for (unsigned i = 1; i < 16; i++) pairs_palette[i] = pal[i];
-    pairs_palette[0] = bd;
-    pairs_ready = 1;
-}
-static const uint16_t tile_pairs[256] = {
-    0x000, 0x000, 0x830, 0x830, 0x000, 0x000, 0x830, 0x830, 0x408, 0x408, 0xc38, 0xc38,
-    0x408, 0x408, 0xc38, 0xc38, 0x204, 0x204, 0xa34, 0xa34, 0x204, 0x204, 0xa34, 0xa34,
-    0x60c, 0x60c, 0xe3c, 0xe3c, 0x60c, 0x60c, 0xe3c, 0xe3c, 0x000, 0x000, 0x830, 0x830,
-    0x000, 0x000, 0x830, 0x830, 0x408, 0x408, 0xc38, 0xc38, 0x408, 0x408, 0xc38, 0xc38,
-    0x204, 0x204, 0xa34, 0xa34, 0x204, 0x204, 0xa34, 0xa34, 0x60c, 0x60c, 0xe3c, 0xe3c,
-    0x60c, 0x60c, 0xe3c, 0xe3c, 0x102, 0x102, 0x932, 0x932, 0x102, 0x102, 0x932, 0x932,
-    0x50a, 0x50a, 0xd3a, 0xd3a, 0x50a, 0x50a, 0xd3a, 0xd3a, 0x306, 0x306, 0xb36, 0xb36,
-    0x306, 0x306, 0xb36, 0xb36, 0x70e, 0x70e, 0xf3e, 0xf3e, 0x70e, 0x70e, 0xf3e, 0xf3e,
-    0x102, 0x102, 0x932, 0x932, 0x102, 0x102, 0x932, 0x932, 0x50a, 0x50a, 0xd3a, 0xd3a,
-    0x50a, 0x50a, 0xd3a, 0xd3a, 0x306, 0x306, 0xb36, 0xb36, 0x306, 0x306, 0xb36, 0xb36,
-    0x70e, 0x70e, 0xf3e, 0xf3e, 0x70e, 0x70e, 0xf3e, 0xf3e, 0x0c1, 0x0c1, 0x8f1, 0x8f1,
-    0x0c1, 0x0c1, 0x8f1, 0x8f1, 0x4c9, 0x4c9, 0xcf9, 0xcf9, 0x4c9, 0x4c9, 0xcf9, 0xcf9,
-    0x2c5, 0x2c5, 0xaf5, 0xaf5, 0x2c5, 0x2c5, 0xaf5, 0xaf5, 0x6cd, 0x6cd, 0xefd, 0xefd,
-    0x6cd, 0x6cd, 0xefd, 0xefd, 0x0c1, 0x0c1, 0x8f1, 0x8f1, 0x0c1, 0x0c1, 0x8f1, 0x8f1,
-    0x4c9, 0x4c9, 0xcf9, 0xcf9, 0x4c9, 0x4c9, 0xcf9, 0xcf9, 0x2c5, 0x2c5, 0xaf5, 0xaf5,
-    0x2c5, 0x2c5, 0xaf5, 0xaf5, 0x6cd, 0x6cd, 0xefd, 0xefd, 0x6cd, 0x6cd, 0xefd, 0xefd,
-    0x1c3, 0x1c3, 0x9f3, 0x9f3, 0x1c3, 0x1c3, 0x9f3, 0x9f3, 0x5cb, 0x5cb, 0xdfb, 0xdfb,
-    0x5cb, 0x5cb, 0xdfb, 0xdfb, 0x3c7, 0x3c7, 0xbf7, 0xbf7, 0x3c7, 0x3c7, 0xbf7, 0xbf7,
-    0x7cf, 0x7cf, 0xfff, 0xfff, 0x7cf, 0x7cf, 0xfff, 0xfff, 0x1c3, 0x1c3, 0x9f3, 0x9f3,
-    0x1c3, 0x1c3, 0x9f3, 0x9f3, 0x5cb, 0x5cb, 0xdfb, 0xdfb, 0x5cb, 0x5cb, 0xdfb, 0xdfb,
-    0x3c7, 0x3c7, 0xbf7, 0xbf7, 0x3c7, 0x3c7, 0xbf7, 0xbf7, 0x7cf, 0x7cf, 0xfff, 0xfff,
-    0x7cf, 0x7cf, 0xfff, 0xfff,
-};
-
+/* Device line: a box filter from 256 to 160 pixels.  Each device pixel
+ * covers 1.6 source pixels; in eighths, the five pixels of a tile take
+ *   o0 = 5 s0 + 3 s1          o3 = 1 s4 + 5 s5 + 2 s6
+ *   o1 = 2 s1 + 5 s2 + 1 s3   o4 = 3 s6 + 5 s7
+ *   o2 = 4 s3 + 4 s4
+ * Colours are added as spread RGB565 (channels apart in a 32-bit word),
+ * rounded, then folded back.  A background tile has two colours only, so
+ * each device pixel is mix(foreground, background, w) with w the weight of
+ * the foreground bits: tile_w gives the five weights of a pattern byte and
+ * mix the 9 blends of a colour byte (rebuilt when the palette or the
+ * backdrop changes).  Both paths compute the same values. */
+static inline uint32_t spread(uint32_t c) { return (c | (c << 16)) & 0x07e0f81fu; }
+/* Panel order: the META's SPI sends the high byte first (SG_PANEL_SWAP). */
+#ifndef SG_PANEL_SWAP
+#define SG_PANEL_SWAP 0
 #endif
-
-/* Device column of each source pixel inside a tile (0xff: not sampled). */
-static const uint8_t out_column[8] = { 0, 1, 0xff, 2, 3, 0xff, 4, 0xff };
+static inline uint16_t panel(uint32_t c) {
+#if SG_PANEL_SWAP
+    return (uint16_t)(((c >> 8) & 0xff) | ((c & 0xff) << 8));
+#else
+    return (uint16_t)c;
+#endif
+}
+static inline uint16_t fold(uint32_t s) {
+    s = ((s + 0x00802004u) >> 3) & 0x07e0f81fu;
+    return (uint16_t)(s | (s >> 16));
+}
+/* five source pixels -> five device pixels, from 8 spread colours */
+static inline void filter8(const uint32_t *s, uint16_t *o) {
+    o[0] = panel(fold(5 * s[0] + 3 * s[1]));
+    o[1] = panel(fold(2 * s[1] + 5 * s[2] + s[3]));
+    o[2] = panel(fold(4 * s[3] + 4 * s[4]));
+    o[3] = panel(fold(s[4] + 5 * s[5] + 2 * s[6]));
+    o[4] = panel(fold(3 * s[6] + 5 * s[7]));
+}
+/* five weights of a pattern byte, as byte offsets 2w in 5-bit fields */
+static const uint32_t tile_w[256] = {
+    0x0000000, 0x0a00000, 0x0620000, 0x1020000, 0x0050000, 0x0a50000,
+    0x0670000, 0x1070000, 0x0012000, 0x0a12000, 0x0632000, 0x1032000,
+    0x0062000, 0x0a62000, 0x0682000, 0x1082000, 0x0002040, 0x0a02040,
+    0x0622040, 0x1022040, 0x0052040, 0x0a52040, 0x0672040, 0x1072040,
+    0x0014040, 0x0a14040, 0x0634040, 0x1034040, 0x0064040, 0x0a64040,
+    0x0684040, 0x1084040, 0x0000140, 0x0a00140, 0x0620140, 0x1020140,
+    0x0050140, 0x0a50140, 0x0670140, 0x1070140, 0x0012140, 0x0a12140,
+    0x0632140, 0x1032140, 0x0062140, 0x0a62140, 0x0682140, 0x1082140,
+    0x0002180, 0x0a02180, 0x0622180, 0x1022180, 0x0052180, 0x0a52180,
+    0x0672180, 0x1072180, 0x0014180, 0x0a14180, 0x0634180, 0x1034180,
+    0x0064180, 0x0a64180, 0x0684180, 0x1084180, 0x0000086, 0x0a00086,
+    0x0620086, 0x1020086, 0x0050086, 0x0a50086, 0x0670086, 0x1070086,
+    0x0012086, 0x0a12086, 0x0632086, 0x1032086, 0x0062086, 0x0a62086,
+    0x0682086, 0x1082086, 0x00020c6, 0x0a020c6, 0x06220c6, 0x10220c6,
+    0x00520c6, 0x0a520c6, 0x06720c6, 0x10720c6, 0x00140c6, 0x0a140c6,
+    0x06340c6, 0x10340c6, 0x00640c6, 0x0a640c6, 0x06840c6, 0x10840c6,
+    0x00001c6, 0x0a001c6, 0x06201c6, 0x10201c6, 0x00501c6, 0x0a501c6,
+    0x06701c6, 0x10701c6, 0x00121c6, 0x0a121c6, 0x06321c6, 0x10321c6,
+    0x00621c6, 0x0a621c6, 0x06821c6, 0x10821c6, 0x0002206, 0x0a02206,
+    0x0622206, 0x1022206, 0x0052206, 0x0a52206, 0x0672206, 0x1072206,
+    0x0014206, 0x0a14206, 0x0634206, 0x1034206, 0x0064206, 0x0a64206,
+    0x0684206, 0x1084206, 0x000000a, 0x0a0000a, 0x062000a, 0x102000a,
+    0x005000a, 0x0a5000a, 0x067000a, 0x107000a, 0x001200a, 0x0a1200a,
+    0x063200a, 0x103200a, 0x006200a, 0x0a6200a, 0x068200a, 0x108200a,
+    0x000204a, 0x0a0204a, 0x062204a, 0x102204a, 0x005204a, 0x0a5204a,
+    0x067204a, 0x107204a, 0x001404a, 0x0a1404a, 0x063404a, 0x103404a,
+    0x006404a, 0x0a6404a, 0x068404a, 0x108404a, 0x000014a, 0x0a0014a,
+    0x062014a, 0x102014a, 0x005014a, 0x0a5014a, 0x067014a, 0x107014a,
+    0x001214a, 0x0a1214a, 0x063214a, 0x103214a, 0x006214a, 0x0a6214a,
+    0x068214a, 0x108214a, 0x000218a, 0x0a0218a, 0x062218a, 0x102218a,
+    0x005218a, 0x0a5218a, 0x067218a, 0x107218a, 0x001418a, 0x0a1418a,
+    0x063418a, 0x103418a, 0x006418a, 0x0a6418a, 0x068418a, 0x108418a,
+    0x0000090, 0x0a00090, 0x0620090, 0x1020090, 0x0050090, 0x0a50090,
+    0x0670090, 0x1070090, 0x0012090, 0x0a12090, 0x0632090, 0x1032090,
+    0x0062090, 0x0a62090, 0x0682090, 0x1082090, 0x00020d0, 0x0a020d0,
+    0x06220d0, 0x10220d0, 0x00520d0, 0x0a520d0, 0x06720d0, 0x10720d0,
+    0x00140d0, 0x0a140d0, 0x06340d0, 0x10340d0, 0x00640d0, 0x0a640d0,
+    0x06840d0, 0x10840d0, 0x00001d0, 0x0a001d0, 0x06201d0, 0x10201d0,
+    0x00501d0, 0x0a501d0, 0x06701d0, 0x10701d0, 0x00121d0, 0x0a121d0,
+    0x06321d0, 0x10321d0, 0x00621d0, 0x0a621d0, 0x06821d0, 0x10821d0,
+    0x0002210, 0x0a02210, 0x0622210, 0x1022210, 0x0052210, 0x0a52210,
+    0x0672210, 0x1072210, 0x0014210, 0x0a14210, 0x0634210, 0x1034210,
+    0x0064210, 0x0a64210, 0x0684210, 0x1084210,
+};
+/* the same weights w (0-8) in 5-bit fields: two lines add without carry */
+static const uint32_t tile_wv[256] = {
+    0x0000000, 0x0500000, 0x0310000, 0x0810000, 0x0028000, 0x0528000,
+    0x0338000, 0x0838000, 0x0009000, 0x0509000, 0x0319000, 0x0819000,
+    0x0031000, 0x0531000, 0x0341000, 0x0841000, 0x0001020, 0x0501020,
+    0x0311020, 0x0811020, 0x0029020, 0x0529020, 0x0339020, 0x0839020,
+    0x000a020, 0x050a020, 0x031a020, 0x081a020, 0x0032020, 0x0532020,
+    0x0342020, 0x0842020, 0x00000a0, 0x05000a0, 0x03100a0, 0x08100a0,
+    0x00280a0, 0x05280a0, 0x03380a0, 0x08380a0, 0x00090a0, 0x05090a0,
+    0x03190a0, 0x08190a0, 0x00310a0, 0x05310a0, 0x03410a0, 0x08410a0,
+    0x00010c0, 0x05010c0, 0x03110c0, 0x08110c0, 0x00290c0, 0x05290c0,
+    0x03390c0, 0x08390c0, 0x000a0c0, 0x050a0c0, 0x031a0c0, 0x081a0c0,
+    0x00320c0, 0x05320c0, 0x03420c0, 0x08420c0, 0x0000043, 0x0500043,
+    0x0310043, 0x0810043, 0x0028043, 0x0528043, 0x0338043, 0x0838043,
+    0x0009043, 0x0509043, 0x0319043, 0x0819043, 0x0031043, 0x0531043,
+    0x0341043, 0x0841043, 0x0001063, 0x0501063, 0x0311063, 0x0811063,
+    0x0029063, 0x0529063, 0x0339063, 0x0839063, 0x000a063, 0x050a063,
+    0x031a063, 0x081a063, 0x0032063, 0x0532063, 0x0342063, 0x0842063,
+    0x00000e3, 0x05000e3, 0x03100e3, 0x08100e3, 0x00280e3, 0x05280e3,
+    0x03380e3, 0x08380e3, 0x00090e3, 0x05090e3, 0x03190e3, 0x08190e3,
+    0x00310e3, 0x05310e3, 0x03410e3, 0x08410e3, 0x0001103, 0x0501103,
+    0x0311103, 0x0811103, 0x0029103, 0x0529103, 0x0339103, 0x0839103,
+    0x000a103, 0x050a103, 0x031a103, 0x081a103, 0x0032103, 0x0532103,
+    0x0342103, 0x0842103, 0x0000005, 0x0500005, 0x0310005, 0x0810005,
+    0x0028005, 0x0528005, 0x0338005, 0x0838005, 0x0009005, 0x0509005,
+    0x0319005, 0x0819005, 0x0031005, 0x0531005, 0x0341005, 0x0841005,
+    0x0001025, 0x0501025, 0x0311025, 0x0811025, 0x0029025, 0x0529025,
+    0x0339025, 0x0839025, 0x000a025, 0x050a025, 0x031a025, 0x081a025,
+    0x0032025, 0x0532025, 0x0342025, 0x0842025, 0x00000a5, 0x05000a5,
+    0x03100a5, 0x08100a5, 0x00280a5, 0x05280a5, 0x03380a5, 0x08380a5,
+    0x00090a5, 0x05090a5, 0x03190a5, 0x08190a5, 0x00310a5, 0x05310a5,
+    0x03410a5, 0x08410a5, 0x00010c5, 0x05010c5, 0x03110c5, 0x08110c5,
+    0x00290c5, 0x05290c5, 0x03390c5, 0x08390c5, 0x000a0c5, 0x050a0c5,
+    0x031a0c5, 0x081a0c5, 0x00320c5, 0x05320c5, 0x03420c5, 0x08420c5,
+    0x0000048, 0x0500048, 0x0310048, 0x0810048, 0x0028048, 0x0528048,
+    0x0338048, 0x0838048, 0x0009048, 0x0509048, 0x0319048, 0x0819048,
+    0x0031048, 0x0531048, 0x0341048, 0x0841048, 0x0001068, 0x0501068,
+    0x0311068, 0x0811068, 0x0029068, 0x0529068, 0x0339068, 0x0839068,
+    0x000a068, 0x050a068, 0x031a068, 0x081a068, 0x0032068, 0x0532068,
+    0x0342068, 0x0842068, 0x00000e8, 0x05000e8, 0x03100e8, 0x08100e8,
+    0x00280e8, 0x05280e8, 0x03380e8, 0x08380e8, 0x00090e8, 0x05090e8,
+    0x03190e8, 0x08190e8, 0x00310e8, 0x05310e8, 0x03410e8, 0x08410e8,
+    0x0001108, 0x0501108, 0x0311108, 0x0811108, 0x0029108, 0x0529108,
+    0x0339108, 0x0839108, 0x000a108, 0x050a108, 0x031a108, 0x081a108,
+    0x0032108, 0x0532108, 0x0342108, 0x0842108,
+};
+#if !SG_LOW_RAM
+static uint16_t mix[256][9];
+static uint16_t mix_palette[16];
+static uint8_t mix_ready;
+static void mix_build(const uint16_t *pal, uint16_t bd) {
+    for (unsigned c = 0; c < 256; c++) {
+        uint32_t f = spread((c >> 4) ? pal[c >> 4] : bd), b = spread((c & 15) ? pal[c & 15] : bd);
+        for (unsigned w = 0; w <= 8; w++) mix[c][w] = panel(fold(w * f + (8 - w) * b));
+    }
+    for (unsigned i = 1; i < 16; i++) mix_palette[i] = pal[i];
+    mix_palette[0] = bd;
+    mix_ready = 1;
+}
+#endif
 
 /* Sprites covering each line, as a mask of sprite numbers, rebuilt when a
  * sprite Y, the terminator, the size or the table moves (sprites_dirty). */
@@ -209,89 +297,226 @@ static void ref_line(unsigned y, uint8_t *pixels, const sprite_t *spr, unsigned 
         }
 }
 
-/* Device renderer: SG_OUT_WIDTH RGB565 pixels. */
-static void out_line(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n) {
-    sg1000_t *m = &machine;
-    const uint16_t *pal = m->palette;
+/* Pattern and colour bytes of background tile tx on line y (Graphics I/II). */
+static inline void tile_bytes(unsigned y, unsigned tx, unsigned *pattern, unsigned *colors) {
+    const sg1000_t *m = &machine;
     const uint8_t *vram = m->vram;
-    uint16_t bd = pal[m->vdp[7] & 15];
-    if (!(m->vdp[1] & 64)) {
-        for (unsigned i = 0; i < SG_OUT_WIDTH; i++) out[i] = bd;
-        return;
-    }
-    if (m->vdp[1] & 24) { /* text or multicolour: sample the reference line */
-        uint8_t px[SG_WIDTH];
-        ref_line(y, px, spr, n);
-        for (unsigned i = 0, x = 0; i < SG_OUT_WIDTH; x += 8) {
-            out[i++] = pal[px[x]]; out[i++] = pal[px[x + 1]]; out[i++] = pal[px[x + 3]];
-            out[i++] = pal[px[x + 4]]; out[i++] = pal[px[x + 6]];
-        }
-        return;
-    }
-#if SG_LOW_RAM
-    /* One tile at a time: its 5 sampled pixels, foreground or background. */
-    const uint8_t *names = vram + (((m->vdp[2] & 15u) << 10) + (y >> 3) * 32);
-    const unsigned g2 = m->vdp[0] & 2;
-    const uint8_t *pt = vram + (g2 ? (m->vdp[4] & 4u) << 11 : ((m->vdp[4] & 7u) << 11) + (y & 7));
-    const uint8_t *ct = vram + (g2 ? (m->vdp[3] & 128u) << 6 : (unsigned)m->vdp[3] << 6);
-    const unsigned pmask = ((m->vdp[4] & 3u) << 11) | 0x7ff, cmask = ((m->vdp[3] & 127u) << 6) | 63;
-    const unsigned third = ((y & 0xc0) << 5) | (y & 7);
-    uint16_t *o = out;
-    for (unsigned tx = 0; tx < 32; tx++, o += 5) {
-        unsigned t = names[tx], bits, colors;
-        if (g2) { unsigned off = t * 8u | third; bits = pt[off & pmask]; colors = ct[off & cmask]; }
-        else { bits = pt[t * 8]; colors = ct[t >> 3]; }
-        uint16_t fg = (colors >> 4) ? pal[colors >> 4] : bd, bg = (colors & 15) ? pal[colors & 15] : bd;
-        o[0] = (bits & 0x80) ? fg : bg; o[1] = (bits & 0x40) ? fg : bg; o[2] = (bits & 0x10) ? fg : bg;
-        o[3] = (bits & 0x08) ? fg : bg; o[4] = (bits & 0x02) ? fg : bg;
-    }
-#else
-    /* Two tiles give 10 device pixels: 5 aligned words from color_pairs. */
-    int stale = !pairs_ready || pairs_palette[0] != bd;
-    for (unsigned i = 1; i < 16 && !stale; i++) stale = pairs_palette[i] != pal[i];
-    if (stale) color_pairs_build(pal, bd);
-    const uint8_t *names = vram + (((m->vdp[2] & 15u) << 10) + (y >> 3) * 32);
-    uint32_t *o = (uint32_t *)out;
-    if (m->vdp[0] & 2) { /* Graphics II: three pattern/colour thirds, masked */
-        const uint8_t *pt = vram + ((m->vdp[4] & 4u) << 11), *ct = vram + ((m->vdp[3] & 128u) << 6);
-        const unsigned pmask = ((m->vdp[4] & 3u) << 11) | 0x7ff, cmask = ((m->vdp[3] & 127u) << 6) | 63;
-        const unsigned third = ((y & 0xc0) << 5) | (y & 7);
-        for (unsigned tx = 0; tx < 32; tx += 2, o += 5) {
-            unsigned oa = names[tx] * 8u | third, ob = names[tx + 1] * 8u | third;
-            const uint32_t *a = color_pairs[ct[oa & cmask]], *b = color_pairs[ct[ob & cmask]];
-            unsigned ka = tile_pairs[pt[oa & pmask]], kb = tile_pairs[pt[ob & pmask]];
-            o[0] = a[ka & 3];
-            o[1] = a[(ka >> 2) & 3];
-            o[2] = (a[(ka >> 4) & 3] & 0xffffu) | (b[(kb >> 6) & 3] & 0xffff0000u);
-            o[3] = b[(kb >> 8) & 3];
-            o[4] = b[(kb >> 10) & 3];
-        }
+    unsigned tile = vram[((m->vdp[2] & 15u) << 10) + (y >> 3) * 32 + tx];
+    if (m->vdp[0] & 2) {
+        unsigned offset = tile * 8u | ((y & 0xc0) << 5) | (y & 7);
+        *pattern = vram[((m->vdp[4] & 4u) << 11) | (offset & (((m->vdp[4] & 3u) << 11) | 0x7ff))];
+        *colors = vram[((m->vdp[3] & 128u) << 6) | (offset & (((m->vdp[3] & 127u) << 6) | 63))];
     } else {
-        const uint8_t *pt = vram + ((m->vdp[4] & 7u) << 11) + (y & 7), *ct = vram + ((unsigned)m->vdp[3] << 6);
-        for (unsigned tx = 0; tx < 32; tx += 2, o += 5) {
-            unsigned ta = names[tx], tb = names[tx + 1];
-            const uint32_t *a = color_pairs[ct[ta >> 3]], *b = color_pairs[ct[tb >> 3]];
-            unsigned ka = tile_pairs[pt[ta * 8]], kb = tile_pairs[pt[tb * 8]];
-            o[0] = a[ka & 3];
-            o[1] = a[(ka >> 2) & 3];
-            o[2] = (a[(ka >> 4) & 3] & 0xffffu) | (b[(kb >> 6) & 3] & 0xffff0000u);
-            o[3] = b[(kb >> 8) & 3];
-            o[4] = b[(kb >> 10) & 3];
-        }
+        *pattern = vram[((m->vdp[4] & 7u) << 11) + tile * 8 + (y & 7)];
+        *colors = vram[((unsigned)m->vdp[3] << 6) + (tile >> 3)];
     }
-#endif
-    for (unsigned k = n; k-- > 0;) {
-        uint16_t c = pal[spr[k].color];
+}
+
+/* Sprite pixels of a line in over[] (0: none; lower numbers win) for the
+ * tiles they touch; returns the mask of those tiles. */
+static uint32_t sprite_overlay(const sprite_t *spr, unsigned n, uint8_t *over) {
+    uint32_t touched = 0;
+    for (unsigned k = 0; k < n; k++) {
+        int x0 = spr[k].left, x1 = x0 + (spr[k].width << spr[k].shift) - 1;
+        if (x1 < 0 || x0 >= SG_WIDTH) continue;
+        if (x0 < 0) x0 = 0;
+        if (x1 >= SG_WIDTH) x1 = SG_WIDTH - 1;
+        for (int t = x0 >> 3; t <= x1 >> 3; t++)
+            if (!(touched & (1u << t))) { touched |= 1u << t; for (unsigned i = 0; i < 8; i++) over[t * 8 + i] = 0; }
+    }
+    for (unsigned k = n; k-- > 0;)
         for (unsigned b = 0; b < spr[k].width; b++) {
             if (!(spr[k].bits & (0x8000u >> b))) continue;
             for (unsigned z = 0; z <= spr[k].shift; z++) {
                 int x = spr[k].left + (int)((b << spr[k].shift) + z);
-                if (x < 0 || x >= SG_WIDTH) continue;
-                unsigned col = out_column[x & 7];
-                if (col != 0xff) out[(unsigned)(x >> 3) * 5 + col] = c;
+                if (x >= 0 && x < SG_WIDTH) over[x] = spr[k].color;
             }
         }
+    return touched;
+}
+/* Tile tx of line y composed with sprites (over, or none), filtered. */
+static void tile_filtered(unsigned y, unsigned tx, const uint8_t *over, uint16_t *o) {
+    const uint16_t *pal = machine.palette;
+    const uint16_t bd = pal[machine.vdp[7] & 15];
+    unsigned pattern, colors;
+    tile_bytes(y, tx, &pattern, &colors);
+    const uint32_t f = spread((colors >> 4) ? pal[colors >> 4] : bd), b = spread((colors & 15) ? pal[colors & 15] : bd);
+    uint32_t src[8];
+    for (unsigned i = 0; i < 8; i++) {
+        unsigned c = over ? over[tx * 8 + i] : 0;
+        src[i] = c ? spread(pal[c]) : ((pattern << i) & 0x80) ? f : b;
     }
+    filter8(src, o);
+}
+
+/* Device renderer: SG_OUT_WIDTH RGB565 pixels, box-filtered. */
+static void out_line(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n) {
+    sg1000_t *m = &machine;
+    const uint16_t *pal = m->palette;
+    const uint16_t bd = pal[m->vdp[7] & 15];
+    if (!(m->vdp[1] & 64)) {
+        for (unsigned i = 0; i < SG_OUT_WIDTH; i++) out[i] = panel(bd);
+        return;
+    }
+    if (m->vdp[1] & 24) { /* text or multicolour: filter the reference line */
+        uint8_t px[SG_WIDTH];
+        ref_line(y, px, spr, n);
+        sg1000_filter_line(px, out);
+        return;
+    }
+#if !SG_LOW_RAM
+    int stale = !mix_ready || mix_palette[0] != bd;
+    for (unsigned i = 1; i < 16 && !stale; i++) stale = mix_palette[i] != pal[i];
+    if (stale) mix_build(pal, bd);
+#endif
+    /* everything the loop reads is hoisted: stores to out may alias VDP bytes */
+    const uint8_t *vram = m->vram;
+    const uint8_t *names = vram + (((m->vdp[2] & 15u) << 10) + (y >> 3) * 32), *pt, *ct;
+    unsigned pmask, cmask, third;
+    if (m->vdp[0] & 2) { /* Graphics II: three pattern/colour thirds, masked */
+        pt = vram + ((m->vdp[4] & 4u) << 11);
+        ct = vram + ((m->vdp[3] & 128u) << 6);
+        pmask = ((m->vdp[4] & 3u) << 11) | 0x7ff;
+        cmask = ((m->vdp[3] & 127u) << 6) | 63;
+        third = ((y & 0xc0) << 5) | (y & 7);
+    } else { /* Graphics I: as Graphics II with colour = tile / 8 */
+        pt = vram + ((m->vdp[4] & 7u) << 11) + (y & 7);
+        ct = vram + ((unsigned)m->vdp[3] << 6);
+        pmask = cmask = third = 0;
+    }
+    const int g2 = (m->vdp[0] & 2) != 0;
+    uint16_t *o = out;
+    for (unsigned tx = 0; tx < 32; tx++, o += 5) {
+        unsigned tile = names[tx], pattern, colors;
+        if (g2) { unsigned off = tile * 8u | third; pattern = pt[off & pmask]; colors = ct[off & cmask]; }
+        else { pattern = pt[tile * 8]; colors = ct[tile >> 3]; }
+        const uint32_t w = tile_w[pattern];
+#if SG_LOW_RAM
+        const uint32_t f = spread((colors >> 4) ? pal[colors >> 4] : bd), b = spread((colors & 15) ? pal[colors & 15] : bd);
+#define SG_MIX(off) panel(fold(((off) >> 1) * f + (8 - ((off) >> 1)) * b))
+#else
+        const uint8_t *mc = (const uint8_t *)mix[colors];
+#define SG_MIX(off) (*(const uint16_t *)(mc + (off)))
+#endif
+        o[0] = SG_MIX(w & 31);
+        o[1] = SG_MIX((w >> 5) & 31);
+        o[2] = SG_MIX((w >> 10) & 31);
+        o[3] = SG_MIX((w >> 15) & 31);
+        o[4] = SG_MIX(w >> 20);
+#undef SG_MIX
+    }
+    if (n) {
+        uint8_t over[SG_WIDTH];
+        uint32_t touched = sprite_overlay(spr, n, over);
+        for (unsigned tx = 0; touched; tx++, touched >>= 1)
+            if (touched & 1) tile_filtered(y, tx, over, out + tx * 5);
+    }
+}
+
+/* Reference line (256 colour indices) -> device line, the same filter. */
+void sg1000_filter_line(const uint8_t *pixels, uint16_t *out) {
+    const uint16_t *pal = machine.palette;
+    for (unsigned t = 0; t < 32; t++) {
+        uint32_t src[8];
+        for (unsigned i = 0; i < 8; i++) src[i] = spread(pal[pixels[t * 8 + i] & 15]);
+        filter8(src, out + t * 5);
+    }
+}
+
+/* Two RGB565 pixels averaged per channel (rounded down). */
+static inline uint16_t avg565(uint32_t a, uint32_t b) { /* both in panel order */
+    a = panel(a); b = panel(b);
+    return panel((a & b) + (((a ^ b) & 0xf7deu) >> 1));
+}
+
+/* Device row from two source lines (ya, ya + 1) of one tile row: tiles
+ * whose two lines share their colour byte are filtered once with the mean
+ * weight, (w_a + w_b + 1) / 2 eighths; other tiles, sprite tiles and the
+ * text/multicolour modes average the two filtered lines. */
+static void out_pair(unsigned ya, uint16_t *out, const sprite_t *spr_b, unsigned n_b) {
+    sg1000_t *m = &machine;
+    const unsigned yb = ya + 1;
+    sprite_t spr_a[4];
+    unsigned n_a = (m->vdp[1] & 64) && !(m->vdp[1] & 16) ? line_sprites(ya, spr_a, 0) : 0;
+#if SG_LOW_RAM
+    const int fast = 0;
+#else
+    const int fast = (m->vdp[1] & 64) && !(m->vdp[1] & 24) && (ya >> 3) == (yb >> 3);
+#endif
+    if (!fast) {
+        uint16_t second[SG_OUT_WIDTH];
+        out_line(ya, out, spr_a, n_a);
+        out_line(yb, second, spr_b, n_b);
+        for (unsigned i = 0; i < SG_OUT_WIDTH; i++) out[i] = avg565(out[i], second[i]);
+        return;
+    }
+#if !SG_LOW_RAM
+    const uint16_t *pal = m->palette;
+    const uint16_t bd = pal[m->vdp[7] & 15];
+    int stale = !mix_ready || mix_palette[0] != bd;
+    for (unsigned i = 1; i < 16 && !stale; i++) stale = mix_palette[i] != pal[i];
+    if (stale) mix_build(pal, bd);
+    const uint8_t *vram = m->vram;
+    const uint8_t *names = vram + (((m->vdp[2] & 15u) << 10) + (ya >> 3) * 32), *pt, *ct;
+    unsigned pmask = 0, cmask = 0, third = 0;
+    const int g2 = (m->vdp[0] & 2) != 0;
+    if (g2) {
+        pt = vram + ((m->vdp[4] & 4u) << 11);
+        ct = vram + ((m->vdp[3] & 128u) << 6);
+        pmask = ((m->vdp[4] & 3u) << 11) | 0x7ff;
+        cmask = ((m->vdp[3] & 127u) << 6) | 63;
+        third = ((ya & 0xc0) << 5) | (ya & 7);
+    } else {
+        pt = vram + ((m->vdp[4] & 7u) << 11) + (ya & 7);
+        ct = vram + ((unsigned)m->vdp[3] << 6);
+    }
+    uint16_t *o = out;
+    /* mean of two weights rounded up: (w_a + w_b + 1) / 2 as the byte offset
+     * 2 * that, i.e. (w_a + w_b + 1) with its low bit cleared */
+#define SG_PAIR_TILE(pa, pb, ca, cb) do { \
+        if (ca == cb) { \
+            const uint32_t w = tile_wv[pa] + tile_wv[pb] + 0x0108421u; \
+            const uint8_t *mc = (const uint8_t *)mix[ca]; \
+            o[0] = *(const uint16_t *)(mc + (w & 30)); \
+            o[1] = *(const uint16_t *)(mc + ((w >> 5) & 30)); \
+            o[2] = *(const uint16_t *)(mc + ((w >> 10) & 30)); \
+            o[3] = *(const uint16_t *)(mc + ((w >> 15) & 30)); \
+            o[4] = *(const uint16_t *)(mc + ((w >> 20) & 30)); \
+        } else { \
+            const uint32_t wa = tile_w[pa], wb = tile_w[pb]; \
+            const uint8_t *ma = (const uint8_t *)mix[ca], *mb = (const uint8_t *)mix[cb]; \
+            for (unsigned k_ = 0; k_ < 5; k_++) \
+                o[k_] = avg565(*(const uint16_t *)(ma + ((wa >> (5 * k_)) & 31)), *(const uint16_t *)(mb + ((wb >> (5 * k_)) & 31))); \
+        } \
+    } while (0)
+    if (g2) {
+        for (unsigned tx = 0; tx < 32; tx++, o += 5) {
+            const unsigned off = names[tx] * 8u | third;
+            const unsigned pa = pt[off & pmask], pb = pt[(off + 1) & pmask];
+            const unsigned ca = ct[off & cmask], cb = ct[(off + 1) & cmask];
+            SG_PAIR_TILE(pa, pb, ca, cb);
+        }
+    } else {
+        for (unsigned tx = 0; tx < 32; tx++, o += 5) {
+            const unsigned tile = names[tx];
+            const unsigned pa = pt[tile * 8], pb = pt[tile * 8 + 1], c = ct[tile >> 3];
+            SG_PAIR_TILE(pa, pb, c, c);
+        }
+    }
+#undef SG_PAIR_TILE
+    if (n_a || n_b) { /* tiles under sprites on either line: both lines composed */
+        uint8_t over_a[SG_WIDTH], over_b[SG_WIDTH];
+        uint32_t ta = n_a ? sprite_overlay(spr_a, n_a, over_a) : 0, tb = n_b ? sprite_overlay(spr_b, n_b, over_b) : 0;
+        uint32_t touched = ta | tb;
+        for (unsigned tx = 0; touched; tx++, touched >>= 1) {
+            if (!(touched & 1)) continue;
+            uint16_t la[5], lb[5];
+            tile_filtered(ya, tx, (ta >> tx) & 1 ? over_a : 0, la);
+            tile_filtered(yb, tx, (tb >> tx) & 1 ? over_b : 0, lb);
+            for (unsigned i = 0; i < 5; i++) out[tx * 5 + i] = avg565(la[i], lb[i]);
+        }
+    }
+#endif
 }
 
 static void vdp_line(unsigned y) {
@@ -303,9 +528,11 @@ static void vdp_line(unsigned y) {
         collisions(spr, n);
         if (!(m->vdp_status & 64)) m->vdp_status = (uint8_t)((m->vdp_status & 0xe0) | 31);
     }
-    if (m->row && m->row_out && (!m->draw_line || m->draw_line(m->platform, y))) {
-        out_line(y, m->row_out, spr, n);
-        m->row(m->platform, y, m->row_out);
+    if (m->row && m->row_out) {
+        int draw = m->draw_line ? m->draw_line(m->platform, y) : 1;
+        if (draw == 2 && y) out_pair(y - 1, m->row_out, spr, n); /* this line and the one before */
+        else if (draw) out_line(y, m->row_out, spr, n);
+        if (draw) m->row(m->platform, y, m->row_out);
     }
     if (m->ref_row) {
         uint8_t px[SG_WIDTH];
@@ -333,4 +560,10 @@ void sg1000_render_out(unsigned y, uint16_t *out) {
     sprite_t spr[4];
     unsigned n = (machine.vdp[1] & 64) && !(machine.vdp[1] & 16) ? line_sprites(y, spr, 0) : 0;
     out_line(y, out, spr, n);
+}
+
+void sg1000_render_pair(unsigned ya, uint16_t *out) {
+    sprite_t spr[4];
+    unsigned n = (machine.vdp[1] & 64) && !(machine.vdp[1] & 16) ? line_sprites(ya + 1, spr, 0) : 0;
+    out_pair(ya, out, spr, n);
 }

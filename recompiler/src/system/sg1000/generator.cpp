@@ -120,7 +120,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                << "#define SG_ROM_MASK " << (pow2 ? rom_size - 1 : 0) << "u\n"
                << "#define SG_CART_RAM " << (cart_ram ? 1 : 0) << "\n"
                << "#define SG_LOW_RAM " << (cart_ram ? 1 : 0) << "\n"
-               << "#define SG_PRECISE " << (o.precise ? 1 : 0) << "\n";
+               << "#define SG_PRECISE " << (o.precise ? 1 : 0) << "\n"
+               << "#define SG_PANEL_SWAP " << (o.target == TargetId::meta ? 1 : 0) << " /* META SPI: high byte first */\n";
         write(src / "sg_config.h", config.str());
         std::ostringstream data;
         data << "#include <stdint.h>\n#include <stddef.h>\nconst uint8_t sg_rom[] = {";

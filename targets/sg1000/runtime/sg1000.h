@@ -35,7 +35,7 @@ extern "C" {
 #define SG_LINE_CYCLES 228
 #define SG_FRAME_CYCLES (SG_LINES * SG_LINE_CYCLES)
 #define SG_VBLANK_CYCLES (SG_HEIGHT * SG_LINE_CYCLES)
-/* Device line: 5 of every 8 source pixels (256 -> 160). */
+/* Device line: 256 -> 160 pixels, box filter (5 device pixels per tile). */
 #define SG_OUT_WIDTH 160
 #define SG_CART_RAM_SIZE 8192
 
@@ -66,13 +66,14 @@ typedef struct {
     int32_t audio_count[4];  /* PSG ticks to the next edge (<= 0: edge due) */
     uint16_t audio_head, audio_tail;
     uint8_t audio_output[4], audio_buffer[512];
-    /* Output.  row: SG_OUT_WIDTH RGB565 pixels from palette; draw_line
+    /* Output.  row: SG_OUT_WIDTH RGB565 pixels from palette (true RGB565,
+     * the platform converts to its panel format); draw_line
      * selects the source lines that are displayed (others only update
      * sprite status).  ref_row: full 256-pixel colour indices, host only. */
     uint16_t palette[16];
     uint16_t *row_out;       /* where the next displayed line is rendered */
     void *platform;
-    int (*draw_line)(void *, unsigned y);
+    int (*draw_line)(void *, unsigned y); /* 0 none, 1 line y, 2 lines y - 1 and y */
     void (*row)(void *, unsigned y, uint16_t *pixels); /* pixels == row_out; may move row_out */
     void (*ref_row)(void *, unsigned y, const uint8_t *pixels);
     void (*frame)(void *);
@@ -122,7 +123,9 @@ int sg_step(uint16_t after);         /* one interpreted instruction; 1: continue
 /* Video */
 void sg1000_vdp_catchup(void);       /* render the lines that ended before cyc */
 void sg1000_render_line(unsigned y, uint8_t *pixels); /* reference: 256 indices or status only */
-void sg1000_render_out(unsigned y, uint16_t *out);    /* device: 160 RGB565 or status only */
+void sg1000_render_out(unsigned y, uint16_t *out);    /* device: 160 RGB565, box-filtered */
+void sg1000_filter_line(const uint8_t *pixels, uint16_t *out); /* 256 indices -> 160 RGB565 */
+void sg1000_render_pair(unsigned ya, uint16_t *out);  /* device row from lines ya and ya + 1 */
 
 /* Audio: unsigned 8-bit samples at rate, following emulated time */
 void sg1000_audio_rate(unsigned rate);
