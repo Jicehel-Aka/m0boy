@@ -1,18 +1,7 @@
 # m0boy
 
-Source CPU, source console (`--system`) and destination (`--target`) now have
-separate identities. SG-1000 cartridges (unbanked, up to 48 KiB) are recompiled
-too: Z80 code becomes C regions for the META and the Pokitto, on a runtime with
-lazy TMS9918A rendering and SN76489 sound; `compile.sh` handles `.sg` files. In
-precise mode the recompiled code reproduces the Z80 interpreter exactly. See the
-[multi-system architecture notes (French)](docs/MULTI_SYSTEM.fr.md).
-SG-1000 uses the shared [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80) frontend: `gm0 game.sg` (arrows,
-Space/Ctrl, Enter, `*`; F8 filters, F10 scaling, F11 fullscreen).
-`tools/sg1000/package.py` builds Windows and Linux archives with SDL2 included;
-see the [desktop distribution instructions](docs/MULTI_SYSTEM.fr.md#jouer-sur-pc).
-
-**Game Boy games recompiled into native firmwares for two Cortex-M0+
-handhelds: the Gamebuino META and the Pokitto.**
+**Game Boy and SG-1000 games recompiled into native firmwares for two
+Cortex-M0+ handhelds: the Gamebuino META and the Pokitto.**
 
 *Version française : [README.fr.md](README.fr.md).*
 
@@ -36,8 +25,37 @@ recompiler and adds everything needed to run on chips with 32 KiB of RAM,
 | Memory | 32 KiB RAM, 240 KiB flash for the firmware | 32 + 2 + 2 KiB RAM, 228 KiB flash below the loader |
 | Screen | 160×128: the 144 Game Boy lines blended into 128 | 220×176: picture 1:1, or enlarged to 200×176 |
 | Firmware build | PlatformIO | `make` with arm-none-eabi-gcc |
-| Version | 0.8.1 | 0.8.1 |
+| Version | 0.9.0 | 0.9.0 |
 | Status | Games run on the console | Tested in an emulator only. A first tester on a real Pokitto reports an upside-down picture; the cause is being investigated |
+
+## SG-1000
+
+Sega SG-1000 cartridges (`.sg`, unbanked, up to 48 KiB) go through the same
+pipeline: the Z80 code is recompiled, not emulated.
+
+- **Recompiler** (`--system sg1000`): code played during automatic sessions
+  (button 1 held plus random games), then the code it reaches statically,
+  becomes C regions like the Game Boy backend's: gotos inside, `CALL` as a C
+  call, flags computed only where a later instruction reads them, cycles
+  added in batches, device sync at loop heads. Rare instructions use the
+  Z80 interpreter's semantics on constant operands; the interpreter runs
+  what was never seen.
+- **Runtime**: two device events per frame instead of a check per
+  instruction. TMS9918A lines are drawn when the program touches the VDP or
+  at VBlank, straight into 160 RGB565 pixels for the LCD; the SN76489 is
+  caught up before each write. 8 KiB cartridge RAM (The Castle) is detected
+  while profiling.
+- **Checked**: built with `--meta-precise`, the recompiled code reproduces
+  the interpreter exactly (registers, memory, VDP, PSG, picture) on all 68
+  cartridges of a collection. The Z80 core passes ZEXDOC and 66 of 67 ZEXALL
+  tests.
+- **Speed**, measured in the gm0 emulator (not on hardware): on the META,
+  58 of those 68 games run at 97 % or more of NTSC speed, 7 at 90-97 %,
+  3 at 80-90 %; average 97.6 % (about 32 % with the former emulation).
+  The Pokitto games measured run at 96-99 %.
+
+Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
+`gm0 game.sg`. Details (French): [docs/MULTI_SYSTEM.fr.md](docs/MULTI_SYSTEM.fr.md).
 
 ## What was built
 
@@ -158,12 +176,13 @@ You need CMake 3.20 or newer, Ninja, gcc or clang, Python 3, and
 cmake -G Ninja -B build .
 ninja -C build                 # build/bin/gbrecomp
 
-# Put your ROMs in roms/gb/, then:
+# Put your ROMs in roms/gb/ (Game Boy) and roms/sg/ (SG-1000), then:
 ./compile.sh                   # asks for the console (META by default)
 TARGET=pokitto ./compile.sh    # or the Pokitto directly
 TARGET=both ./compile.sh       # or both
 ```
 
+`FIRMWARE_COMPILER=clang` builds the firmwares with Clang (GCC by default).
 New CMake builds prefer Clang when available, falling back to GCC.
 `-DM0BOY_PREFER_CLANG=OFF` prefers GCC; explicit `CC`, `CXX` and toolchains
 take precedence. Existing build directories keep their compiler. See the
@@ -192,6 +211,8 @@ ctest --test-dir build --output-on-failure
   has no partner.
 - On the META, the 144 lines are reduced to 128.
 - Frames are skipped when the console falls behind.
+- SG-1000: unbanked cartridges up to 48 KiB, NTSC only, no SC-3000
+  keyboard; code never seen while profiling runs in the interpreter.
 
 ## 100% vibe coded
 
@@ -244,10 +265,11 @@ were then removed from the tree; they remain in the history and in the
 
 | Path | Content |
 |---|---|
-| `recompiler/` | `gbrecomp`, with the META and Pokitto backend (`--target meta`, `--target pokitto`) |
+| `recompiler/` | `gbrecomp`/`m0recomp`, with the META and Pokitto backend (`--target meta`, `--target pokitto`) and the SG-1000 Z80 recompiler (`src/system/sg1000/`) |
 | `targets/meta/runtime/` | the `gbl` runtime shared by both consoles |
 | `targets/meta/platform/` | shared frontend (menu, saves, SD card, display) and each console's drivers |
 | `targets/meta/host/`, `targets/meta/tools/` | host harness, cycle estimator, font tools |
+| `targets/sg1000/` | SG-1000 runtime (TMS9918A, SN76489, fallback Z80 interpreter), console frontend, host harness |
 | `compile.sh`, `tools/meta-compiler/` | batch conversion |
 | `tools/gb-emu/` | gamebuino-emulator fork |
 | `tests/`, `targets/meta/tests/` | tests |

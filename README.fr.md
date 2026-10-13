@@ -1,18 +1,7 @@
 # m0boy
 
-L’architecture sépare maintenant CPU, console d’origine (`--system`) et
-destination (`--target`). Les cartouches SG-1000 (sans mapper, 48 Kio au plus)
-sont recompilées elles aussi : le code Z80 devient des régions de C pour la META
-et la Pokitto, sur un runtime à rendu TMS9918A différé et son SN76489 ;
-`compile.sh` accepte les `.sg`. En mode précis, le code recompilé reproduit
-exactement l’interpréteur Z80. Voir [l’architecture multi-console](docs/MULTI_SYSTEM.fr.md).
-La lecture SG-1000 utilise le frontal commun [gm0, branche `z80`](https://github.com/r043v/gm0/tree/z80) : `gm0 jeu.sg`
-(flèches, Espace/Ctrl, Entrée, `*` ; filtres F8, échelle F10, plein écran F11).
-Les paquets Windows et Linux avec SDL2 inclus se construisent avec
-`tools/sg1000/package.py` ; voir [la distribution PC](docs/MULTI_SYSTEM.fr.md#jouer-sur-pc).
-
-**Les jeux Game Boy recompilés en firmwares natifs pour deux consoles
-Cortex-M0+ : la Gamebuino META et la Pokitto.**
+**Les jeux Game Boy et SG-1000 recompilés en firmwares natifs pour deux
+consoles Cortex-M0+ : la Gamebuino META et la Pokitto.**
 
 *English version: [README.md](README.md).*
 
@@ -37,8 +26,38 @@ puces à 32 Kio de RAM, 256 Kio de flash et sans division matérielle.
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le firmware | 32 + 2 + 2 Kio de RAM, 228 Kio de flash sous le loader |
 | Écran | 160×128 : les 144 lignes du Game Boy fusionnées en 128 | 220×176 : image 1:1, ou agrandie en 200×176 |
 | Build du firmware | PlatformIO | `make` avec arm-none-eabi-gcc |
-| Version | 0.8.1 | 0.8.1 |
+| Version | 0.9.0 | 0.9.0 |
 | État | Jeux lancés sur la console | Testée en émulateur seulement. Un premier testeur sur vraie Pokitto signale une image à l'envers, cause en cours d'analyse |
+
+## SG-1000
+
+Les cartouches Sega SG-1000 (`.sg`, sans mapper, 48 Kio au plus) suivent la
+même chaîne : le code Z80 est recompilé, pas émulé.
+
+- **Recompilateur** (`--system sg1000`) : le code joué pendant les parties
+  automatiques (bouton 1 maintenu et parties aléatoires), puis celui qu'il
+  atteint statiquement, devient des régions de C comme avec l'émetteur Game
+  Boy : `goto` internes, `CALL` en appel C, drapeaux calculés seulement
+  quand une instruction suivante les lit, cycles ajoutés par lots,
+  synchronisation aux têtes de boucle. Les instructions rares reprennent la
+  sémantique de l'interpréteur Z80 sur opérandes constants ; l'interpréteur
+  exécute ce qui n'a jamais été vu.
+- **Runtime** : deux événements par trame au lieu d'un test par
+  instruction. Les lignes TMS9918A sont dessinées quand le programme touche
+  le VDP ou au VBlank, directement en 160 pixels RGB565 pour l'écran ; le
+  SN76489 est rattrapé avant chaque écriture. La RAM de cartouche de 8 Kio
+  (The Castle) est détectée au profilage.
+- **Vérifié** : avec `--meta-precise`, le code recompilé reproduit
+  exactement l'interpréteur (registres, mémoire, VDP, PSG, image) sur les
+  68 cartouches d'une collection. Le noyau Z80 passe ZEXDOC et 66 tests
+  ZEXALL sur 67.
+- **Vitesse**, mesurée dans l'émulateur gm0 (pas sur console) : sur META,
+  58 de ces 68 jeux tournent à 97 % ou plus de la vitesse NTSC, 7 entre 90
+  et 97 %, 3 entre 80 et 90 % ; moyenne 97,6 % (environ 32 % avec
+  l'ancienne émulation). Les jeux mesurés sur Pokitto sont entre 96 et 99 %.
+
+Sur PC, la lecture passe par la [branche `z80` de gm0](https://github.com/r043v/gm0/tree/z80) :
+`gm0 jeu.sg`. Détails : [docs/MULTI_SYSTEM.fr.md](docs/MULTI_SYSTEM.fr.md).
 
 ## Le travail réalisé
 
@@ -165,12 +184,13 @@ que d'`arm-none-eabi-gcc` (celui du PATH, sinon celui de PlatformIO).
 cmake -G Ninja -B build .
 ninja -C build                 # build/bin/gbrecomp
 
-# Mets tes ROMs dans roms/gb/, puis :
+# Mets tes ROMs dans roms/gb/ (Game Boy) et roms/sg/ (SG-1000), puis :
 ./compile.sh                   # demande la console (META par défaut)
 TARGET=pokitto ./compile.sh    # ou directement la Pokitto
 TARGET=both ./compile.sh       # ou les deux
 ```
 
+`FIRMWARE_COMPILER=clang` compile les firmwares avec Clang (GCC par défaut).
 Pour un nouveau build, CMake préfère Clang lorsqu'il est disponible,
 sinon GCC. `-DM0BOY_PREFER_CLANG=OFF` privilégie GCC ; `CC`, `CXX` et une
 toolchain explicite restent prioritaires. Un répertoire déjà configuré
@@ -199,6 +219,8 @@ ctest --test-dir build --output-on-failure
   l'image, le câble link n'a pas de partenaire.
 - Sur la META, les 144 lignes sont ramenées à 128.
 - Des images sont sautées quand la console prend du retard.
+- SG-1000 : cartouches sans mapper de 48 Kio au plus, NTSC seulement, sans
+  clavier SC-3000 ; le code jamais vu au profilage passe par l'interpréteur.
 
 ## 100 % vibe coded
 
@@ -252,10 +274,11 @@ restent dans l'historique et dans le [dépôt d'origine](https://github.com/arca
 
 | Chemin | Contenu |
 |---|---|
-| `recompiler/` | `gbrecomp`, avec la cible META et Pokitto (`--target meta`, `--target pokitto`) |
+| `recompiler/` | `gbrecomp`/`m0recomp`, avec la cible META et Pokitto (`--target meta`, `--target pokitto`) et le recompilateur Z80 SG-1000 (`src/system/sg1000/`) |
 | `targets/meta/runtime/` | le runtime `gbl` commun aux deux consoles |
 | `targets/meta/platform/` | frontend commun (menu, sauvegardes, carte SD, affichage) et pilotes de chaque console |
 | `targets/meta/host/`, `targets/meta/tools/` | harnais PC, estimateur de cycles, outils de police |
+| `targets/sg1000/` | runtime SG-1000 (TMS9918A, SN76489, interpréteur Z80 de repli), frontend des consoles, harnais PC |
 | `compile.sh`, `tools/meta-compiler/` | conversion en lot |
 | `tools/gb-emu/` | fork de gamebuino-emulator |
 | `tests/`, `targets/meta/tests/` | tests |
