@@ -73,7 +73,7 @@ void pokitto_enter_loader(void) {
         "ldr r0, [%0, #4]\n"
         "bx r0\n"
         :
-        : "r"(app)
+        : "l"(app) /* Thumb-1 LDR immediate needs a low register. */
         : "r0", "r1", "memory");
     for (;;) {}
 }

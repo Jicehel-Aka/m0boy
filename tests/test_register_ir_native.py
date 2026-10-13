@@ -61,7 +61,9 @@ target_link_options(cases PRIVATE -mcpu=cortex-m0plus -mthumb -nostdlib
             compiler_options = ['-DCMAKE_C_COMPILER=' + gcc]
             if args.compiler == 'clang':
                 sysroot = subprocess.check_output([gcc, '-print-sysroot'], text=True).strip()
-                flags += ' --sysroot=' + sysroot + ' -B' + str(Path(gcc).parent) + ' -fno-integrated-as -fshort-enums'
+                assembler = subprocess.check_output([gcc, '-print-prog-name=as'], text=True).strip()
+                assembler_dir = Path(assembler).resolve().parent if Path(assembler).is_file() else Path(gcc).parent
+                flags += ' --sysroot=' + sysroot + ' -B' + str(assembler_dir) + ' -fno-integrated-as -fshort-enums'
                 compiler_options = ['-DCMAKE_C_COMPILER=' + clang, '-DCMAKE_C_COMPILER_TARGET=arm-none-eabi',
                                     '-DGNU_CC=' + gcc]
             subprocess.run(['cmake', '-G', 'Ninja', '-S', str(root), '-B', str(build),

@@ -54,6 +54,16 @@ class CompilerSelection(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Clang not found'):
                 module.clang_command(str(self.gcc), 'c', ['-c', 'main.c'])
 
+    def test_distro_toolchain_selects_target_assembler(self):
+        assembler = Path(self.tmp.name) / 'target/bin/as'
+        assembler.parent.mkdir(parents=True)
+        assembler.write_text('#!/bin/sh\nexit 0\n')
+        assembler.chmod(0o755)
+        self.gcc.write_text('#!/bin/sh\ncase "$1" in\n-print-prog-name=as) printf "%s\\n" "' + str(assembler) + '";;\n*) printf "%s\\n" "' + self.tmp.name + '";;\nesac\n')
+        with patch.dict(os.environ, {'CLANG': str(self.clang)}):
+            command = module.clang_command(str(self.gcc), 'c', ['-c', 'main.c'])
+        self.assertIn('-B' + str(assembler.parent), command)
+
     def test_cmsis_changes_only_unnamed_reserved_qualifiers(self):
         original = "    __I uint32_t :2; /* reserved */\n    __I uint32_t STATUS:2;\n    __IO uint8_t :1;\n"
         converted = compat.sanitize_reserved_fields(original)

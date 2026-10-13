@@ -50,8 +50,12 @@ def clang_command(gcc, language, arguments):
     sysroot = subprocess.check_output([gcc, '-print-sysroot'], text=True).strip()
     if not sysroot:
         raise ValueError('GNU ARM compiler did not report a sysroot')
+    # Distro packages keep the target assembler in <sysroot>/bin while gcc
+    # lives in /usr/bin alongside the host assembler. Ask GCC for its tool.
+    assembler = subprocess.check_output([gcc, '-print-prog-name=as'], text=True).strip()
+    assembler_dir = Path(assembler).resolve().parent if Path(assembler).is_file() else Path(gcc).parent
     command = [compiler, '--target=arm-none-eabi', '--sysroot=' + sysroot,
-               '-B' + str(Path(gcc).parent), '-fno-integrated-as', '-fshort-enums',
+               '-B' + str(assembler_dir), '-fno-integrated-as', '-fshort-enums',
                '-Wno-unknown-pragmas', '-Wno-unused-command-line-argument']
     if cpp:
         if not any(arg.startswith('-std=') for arg in arguments):
