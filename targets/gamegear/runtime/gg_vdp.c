@@ -288,14 +288,21 @@ static void draw_sprites(const sprite_t *spr, unsigned n, uint16_t *out, const u
     }
 }
 
+/* A whole row of one colour (display off), two pixels per word: rows are
+ * word-aligned. */
+static void fill_row(uint16_t *out, uint16_t c) {
+    uint32_t *w = (uint32_t *)out;
+    const uint32_t v = c | (uint32_t)c << 16;
+    for (unsigned i = 0; i < GG_WIDTH / 2; i += 4) { w[i] = v; w[i + 1] = v; w[i + 2] = v; w[i + 3] = v; }
+}
+
 static void sms_render(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n);
 static uint32_t sms_bg_fast(unsigned y, uint16_t *out);
 static void render(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n) {
     gg_t *m = &machine;
     if (GG_IS_SMS) { sms_render(y, out, spr, n); return; }
     if (!(m->vdp[1] & 0x40)) { /* display off: backdrop */
-        const uint16_t bd = m->pal[16 + (m->vdp[7] & 15)];
-        for (unsigned i = 0; i < GG_WIDTH; i++) out[i] = bd;
+        fill_row(out, m->pal[16 + (m->vdp[7] & 15)]);
         return;
     }
     uint32_t bg_prio[6];
@@ -750,12 +757,17 @@ static uint32_t sms_bg_fast(unsigned y, uint16_t *out) {
 static void sms_render(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n) {
     gg_t *m = &machine;
     const uint16_t bd = m->pal[16 + (m->vdp[7] & 15)];
-    if (!(m->vdp[1] & 0x40)) { for (unsigned i = 0; i < GG_WIDTH; i++) out[i] = bd; return; }
+    if (!(m->vdp[1] & 0x40)) { fill_row(out, bd); return; }
     if (pairs_stale) pairs_build();
     uint32_t slow = sms_bg_fast(y, out);
     const unsigned zoom = m->vdp[1] & 1;
-    for (unsigned k = 0; k < n; k++) { /* groups the sprites touch */
-        const int x0 = spr[k].x, x1 = x0 + (8 << zoom) - 1;
+    for (unsigned k = 0; k < n; k++) { /* groups under the sprites' opaque pixels */
+        const unsigned opaque = spr[k].planes[0] | spr[k].planes[1] | spr[k].planes[2] | spr[k].planes[3];
+        if (!opaque) continue;
+        unsigned left = 0, right = 7; /* pixel 0 is bit 7 */
+        while (!(opaque & (0x80u >> left))) left++;
+        while (!(opaque & (0x80u >> right))) right--;
+        const int x0 = spr[k].x + (int)(left << zoom), x1 = spr[k].x + (int)((right + 1) << zoom) - 1;
         if (x1 < 0 || x0 > 255) continue;
         for (int g = (x0 < 0 ? 0 : x0) >> 3; g <= (x1 > 255 ? 255 : x1) >> 3; g++) slow |= 1u << g;
     }
