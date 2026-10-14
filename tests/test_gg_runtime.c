@@ -1,5 +1,6 @@
 /* GG/SMS renderer against colour indices and a component-wise filter;
- * line-counter catch-up against a literal per-line hardware model. */
+ * line-counter catch-up against a literal per-line hardware model; OUTI /
+ * OUTD from RAM against the generic interpreter. */
 #include "gg.h"
 #include "gg_display.h"
 #include <stdio.h>
@@ -50,6 +51,40 @@ static int counters(void) {
     return 0;
 }
 
+/* OUTI / OUTD run from RAM by sg_interp_block (its fast path) against
+ * sg_step (the generic decode), from the same state: the whole machine. */
+static int ram_outx(void) {
+    static gg_t before, fast;
+    static const uint8_t ports[] = { 0x7f, 0xbe, 0x06, 0x7e, 0xdd };
+    for (unsigned round = 0; round < 2000; round++) {
+        gg_init(rom, sizeof rom, 0);
+        for (unsigned i = 0; i < sizeof machine.ram; i++) machine.ram[i] = (uint8_t)(random_word() >> 16);
+        const unsigned start = 0xc100 + (random_word() >> 16) % 0x3e00, count = 1 + (random_word() >> 16) % 40;
+        unsigned a = start;
+        for (unsigned k = 0; k < count; k++, a += 2) {
+            machine.ram[a & 8191] = 0xed;
+            machine.ram[(a + 1) & 8191] = (random_word() >> 16) & 1 ? 0xab : 0xa3;
+        }
+        machine.ram[a & 8191] = 0x18; machine.ram[(a + 1) & 8191] = 0xfe; /* JR $ */
+        z80_t *c = &machine.cpu;
+        c->pc = (uint16_t)start;
+        c->hl = (uint16_t)random_word();
+        c->bc = (uint16_t)((random_word() & 0xff00) | ports[(random_word() >> 16) % sizeof ports]);
+        c->f = (uint8_t)random_word(); c->r = (uint8_t)random_word();
+        c->iff1 = 0; c->ei_delay = (uint8_t)(random_word() & 1); c->irq = (uint8_t)((random_word() >> 4) & 1);
+        before = machine;
+        const uint32_t done = machine.interpreted;
+        sg_interp_block();
+        fast = machine;
+        const uint32_t n = machine.interpreted - done;
+        REQUIRE(n >= 1);
+        machine = before;
+        while (machine.interpreted - done < n) (void)sg_step(0);
+        REQUIRE(!memcmp(&machine, &fast, sizeof machine));
+    }
+    return 0;
+}
+
 static void palette_byte(unsigned i, uint8_t value) {
     gg_vdp_control_write((uint8_t)i); gg_vdp_control_write(0xc0); gg_vdp_data_write(value);
 }
@@ -94,7 +129,7 @@ static int rendering(int sms) {
 }
 
 int main(void) {
-    REQUIRE(!counters()); REQUIRE(!rendering(0)); REQUIRE(!rendering(1));
+    REQUIRE(!counters()); REQUIRE(!rendering(0)); REQUIRE(!rendering(1)); REQUIRE(!ram_outx());
     unsigned shown = 0;
     for (unsigned y = 0; y < GG_ACTIVE; y++) {
         REQUIRE(gg_sms_display_row(y) == y * 5 / 8);

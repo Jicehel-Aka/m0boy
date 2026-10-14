@@ -472,8 +472,38 @@ static int interp_one(void) {
     return c->pc == (uint16_t)(pc + d.length);
 }
 
+/* OUTI / OUTD in RAM, where games unroll their VRAM uploads: z80_execute's
+ * effects without the generic decode.  1 done, 0 another instruction, -1
+ * stopped by an event. */
+static int ram_outx(void) {
+    gg_t *m = &machine;
+    z80_t *c = &m->cpu;
+    const uint16_t pc = c->pc;
+    if (pc < 0xc000 || pc == 0xffff || m->ram[pc & 8191] != 0xed) return 0;
+    const uint8_t op = m->ram[(pc + 1) & 8191];
+    if ((op & 0xf7) != 0xa3) return 0;
+    if ((int32_t)(m->cyc - m->next_evt) >= 0 && sg_event(pc)) return -1;
+    if (c->pc != pc) return 0; /* the event moved pc */
+    if (m->coverage) { const uint32_t loc = gg_location(pc); if (loc < m->coverage_size) m->coverage[loc]++; }
+    c->pc = (uint16_t)(pc + 2);
+    c->r = (uint8_t)((c->r & 128) | ((c->r + 2) & 127));
+    const uint8_t v = gg_native_read(c, c->hl);
+    c->b--;
+    c->hl = (uint16_t)(c->hl + (op & 8 ? -1 : 1));
+    gg_out(c->c, v);
+    const unsigned s = v + c->l;
+    c->f = (uint8_t)(z80_sz(c->b) | (v & 128 ? Z80_N : 0) | (s > 255 ? Z80_H | Z80_C : 0) | z80_parity((uint8_t)((s & 7) ^ c->b)));
+    m->cyc += 16;
+    m->interpreted++;
+    if (c->ei_delay && --c->ei_delay == 0 && c->irq) m->next_evt = m->cyc;
+    return 1;
+}
+
 void sg_interp_block(void) {
-    for (unsigned n = 0; n < 32 && interp_one(); n++) {}
+    unsigned n = 0;
+    if (machine.cpu.pc >= 0xc000)
+        for (int r; n < 32 && (r = ram_outx()) != 0; n++) if (r < 0) return;
+    for (; n < 32 && interp_one(); n++) {}
 }
 
 int sg_step(uint16_t after) {
