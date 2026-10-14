@@ -108,6 +108,7 @@ int main(void) {
                        : y > GG_TOP && (y - 1 - GG_TOP) * 8 / 9 == r ? 2 : 1;
         REQUIRE(gg_meta_display_row(y) == r && gg_meta_draw_mode(y) == mode);
     }
+    for (unsigned l = 0; l <= GG_HEIGHT; l++) REQUIRE(gg_pokitto_rows[l] == (l * 11 + 8) / 9);
     puts("GG/SMS: counter, priority, sprite/filter composition and line policies match references");
     return 0;
 }

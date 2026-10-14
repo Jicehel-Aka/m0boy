@@ -103,8 +103,8 @@ static void row(void *, unsigned y, uint16_t *pixels) {
 }
 #elif META_TARGET_POKITTO
 static void row(void *, unsigned y, uint16_t *pixels) {
-    const unsigned line = y - GG_TOP, first = (line * 11 + 8) / 9, last = ((line + 1) * 11 + 8) / 9; /* 144 -> 176 */
-    for (unsigned r = first; r < last; r++) pokitto_lcd_row_zoom(r, pixels);
+    const unsigned line = y - GG_TOP, last = gg_pokitto_rows[line + 1]; /* 144 -> 176 */
+    for (unsigned r = gg_pokitto_rows[line]; r < last; r++) pokitto_lcd_row_zoom(r, pixels);
 }
 #else
 static void row(void *, unsigned y, uint16_t *pixels) {

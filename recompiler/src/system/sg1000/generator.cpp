@@ -200,6 +200,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         if (cart_on_card) {
             config << "#define GG_SAVE_NAME \"ROM.SAV\"\n#define GG_SAVE_NAME83 \"ROM     SAV\"\n";
         }
+        /* Pokitto: the sector cache lives in the 2 KiB USB RAM bank, which
+         * the Master System shares with its pair tables. */
+        if (gg && (streamed || cart_on_card) && o.target == TargetId::pokitto && !o.mastersystem)
+            config << "#define GG_STREAM_SECTORS 4 /* the whole USB RAM bank */\n";
         if (gg && streamed) {
             const std::string ext = o.mastersystem ? "SMS" : "GG";
             config << "#define GG_STREAM_NAME \"ROM." << ext << "\"\n#define GG_STREAM_NAME83 \"ROM     "
@@ -272,12 +276,15 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                                         "\n#define SG_GEN_VERSION \"" + version + "\"\n");
             write(src / "gbl_profile.h", "#pragma once\n#define META_LCD_DMA 1\n#define META_LCD_12BPP 0\n#define META_LCD_SPI_MHZ 24\n"
                                          "#ifndef POKITTO_HC\n#define POKITTO_HC 0\n#endif\n"
-                                         "#define POKITTO_LCD_ASM " + std::string(gg ? "1" : "0") + "\n#define POKITTO_RAM_BANKS " + std::string(gg ? "1" : "0") + "\n#define POKITTO_AUDIO_ASM 0\n#define META_AUDIO_DMA 0\n"
+                                         "#define POKITTO_LCD_ASM " + std::string(gg ? "1" : "0") + "\n#define POKITTO_RAM_BANKS " + std::string(gg ? "1" : "0") + "\n#define POKITTO_AUDIO_ASM " + std::string(gg ? "1" : "0") + "\n#define META_AUDIO_DMA 0\n"
                                          "#define META_SD_SPI_HZ 12000000\n");
             if (o.target == TargetId::pokitto) {
                 for (const char* name : { "pokitto_startup.c", "pokitto_clock.c", "pokitto_buttons.c", "pokitto_lcd.c", "pokitto_hw.h", "lpc11u6x.h" })
                     copy_template(platform / name, src / name);
-                if (gg) copy_template(platform / "pokitto_lcd_asm.S", src / "pokitto_lcd_asm.S"); /* rows pushed in Thumb-1 */
+                if (gg) { /* rows pushed and the audio interrupt in Thumb-1 */
+                    copy_template(platform / "pokitto_lcd_asm.S", src / "pokitto_lcd_asm.S");
+                    copy_template(platform / "pokitto_audio_asm.S", src / "pokitto_audio_asm.S");
+                }
                 auto ld = replace(read(platform / "pokitto.ld.in"), "@NAME@", o.name);
                 if (gg) /* the 2 KiB USB RAM bank: pair tables and the card cache */
                     ld = replace(ld, "*(.bss.gbl_lookup_cache)", "*(.bss.gbl_lookup_cache)\n    *(.bss.pair53)\n    *(.bss.card_buf)");

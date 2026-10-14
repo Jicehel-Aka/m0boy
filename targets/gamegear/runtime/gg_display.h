@@ -34,4 +34,18 @@ static const uint8_t gg_meta_modes[GG_HEIGHT] = {
 
 static inline unsigned gg_meta_display_row(unsigned y) { return gg_meta_rows[y - GG_TOP]; }
 static inline int gg_meta_draw_mode(unsigned y) { return gg_meta_modes[y - GG_TOP]; }
+
+/* Pokitto: 144 -> 176, line l on panel rows gg_pokitto_rows[l] up to the
+ * next entry, (l * 11 + 8) / 9 without a software division per row. */
+static const uint8_t gg_pokitto_rows[GG_HEIGHT + 1] = {
+    0, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 18, 19, 20, 21,
+    22, 24, 25, 26, 27, 29, 30, 31, 32, 33, 35, 36, 37, 38, 40, 41, 42, 43,
+    44, 46, 47, 48, 49, 51, 52, 53, 54, 55, 57, 58, 59, 60, 62, 63, 64, 65,
+    66, 68, 69, 70, 71, 73, 74, 75, 76, 77, 79, 80, 81, 82, 84, 85, 86, 87,
+    88, 90, 91, 92, 93, 95, 96, 97, 98, 99, 101, 102, 103, 104, 106, 107, 108, 109,
+    110, 112, 113, 114, 115, 117, 118, 119, 120, 121, 123, 124, 125, 126, 128, 129, 130, 131,
+    132, 134, 135, 136, 137, 139, 140, 141, 142, 143, 145, 146, 147, 148, 150, 151, 152, 153,
+    154, 156, 157, 158, 159, 161, 162, 163, 164, 165, 167, 168, 169, 170, 172, 173, 174, 175,
+    176,
+};
 #endif
