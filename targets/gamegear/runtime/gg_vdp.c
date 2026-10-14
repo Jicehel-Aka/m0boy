@@ -215,7 +215,8 @@ static int render_c; /* the self test renders both ways */
 #endif
 
 /* Background of window line y into out[-7 .. 167]; bg_prio: pixels of
- * priority tiles that are not colour 0 (bit x + 8), returns whether any. */
+ * priority tiles that are not colour 0 (bit x + 8), returns whether any.
+ * A NULL mask skips priority decoding when there are no sprites to cover. */
 static int background(unsigned y, uint16_t *out, uint32_t *bg_prio) {
     gg_t *m = &machine;
     const uint8_t *vram = m->vram;
@@ -235,7 +236,7 @@ static int background(unsigned y, uint16_t *out, uint32_t *bg_prio) {
         args.count = 21 - locked;
         prio |= BG_TILES(o + 8 * locked, vram + names + (y >> 3) * 64, (tx0 + locked) & 31, &args) << locked;
     }
-    if (!prio) return 0;
+    if (!prio || !bg_prio) return 0;
     for (unsigned k = 0; k < 21; k++) { /* rare: the pixels of priority tiles */
         if (!(prio >> k & 1)) continue;
         const unsigned r = k >= locked ? y : row, tx = (tx0 + k) & 31;
@@ -283,7 +284,7 @@ static void render(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n) {
     }
     uint32_t bg_prio[6];
     for (unsigned i = 0; i < 6; i++) ((volatile uint32_t *)bg_prio)[i] = 0;
-    const int prio = background(y, out, bg_prio);
+    const int prio = background(y, out, n ? bg_prio : 0);
     if (n) draw_sprites(spr, n, out, bg_prio, prio);
 }
 
@@ -343,8 +344,8 @@ static void sms_bg_indices(unsigned y, uint8_t *line, uint64_t tiles) {
     const unsigned first = (0u - hs) & 255, fine = first & 7, tx0 = first >> 3;
     unsigned row = y + m->vscroll;
     if (row >= 224) row -= 224;
-    for (unsigned k = 0; k < 33; k++) {
-        if (!(tiles >> k & 1)) continue;
+    for (unsigned k = 0; k < 33; k++, tiles >>= 1) {
+        if (!(tiles & 1)) continue;
         uint8_t *o = line + 8 - fine + 8 * k;
         const int column = (int)k - (fine ? 1 : 0);
         const unsigned r = ((m->vdp[0] & 0x80) && column >= 24) ? y : row, tx = (tx0 + k) & 31;
@@ -474,14 +475,27 @@ void gg_vdp_catchup(void) {
  * later lines reload it. */
 void gg_line_counter_catchup(void) {
     gg_t *m = &machine;
-    while (m->lc_line < GG_LINES &&
-           (int32_t)(m->cyc - (m->frame_start + (uint32_t)m->lc_line * GG_LINE_CYCLES + GG_LINE_IRQ_AT)) >= 0) {
-        if (m->lc_line <= GG_ACTIVE) {
-            if (!m->lc_count) { m->lc_count = m->vdp[10]; m->line_irq = 1; }
-            else m->lc_count--;
-        } else m->lc_count = m->vdp[10];
-        m->lc_line++;
+    if (m->lc_line >= GG_LINES) return;
+    uint32_t t = m->cyc - m->frame_start;
+    if ((int32_t)(t - GG_LINE_IRQ_AT) < 0) return;
+    t -= GG_LINE_IRQ_AT;
+    /* Same exact reciprocal as the V counter, with division for long gaps. */
+    unsigned end = (t < 77000u ? ((t >> 2) * 18397u) >> 20 : t / GG_LINE_CYCLES) + 1;
+    if (end > GG_LINES) end = GG_LINES;
+    if (end <= m->lc_line) return;
+    const unsigned active = end > GG_ACTIVE + 1 ? GG_ACTIVE + 1 : end;
+    if (active > m->lc_line) {
+        unsigned n = active - m->lc_line;
+        if (n <= m->lc_count) m->lc_count -= n;
+        else {
+            n -= m->lc_count + 1;
+            const unsigned period = m->vdp[10] + 1;
+            m->line_irq = 1;
+            m->lc_count = (uint8_t)(m->vdp[10] - (n < period ? n : n % period));
+        }
     }
+    if (end > GG_ACTIVE + 1) m->lc_count = m->vdp[10];
+    m->lc_line = (uint16_t)end;
 }
 
 uint32_t gg_vdp_next_event(void) {
@@ -651,8 +665,9 @@ static void sms_compose(unsigned y, uint8_t *line, const sprite_t *spr, unsigned
     gg_t *m = &machine;
     const unsigned zoom = m->vdp[1] & 1;
     const unsigned hs = (y < 16 && (m->vdp[0] & 0x40)) ? 0 : m->vdp[8], fine = (0u - hs) & 7;
-    uint64_t tiles = 0; /* group g covers tiles g and g + 1 (fine scroll) */
-    for (unsigned g = 0; g < 32; g++) if (groups >> g & 1) tiles |= (uint64_t)(fine ? 3 : 1) << g;
+    /* Keep bit 32: a finely scrolled last group also covers tile 32. */
+    uint64_t tiles = groups;
+    if (fine) tiles |= tiles << 1;
     sms_bg_indices(y, line, tiles);
     for (unsigned k = n; k-- > 0;) { /* lower numbers drawn last: on top */
         const uint32_t w = row_fields(spr[k].planes, 0);

@@ -9,6 +9,7 @@
  * drawn, 120 rows on the META, the same rows enlarged to 200x150 on the
  * Pokitto; MENU / C is PAUSE. */
 #include "gg.h"
+#include "gg_display.h"
 #include "sg_config.h"
 #include "meta_target.h"
 #include "meta_clock.h"
@@ -59,12 +60,11 @@ static const char version[] __attribute__((used)) = "m0boy-gg-" META_TARGET_NAME
 #if GG_SMS
 /* One source line per row (the 256 -> 160 filter is already the costly
  * part): the line nearest the row's centre. */
-static unsigned display_row(unsigned y) { return (y * 5) >> 3; } /* 192 -> 120 */
-static int shown(unsigned y) { return y == (display_row(y) * 8 + 4) / 5; }
+static unsigned display_row(unsigned y) { return gg_sms_display_row(y); }
 /* Pokitto: the 120 rows drawn on 150, one in four twice */
 #define GG_PAIRS 0
 #elif !META_TARGET_POKITTO
-static unsigned display_row(unsigned y) { return ((y - GG_TOP) * 8) / 9; } /* 144 -> 128 */
+static unsigned display_row(unsigned y) { return gg_meta_display_row(y); }
 #define GG_PAIRS 1
 #else
 #define GG_PAIRS 0
@@ -80,20 +80,19 @@ static void wait_slot(unsigned slot) {
 static int draw_line(void *, unsigned y) {
     if (skip_video) return 0;
 #if GG_SMS
-    return shown(y);
+    return gg_sms_line_shown(y);
 #elif !GG_PAIRS
     (void)y;
     return 1;
 #else
-    if (y + 1 < GG_WIN_TOP + GG_WIN_LINES && display_row(y + 1) == display_row(y)) return 3;
-    if (y > GG_WIN_TOP && display_row(y - 1) == display_row(y)) {
+    const int mode = gg_meta_draw_mode(y);
+    if (mode == 2) {
 #if !META_TARGET_POKITTO
         wait_slot(line_slot ^ 1); /* the other buffer is free once sent */
         machine.row_tmp = line_buffers[line_slot ^ 1] + GG_ROW_PAD;
 #endif
-        return 2;
     }
-    return 1;
+    return mode;
 #endif
 }
 
