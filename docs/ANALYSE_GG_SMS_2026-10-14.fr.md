@@ -343,3 +343,79 @@ python3 tests/test_gg_collection.py --rom-dir roms \
 
 Omettre `--runtime-libs` reconstruit le runtime spécialisé de chaque projet.
 `--resume` est réservé à une interruption avec les mêmes sources et paramètres.
+
+## Suite : version 0.10.3, mesurée sur de vrais jeux dans gm0
+
+Les chiffres ci-dessus viennent d'une cartouche synthétique. Pour la suite,
+cinq jeux ont été mesurés en firmware Pokitto complet dans gm0 (cœur
+Cortex-M0+, LCD, carte SD et timer audio émulés) : Sonic the
+Hedgehog, Columns, Shinobi, Disney's Aladdin (Game Gear) et Alex Kidd in
+Miracle World (Master System). Firmware de banc : touches scriptées par
+trame GG dans `frame()`, ni attente ni saut d'image, arrêt à la trame 900 ;
+le profil `EMU_PROF` donne les cycles jusque-là, sans la boucle finale ni le
+hachage. Le firmware écrit dans l'EEPROM émulée un hash de l'état final
+(registres, cycles, RAM, VRAM, CRAM, VDP, tampon audio) et un hash cumulé de
+toutes les lignes envoyées à l'écran : il est identique pour chaque jeu
+entre 0.10.2 et chaque étape ci-dessous.
+
+| Jeu | 0.10.2, cycles / trame | 0.10.3 | Écart |
+|---|---:|---:|---:|
+| Sonic the Hedgehog | 1 337 396 | 1 034 854 | −22,6 % |
+| Columns | 1 143 253 | 992 832 | −13,2 % |
+| Shinobi | 1 378 151 | 1 190 342 | −13,6 % |
+| Disney's Aladdin | 1 192 090 | 970 830 | −18,6 % |
+| Alex Kidd in Miracle World | 1 363 208 | 1 221 613 | −10,4 % |
+
+Ce sont des mesures d'émulateur, pas de console : gm0 modélise le cœur et
+les attentes de flash, mais le SSP de la carte SD y est instantané (une
+lecture de secteur coûte plus cher sur une vraie Pokitto) et le LCD n'y a
+pas de délai propre. Les projets de banc ont été générés avec 10 s de
+parties automatiques par ROM. Ce n'est pas une fréquence d'images : au
+72 MHz que règle le firmware, 1,2 million de cycles font une trame à 60 Hz.
+
+Par étape (même banc, mêmes hashes) :
+
+- **Tuiles répétées (asm).** Fond GG : une tuile de même entrée de nom que
+  la précédente recopie ses 8 pixels ; `gg_bg_tiles` −19 à −33 %, −4,2 à
+  −7,0 % au total. Fond SMS : champs réutilisés pour une tuile répétée, et
+  groupe de 5 pixels recopié s'il égale le précédent ; −5,9 % (Alex Kidd).
+  `GG_SELFTEST` a désormais des tours à table de noms répétitive ; cinq
+  mutations de ces chemins y sont détectées.
+- **Cache SD de 4 secteurs (Pokitto, Game Gear).** La RAM USB de 2 Kio ne
+  contenait que les 2 secteurs du cache ; elle en tient 4, sans RAM
+  principale. Sonic en jeu : 532 secteurs lus au lieu de 15 123, −12,4 %.
+  Le Master System y garde ses tables de paires (2 secteurs) ; le META,
+  dont la RAM principale est juste, garde 2 secteurs.
+- **Interruption audio Thumb-1** (celle du Game Boy) pour GG/SMS sur
+  Pokitto : −1,5 à −1,8 %.
+- **Table 144 → 176 lignes** sur Pokitto au lieu de deux divisions
+  logicielles par ligne : −1,4 à −1,6 % en GG.
+- **Priorité GG** limitée aux tuiles sous un sprite (−0,1 à −1,2 %),
+  **sprites entiers** sans tests par pixel (−0,5 à −1,8 %). Le test hôte ne
+  testait les sprites que zoomés : corrigé.
+- **OUTI/OUTD compilés** par des helpers (`sg_outi`, `sg_outd`) au lieu de
+  `sg_op` : Columns −3,0 %, Shinobi −3,2 %, Alex Kidd −2,1 %, Sonic et
+  Aladdin sans effet notable ; moins de flash (−3,5 Kio sur Shinobi).
+- **OUTI/OUTD en RAM** sans le décodage générique de l'interpréteur :
+  Aladdin y exécute 178 000 de ses 181 000 instructions interprétées ;
+  −6,3 %. `test_gg_runtime` compare 2 000 suites aléatoires à `sg_step`.
+- **Écran coupé** rempli par mots, groupes SMS recomposés sous les seuls
+  pixels opaques des sprites : −0,4 à −2,6 %.
+
+Vérifications : CTest complet ; e2e GG et SMS (la cartouche synthétique
+exécute OUTI/OUTD, flags lus et non lus) ; `GG_SELFTEST` Pokitto (EEPROM)
+et META (couleur de l'écran) à 1 pour `GG_PANEL_SWAP` 0 et 1 ; builds
+META de Sonic, Aladdin et Alex Kidd, démarrés dans gm0, capture de Sonic
+identique octet pour octet à celle de 0.10.2. Le code asm du fond,
+exécuté en SRAM, prend 64 octets de RAM de plus sur META (Aladdin 28 912
+octets statiques au lieu de 28 848). Les 733 ROMs du contrôle de
+collection n'ont pas été rejouées pour ces changements, et rien n'a été
+mesuré sur une console.
+
+Restent visibles au profil : l'envoi des lignes au LCD du Pokitto (24 à
+30 %, `pokitto_push200`, borné par les GPIO), dont l'adressage par ligne
+(`at`, environ 1,7 %) pourrait céder à une fenêtre GRAM fixée par trame,
+non tentée sans essai sur la dalle réelle ; le fond (15 à 33 %) ; le code
+natif (8 à 11 %) ; l'interpréteur pour le code hors couverture (jusqu'à
+9 % sur Shinobi, environ 400 cycles par instruction Z80) ; le PSG (3 à
+5 %).
