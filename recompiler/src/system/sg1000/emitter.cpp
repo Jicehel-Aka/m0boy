@@ -551,6 +551,10 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
             else o << "    " << rr << " = (uint16_t)(" << mem_read(nn) << " | (" << mem_read(n1) << " << 8));\n";
             return true;
         }
+        if (x == 2 && (y == 4 || y == 5) && z == 3 && opt_.banked) { /* OUTI / OUTD: unrolled VRAM uploads */
+            o << (y == 4 ? "    sg_outi();\n" : "    sg_outd();\n");
+            return true;
+        }
         if (x == 2 && (y == 4 || y == 5) && z == 0 && !flags) { /* LDI / LDD */
             const char* step = y == 4 ? "++" : "--";
             o << "    { uint8_t v_ = sg_rd(Z.hl); sg_wr(Z.de, v_); Z.hl" << step << "; Z.de" << step << "; Z.bc--; }\n";

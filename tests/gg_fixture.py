@@ -1,6 +1,6 @@
 """Synthetic Game Gear cartridge (64 KiB, four pages) for the runtime and
 end-to-end tests: Sega mapper with code called in two pages of slot 2, a
-pushed return address (RET to a constant), mode 4 tiles with scrolling,
+pushed return address (RET to a constant), OUTI/OUTD, mode 4 tiles with scrolling,
 priority and flips, sprites (overflow and collision), CRAM, the frame and
 line interrupts, the V counter, the PSG and the START button.
 
@@ -184,7 +184,19 @@ page2:
     ld (0xc006),hl
     ld a,0x9f              ; tone 0 quiet
     out (0x7f),a
+    ld hl,psg_bytes        ; OUTI then OUTD to the PSG, their flags kept
+    ld bc,0x027f
+    outi
+    push af
+    pop de
+    ld (0xc016),de
+    outd
+    push af
+    pop de
+    ld (0xc018),de
     ret
+psg_bytes:
+    db 0xbf,0xdf
 
 org 0xc000                 ; page 3, run from slot 2
 page3:
@@ -194,7 +206,13 @@ page3:
     ld (0xc008),hl
     ld a,0x90              ; tone 0 loud
     out (0x7f),a
+    ld hl,psg_loud         ; OUTI whose flags nobody reads
+    ld c,0x7f
+    outi
+    cp 0
     ret
+psg_loud:
+    db 0xb4
 """
 
 
