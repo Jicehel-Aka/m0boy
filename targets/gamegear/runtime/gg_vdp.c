@@ -215,9 +215,9 @@ static int render_c; /* the self test renders both ways */
 #endif
 
 /* Background of window line y into out[-7 .. 167]; bg_prio: pixels of
- * priority tiles that are not colour 0 (bit x + 8), returns whether any.
- * A NULL mask skips priority decoding when there are no sprites to cover. */
-static int background(unsigned y, uint16_t *out, uint32_t *bg_prio) {
+ * priority tiles that are not colour 0 (bit x + 8) under the n sprites spr,
+ * returns whether any.  A NULL mask: no sprites to cover. */
+static int background(unsigned y, uint16_t *out, uint32_t *bg_prio, const sprite_t *spr, unsigned n) {
     gg_t *m = &machine;
     const uint8_t *vram = m->vram;
     const unsigned names = (m->vdp[2] & 0x0eu) << 10;
@@ -237,6 +237,16 @@ static int background(unsigned y, uint16_t *out, uint32_t *bg_prio) {
         prio |= BG_TILES(o + 8 * locked, vram + names + (y >> 3) * 64, (tx0 + locked) & 31, &args) << locked;
     }
     if (!prio || !bg_prio) return 0;
+    uint32_t near = 0; /* tiles under a sprite: tile k shows pixels 8k - fine .. 8k + 7 - fine */
+    const int width = 8 << (m->vdp[1] & 1);
+    for (unsigned i = 0; i < n; i++) {
+        const int lo = spr[i].x - GG_LEFT + (int)fine, hi = lo + width - 1;
+        if (hi < 0 || lo >= 8 * 21) continue;
+        const unsigned k0 = lo < 0 ? 0 : (unsigned)lo >> 3, k1 = hi >= 8 * 21 ? 20 : (unsigned)hi >> 3;
+        near |= (2u << k1) - (1u << k0);
+    }
+    prio &= near;
+    if (!prio) return 0;
     for (unsigned k = 0; k < 21; k++) { /* rare: the pixels of priority tiles */
         if (!(prio >> k & 1)) continue;
         const unsigned r = k >= locked ? y : row, tx = (tx0 + k) & 31;
@@ -259,6 +269,12 @@ static void draw_sprites(const sprite_t *spr, unsigned n, uint16_t *out, const u
         const uint32_t w = row_fields(spr[k].planes, 0);
         if (!w) continue;
         const int x0 = spr[k].x - GG_LEFT;
+        if (!zoom && !prio && x0 >= 0 && x0 <= GG_WIDTH - 8) { /* the usual case: whole, in front */
+            uint16_t *o = out + x0;
+            for (uint32_t v = w; v; v >>= 4, o++)
+                if (v & 15) *o = pal[v & 15];
+            continue;
+        }
         for (unsigned px = 0; px < 8; px++) {
             const unsigned c = (w >> (4 * px)) & 15;
             if (!c) continue;
@@ -283,8 +299,8 @@ static void render(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n) {
         return;
     }
     uint32_t bg_prio[6];
-    for (unsigned i = 0; i < 6; i++) ((volatile uint32_t *)bg_prio)[i] = 0;
-    const int prio = background(y, out, n ? bg_prio : 0);
+    if (n) for (unsigned i = 0; i < 6; i++) ((volatile uint32_t *)bg_prio)[i] = 0;
+    const int prio = background(y, out, n ? bg_prio : 0, spr, n);
     if (n) draw_sprites(spr, n, out, bg_prio, prio);
 }
 
@@ -606,12 +622,35 @@ void gg_vdp_control_write(uint8_t v) {
 #ifdef GG_SELFTEST
 /* Background tiles, Thumb-1 against C, on random VRAM, CRAM, scrolls and
  * locks: the number of differing lines (both palettes, flips, priority). */
+#if GG_RENDER_ASM
+/* Odd rounds: a name table of three entries, two of them the same tile in
+ * both palettes, in runs (rounds 3, 7...) or mixed: the paths of repeated
+ * tiles and groups. */
+static void selftest_names(uint32_t *r, unsigned round) {
+    if (!(round & 1)) return;
+    gg_t *m = &machine;
+    uint16_t set[3];
+    for (unsigned k = 0; k < 3; k++) { *r = *r * 1103515245u + 12345u; set[k] = (uint16_t)(*r >> 12); }
+    set[1] = set[0] ^ 0x0800;
+    const unsigned names = (m->vdp[2] & 0x0eu) << 10;
+    unsigned pick = 0;
+    for (unsigned i = 0; i < 32 * 28; i++) {
+        *r = *r * 1103515245u + 12345u;
+        if (!(round & 2) || ((*r >> 16) & 7) == 0) pick = (*r >> 20) % 3;
+        m->vram[names + 2 * i] = (uint8_t)set[pick];
+        m->vram[names + 2 * i + 1] = (uint8_t)(set[pick] >> 8);
+    }
+}
+#endif
+
 unsigned gg_render_selftest(void) {
 #if GG_RENDER_ASM
     gg_t *m = &machine;
     uint32_t r = 12345;
     unsigned bad = 0;
     uint16_t a[GG_ROW_STRIDE], b[GG_ROW_STRIDE];
+    sprite_t cover[23]; /* sprites over every pixel: the whole priority mask */
+    for (unsigned i = 0; i < 23; i++) cover[i].x = (int16_t)(GG_LEFT - 8 + 8 * (int)i);
     for (unsigned round = 0; round < 16; round++) {
         for (unsigned i = 0; i < 16384; i++) { r = r * 1103515245u + 12345u; m->vram[i] = (uint8_t)(r >> 16); }
         for (unsigned i = 0; i < 32; i++) { r = r * 1103515245u + 12345u; m->pal[i] = (uint16_t)(r >> 8); }
@@ -621,11 +660,12 @@ unsigned gg_render_selftest(void) {
         m->vdp[2] = (uint8_t)(0x0e & (r >> 8));
         m->vdp[8] = (uint8_t)(r >> 20);
         m->vscroll = (uint8_t)((r >> 24) % 224);
+        selftest_names(&r, round);
         for (unsigned y = GG_TOP; y < GG_TOP + GG_HEIGHT; y++) {
             uint32_t pa[6] = { 0 }, pb[6] = { 0 };
             memset(a, 0, sizeof a); memset(b, 0, sizeof b);
-            render_c = 0; const int qa = background(y, a + GG_ROW_PAD, pa);
-            render_c = 1; const int qb = background(y, b + GG_ROW_PAD, pb);
+            render_c = 0; const int qa = background(y, a + GG_ROW_PAD, pa, cover, 23);
+            render_c = 1; const int qb = background(y, b + GG_ROW_PAD, pb, cover, 23);
             bad += qa != qb || memcmp(a, b, sizeof a) || memcmp(pa, pb, sizeof pa);
         }
     }
@@ -640,6 +680,7 @@ unsigned gg_render_selftest(void) {
         m->vdp[2] = (uint8_t)(0x0e & (r >> 8));
         m->vdp[8] = (uint8_t)(r >> 20);
         m->vscroll = (uint8_t)((r >> 24) % 224);
+        selftest_names(&r, round);
         for (unsigned y = 0; y < GG_ACTIVE; y++) {
             memset(a, 0, sizeof a); memset(b, 0, sizeof b);
             render_c = 0; const uint32_t qa = sms_bg_fast(y, a + GG_ROW_PAD);

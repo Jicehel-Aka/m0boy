@@ -66,7 +66,7 @@ static int rendering(int sms) {
         gg_init_system(rom, sizeof rom, 0, sms);
         for (unsigned i = 0; i < sizeof machine.vram; i++) machine.vram[i] = (uint8_t)(random_word() >> 16);
         machine.vdp[0] = (uint8_t)(6 | ((round & 7) << 5));
-        machine.vdp[1] = (uint8_t)(0x40 | (round & 3));
+        machine.vdp[1] = (uint8_t)(0x40 | ((round >> 1) & 3)); /* sprites in odd rounds: all sizes */
         machine.vdp[2] = 0x0e; machine.sat_base = 0x3f00;
         machine.vdp[8] = (uint8_t)random_word(); machine.vscroll = (uint8_t)(random_word() % 224);
         for (unsigned i = 0; i < 64; i++) machine.vram[0x3f00 + i] = (uint8_t)(random_word() % 192);

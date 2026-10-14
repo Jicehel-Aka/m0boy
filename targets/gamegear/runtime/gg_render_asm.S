@@ -10,7 +10,9 @@
  *
  * Per tile: name entry, row bytes, four table loads spreading the planes
  * into eight 4-bit fields (w); per pixel two ALU operations give the
- * palette offset (field * 2), then a halfword load and store. */
+ * palette offset (field * 2), then a halfword load and store.  A tile with
+ * the same name entry as the previous one (same row: the same pixels)
+ * copies its eight pixels instead. */
 #include "sg_config.h"
 
 #if defined(__ARM_ARCH_6M__) && !defined(GG_NO_RENDER_ASM)
@@ -44,9 +46,14 @@ gg_bg_tiles:
     movs r4, #1
     mov r12, r4                /* bit of this tile */
     movs r4, #0
-    push {r4}                  /* priority tiles, at [sp] */
+    mvns r5, r4
+    push {r4, r5}              /* priority tiles at [sp], previous entry at [sp, #4] */
 1:  lsls r5, r2, #1
     ldrh r5, [r1, r5]          /* name entry */
+    ldr r4, [sp, #4]
+    cmp r4, r5
+    beq 6f                     /* repeated: w and r6 still hold its fields */
+    str r5, [sp, #4]
     mov r6, r9
     lsls r4, r5, #21           /* V flip (bit 10) */
     bpl 2f
@@ -126,7 +133,7 @@ gg_bg_tiles:
     ands r4, r7
     ldrh r4, [r6, r4]
     strh r4, [r0, #14]
-    adds r0, #16
+7:  adds r0, #16
     adds r2, r2, #1
     movs r4, #31
     ands r2, r4                /* next name column */
@@ -135,13 +142,40 @@ gg_bg_tiles:
     mov r12, r4
     cmp r0, lr
     bne 1b
-    pop {r0}                   /* result */
+    pop {r0, r1}               /* result */
     pop {r4-r7}
     mov r8, r4
     mov r9, r5
     mov r10, r6
     mov r11, r7
     pop {r4-r7, pc}
+6:  lsls r4, r5, #19           /* priority as for the previous tile */
+    bpl 8f
+    cmp r3, #0
+    beq 8f
+    ldr r4, [sp]
+    mov r7, r12
+    orrs r4, r7
+    str r4, [sp]
+8:  mov r4, r0                 /* the previous tile's pixels */
+    subs r4, #16
+    ldrh r7, [r4, #0]
+    strh r7, [r0, #0]
+    ldrh r7, [r4, #2]
+    strh r7, [r0, #2]
+    ldrh r7, [r4, #4]
+    strh r7, [r0, #4]
+    ldrh r7, [r4, #6]
+    strh r7, [r0, #6]
+    ldrh r7, [r4, #8]
+    strh r7, [r0, #8]
+    ldrh r7, [r4, #10]
+    strh r7, [r0, #10]
+    ldrh r7, [r4, #12]
+    strh r7, [r0, #12]
+    ldrh r7, [r4, #14]
+    strh r7, [r0, #14]
+    b 7b
     .size gg_bg_tiles, . - gg_bg_tiles
 
 /* Master System background: unsigned gg_sms_bg(uint16_t *out, const
@@ -154,7 +188,11 @@ gg_bg_tiles:
  * locked tile, 20 tx0, 24 sh (4 * fine), 28 vram, 32 planes, 36 pairs (palette
  * 1 at +512), 40 spal (palette 1 at +64).
  * r8 previous fields, r9 previous palette, r10 slow groups, r11 group bit,
- * r12 args, lr tile. */
+ * r12 args, lr tile.  Stack: [sp] fields and [sp, #4] palette of the last
+ * group drawn here (palette 2: none, its pixels are not at out - 10), and
+ * [sp, #8] name entry | tr << 16 of the previous tile.  A tile repeating the
+ * previous one reuses its fields; a group equal to the last one copies its
+ * five pixels. */
     .section .data.gg_ramfunc.gg_sms_bg, "ax", %progbits
     .align 2
     .global gg_sms_bg
@@ -167,6 +205,9 @@ gg_sms_bg:
     mov r6, r10
     mov r7, r11
     push {r4-r7}
+    movs r5, #2
+    mvns r6, r5
+    push {r4-r6}               /* no group drawn, no previous tile */
     mov r12, r1
     movs r4, #0
     mov r8, r4
@@ -191,6 +232,14 @@ gg_sms_bg:
     ands r3, r6
     lsls r3, r3, #1
     ldrh r3, [r4, r3]          /* name entry */
+    lsls r6, r5, #16
+    orrs r6, r3
+    ldr r4, [sp, #8]
+    cmp r4, r6
+    bne 25f
+    mov r7, r8                 /* the previous tile again: its fields */
+    b 24f
+25: str r6, [sp, #8]
     lsls r6, r3, #21           /* V flip */
     bpl 13f
     movs r6, #7
@@ -225,7 +274,7 @@ gg_sms_bg:
     ldr r6, [r5, r6]
     lsls r6, r6, #3
     orrs r7, r6                /* fields of tile k */
-    lsls r3, r3, #20
+24: lsls r3, r3, #20
     lsrs r3, r3, #31           /* its palette */
     cmp r2, #0
     beq 19f
@@ -242,7 +291,16 @@ gg_sms_bg:
     mov r4, r7
     lsls r4, r6
     orrs r5, r4                /* group fields */
-15: ldr r4, [r1, #36]          /* pairs, spal of the group's palette */
+15: ldr r4, [sp, #0]
+    cmp r4, r5
+    bne 21f
+    ldr r4, [sp, #4]
+    cmp r4, r9
+    beq 22f                    /* the last group again: copy it */
+21: str r5, [sp, #0]
+    mov r4, r9
+    str r4, [sp, #4]
+    ldr r4, [r1, #36]          /* pairs, spal of the group's palette */
     ldr r6, [r1, #40]
     mov r2, r9
     cmp r2, #0
@@ -300,6 +358,8 @@ gg_sms_bg:
     mov r5, r11
     orrs r4, r5
     mov r10, r4
+    movs r4, #2
+    str r4, [sp, #4]           /* its pixels come later, from C */
 18: adds r0, #10
     mov r4, r11
     lsls r4, r4, #1
@@ -313,12 +373,26 @@ gg_sms_bg:
     beq 20f
     b 10b
 20: mov r0, r10
+    add sp, #12
     pop {r4-r7}
     mov r8, r4
     mov r9, r5
     mov r10, r6
     mov r11, r7
     pop {r4-r7, pc}
+22: mov r4, r0
+    subs r4, #10
+    ldrh r1, [r4, #0]
+    strh r1, [r0, #0]
+    ldrh r1, [r4, #2]
+    strh r1, [r0, #2]
+    ldrh r1, [r4, #4]
+    strh r1, [r0, #4]
+    ldrh r1, [r4, #6]
+    strh r1, [r0, #6]
+    ldrh r1, [r4, #8]
+    strh r1, [r0, #8]
+    b 18b
     .pool
     .size gg_sms_bg, . - gg_sms_bg
 
