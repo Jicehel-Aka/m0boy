@@ -3,14 +3,16 @@
 #include "z80.h"
 /* Shared by the reference interpreter and constant-specialized native code.
  * Every flag below has Z80 semantics, independent of the Game Boy runtime. */
+/* S/Z/X/Y/PV by value: one flash table lookup instead of the parity XOR
+ * chain, for every flagged ALU operation (defined in z80.c). */
+extern const uint8_t z80_szp_tab[256];
 static inline uint8_t z80_sz(uint8_t v) {
     return (v & (Z80_S|Z80_Y|Z80_X)) | (v ? 0 : Z80_Z);
 }
 static inline uint8_t z80_parity(uint8_t v) {
-    v ^= v >> 4; v ^= v >> 2; v ^= v >> 1;
-    return (v & 1) ? 0 : Z80_PV;
+    return (uint8_t)(z80_szp_tab[v] & Z80_PV);
 }
-static inline uint8_t z80_szp(uint8_t v) { return z80_sz(v) | z80_parity(v); }
+static inline uint8_t z80_szp(uint8_t v) { return z80_szp_tab[v]; }
 static inline uint8_t z80_rd(z80_t *c, uint16_t a) {
 #ifdef Z80_NATIVE_READ
     return Z80_NATIVE_READ(c,a);

@@ -48,26 +48,10 @@ namespace {
 
 constexpr uint8_t FZ = 1, FN = 2, FH = 4, FC = 8, FALL = 15;
 
-/* Base T-cycles; conditional control flow lists the not-taken cost.  Must
- * stay identical to cyc_main in targets/meta/runtime/gbl_cpu.c. */
-const uint8_t kCycles[256] = {
-     4,12, 8, 8, 4, 4, 8, 4,20, 8, 8, 8, 4, 4, 8, 4,
-     4,12, 8, 8, 4, 4, 8, 4,12, 8, 8, 8, 4, 4, 8, 4,
-     8,12, 8, 8, 4, 4, 8, 4, 8, 8, 8, 8, 4, 4, 8, 4,
-     8,12, 8, 8,12,12,12, 4, 8, 8, 8, 8, 4, 4, 8, 4,
-     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
-     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
-     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
-     8, 8, 8, 8, 8, 8, 4, 8, 4, 4, 4, 4, 4, 4, 8, 4,
-     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
-     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
-     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
-     4, 4, 4, 4, 4, 4, 8, 4, 4, 4, 4, 4, 4, 4, 8, 4,
-     8,12,12,16,12,16, 8,16, 8,16,12, 4,12,24, 8,16,
-     8,12,12, 4,12,16, 8,16, 8,16,12, 4,12, 4, 8,16,
-    12,12, 8, 4, 4,16, 8,16,16, 4,16, 4, 4, 4, 8,16,
-    12,12, 8, 4, 4,16, 8,16,12, 8,16, 4, 4, 4, 8,16,
-};
+/* Base T-cycles: the runtime's table (gbl_cycles.h), one source for the
+ * interpreter and this emitter. */
+#include "gbl_cycles.h"
+static const uint8_t* const kCycles = gbl_cyc_main;
 
 bool is_undefined(uint8_t op) {
     switch (op) {

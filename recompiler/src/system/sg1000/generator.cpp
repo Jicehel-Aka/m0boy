@@ -41,6 +41,7 @@ std::string replace(std::string s, const std::string& what, const std::string& v
  * reads per frame, averaged over the runs. */
 struct Profile {
     std::vector<Loc> hot;                 ///< hottest first
+    std::map<Loc, uint32_t> hits;         ///< executions summed over sessions
     std::map<Loc, double> rate;           ///< executions per frame
     std::map<uint32_t, double> sector_rate; ///< fraction of the frames reading each ROM sector as data
     std::vector<Loc> entries;
@@ -65,12 +66,13 @@ Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sm
     std::map<Loc, double> score;
     bool counted = true, rated = true;
     const unsigned long limit = gamegear ? 0xffffff : 0xffff;
-    const std::string header = sms ? "# m0boy.sms.coverage.v1" : gamegear ? "# m0boy.gg.coverage.v1" : "# m0boy.sg1000.coverage.v1";
+    const std::string base = sms ? "sms" : gamegear ? "gg" : "sg1000";
     for (const auto& path : files) {
         std::ifstream file(path);
         std::string line;
-        if (!file || !std::getline(file, line) || line != header)
-            throw std::runtime_error("Expected " + header.substr(2) + ": " + path.string());
+        if (!file || !std::getline(file, line) ||
+            (line != "# m0boy." + base + ".coverage.v1" && line != "# m0boy." + base + ".coverage.v2"))
+            throw std::runtime_error("Expected m0boy." + base + ".coverage.v[12]: " + path.string());
         std::vector<std::pair<Loc, uint64_t>> run;
         std::vector<std::pair<uint32_t, uint32_t>> run_reads;
         uint64_t total = 0, frames = 0;
@@ -108,6 +110,9 @@ Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sm
             }
             if (value > limit) throw std::runtime_error("Invalid coverage address");
             if (!count) counted = false;
+            uint32_t& sum = profile.hits[static_cast<Loc>(value)];
+            const uint64_t executions = count ? count : 1;
+            sum = executions > 0xffffffffu - sum ? 0xffffffffu : sum + static_cast<uint32_t>(executions);
             total += count;
             run.push_back({ static_cast<Loc>(value), count });
             if (seen.insert(static_cast<Loc>(value)).second) profile.hot.push_back(static_cast<Loc>(value));
@@ -293,7 +298,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const bool streamed = !page_index.empty();
         if (budget) eo.max_instructions = budget / per_instruction;
         EmitStats es;
-        write(src / "sg_gen.c", emit_code(rom, hot, eo, es));
+        std::vector<HotLoc> hot_counts;
+        hot_counts.reserve(hot.size());
+        for (Loc loc : hot) hot_counts.push_back({ loc, profile.hits.at(loc) });
+        write(src / "sg_gen.c", emit_code(rom, hot_counts, eo, es));
         stats.covered = es.covered;
         stats.compiled = es.compiled;
         stats.speculative = es.speculative;
@@ -368,7 +376,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         for (const auto& entry : fs::directory_iterator(tpl / "runtime"))
             if (entry.is_regular_file()) copy_template(entry.path(), src / entry.path().filename());
         if (gg) /* the Z80 core is the SG-1000 runtime's */
-            for (const char* name : { "z80.c", "z80.h", "z80_ops.h" }) copy_template(shared / "runtime" / name, src / name);
+            for (const char* name : { "z80.c", "z80.h", "z80_ops.h", "z80_fast.h" }) copy_template(shared / "runtime" / name, src / name);
         const std::string host_c = gg ? "gg_host.c" : "sg_host.c", main_cpp = gg ? "gg_main.cpp" : "sg_main.cpp";
         copy_template(tpl / "host" / host_c, o.output / "host" / host_c);
         write(o.output / "host" / "CMakeLists.txt", replace(read(tpl / "host" / "CMakeLists.txt.in"), "@NAME@", o.name));

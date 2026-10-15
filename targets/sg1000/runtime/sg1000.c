@@ -4,6 +4,9 @@ static inline void sg_native_write(z80_t *c, uint16_t a, uint8_t v) { (void)c; s
 #define Z80_NATIVE_READ sg_native_read
 #define Z80_NATIVE_WRITE sg_native_write
 #include "z80_ops.h"
+/* Opcode fetch as the generic decoder sees it: mapped, never a data read. */
+#define Z80_FAST_FETCH(a) sg1000_read((a))
+#include "z80_fast.h"
 #include <string.h>
 
 sg1000_t machine;
@@ -315,6 +318,15 @@ static int interp_one(void) {
     if ((int32_t)(m->cyc - m->next_evt) >= 0 && sg_event(c->pc)) return 0;
     uint16_t pc = c->pc;
     if (m->coverage) m->coverage[pc]++;
+    int jumped;
+    const int fast = z80_fast(c, &jumped); /* common opcodes without decoding */
+    if (fast >= 0) {
+        c->r = (uint8_t)((c->r & 128) | ((c->r + 1) & 127));
+        m->cyc += (uint32_t)fast;
+        m->interpreted++;
+        if (c->ei_delay && --c->ei_delay == 0 && c->irq) m->next_evt = m->cyc;
+        return !jumped;
+    }
     z80_decoded_t d;
     if (!z80_decode(c, &d)) { c->fault = 1; m->stop = 1; return 0; }
     const uint16_t sp = c->sp;

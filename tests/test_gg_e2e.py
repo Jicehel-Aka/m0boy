@@ -39,7 +39,7 @@ def exercise(args, root, system):
     baseline = run(args.host, rom, *common, '--coverage', coverage,
                    '--shot', root / 'reference.ppm', '--wav', root / 'reference.wav')
     text = coverage.read_text()
-    assert text.startswith('# m0boy.' + system + '.coverage.v1\n') and '# read ' in text
+    assert text.startswith('# m0boy.' + system + '.coverage.v2\n') and '# read ' in text
     assert re.search(r'^02[0-9a-f]{4} \d+$', text, re.M) and re.search(r'^03[0-9a-f]{4} \d+$', text, re.M)  # pages 2 and 3
     # The coverage-guided explorer: segments from snapshots, a profile with rates
     explored = root / 'explored.cov'

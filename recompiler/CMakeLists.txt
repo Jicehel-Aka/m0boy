@@ -41,6 +41,8 @@ target_link_libraries(gbrecomp_core PUBLIC m0boy_frontends m0boy_cpu_sm83 m0boy_
 target_include_directories(gbrecomp_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        # the SM83 cycle table shared with the runtime (gbl_cycles.h)
+        ${CMAKE_CURRENT_SOURCE_DIR}/../targets/meta/runtime
 )
 
 # Versions of the two consoles of the META edition, one file each: the META's

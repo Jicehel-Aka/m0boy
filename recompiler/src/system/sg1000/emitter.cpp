@@ -46,6 +46,7 @@ struct Ins {
     uint8_t use = 0, def = 0;
     bool timed = false;              ///< observes machine.cyc or R: flush before
     bool covered = false;
+    uint32_t hits = 0;               ///< executions the profile recorded (0: statically reached)
     int region = -1;
     size_t order = 0;
     bool label = false, sw_case = false, loop_head = false;
@@ -189,7 +190,7 @@ public:
         sb_.banked = opt.banked;
         sb_.fixed_kib = opt.fixed_kib;
     }
-    std::string run(const std::vector<Loc>& hot, EmitStats& stats);
+    std::string run(const std::vector<HotLoc>& hot, EmitStats& stats);
 
 private:
     std::span<const uint8_t> rom_;
@@ -199,6 +200,19 @@ private:
     std::vector<std::vector<Loc>> regions_;
     int defaults_[3] = { -1, -1, -1 }; ///< usual page of each slot (banked), -1: unknown
     uint32_t pend_cy_ = 0, pend_rf_ = 0;
+    /* Sites of the instruction being emitted expand the out-of-line helpers
+     * (sg_gen.h) when it ran this hot: PUSH/POP/RD/WR are the same bodies
+     * without the call; flash pays a few bytes per site, and the budget
+     * decides how many instructions fit. */
+    uint32_t hot_threshold_ = 0xffffffffu;
+    uint32_t cur_hits_ = 0;
+    bool hot_site() const { return cur_hits_ >= hot_threshold_; }
+    std::string rd_expr(const std::string& a) const { return std::string(hot_site() ? "RD(" : "sg_rd(") + a + ")"; }
+    std::string wr_stmt(const std::string& a, const std::string& v) const {
+        return std::string(hot_site() ? "WR(" : "sg_wr(") + a + ", " + v + ")";
+    }
+    std::string push_stmt(const std::string& v) const { return std::string(hot_site() ? "PUSH(" : "sg_push(") + v + ")"; }
+    std::string pop_expr() const { return hot_site() ? "POP()" : "sg_pop()"; }
     EmitStats* stats_ = nullptr;
 
     static uint16_t addr_of(Loc l) { return static_cast<uint16_t>(l); }
@@ -426,7 +440,7 @@ void Emitter::plan() {
 
 std::string Emitter::reg8(unsigned r, const z80_decoded_t& d) const {
     static const char* n[8] = { "Z.b", "Z.c", "Z.d", "Z.e", "Z.h", "Z.l", nullptr, "Z.a" };
-    if (r == 6) return "sg_rd(" + addr_hl(d) + ")";
+    if (r == 6) return rd_expr(addr_hl(d));
     return n[r];
 }
 std::string Emitter::addr_hl(const z80_decoded_t& d) const {
@@ -520,13 +534,13 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
             }
             auto sub = [&](const std::string& val) { std::string e = expr; size_t pos;
                 while ((pos = e.find("V_")) != std::string::npos) e.replace(pos, 2, val); return e; };
-            if (r == 6) o << "    { uint16_t a_ = " << addr_hl(d) << "; uint8_t m_ = sg_rd(a_); sg_wr(a_, " << sub("m_") << "); }\n";
+            if (r == 6) o << "    { uint16_t a_ = " << addr_hl(d) << "; uint8_t m_ = " << rd_expr("a_") << "; " << wr_stmt("a_", sub("m_")) << "; }\n";
             else o << "    { uint8_t m_ = " << v << "; " << v << " = " << sub("m_") << "; }\n";
             return true;
         }
         const std::string mask = hex(1u << y, 2);
         if (r == 6) {
-            o << "    { uint16_t a_ = " << addr_hl(d) << "; sg_wr(a_, (uint8_t)(sg_rd(a_) " << (x == 2 ? "& ~" : "| ") << mask << ")); }\n";
+            o << "    { uint16_t a_ = " << addr_hl(d) << "; " << wr_stmt("a_", "(uint8_t)(" + rd_expr("a_") + " " + (x == 2 ? std::string("& ~") : std::string("| ")) + mask + ")") << "; }\n";
         } else {
             o << "    " << reg8(r, d) << (x == 2 ? " &= (uint8_t)~" : " |= ") << mask << ";\n";
         }
@@ -557,7 +571,7 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
         }
         if (x == 2 && (y == 4 || y == 5) && z == 0 && !flags) { /* LDI / LDD */
             const char* step = y == 4 ? "++" : "--";
-            o << "    { uint8_t v_ = sg_rd(Z.hl); sg_wr(Z.de, v_); Z.hl" << step << "; Z.de" << step << "; Z.bc--; }\n";
+            o << "    { uint8_t v_ = " << rd_expr("Z.hl") << "; " << wr_stmt("Z.de", "v_") << "; Z.hl" << step << "; Z.de" << step << "; Z.bc--; }\n";
             return true;
         }
         return false;
@@ -566,7 +580,7 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
         const bool plain = y == 6 || z == 6;
         if (!ok(y, plain) || !ok(z, plain)) return false;
         if (y == z) return true;
-        if (y == 6) o << "    sg_wr(" << addr_hl(d) << ", " << reg8(z, d) << ");\n";
+        if (y == 6) o << "    " << wr_stmt(addr_hl(d), reg8(z, d)) << ";\n";
         else o << "    " << reg8(y, d) << " = " << reg8(z, d) << ";\n";
         return true;
     }
@@ -681,7 +695,7 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
         return true;
     case 6:
         if (!ok(y, false)) return false;
-        if (y == 6) o << "    sg_wr(" << addr_hl(d) << ", " << hex(d.immediate & 255, 2) << ");\n";
+        if (y == 6) o << "    " << wr_stmt(addr_hl(d), hex(d.immediate & 255, 2)) << ";\n";
         else o << "    " << reg8(y, d) << " = " << hex(d.immediate & 255, 2) << ";\n";
         return true;
     default: return false;
@@ -690,8 +704,8 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
     switch (z) {
     case 1:
         if (!q) {
-            if (p == 3) o << "    { uint16_t v_ = sg_pop(); Z.a = (uint8_t)(v_ >> 8); Z.f = (uint8_t)v_; }\n";
-            else o << "    " << pair(p, d) << " = sg_pop();\n";
+            if (p == 3) o << "    { uint16_t v_ = " << pop_expr() << "; Z.a = (uint8_t)(v_ >> 8); Z.f = (uint8_t)v_; }\n";
+            else o << "    " << pair(p, d) << " = " << pop_expr() << ";\n";
             return true;
         }
         if (p == 1) {
@@ -714,8 +728,8 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
         return false;
     case 5:
         if (q) return false;
-        if (p == 3) o << "    sg_push((uint16_t)((Z.a << 8) | Z.f));\n";
-        else o << "    sg_push(" << pair(p, d) << ");\n";
+        if (p == 3) o << "    " << push_stmt("(uint16_t)((Z.a << 8) | Z.f)") << ";\n";
+        else o << "    " << push_stmt(pair(p, d)) << ";\n";
         return true;
     default: return false;
     }
@@ -724,6 +738,7 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
 void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
     const z80_decoded_t& d = in.d;
     const uint16_t next = in.next();
+    cur_hits_ = in.hits; /* helper-inlining decision for this instruction */
     if (in.label) {
         flush(o);
         o << lab(in.loc) << ":\n";
@@ -766,7 +781,7 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
         flush(o);
         const Ins* t = find(in.target_dest.loc);
         if (in.flow == Flow::CallCond) o << "    if (" << cond_expr((d.opcode >> 3) & 7) << ") {\n";
-        o << "    CY(" << in.taken << "); sg_push(" << hex(next) << "); Z.pc = " << hex(in.target) << ";\n";
+        o << "    CY(" << in.taken << "); " << push_stmt(hex(next)) << "; Z.pc = " << hex(in.target) << ";\n";
         if (t && in.target_dest.guard_slot >= 0)
             o << "    if (" << guard(in.target_dest) << ") " << region_name(t->region) << "(); else sg_exec();\n";
         else o << "    " << (t ? region_name(t->region) + "()" : std::string("sg_exec()")) << ";\n";
@@ -777,17 +792,17 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
     case Flow::Ret:
         pend_cy_ += in.cycles; pend_rf_ += d.refresh;
         flush(o);
-        o << "    Z.pc = sg_pop(); return;\n";
+        o << "    Z.pc = " << pop_expr() << "; return;\n";
         return;
     case Flow::Reti:
         pend_cy_ += in.cycles; pend_rf_ += d.refresh;
         flush(o);
-        o << "    Z.pc = sg_pop(); Z.iff1 = Z.iff2; return;\n";
+        o << "    Z.pc = " << pop_expr() << "; Z.iff1 = Z.iff2; return;\n";
         return;
     case Flow::RetCond:
         pend_rf_ += d.refresh;
         flush(o);
-        o << "    if (" << cond_expr((d.opcode >> 3) & 7) << ") { CY(" << in.taken << "); Z.pc = sg_pop(); return; }\n";
+        o << "    if (" << cond_expr((d.opcode >> 3) & 7) << ") { CY(" << in.taken << "); Z.pc = " << pop_expr() << "; return; }\n";
         pend_cy_ += in.cycles;
         break;
     case Flow::JumpDyn:
@@ -810,13 +825,13 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
             const char* step = (y & 1) ? "--" : "++";
             o << "    for (;;) {\n";
             if (z == 0) { /* flags (if read) as LDI's with BC 0: P/V clear, X/Y from A + value */
-                o << "        uint8_t v_ = sg_rd(Z.hl); sg_wr(Z.de, v_); Z.hl" << step << "; Z.de" << step << "; Z.bc--;\n"
+                o << "        uint8_t v_ = " << rd_expr("Z.hl") << "; " << wr_stmt("Z.de", "v_") << "; Z.hl" << step << "; Z.de" << step << "; Z.bc--;\n"
                   << "        if (!Z.bc) { ADV(16, " << unsigned(d.refresh) << ");"
                   << (block_flags ? " { uint8_t n_ = (uint8_t)(Z.a + v_); Z.f = (uint8_t)((Z.f & 0xc1) | (n_ & 0x08) | ((n_ & 0x02) << 4)); }" : "")
                   << " break; }\n";
             } else {
                 /* flags (if read) as OUTI's with B 0 */
-                o << "        uint8_t v_ = sg_rd(Z.hl); Z.b--; Z.hl" << step << "; " << opt_.io_out << "(Z.c, v_);\n"
+                o << "        uint8_t v_ = " << rd_expr("Z.hl") << "; Z.b--; Z.hl" << step << "; " << opt_.io_out << "(Z.c, v_);\n"
                   << "        if (!Z.b) { ADV(16, " << unsigned(d.refresh) << ");"
                   << (block_flags ? " { unsigned s_ = v_ + Z.l; Z.f = (uint8_t)(0x40 | (v_ & 0x80 ? 2 : 0) | (s_ > 255 ? 0x11 : 0) | z80_parity(s_ & 7)); }" : "")
                   << " break; }\n";
@@ -852,7 +867,7 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
                 if (!opt_.precise) o << "    SYNC(" << hex(n->target) << ");\n";
                 transfer(o, in, n->target, n->target_dest);
             } else {
-                o << "    Z.pc = sg_pop();" << (n->flow == Flow::Reti ? " Z.iff1 = Z.iff2;" : "") << " return;\n";
+                o << "    Z.pc = " << pop_expr() << ";" << (n->flow == Flow::Reti ? " Z.iff1 = Z.iff2;" : "") << " return;\n";
             }
             stats_->native++;
             return;
@@ -908,28 +923,34 @@ void Emitter::emit_region(std::ostringstream& o, int r) {
     o << "}\n";
 }
 
-std::string Emitter::run(const std::vector<Loc>& hot, EmitStats& stats) {
+std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
     stats_ = &stats;
     if (opt_.banked) { /* usual page of each slot: the most played one */
-        std::map<unsigned, size_t> count[3];
-        for (Loc l : hot) { const int s = slot_of(addr_of(l)); if (s >= 0) count[s][page_of(l)]++; }
+        std::map<unsigned, uint64_t> count[3];
+        for (const HotLoc& h : hot) { const int s = slot_of(addr_of(h.loc)); if (s >= 0) count[s][page_of(h.loc)] += h.hits; }
         for (int s = 0; s < 3; s++) {
-            size_t best = 0;
+            uint64_t best = 0;
             defaults_[s] = s; /* power-on mapping */
             for (auto& [page, n] : count[s]) if (n > best) { best = n; defaults_[s] = static_cast<int>(page); }
         }
     }
     /* Played instructions first (hottest first), then what they reach. */
     std::deque<Loc> work;
-    auto add = [&](Loc a, bool covered) {
+    auto add = [&](Loc a, bool covered, uint32_t hits) {
         if (ins_.size() >= opt_.max_instructions || a == NOLOC || ins_.count(a)) return;
         Ins in;
         if (!decode(a, in)) return;
         in.covered = covered;
+        in.hits = hits;
         ins_[a] = in;
         work.push_back(a);
     };
-    for (Loc a : hot) add(a, true);
+    for (const HotLoc& h : hot) add(h.loc, true, h.hits);
+    /* Sites this hot expand the memory and stack helpers inline (sg_gen.h):
+     * the body is the helper's, the call itself is the cost on a Cortex-M0+;
+     * within a factor of the hottest execution count, flash permitting. */
+    hot_threshold_ = hot.empty() ? 0xffffffffu :
+        std::max_element(hot.begin(), hot.end(), [](const HotLoc& a, const HotLoc& b) { return a.hits < b.hits; })->hits / 64 + 1;
     stats.covered = ins_.size();
     /* Static reach stops at padding: four equal bytes 00 (NOP) or FF (RST 38). */
     auto padding = [&](Loc a) {
@@ -938,7 +959,7 @@ std::string Emitter::run(const std::vector<Loc>& hot, EmitStats& stats) {
         for (unsigned k = 1; k < 4; k++) if (rom_at(a + k) != v) return false;
         return true;
     };
-    auto reach = [&](Loc a) { if (a != NOLOC && !ins_.count(a) && in_rom(a) && !padding(a)) add(a, false); };
+    auto reach = [&](Loc a) { if (a != NOLOC && !ins_.count(a) && in_rom(a) && !padding(a)) add(a, false, 0); };
     for (Loc v : { 0x0000u, 0x0038u, 0x0066u }) reach(v);
     while (!work.empty()) {
         Ins in = ins_[work.front()];
@@ -993,7 +1014,7 @@ std::string Emitter::run(const std::vector<Loc>& hot, EmitStats& stats) {
 
 } // namespace
 
-std::string emit_code(std::span<const uint8_t> rom, const std::vector<Loc>& hot_first,
+std::string emit_code(std::span<const uint8_t> rom, const std::vector<HotLoc>& hot_first,
                       const EmitOptions& options, EmitStats& stats) {
     Emitter e(rom, options);
     return e.run(hot_first, stats);

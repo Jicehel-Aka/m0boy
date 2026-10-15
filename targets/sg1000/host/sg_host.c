@@ -246,7 +246,9 @@ int main(int argc, char **argv) {
         if (audio_error) { perror("audio"); if (coverage) fclose(coverage); free(loaded); return 1; }
     }
     if (coverage) {
-        fprintf(coverage, "# m0boy.sg1000.coverage.v1\n");
+        /* v2: every address line carries its execution count, so the
+         * recompiler ranks heat across sessions instead of file order */
+        fprintf(coverage, "# m0boy.sg1000.coverage.v2\n");
         if (machine.cart_ram_used) fprintf(coverage, "# cart-ram\n");
         for (unsigned pc = 0; pc < 65536; pc++) /* dynamic jump targets: region entries */
             if (entries[pc]) fprintf(coverage, "# entry %04x\n", pc);
@@ -254,7 +256,7 @@ int main(int argc, char **argv) {
         for (unsigned pc = 0; pc < 65536; pc++) if (hits[pc]) coverage_order[n++] = (uint16_t)pc;
         qsort(coverage_order, n, sizeof *coverage_order, hot_first);
         for (unsigned i = 0; i < n; i++)
-            if (fprintf(coverage, "%04x\n", coverage_order[i]) < 0) { fclose(coverage); free(loaded); return 1; }
+            if (fprintf(coverage, "%04x %u\n", coverage_order[i], hits[coverage_order[i]]) < 0) { fclose(coverage); free(loaded); return 1; }
         if (fclose(coverage)) { perror("coverage"); free(loaded); return 1; }
     }
     if (shot) {

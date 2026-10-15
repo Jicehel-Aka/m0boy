@@ -276,7 +276,9 @@ int main(int argc, char **argv) {
         if (audio_error) { perror("audio"); if (coverage) fclose(coverage); free(loaded); return 1; }
     }
     if (coverage) {
-        fprintf(coverage, GG_IS_SMS ? "# m0boy.sms.coverage.v1\n" : "# m0boy.gg.coverage.v1\n");
+        /* v2: every address line carries its execution count, so the
+         * recompiler ranks heat across sessions instead of file order */
+        fprintf(coverage, GG_IS_SMS ? "# m0boy.sms.coverage.v2\n" : "# m0boy.gg.coverage.v2\n");
         if (machine.cart_ram_used) fprintf(coverage, "# cart-ram\n");
         fprintf(coverage, "# frames %u\n", machine.frames);
         for (uint32_t loc = 0; loc < locations; loc++) /* dynamic jump targets: region entries */

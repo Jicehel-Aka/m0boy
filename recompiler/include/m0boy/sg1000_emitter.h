@@ -13,6 +13,13 @@ namespace m0boy::sg1000 {
 /// the address itself.
 using Loc = uint32_t;
 
+/// A played location with the executions the profile recorded: the emitter
+/// seeds its worklist and picks mapper defaults hottest first.
+struct HotLoc {
+    Loc loc;
+    uint32_t hits; ///< execution count, summed over the coverage sessions
+};
+
 struct EmitOptions {
     bool precise = false;       ///< sync before every instruction (differential tests)
     bool cart_ram = false;      ///< 8 KiB of cartridge RAM at 8000-BFFF
@@ -33,7 +40,7 @@ struct EmitStats {
 
 /// Z80 -> C for the Sega Z80 runtimes (sg_gen.h): regions of native code
 /// for the played (hot first) and statically reachable instructions.
-std::string emit_code(std::span<const uint8_t> rom, const std::vector<Loc>& hot_first,
+std::string emit_code(std::span<const uint8_t> rom, const std::vector<HotLoc>& hot_first,
                       const EmitOptions& options, EmitStats& stats);
 
 } // namespace m0boy::sg1000

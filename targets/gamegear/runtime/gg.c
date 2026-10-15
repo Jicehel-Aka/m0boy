@@ -14,6 +14,10 @@ static inline void gg_native_write(z80_t *c, uint16_t a, uint8_t v) { (void)c; g
 #define Z80_NATIVE_READ gg_native_read
 #define Z80_NATIVE_WRITE gg_native_write
 #include "z80_ops.h"
+/* Opcode fetch as the generic decoder sees it (bus_read): mapped by the
+ * mapper, never traced as a data read (gg_rom_trace). */
+#define Z80_FAST_FETCH(a) gg_read((a))
+#include "z80_fast.h"
 #include <string.h>
 
 gg_t machine;
@@ -475,6 +479,15 @@ static int interp_one(void) {
     if ((int32_t)(m->cyc - m->next_evt) >= 0 && sg_event(c->pc)) return 0;
     uint16_t pc = c->pc;
     if (m->coverage) { const uint32_t loc = gg_location(pc); if (loc < m->coverage_size) gg_cover(loc); }
+    int jumped;
+    const int fast = z80_fast(c, &jumped); /* common opcodes without decoding */
+    if (fast >= 0) {
+        c->r = (uint8_t)((c->r & 128) | ((c->r + 1) & 127));
+        m->cyc += (uint32_t)fast;
+        m->interpreted++;
+        if (c->ei_delay && --c->ei_delay == 0 && c->irq) m->next_evt = m->cyc;
+        return !jumped;
+    }
     z80_decoded_t d;
     if (!z80_decode(c, &d)) { c->fault = 1; m->stop = 1; return 0; }
     const uint16_t sp = c->sp;

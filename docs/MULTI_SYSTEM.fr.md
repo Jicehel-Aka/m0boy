@@ -108,6 +108,11 @@ l’émetteur META.
   flash (32 octets estimés par instruction, `--meta-code-budget` pour la
   fixer). L’exploration statique s’arrête sur le remplissage (quatre octets
   `00` ou `FF`). Le code en RAM et le reste passent par l’interpréteur.
+  Depuis la version v2 des fichiers de couverture, chaque adresse y porte
+  son nombre d’exécutions : la fusion des sessions additionne ces compteurs
+  pour guider les optimisations des sites chauds. Le classement conserve
+  la pondération des sessions par leurs taux d’exécution ; les fichiers v1
+  sans compteur comptent une exécution par adresse.
 - **Régions** : les instructions voisines forment des fonctions C, avec des
   `goto` internes et un `switch` sur `pc` à l’entrée. `CALL` devient un appel
   C suivi d’un contrôle du retour ; les autres sorties posent `pc` et
@@ -234,6 +239,21 @@ note aussi les cibles des `RET`, `RETI`/`RETN` et `JP (HL)` (hors retours
 d'interruption) en lignes `# entry XXXX` : le recompilateur en fait des
 entrées de région (adresses de retour empilées, tables de sauts), sans quoi
 ce code repasserait par l'interpréteur. `AUTO_REDO=1` refait les profils.
+
+Le cœur Z80 gagne ses cycles à trois endroits (2026-10-15).  Les drapeaux
+S/Z/X/Y/PV viennent d'une table de 256 octets (`z80.c`) au lieu de la chaîne
+XOR de parité, dans l'interpréteur comme dans les fonctions générées.
+L'interpréteur de repli court-circuite le décodeur pour les familles
+courantes (`z80_fast.h`, partagé SG-1000/Game Gear : LD r,r', LD r,n, ALU,
+INC/DEC, JR, DJNZ...) : le code interprété d'Aladdin exécute à 78 % le trio
+LD A,(HL) / OR A / JR.  Enfin, les sites d'instructions chauds (dans un
+facteur 64 du plus exécuté, compteurs v2) déploient `PUSH`/`POP`/`RD`/`WR`
+en ligne au lieu des appels `sg_push`/`sg_pop`/`sg_rd`/`sg_wr`.  Mesuré par
+attribution de cycles gm0 (`EMU_PROF`, 600 images, pas une mesure sur
+appareil) : Galaga Pokitto, `sg_push`+`sg_pop` de 5,4 % à 3,0 % des cycles
+et 0,9 point de marge de trame en plus ; Aladdin streamé, le chemin
+interprété de 18 % à 14 % des cycles et 2,2 points de marge en plus, à
+méthodologie de génération égale par ailleurs.
 
 En retard, le firmware saute jusqu'à deux présentations de suite ; le Z80, le
 PSG et l'état des sprites restent exacts. Clang 23 produit des

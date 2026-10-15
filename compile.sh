@@ -670,7 +670,9 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   fi
   for cov in "$store"/*.cov "$PROFILES_DIR/$rom_sha"/*.cov; do
     [ -f "$cov" ] || continue
-    [ "$(head -n1 "$cov")" = "# m0boy.$sys.coverage.v1" ] && cov_args+=(--coverage "$cov")
+    case "$(head -n1 "$cov")" in
+      "# m0boy.$sys.coverage.v1"|"# m0boy.$sys.coverage.v2") cov_args+=(--coverage "$cov") ;;
+    esac
   done
   # Firmware filling the flash: a first build measures the generated code
   # per instruction (sg_gen.o), the second generates with that measure;
