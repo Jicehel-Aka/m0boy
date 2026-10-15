@@ -28,6 +28,10 @@ void meta_spi_rate(uint32_t hz);
 /* The SERCOM's clock changed (meta_clock.cpp): hz, from now on. */
 void meta_spi_clock(uint32_t hz);
 uint8_t meta_spi_transfer(uint8_t out);
+/* Pressed buttons: the pad's 74HC165 (CS PB03) read at META_BUTTONS_SPI_HZ,
+ * active low, in the Gamebuino library bit order.  The SPI receive FIFO is
+ * drained first; call it only when the bus is free. */
+uint8_t meta_pad_read(void);
 
 #ifdef __cplusplus
 }

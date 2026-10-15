@@ -93,15 +93,9 @@ static int close_frame(void) {
 /* ---- buttons -------------------------------------------------------------- */
 
 #if !META_TARGET_POKITTO
-#define BTN_CS_MASK (1u << 3) /* PB03 */
 
-/* META_BUTTONS_SPI_HZ (gbl_profile.h): 12 MHz like the Gamebuino library.
- * The library also waits ~1 us after CS low for the shift register's
- * parallel load; reading immediately works on the META tested here, so
- * the wait is optional (META_BUTTONS_PL_US). */
-#ifndef META_BUTTONS_PL_US
-#define META_BUTTONS_PL_US 0
-#endif
+/* The pad is read by the bus driver (meta_pad_read, meta_spi.c) at
+ * META_BUTTONS_SPI_HZ (gbl_board.h); the frontends only map the bits. */
 
 #endif /* !META_TARGET_POKITTO */
 
@@ -112,21 +106,6 @@ static int close_frame(void) {
 #endif
 
 #if !META_TARGET_POKITTO
-
-static uint8_t read_buttons_raw(void) {
-    meta_spi_rate(META_BUTTONS_SPI_HZ);
-    /* Drop bytes left by display writes (the receive FIFO holds two). */
-    for (int i = 0; i < 2 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
-        (void)SERCOM4->SPI.DATA.reg;
-    SERCOM4->SPI.STATUS.reg = SERCOM_SPI_STATUS_BUFOVF;
-    PORT->Group[1].OUTCLR.reg = BTN_CS_MASK;
-#if META_BUTTONS_PL_US > 0
-    for (uint32_t t = meta_micros(); meta_micros() - t < META_BUTTONS_PL_US;) {}
-#endif
-    uint8_t raw = meta_spi_transfer(1);
-    PORT->Group[1].OUTSET.reg = BTN_CS_MASK;
-    return (uint8_t)~raw; /* active low */
-}
 
 /* Hand the console back to the Gamebuino loader in the state it expects:
  * display idle, our audio and DMA interrupts off, SD card deselected and in
@@ -145,7 +124,7 @@ static void enter_loader(void) {
 /* Pressed buttons in the Gamebuino library order (META_MB_*): 0 down,
  * 1 left, 2 right, 3 up, 4 A, 5 B, 6 MENU, 7 HOME. */
 static uint8_t meta_buttons(void) {
-    uint8_t m = read_buttons_raw();
+    uint8_t m = meta_pad_read();
 #ifdef META_BUTTONS_LAPINOU_ORDER
     /* 0 left, 1 right, 2 up, 3 A, 4 B, 5 MENU, 6 down, 7 HOME */
     uint8_t b = (uint8_t)(m & 0x80);
@@ -411,7 +390,7 @@ static void option_menu(void) {
 #if !META_TARGET_POKITTO
     /* Display SPI clock (meta_clock.cpp): 36 at most at 72 MHz.  Too fast
      * for the panel shows garbage, the menu too: switching the console off
-     * restores META_LCD_SPI_MHZ. */
+     * restores the boot default, META_LCD_SPI_MHZ (gbl_board.h). */
     ADD(M_LCD_SPI, "SPI ecran", META_MENU_CHOICE, &lcd_spi, 4, lcd_spi_names);
 #endif
     ADD(M_QUIT, "Quitter", META_MENU_ACTION, 0, 0, 0);
@@ -547,7 +526,7 @@ static void __attribute__((unused)) boot_error(uint16_t colour) {
     for (;;) {
 #if !META_TARGET_POKITTO
         if (WDT->CTRL.reg & WDT_CTRL_ENABLE) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
-        uint8_t m = read_buttons_raw();
+        uint8_t m = meta_pad_read();
 #else
         uint8_t m = meta_buttons();
 #endif
@@ -576,8 +555,6 @@ static void stream_error_screen(int err) {
 int main(void) {
 #if !META_TARGET_POKITTO
     meta_sd_deselect(); /* the card off the shared SPI bus from the start */
-    PORT->Group[1].DIRSET.reg = BTN_CS_MASK;
-    PORT->Group[1].OUTSET.reg = BTN_CS_MASK;
 #else
     pokitto_buttons_init();
 #endif

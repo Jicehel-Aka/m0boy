@@ -26,7 +26,7 @@ recompiler and adds everything needed to run on chips with 32 KiB of RAM,
 | Memory | 32 KiB RAM, 240 KiB flash for the firmware | 32 + 2 + 2 KiB RAM, 228 KiB flash below the loader |
 | Screen | 160×128: the 144 Game Boy lines blended into 128 | 220×176: picture 1:1, or enlarged to 200×176 |
 | Firmware build | PlatformIO | `make` with arm-none-eabi-gcc |
-| Version | 0.10.6 | 0.10.6 |
+| Version | 0.10.7 | 0.10.6 |
 | Status | Games run on the console | Tested in an emulator only. A first tester on a real Pokitto reports a picture flipped vertically (rows reversed, columns in order), consistent with the panel's SS bit (R01) being lost at init; 0.10.1 lengthens the post-reset wait and the register write strobe and writes R01 again, still to be checked on the device |
 
 ## SG-1000

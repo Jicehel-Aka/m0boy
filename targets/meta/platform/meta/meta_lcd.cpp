@@ -94,8 +94,8 @@ static const uint8_t cmd_init[] = {
     ST7735_DISPON, 0,
 };
 
-/* The option menu's rate (meta_clock.cpp: 12 to 48 MHz, default
- * META_LCD_SPI_MHZ; meta-lapinou drives this panel at 24). */
+/* The option menu's rate (meta_clock.cpp: 12 to 48 MHz, boot default
+ * META_LCD_SPI_MHZ, 48; meta-lapinou drives this panel at 24). */
 #define TFT_SPI_HZ ((uint32_t)meta_clock_lcd_spi() * 1000000u)
 
 /* TXC only rises after a transmission, so track whether one is in flight

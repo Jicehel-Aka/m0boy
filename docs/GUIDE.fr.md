@@ -23,9 +23,12 @@ exécute le reste.
   seule passe ; un fichier `build_flags` à côté d'un jeu garde ses options
   de compilation d'une conversion à l'autre ; les reconstructions de
   version sont environ deux fois plus légères.
-- META : TBLEND aussi dans les jeux lus sur la carte, bus SD plus rapide,
-  option `-DMETA_LCD_12BPP=1` (écran en 12 bits, 25 % d'octets en moins
-  par rangée).
+- META : TBLEND aussi dans les jeux lus sur la carte, option
+  `-DMETA_LCD_12BPP=1` (écran en 12 bits, 25 % d'octets en moins par
+  rangée). Les trois périphériques du bus SPI ont leur débit dans
+  `gbl_board.h` : 48 MHz pour l'écran (le maximum), 24 MHz pour la carte
+  SD (sous sa limite de 25 MHz en mode SPI) et 12 MHz pour les boutons,
+  qui ne supportent pas plus.
 
 ## Nouveautés de la version 0.5.0
 
@@ -344,7 +347,7 @@ gauche/droite (ou A) change la valeur, B ou HOME referme.
 | Images | saut d'images : Auto (n'affiche pas les images en retard), Aucun, 1 sur 2, 1 sur 3, 1 sur 4 |
 | Vitesse | Normale, ou Rapide (sans limite d'images par seconde) |
 | Processeur | 48 MHz ou 72 MHz (surcadencé, hors spécification du SAMD21 : à essayer, retour à 48 MHz si instable) |
-| SPI ecran | vitesse d'envoi de l'image à l'écran : 12, 24 (défaut), 36 ou 48 MHz (36 au plus avec le processeur à 72 MHz). Si l'écran devient illisible, le menu l'est aussi : éteindre la console remet 24 MHz |
+| SPI ecran | vitesse d'envoi de l'image à l'écran : 12, 24, 36 ou 48 MHz (48 par défaut, 36 au plus avec le processeur à 72 MHz). Si l'écran devient illisible, le menu l'est aussi : éteindre la console remet le défaut, et un firmware reconstruit avec `-DMETA_LCD_SPI_MHZ=24` (dans `build_flags`) démarre à 24 MHz |
 | Quitter | retour au loader Gamebuino |
 
 Sous les lignes : images émulées et affichées pendant la dernière seconde,
@@ -404,6 +407,8 @@ Ajoute-les dans `build_flags` du `platformio.ini` généré, par exemple
 | `GBL_PPU_ASM` | 1 sur M0+ | Chargement des tuiles et conversion des couleurs en assembleur Thumb-1 (`gbl_ppu_asm.S`) |
 | `GBL_PPU_RAMFUNC` | 1 | Ces deux boucles tournent depuis la SRAM (≈150 octets), sans état d'attente de la flash |
 | `META_LCD_DMA` | 1 | Écran en DMA avec file de transferts ; 0 = envoi par le CPU |
+| `META_LCD_SPI_MHZ` | 48 | Débit SPI de l'écran au démarrage : 12, 24, 36 ou 48 (48 = le maximum, ramené à 36 quand le processeur est à 72 MHz, 24 si la PLL ne s'accroche pas) ; le menu « SPI ecran » le change |
+| `META_SD_SPI_HZ` | 24000000 | Débit SPI de la carte SD hors identification, sous la limite de 25 MHz du mode SPI (18 MHz quand l'écran est à 36) |
 | `META_LCD_BUFFERS` / `META_STRIP_LINES` | 3 / 4 | Buffers d'écran et lignes par buffer |
 | `META_MAX_SKIP` | 3 | Frames consécutives sautées au maximum en cas de retard |
 | `META_BUTTONS_LAPINOU_ORDER` | off | Autre ordre des bits des boutons (lecture à 24 MHz, avec `-DMETA_BUTTONS_SPI_HZ=24000000`) |

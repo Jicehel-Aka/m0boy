@@ -36,7 +36,8 @@ POKITTO_DRIVERS = {"pokitto_startup.c", "pokitto_clock.c", "pokitto_lcd.c", "pok
 META_DRIVERS = {"meta_lcd.cpp", "meta_display.c", "meta_audio.cpp", "meta_sd_bus.cpp", "meta_clock.cpp",
                 "meta_dma.cpp"}
 SHARED = {"meta_main.cpp", "meta_menu.cpp", "meta_save.cpp", "meta_state.cpp", "meta_stream.cpp",
-          "meta_fat.c", "meta_sd.c", "meta_palettes.c", "meta_target.h", "gbl_profile.h"}
+          "meta_fat.c", "meta_sd.c", "meta_palettes.c", "meta_target.h", "gbl_profile.h",
+          "gbl_board.h"}
 
 
 def toolchain() -> str | None:

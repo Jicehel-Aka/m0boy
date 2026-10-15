@@ -195,12 +195,7 @@ static void frame(void *) {
            ((raw & POKITTO_LEFT) ? GG_LEFT_KEY : 0) | ((raw & POKITTO_RIGHT) ? GG_RIGHT_KEY : 0) |
            ((raw & POKITTO_A) ? GG_B1 : 0) | ((raw & POKITTO_B) ? GG_B2 : 0) | ((raw & POKITTO_C) ? (GG_SMS ? GG_PAUSE : GG_START) : 0);
 #else
-    meta_spi_rate(12000000u);
-    for (unsigned i = 0; i < 2 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++) (void)SERCOM4->SPI.DATA.reg;
-    SERCOM4->SPI.STATUS.reg = SERCOM_SPI_STATUS_BUFOVF;
-    PORT->Group[1].OUTCLR.reg = 1u << 3;
-    uint8_t raw = (uint8_t)~meta_spi_transfer(1);
-    PORT->Group[1].OUTSET.reg = 1u << 3;
+    uint8_t raw = meta_pad_read(); /* META_BUTTONS_SPI_HZ, library bit order */
     /* META: A is button 1, B button 2, MENU is START */
     keys = ((raw & 8) ? GG_UP : 0) | ((raw & 1) ? GG_DOWN : 0) | ((raw & 2) ? GG_LEFT_KEY : 0) |
            ((raw & 4) ? GG_RIGHT_KEY : 0) | ((raw & 16) ? GG_B1 : 0) | ((raw & 32) ? GG_B2 : 0) | ((raw & 64) ? (GG_SMS ? GG_PAUSE : GG_START) : 0);
@@ -226,8 +221,6 @@ int main() {
     pokitto_buttons_init();
 #else
     meta_spi_init();
-    PORT->Group[1].DIRSET.reg = 1u << 3;
-    PORT->Group[1].OUTSET.reg = 1u << 3;
 #endif
     meta_clock_init();
 #if !META_TARGET_POKITTO && META_CLOCK_DEFAULT != 48

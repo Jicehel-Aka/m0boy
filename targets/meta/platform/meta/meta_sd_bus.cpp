@@ -16,7 +16,7 @@
 #include "meta_lcd.h"
 
 #define SD_CS_MASK (1u << 27) /* PA27, Arduino pin 26 */
-/* Sector reads (ROM streaming) at META_SD_SPI_HZ (gbl_profile.h). */
+/* Sector reads (ROM streaming) at META_SD_SPI_HZ (gbl_board.h). */
 
 void meta_sd_deselect(void) {
     PORT->Group[0].DIRSET.reg = SD_CS_MASK;

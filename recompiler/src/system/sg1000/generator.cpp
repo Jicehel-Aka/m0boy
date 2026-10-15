@@ -396,6 +396,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             auto platform = o.meta_templates / "platform" / (o.target == TargetId::pokitto ? "pokitto" : "meta");
             for (const char* name : { "meta_target.h", "meta_lcd.h", "meta_clock.h" })
                 copy_template(o.meta_templates / "platform" / "src" / name, src / name);
+            /* The META's board settings (SPI rates, display pipeline): the
+             * same file the Game Boy profile includes. */
+            copy_template(o.meta_templates / "runtime" / "gbl_board.h", src / "gbl_board.h");
             copy_template(tpl / "platform" / "sg_audio.h", src / "sg_audio.h");
             auto audio_header = read(o.meta_templates / "platform/src/meta_audio.h");
             audio_header = replace(replace(audio_header, "70224u", "59736u"), "4194304u", "3579545u");
@@ -410,10 +413,12 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             while (!version.empty() && (version.back() == '\n' || version.back() == '\r')) version.pop_back();
             write(src / "gbl_config.h", "#pragma once\n#define GBL_TARGET_POKITTO " + std::to_string(o.target == TargetId::pokitto) +
                                         "\n#define SG_GEN_VERSION \"" + version + "\"\n");
-            write(src / "gbl_profile.h", "#pragma once\n#define META_LCD_DMA 1\n#define META_LCD_12BPP 0\n#define META_LCD_SPI_MHZ 24\n"
+            /* gbl_board.h carries the META's SPI rates and display pipeline
+             * switches, shared with the Game Boy profile; only what this
+             * build decides differently is written here. */
+            write(src / "gbl_profile.h", "#pragma once\n#include \"gbl_board.h\"\n"
                                          "#ifndef META_OVERCLOCK\n#if defined(POKITTO_HC) && POKITTO_HC\n#define META_OVERCLOCK 1\n#else\n#define META_OVERCLOCK 0\n#endif\n#endif\n"
-                                         "#define POKITTO_LCD_ASM " + std::string(gg ? "1" : "0") + "\n#define POKITTO_RAM_BANKS " + std::string(gg ? "1" : "0") + "\n#define POKITTO_AUDIO_ASM " + std::string(gg ? "1" : "0") + "\n#define META_AUDIO_DMA 0\n"
-                                         "#define META_SD_SPI_HZ 12000000\n");
+                                         "#define POKITTO_LCD_ASM " + std::string(gg ? "1" : "0") + "\n#define POKITTO_RAM_BANKS " + std::string(gg ? "1" : "0") + "\n#define POKITTO_AUDIO_ASM " + std::string(gg ? "1" : "0") + "\n#define META_AUDIO_DMA 0\n");
             if (o.target == TargetId::pokitto) {
                 for (const char* name : { "pokitto_startup.c", "pokitto_clock.c", "pokitto_buttons.c", "pokitto_lcd.c", "pokitto_hw.h", "lpc11u6x.h" })
                     copy_template(platform / name, src / name);

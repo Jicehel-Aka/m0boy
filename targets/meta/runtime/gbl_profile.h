@@ -19,11 +19,16 @@
  * Included by gbl_options.h (runtime), meta_target.h (frontend), the
  * assembly files and, through the C preprocessor, the Pokitto linker
  * script: definitions only.
+ *
+ * The META's board settings (SPI rates, display pipeline) are in
+ * gbl_board.h, included below: the SG-1000 and Game Gear profiles carry the
+ * same ones.
  */
 #ifndef GBL_PROFILE_H
 #define GBL_PROFILE_H
 
 #include "gbl_config.h"
+#include "gbl_board.h"
 
 /* META_OVERCLOCK: both consoles start at 72 MHz instead of the nominal
  * 48 MHz (the converter's choice, compile.sh).  The SAMD21 is rated 48 MHz:
@@ -232,37 +237,9 @@
 #ifndef META_MAX_SKIP
 #define META_MAX_SKIP 3
 #endif
-#ifndef META_LCD_DMA
-#define META_LCD_DMA 1
-#endif
-/* SPI rates (meta_spi.c, meta_clock.cpp).  META_LCD_SPI_MHZ: the
- * display's at boot, 12, 24, 36 or 48 (the option menu's "SPI ecran"
- * changes it); 24 is how meta-lapinou drives the META's ST7735, 36 and 48
- * clock the SERCOM from the PLL past its rating.  The Arduino core capped
- * every rate at 12, so the firmwares tested on a META before 2026-10-03
- * ran everything at 12.  The buttons stay at 12: at 24 the shift
- * register's bits come shifted and UP is lost (meta-lapinou's order,
- * META_BUTTONS_LAPINOU_ORDER).  The card stays at 12, the rate it has run
- * at so far (SD cards take 25 in SPI mode). */
-#ifndef META_LCD_SPI_MHZ
-#define META_LCD_SPI_MHZ 24
-#endif
-#ifndef META_BUTTONS_SPI_HZ
-#define META_BUTTONS_SPI_HZ 12000000
-#endif
-#ifndef META_SD_SPI_HZ
-#define META_SD_SPI_HZ 12000000
-#endif
-/* META_LCD_12BPP: the ST7735 in 12-bit colour (RGB444, COLMOD 03h): 25%
- * fewer bytes per row on the SPI (a full frame 10.2 ms instead of 13.7 at
- * 24 MHz).  The pipeline renders 0x0RGB pixels (META_COLOR) and each row
- * is packed in Thumb-1 as it goes out (meta_lcd_pack_asm.S, ~5 cycles per
- * pixel).  meta-emu-sdl estimate on Super Mario Land: waits for the display
- * 8.5% -> 1.3% of the CPU, audio restarts 7 -> 1 per minute; colours keep 4
- * bits per channel. */
-#ifndef META_LCD_12BPP
-#define META_LCD_12BPP 0
-#endif
+/* META_LCD_DMA, META_LCD_12BPP, META_LCD_SPI_MHZ, META_SD_SPI_HZ and
+ * META_BUTTONS_SPI_HZ are the board settings the SG-1000/Game Gear profile
+ * needs too: gbl_board.h, included above. */
 #ifndef META_AUDIO_DMA
 #define META_AUDIO_DMA 1
 #endif

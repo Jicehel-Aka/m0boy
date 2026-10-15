@@ -54,7 +54,7 @@ $(BUILD)/%.o: src/%.S | $(BUILD)
 	$(ASCC) $(ASFLAGS) -MMD -MP -c $< -o $@
 
 # The linker script sees the profile (POKITTO_RAM_BANKS): preprocessed.
-$(BUILD)/pokitto.ld: pokitto.ld src/gbl_config.h src/gbl_profile.h | $(BUILD)
+$(BUILD)/pokitto.ld: pokitto.ld src/gbl_config.h src/gbl_profile.h src/gbl_board.h | $(BUILD)
 	$(CC) -E -P -x c -Isrc $(EXTRA_CFLAGS) $< -o $@
 
 $(BUILD)/firmware.elf: $(OBJ) $(BUILD)/pokitto.ld

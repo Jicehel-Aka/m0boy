@@ -27,7 +27,7 @@ target_compile_options(firmware PRIVATE -O2 -ffunction-sections -fdata-sections 
     $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions> $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>)
 add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld
     COMMAND ${CMAKE_C_COMPILER} -E -P -x c -I${SRC} ${CMAKE_CURRENT_SOURCE_DIR}/pokitto.ld -o ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/pokitto.ld ${SRC}/gbl_profile.h)
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/pokitto.ld ${SRC}/gbl_profile.h ${SRC}/gbl_board.h)
 add_custom_target(linker_script DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/pokitto.ld)
 add_dependencies(firmware linker_script)
 target_link_options(firmware PRIVATE -nostartfiles --specs=nano.specs --specs=nosys.specs

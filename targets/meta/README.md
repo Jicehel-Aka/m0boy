@@ -157,7 +157,7 @@ kept across power-off), from fgb's menu where they apply on the META:
 | Images | frame skip: Auto (default: when emulation falls a frame behind, up to `META_MAX_SKIP` frames in a row are not rendered), Aucun, 1 sur 2/3/4 (one frame rendered in two, three, four) |
 | Vitesse | Normale, or Rapide: no frame limit (fgb's Synchronization off) |
 | Processeur | 48 MHz (default) or 72 MHz (below) |
-| SPI ecran | display SPI clock: 12, 24 (default, `META_LCD_SPI_MHZ`), 36 or 48 MHz (below); 36 at most with the CPU at 72 MHz. A rate the panel does not take scrambles the screen, menu included: switching off restores the default |
+| SPI ecran | display SPI clock: 12, 24, 36 or 48 MHz, 48 (default, `META_LCD_SPI_MHZ`) at 48 MHz CPU and 36 with the CPU at 72 MHz (below). A rate the panel does not take scrambles the screen, menu included: switching off restores the default, and a firmware rebuilt with `-DMETA_LCD_SPI_MHZ=24` (build_flags) boots at that rate |
 | Quitter | back to the Gamebuino loader |
 
 Not taken from fgb: gamma (the palettes cover it), double buffering and
@@ -203,11 +203,14 @@ most at half the SERCOM's clock, so the display's rate picks the source:
 96 MHz (past the SERCOM's 48 MHz clock rating; gm0's overclocked META port
 ran the ST7735 at 36). The PLL has one frequency: with the CPU at 72 MHz
 the display gets 36 MHz at most. `meta_spi_rate()` derives every divider
-from the SERCOM's actual clock, so the card and the buttons keep 12 MHz.
-When the PLL does not lock the menu stays at 48 MHz, and the loader is
-always entered at 48 MHz. Not yet run on a META: on the M0 estimator a
-frame at 72 MHz (two wait states) costs about 1.35 times less of its
-budget than at 48 MHz.
+from the SERCOM's actual clock, so the card and the buttons keep their own
+rates: the card at 24 MHz (`META_SD_SPI_HZ`, under the SD's 25 MHz
+Default-Speed limit for SPI mode; 18 MHz when the display is at 36, the
+pair the Pokitto's SSP gives at 48 and 72 MHz) and the buttons at 12
+(gbl_board.h). When the PLL does not lock the menu stays at 48 MHz, and the
+loader is always entered at 48 MHz. Not yet run on a META: on the M0
+estimator a frame at 72 MHz (two wait states) costs about 1.35 times less
+of its budget than at 48 MHz.
 
 Display modes (144 DMG lines on 128 META lines), chosen in the menu:
 
@@ -253,10 +256,13 @@ tables against the formula and a run of sprites moving down. `<name>_metaview
 --mode … --dump N file.ppm` writes the exact META screen of a game on the
 host.
 
-The buttons are read at 12 MHz in the Gamebuino library bit order
-(`META_BUTTONS_SPI_HZ`). Do not raise it: at 24 MHz the bits come in
-another order (meta-lapinou's, `-DMETA_BUTTONS_LAPINOU_ORDER`) and UP is
-lost.
+The buttons are read by the bus driver (`meta_pad_read`, meta_spi.c) at
+12 MHz in the Gamebuino library bit order (`META_BUTTONS_SPI_HZ`, read
+again at 12 whatever rate the display and the card use: 48/4, 72/6 and
+96/8 all give it). Do not raise it: at 24 MHz the bits come in another
+order (meta-lapinou's, `-DMETA_BUTTONS_LAPINOU_ORDER`) and UP is lost.
+The pad's chip select is left inactive by `meta_spi_init()`, and the read
+drains the display's leftovers from the receive FIFO first.
 
 ## Saves and large cartridge RAM
 
@@ -325,7 +331,9 @@ default; `on` / `off` force it):
   sector at a time, into an LRU cache of `GBL_STREAM_SECTORS` sectors
   (8, i.e. 4 KiB; 4 when 2 KiB of cartridge RAM stay in RAM). A read
   first lets the display's DMA queue drain and frees the shared SPI bus,
-  then issues CMD17 at 12 MHz (`META_SD_SPI_HZ`).
+  then issues CMD17 at 24 MHz (`META_SD_SPI_HZ`; 18 when the display runs
+  at 36).  A 512-byte sector spends 341 us on the wire at 12 MHz and 171
+  at 24, card latency on top.
 - The resident set comes from ROM data-read profiles. In streaming
   projects, the host `_profile` and `_play` builds record them with
   `--rom-profile-out FILE`; pass them back with `--rom-profile FILE`.
@@ -651,17 +659,22 @@ run (same picture in Link's Awakening).
 | `GBL_UNPACK_ASM` | 1 on Cortex-M0+ | Thumb-1 decoder for those sectors |
 | `GBL_STACK_GUARD` | 1 | C stack check on entry to every compiled region |
 | `META_SWAP_AB` | 1 | META A = Game Boy B, META B = Game Boy A |
-| `META_SD_SPI_HZ` | 12000000 | SPI clock for SD sector reads: the rate the card has run at so far (cards take 25 MHz in SPI mode) |
-| `META_BUTTONS_SPI_HZ` | 12000000 | SPI clock for the buttons' shift register; at 24 MHz the bits shift and UP is lost |
+| `META_SD_SPI_HZ` | 24000000 | SPI clock asked for SD sector reads, under the card's 25 MHz Default-Speed limit for SPI mode: 24 MHz from the DFLL48M and from the PLL at 96, 18 from the PLL at 72 (identification stays at 250 kHz) |
+| `META_BUTTONS_SPI_HZ` | 12000000 | SPI clock for the buttons' shift register; at 24 MHz the bits shift and UP is lost. `META_BUTTONS_PL_US` (0) is an optional wait after CS low for the register's parallel load |
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND and DARK display modes (1 KiB table, a spare line); TBLEND then blends two pixels per lookup |
 | `META_TBLEND` | 1 | TBLEND, the default mode, in every build: 600 bytes of held lines and, without `META_MERGE_MODES`, a 16-colour table (one lookup per pixel) instead of the 1 KiB one |
 | `META_LCD_12BPP` | 0 | ST7735 in RGB444 (COLMOD 03h): `META_COLOR` gives 0x0RGB, each row is packed in Thumb-1 as it goes out (`meta_lcd_pack_asm.S`), 240 bytes per row instead of 320. meta-emu-sdl estimate on Super Mario Land: display waits 8.5% → 1.3% of the CPU, audio restarts 7 → 1 per minute |
 | `META_AUDIO_DMA` | 1 | Audio samples go to the DAC by DMA (TC4-triggered DMAC channel 1, chained descriptors) instead of a 22 kHz TC4 interrupt (about 3% of the CPU); 0 restores the interrupt |
-| `META_LCD_SPI_MHZ` | 24 | Display SPI clock at boot: 12, 24, 36 or 48 (menu "SPI ecran"). meta-lapinou drives the META's ST7735 at 24 MHz; 36 and 48 clock the SERCOM from the PLL. The Arduino core capped every rate at 12 MHz, so firmwares built before 2026-10-03 sent the picture at 12. |
+| `META_LCD_SPI_MHZ` | 48 | Display SPI clock at boot: 12, 24, 36 or 48 (menu "SPI ecran"). 48 is the maximum the clock tree gives, 36 with the CPU at 72 MHz (reduced by `meta_clock.cpp`), 24 when the PLL does not lock. meta-lapinou drives the META's ST7735 at 24 MHz; 36 was run in gm0's overclocked META port, 48 has not been seen on a panel. A panel that does not take it: rebuild with `-DMETA_LCD_SPI_MHZ=24` (or 36) in build_flags. A full frame 40,960 bytes: 13.7 ms at 24, 9.1 at 36, 6.8 at 48. The Arduino core capped every rate at 12 MHz, so firmwares built before 2026-10-03 sent the picture at 12. |
 | `META_LCD_DMA` | 1 | Strips are sent by DMA through a queue: the DMA-complete interrupt programs the next window and starts the next strip, so rendering waits only when every buffer is in flight. At VBlank, if the bus is still busy, the button read is postponed by one frame (never two in a row). 0 writes pixels from the CPU. |
 | `META_LCD_BUFFERS` | 3 | Strip buffers (triple buffering by default) |
 | `META_STRIP_LINES` | 4 | Rows per strip |
 | `META_MAX_SKIP` | 3 | Maximum run of frames skipped for speed |
+
+`META_LCD_SPI_MHZ`, `META_SD_SPI_HZ`, `META_BUTTONS_SPI_HZ`, `META_LCD_DMA`
+and `META_LCD_12BPP` are defined in `runtime/gbl_board.h` only: `gbl_profile.h`
+includes it, and so does the profile the SG-1000/Game Gear generator writes,
+so one file holds the META's board settings for all three firmwares.
 
 The output is identical with every option on or off (SML host `run_hash`,
 3,000 frames, two input scripts). The line-signature contract is checked on
@@ -896,8 +909,9 @@ went with them. Donkey Kong Land (streamed, same code and options):
 222,340 → 207,296 bytes of flash (−15.0 KiB) and 30,772 → 28,892 bytes of
 RAM (−1,880); Tetris: −14.2 KiB and −1,884 bytes. The RAM goes to the
 stream cache (`GBL_STREAM_SECTORS` 4 → 8), the flash to compiled code.
-The core also capped SPI at 12 MHz: the display now gets the SERCOM's
-24 MHz, as in meta-lapinou; card and buttons stay at 12.
+The core also capped SPI at 12 MHz: the bare-metal driver derives every
+rate itself (gbl_board.h holds them), the display at 48, the card at 24
+under the SD's 25 MHz limit, the buttons at 12.
 Tetris and Donkey Kong Land boot and draw the same screens as before in
 the `tools/gb-emu` fork; not yet run on a META.
 

@@ -1,19 +1,27 @@
 /*
  * SPI bus of the Gamebuino META: SERCOM4 as the Arduino core's SPI library
  * configured it (master, mode 0, MSB first, DOPO 1 = MOSI on PAD2 and SCK
- * on PAD3, MISO on PAD0), without the library.
+ * on PAD3, MISO on PAD0), without the library.  The display, the SD card and
+ * the pad share it, each with its own chip select; meta_pad_read() is the
+ * pad's 74HC165, the other two are in meta_lcd.cpp and meta_sd_bus.cpp.
  *
  * The SERCOM's clock is generator 6 (48 MHz from the DFLL48M, or 72 or
  * 96 MHz from the PLL for the faster display rates, meta_clock.cpp); the
  * divider gives the fastest rate at or below the one asked: SPI clock /
- * (2 (BAUD + 1)).  The Arduino core capped every rate at 12 MHz: firmwares
- * built with it ran the display, the card and the buttons at 12 MHz (18 at
- * 72 MHz) whatever they asked for.
+ * (2 (BAUD + 1)).  The rates each device asks for are in gbl_board.h.  The
+ * Arduino core capped every rate at 12 MHz: firmwares built with it ran the
+ * display, the card and the buttons at 12 MHz (18 at 72 MHz) whatever they
+ * asked for.
  */
 #include "meta_hw.h"
 #include "meta_target.h"
 
+#include "meta_clock.h" /* meta_micros, META_BUTTONS_PL_US */
+
 #define SPI SERCOM4->SPI
+
+/* Pad chip select, PB03 (meta_hw.h). */
+#define PAD_CS_MASK (1u << 3)
 
 static uint8_t baud = 0xFF; /* not configured */
 static uint32_t sercom_hz = 48000000u;
@@ -38,8 +46,34 @@ void meta_spi_init(void) {
     pin_function_d(0, 12); /* MISO, PAD0 */
     pin_function_d(1, 10); /* MOSI, PAD2 */
     pin_function_d(1, 11); /* SCK, PAD3 */
+    /* The pad's chip select is an output, inactive, from the start: its shift
+     * register must not drive MISO while the display or the card is using the
+     * bus (the Gamebuino library sets it the same way at boot). */
+    PORT->Group[1].DIRSET.reg = PAD_CS_MASK;
+    PORT->Group[1].OUTSET.reg = PAD_CS_MASK;
     baud = 0xFF;
     meta_spi_rate(4000000); /* the library's default until a device asks */
+}
+
+/* The pad's 74HC165 shift register: one byte per frame, active low, in the
+ * Gamebuino library's bit order at META_BUTTONS_SPI_HZ (gbl_board.h; at 24
+ * MHz the bits come in another order and UP is lost).  Call it only when the
+ * bus is free: the frame loops postpone it by one frame while a strip is in
+ * flight (close_frame, meta_main.cpp). */
+uint8_t meta_pad_read(void) {
+    meta_spi_rate(META_BUTTONS_SPI_HZ);
+    /* Drop bytes left by display writes (the receive FIFO holds two). */
+    for (int i = 0; i < 2 && (SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
+        (void)SPI.DATA.reg;
+    SPI.STATUS.reg = SERCOM_SPI_STATUS_BUFOVF;
+    PORT->Group[1].OUTCLR.reg = PAD_CS_MASK;
+#if META_BUTTONS_PL_US > 0
+    /* The library waits about a microsecond for the parallel load. */
+    for (uint32_t t = meta_micros(); meta_micros() - t < META_BUTTONS_PL_US;) {}
+#endif
+    uint8_t raw = meta_spi_transfer(1);
+    PORT->Group[1].OUTSET.reg = PAD_CS_MASK;
+    return (uint8_t)~raw; /* active low */
 }
 
 void meta_spi_clock(uint32_t hz) {

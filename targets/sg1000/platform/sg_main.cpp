@@ -94,12 +94,7 @@ static void frame(void *) {
            ((raw & POKITTO_RIGHT) ? 8 : 0) | ((raw & POKITTO_A) ? 16 : 0) | ((raw & POKITTO_B) ? 32 : 0);
     pause = raw & POKITTO_C;
 #else
-    meta_spi_rate(12000000u);
-    for (unsigned i = 0; i < 2 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++) (void)SERCOM4->SPI.DATA.reg;
-    SERCOM4->SPI.STATUS.reg = SERCOM_SPI_STATUS_BUFOVF;
-    PORT->Group[1].OUTCLR.reg = 1u << 3;
-    uint8_t raw = (uint8_t)~meta_spi_transfer(1);
-    PORT->Group[1].OUTSET.reg = 1u << 3;
+    uint8_t raw = meta_pad_read(); /* META_BUTTONS_SPI_HZ, library bit order */
     keys = ((raw & 8) ? 1 : 0) | ((raw & 1) ? 2 : 0) | ((raw & 2) ? 4 : 0) | ((raw & 4) ? 8 : 0) | (raw & 48);
     pause = raw & 64;
     if (WDT->CTRL.reg & WDT_CTRL_ENABLE) { WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY; }
@@ -123,8 +118,6 @@ int main() {
     pokitto_buttons_init();
 #else
     meta_spi_init();
-    PORT->Group[1].DIRSET.reg = 1u << 3;
-    PORT->Group[1].OUTSET.reg = 1u << 3;
 #endif
     meta_clock_init();
 #if !META_TARGET_POKITTO && META_CLOCK_DEFAULT != 48
