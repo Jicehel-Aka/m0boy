@@ -47,6 +47,59 @@
     str r2, [r1, #0x7C]
 .endm
 
+/* One bus write of the C reference (command(), data(), strobe()): the value
+ * in \val goes on the data lines, WR low for two nops. */
+.macro STROBE
+    str r6, [r2, r5]
+    nop
+    nop
+    str r6, [r2, #0x7C]
+.endm
+
+    .section .data.gbl_ramfunc.pokitto_at, "ax", %progbits
+    .align 2
+    .global pokitto_at
+    .type pokitto_at, %function
+    .thumb_func
+/* void pokitto_at(unsigned x, unsigned y): GRAM write from (x, y) on,
+ * at() of pokitto_lcd.c: registers 0x20 (y) and 0x21 (x), command 0x22,
+ * with the same writes and strobes, from SRAM (no flash wait states).
+ *   r2 = &MPIN[2]  r3 = CD (P0_2)  r4 = 0xF8 (CLR[0])  r5 = 0xFC (CLR[1])
+ *   r6 = WR (P1_12)  SET[0] = r2 + 0x78, SET[1] = r2 + 0x7C */
+pokitto_at:
+    push {r4, r5, r6, r7, lr}
+    ldr r2, =MPIN2
+    movs r3, #4
+    movs r4, #0xF8
+    movs r5, #0xFC
+    movs r6, #1
+    lsls r6, r6, #12
+    lsls r0, r0, #3
+    lsls r1, r1, #3
+    movs r7, #1
+    lsls r7, r7, #8
+    str r3, [r2, r4]           /* command 0x20: CD low */
+    str r7, [r2]
+    STROBE
+    str r3, [r2, #0x78]        /* CD high */
+    str r1, [r2]               /* data y */
+    STROBE
+    adds r7, #8
+    str r3, [r2, r4]           /* command 0x21 */
+    str r7, [r2]
+    STROBE
+    str r3, [r2, #0x78]
+    str r0, [r2]               /* data x */
+    STROBE
+    adds r7, #8
+    str r3, [r2, r4]           /* command 0x22 */
+    str r7, [r2]
+    STROBE
+    str r3, [r2, #0x78]
+    pop {r4, r5, r6, r7, pc}
+    .pool
+    .size pokitto_at, . - pokitto_at
+
     .section .data.gbl_ramfunc.pokitto_push160, "ax", %progbits
     .align 2
     .global pokitto_push160

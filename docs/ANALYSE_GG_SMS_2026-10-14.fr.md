@@ -419,3 +419,7 @@ non tentée sans essai sur la dalle réelle ; le fond (15 à 33 %) ; le code
 natif (8 à 11 %) ; l'interpréteur pour le code hors couverture (jusqu'à
 9 % sur Shinobi, environ 400 cycles par instruction Z80) ; le PSG (3 à
 5 %).
+
+Suite, sur un jeu qui saute des images (Ristar) : profil, secteurs de ROM gardés
+en flash et adressage du LCD, version 0.10.4 :
+[GG_RISTAR_VITESSE_2026-10-14.fr.md](GG_RISTAR_VITESSE_2026-10-14.fr.md).

@@ -22,11 +22,11 @@ recompiler and adds everything needed to run on chips with 32 KiB of RAM,
 
 | | Gamebuino META | Pokitto |
 |---|---|---|
-| Chip | SAMD21, Cortex-M0+ at 48 MHz | LPC11U68, Cortex-M0+ at 48 MHz (72 MHz optional) |
+| Chip | SAMD21, Cortex-M0+ at 48 MHz (72 MHz optional, past its rating) | LPC11U68, Cortex-M0+ at 48 MHz (72 MHz optional) |
 | Memory | 32 KiB RAM, 240 KiB flash for the firmware | 32 + 2 + 2 KiB RAM, 228 KiB flash below the loader |
 | Screen | 160×128: the 144 Game Boy lines blended into 128 | 220×176: picture 1:1, or enlarged to 200×176 |
 | Firmware build | PlatformIO | `make` with arm-none-eabi-gcc |
-| Version | 0.10.3 | 0.10.3 |
+| Version | 0.10.5 | 0.10.5 |
 | Status | Games run on the console | Tested in an emulator only. A first tester on a real Pokitto reports a picture flipped vertically (rows reversed, columns in order), consistent with the panel's SS bit (R01) being lost at init; 0.10.1 lengthens the post-reset wait and the register write strobe and writes R01 again, still to be checked on the device |
 
 ## SG-1000
@@ -74,10 +74,24 @@ banked code:
   line interrupts, 12-bit CRAM) drawn 1:1 in the 160×144 window, background
   tiles in Thumb-1 assembly; Sega PSG (mono).
 - **Large ROMs and saves**: a ROM that does not fit in flash with its code
-  keeps its most read pages in flash and reads the others from a copy on
-  the SD card; battery-backed cartridge RAM lives in a `.SAV` file on the
-  card. Both share a two-sector cache: the console's own 24 KiB of video
-  and work RAM leave little else.
+  keeps in flash page 0, the instructions it compiles and the 512-byte ROM
+  sectors that, from the recorded play sessions (executions and sector reads
+  per frame), save the most cycles per byte; it reads the others from a copy
+  on the SD card. Battery-backed cartridge RAM lives in a `.SAV` file on the
+  card. Both share a small sector cache (four sectors on the Pokitto Game Gear, two
+  elsewhere): the console's own 24 KiB of video and work RAM leave little
+  else. The play sessions of a Game Gear or Master System game are recorded
+  by `compile.sh`: blind sessions (10 800 frames each) and four explorations
+  (`--explore`, 120 000 frames each) in which the player keeps a
+  snapshot of every state where it saw code or data it had not seen and plays
+  on from there, so that it reaches levels a blind player does not. The
+  explorer (`targets/common/host/m0_explore.h`) is shared by the Game Boy,
+  SG-1000 and Game Gear/Master System harnesses (`EXPLORERS`,
+  `EXPLORE_FRAMES`); on the Game Boy it plays from save states, 400 000
+  frames by default. Older
+  sessions, without the execution counts or the explorations, are redone. The
+  sectors the interpreter fetches the code of, for what is not compiled, count
+  like the sectors read as data.
 - **Checked**: with `--meta-precise`, the recompiled code reproduces the
   interpreter exactly on all 225 cartridges of a Game Gear collection.
 - **Speed**, measured in gm0 at 48 MHz on the games tried: full speed on
@@ -103,8 +117,9 @@ Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
 
 - `compile.sh` plays each ROM by itself before compiling it: one
   random-input session per CPU core, 20 s each at full speed (3,000 to
-  12,000 frames a second, so 15 to 60 minutes of play per session), plus
-  any session you record yourself. Only the instructions these sessions
+  12,000 frames a second, so 15 to 60 minutes of play per session), four
+  explorations (below) and any session you record yourself. Only the
+  instructions these sessions
   executed are compiled, so data is never mistaken for code and the
   firmware fits in flash.
 - Everything else, including code copied to RAM, runs in the `gbl`

@@ -9,7 +9,8 @@
  *            [--dump-frame N FILE.ppm]... [--hash-every K] [--stack-kib N | --stack-bytes N]
  *            [--wav FILE.wav] [--mute MASK] [--wram-hash-bytes N] [--dump-wram FILE]
  *            [--static-skip-check] [--max-seconds S] [--save FILE]
- *            [--trace FRAME COUNT (profile build)]
+ *            [--trace FRAME COUNT (profile build)] [--agent]
+ *            [--explore FRAMES [--random SEED] (profile build)]
  *
  * Input files contain "<frame> <buttons>" lines; buttons are the gbl mask
  * (hex or names joined with '+': a b select start right left up down).
@@ -22,6 +23,18 @@
  * arrows, X = A, Z = B, Enter = Start, Backspace/Right Shift = Select,
  * Escape quits and writes --coverage; --record-input saves the session in
  * the same input format for exact replays.
+ *
+ * --agent hands the buttons to another program (tools/ai-play): at a VBlank
+ * it prints "agent <frame> <executed addresses> <frame hash> <IO> <OAM>
+ * <VRAM>" (hex) on stdout and reads one line from stdin, "<buttons>:<frames>"
+ * steps (e.g. "right+a:12 right:8"), queued like --input lines; it asks
+ * again once they are played.  "quit" or end of input ends the run.  The
+ * program keeps the steps as an input file, which replays the same game.
+ *
+ * --explore FRAMES plays that many frames with the coverage-guided player
+ * of m0_explore.h (seed --random): segments from the start or from save
+ * states that reached code or ROM data never seen.  Coverage and the ROM
+ * read profile are those of every frame played; there is no input file.
  */
 #include "gbl.h"
 #include "gbl_config.h"
@@ -68,11 +81,14 @@ static void state_mix(const void *p, size_t n) {
 static struct { uint32_t frame; const char *path; } dumps[MAX_DUMPS];
 static int dump_count;
 
-#define MAX_INPUTS 4096
+#define MAX_INPUTS 65536
 static struct { uint32_t frame; uint8_t buttons; } inputs[MAX_INPUTS];
 static int input_count, input_pos;
 
 static const char *coverage_path;
+static uint32_t coverage_count; /* distinct executed addresses (--agent) */
+static int agent;
+static uint32_t agent_next;
 static FILE *wav;
 static uint32_t wav_bytes, wav_frac;
 #define WAV_RATE 22050u
@@ -106,6 +122,7 @@ static uint32_t hits[GBL_ROM_BANKS][0x4000];
 
 void gbl_coverage_hit(uint16_t bank, uint16_t addr, int entry) {
     if (bank >= GBL_ROM_BANKS) return;
+    if (!coverage[bank][addr & 0x3FFF]) coverage_count++;
     coverage[bank][addr & 0x3FFF] |= (uint8_t)(1 | (entry ? 2 : 0));
     if (hits[bank][addr & 0x3FFF] != 0xFFFFFFFFu) hits[bank][addr & 0x3FFF]++;
 }
@@ -125,6 +142,13 @@ static void write_coverage(void) {
 static void write_coverage(void) {
     if (coverage_path) fprintf(stderr, "coverage requested but build lacks GBL_COVERAGE\n");
 }
+#endif
+
+#ifdef GBL_COVERAGE
+#include "m0_explore.h"
+static m0x_t explorer;
+static int explore_on, explore_pending;
+static uint32_t explore_frames, explore_seed, explore_new_pages;
 #endif
 
 #ifdef GBL_TRACE
@@ -228,7 +252,11 @@ uint8_t gbl_rom_trace_read(uint32_t bank, uint16_t a) {
     trace_reads++;
     /* The profile counts data reads: compiled code does not fetch opcodes
      * (the generator adds the fetches of code it leaves interpreted). */
-    if (!gbl_rom_fetch) trace_page_reads[abs >> 8]++;
+    if (!gbl_rom_fetch && !trace_page_reads[abs >> 8]++) {
+#ifdef GBL_COVERAGE
+        explore_new_pages++;
+#endif
+    }
     if (!trace_resident[abs >> 12]) {
         int32_t sec = (int32_t)(abs >> 9);
         unsigned lru = 0;
@@ -376,6 +404,13 @@ int gbl_platform_rom_read(uint32_t sector, uint8_t *dst) {
 
 static void finish(void) {
     uint32_t f = gbl_frame;
+#ifdef GBL_COVERAGE
+    if (explore_on) {
+        f = explorer.frames;
+        fprintf(stderr, "explore: %u frames, %u segments, %u snapshots, %u locations\n", explorer.frames,
+                explorer.segments, explorer.pool_size, coverage_count);
+    }
+#endif
 #if GBL_ERAM_SIZE > 0
     gbl_save_flush(); /* like the META returning to the loader */
 #endif
@@ -558,7 +593,58 @@ static uint64_t st_machine_hash(void) {
     return h;
 }
 
+#ifdef GBL_COVERAGE
+/* --explore: save states through gbl_state_io, taken and loaded at safe
+ * points (instruction boundaries); a load starts gbl_run over. */
+static uint32_t explore_cursor;
+static void explore_put(void *data, uint32_t n, void *ctx) {
+    memcpy((uint8_t *)ctx + explore_cursor, data, n);
+    explore_cursor += n;
+}
+static void explore_get(void *data, uint32_t n, void *ctx) {
+    memcpy(data, (uint8_t *)ctx + explore_cursor, n);
+    explore_cursor += n;
+}
+static void explore_save(void *ctx, void *state) {
+    (void)ctx;
+    explore_cursor = 0;
+    gbl_state_io(explore_put, state, 0);
+}
+static void explore_load(void *ctx, const void *state) {
+    (void)ctx;
+    explore_cursor = 0;
+    gbl_state_io(explore_get, (void *)state, 1);
+}
+static void explore_begin(void) {
+    const m0x_machine_t m = { 0, gbl_state_bytes(), explore_save, explore_load, 0 };
+    max_frames = 0;
+    explore_on = m0x_begin(&explorer, &m, explore_seed, explore_frames);
+    if (!explore_on) { fprintf(stderr, "explore: out of memory\n"); exit(2); }
+}
+/* Once per frame: the player's keys, or the end of the segment. */
+static void explore_vblank(void) {
+    if (max_seconds > 0 && (explorer.frames & 15) == 0 && elapsed_seconds() >= max_seconds) finish();
+    if (explore_pending) return; /* the safe point comes before the next frame */
+    const unsigned k = m0x_keys(&explorer);
+    if (k == M0X_END) {
+        explore_pending = 1;
+        gbl_safe_request = 1;
+        return;
+    }
+    gbl_set_buttons((uint8_t)((k & M0X_B1 ? 0x01 : 0) | (k & M0X_B2 ? 0x02 : 0) | (k & M0X_START ? 0x08 : 0) |
+                              (k & M0X_RIGHT ? 0x10 : 0) | (k & M0X_LEFT ? 0x20 : 0) |
+                              (k & M0X_UP ? 0x40 : 0) | (k & M0X_DOWN ? 0x80 : 0)));
+}
+#endif
+
 void gbl_platform_safe_point(void) {
+#ifdef GBL_COVERAGE
+    if (explore_pending) {
+        explore_pending = 0;
+        if (!m0x_next(&explorer, coverage_count + explore_new_pages)) finish();
+        longjmp(st_restart, 1);
+    }
+#endif
     if (st_phase == 1) {
         st_pos = 0;
         gbl_state_io(st_write, 0, 0);
@@ -573,6 +659,38 @@ void gbl_platform_safe_point(void) {
         st_phase = 4;
         longjmp(st_restart, 1);
     }
+}
+
+static uint8_t parse_buttons(const char *s);
+
+static void agent_hex(const uint8_t *p, size_t n) {
+    static const char digits[] = "0123456789abcdef";
+    putchar(' ');
+    for (size_t i = 0; i < n; i++) { putchar(digits[p[i] >> 4]); putchar(digits[p[i] & 15]); }
+}
+
+/* --agent: one question per batch of steps; the steps start at this VBlank. */
+static void agent_step(uint32_t f, uint64_t h) {
+    printf("agent %u %u %016llx", f, coverage_count, (unsigned long long)h);
+    agent_hex(gbl_io, sizeof(gbl_io));
+    agent_hex(gbl_oam, sizeof(gbl_oam));
+    agent_hex(gbl_vram, sizeof(gbl_vram));
+    putchar('\n');
+    fflush(stdout);
+    static char line[4096];
+    if (!fgets(line, sizeof(line), stdin) || !strncmp(line, "quit", 4)) finish();
+    uint32_t at = f;
+    for (char *save, *tok = strtok_r(line, " \t\r\n", &save); tok; tok = strtok_r(0, " \t\r\n", &save)) {
+        char *colon = strchr(tok, ':');
+        unsigned n = colon ? (unsigned)atoi(colon + 1) : 1;
+        if (colon) *colon = 0;
+        if (input_count == MAX_INPUTS) finish();
+        inputs[input_count].frame = at;
+        inputs[input_count].buttons = parse_buttons(tok);
+        input_count++;
+        at += n ? n : 1;
+    }
+    agent_next = at > f ? at : f + 1;
 }
 
 void gbl_platform_vblank(void) {
@@ -596,6 +714,9 @@ void gbl_platform_vblank(void) {
 #endif
 #if GBL_ROM_STREAM
     stream_frame();
+#endif
+#ifdef GBL_COVERAGE
+    if (explore_on) { explore_vblank(); return; }
 #endif
     uint64_t h = frame_hash();
     run_hash ^= h;
@@ -631,6 +752,7 @@ void gbl_platform_vblank(void) {
         }
         static_skip_next = (uint8_t)gbl_frame_unchanged_next(shown);
     }
+    if (agent && f >= agent_next) agent_step(f, h);
     while (input_pos < input_count && inputs[input_pos].frame <= f)
         gbl_set_buttons(inputs[input_pos++].buttons);
 #ifdef GBL_SDL
@@ -723,6 +845,11 @@ int main(int argc, char **argv) {
 #ifdef GBL_SDL
         else if (!strcmp(argv[i], "--record-input") && i + 1 < argc) record_path = argv[++i];
 #endif
+        else if (!strcmp(argv[i], "--agent")) agent = 1;
+#ifdef GBL_COVERAGE
+        else if (!strcmp(argv[i], "--explore") && i + 1 < argc) explore_frames = (uint32_t)strtoul(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "--random") && i + 1 < argc) explore_seed = (uint32_t)strtoul(argv[++i], 0, 0);
+#endif
         else if (!strcmp(argv[i], "--hash-every") && i + 1 < argc) hash_every = (uint32_t)atoi(argv[++i]);
 #ifdef GBL_TRACE
         else if (!strcmp(argv[i], "--trace") && i + 2 < argc) {
@@ -748,6 +875,9 @@ int main(int argc, char **argv) {
     gbl_stack_limit = (uintptr_t)&base - (uintptr_t)stack_bytes;
     gbl_reset();
     gbl_apu_set_rate(WAV_RATE);
+#ifdef GBL_COVERAGE
+    if (explore_frames) explore_begin();
+#endif
     setjmp(st_restart); /* a loaded state starts over from gbr.pc */
     gbl_run();
     return 0;

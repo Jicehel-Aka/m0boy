@@ -19,7 +19,7 @@ static uint8_t cart_ram[SG_CART_RAM_SIZE];
 static FILE *audio;
 static uint32_t audio_samples;
 static int audio_error;
-static unsigned frames = 300, buttons, start_frame = ~0u, pause_frame = ~0u;
+static unsigned frames = 300, buttons, start_frame = ~0u, pause_frame = ~0u, explore_frames;
 static uint32_t hits[65536];
 static uint8_t entries[65536];
 static uint16_t coverage_order[65536];
@@ -59,8 +59,57 @@ static void inputs(void) {
     sg1000_buttons(0, (uint8_t)keys);
     sg1000_pause(machine.frames == pause_frame);
 }
+#ifndef SG_GENERATED
+/* --explore frames: the coverage-guided player of m0_explore.h, from the
+ * start or from snapshots of the machine (and cartridge RAM) that reached
+ * code never seen.  No START: the console's pause button is not on the pad. */
+#include "m0_explore.h"
+typedef struct { sg1000_t machine; uint8_t cart[SG_CART_RAM_SIZE]; } snapshot_t;
+static m0x_t explorer;
+static unsigned explore_on;
+static void snapshot_save(void *ctx, void *state) {
+    snapshot_t *s = state;
+    (void)ctx;
+    memcpy(&s->machine, &machine, sizeof machine);
+    memcpy(s->cart, cart_ram, sizeof cart_ram);
+}
+static void snapshot_load(void *ctx, const void *state) {
+    const snapshot_t *s = state;
+    (void)ctx;
+    memcpy(&machine, &s->machine, sizeof machine);
+    memcpy(cart_ram, s->cart, sizeof cart_ram);
+    machine.sprites_dirty = 1; /* sprite masks derived from the tables */
+}
+static uint32_t explore_novelty(void) { /* program counters reached so far */
+    uint32_t n = 0;
+    for (unsigned pc = 0; pc < 65536; pc++) n += hits[pc] != 0;
+    return n;
+}
+static void explore(unsigned total) {
+    const m0x_machine_t m = { 0, sizeof(snapshot_t), snapshot_save, snapshot_load, M0X_NO_START };
+    machine.row = 0; /* nothing is drawn: the game does not need it */
+    machine.ref_row = 0;
+    if (!m0x_begin(&explorer, &m, random_state, total)) return;
+    explore_on = 1;
+    do {
+        machine.stop = 0;
+        sg1000_run();
+    } while (m0x_next(&explorer, explore_novelty()));
+    fprintf(stderr, "explore: %u frames, %u segments, %u snapshots, %u locations\n", explorer.frames,
+            explorer.segments, explorer.pool_size, explore_novelty());
+}
+#endif
 static void frame(void *ctx) {
     (void)ctx;
+#ifndef SG_GENERATED
+    if (explore_on) {
+        const unsigned k = m0x_keys(&explorer);
+        if (k == M0X_END) machine.stop = 1;
+        else sg1000_buttons(0, (uint8_t)((k & M0X_UP ? 1 : 0) | (k & M0X_DOWN ? 2 : 0) | (k & M0X_LEFT ? 4 : 0) |
+                                         (k & M0X_RIGHT ? 8 : 0) | (k & M0X_B1 ? 16 : 0) | (k & M0X_B2 ? 32 : 0)));
+        return;
+    }
+#endif
     if (audio) {
         uint8_t buffer[512];
         unsigned n = sg1000_audio_available();
@@ -136,6 +185,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--pause-frame") && i + 1 < argc) pause_frame = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_script = argv[++i];
         else if (!strcmp(argv[i], "--random") && i + 1 < argc) random_state = (uint32_t)strtoul(argv[++i], 0, 0) | 1u;
+#ifndef SG_GENERATED
+        else if (!strcmp(argv[i], "--explore") && i + 1 < argc) explore_frames = (unsigned)strtoul(argv[++i], 0, 0);
+#endif
         else if (argv[i][0] != '-' && !rom_path) rom_path = argv[i];
         else { fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]); return 1; }
     }
@@ -179,6 +231,10 @@ int main(int argc, char **argv) {
         sg1000_audio_rate(22050);
     }
     inputs();
+#ifndef SG_GENERATED
+    if (explore_frames && cov_path) { explore(explore_frames); machine.frames = explorer.frames; }
+    else
+#endif
     if (frames) sg1000_run();
     if (audio) {
         if (audio_samples & 1) fputc(0, audio); /* RIFF chunks are padded to an even size */

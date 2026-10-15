@@ -34,10 +34,10 @@
 #define META_SCREEN_ROWS 144 /* rows of the picture the menu draws on */
 #define META_SWAP_AB_DEFAULT 0 /* Pokitto A (right) is Game Boy A already */
 /* LPC11U68 : 50 MHz max (datasheet), 48 MHz nominal (PokittoLib, SYSPLLCTRL
- * 0x23 : M = 4, P = 2).  POKITTO_HC (gbl_profile.h) démarre à 72 MHz
+ * 0x23 : M = 4, P = 2).  META_OVERCLOCK (gbl_profile.h) démarre à 72 MHz
  * (_OSCT=2, hors spécification mais overclock standard de la console) ; le
  * menu « Processeur » permet la bascule 48 <-> 72 dans tous les cas. */
-#define META_CLOCK_DEFAULT (POKITTO_HC ? 72 : 48)
+#define META_CLOCK_DEFAULT (META_OVERCLOCK ? 72 : 48)
 /* Panel colours: native RGB565 on the 16-bit bus. */
 #define META_COLOR(rgb) \
     ((uint16_t)((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)))
@@ -50,7 +50,9 @@
 #define META_SCALED_MODES 1 /* 144 lines onto 128: TBLEND, SMOOTH, ... */
 #define META_SCREEN_ROWS 128
 #define META_SWAP_AB_DEFAULT 1 /* the META's A is the right-hand button */
-#define META_CLOCK_DEFAULT 48
+/* The SAMD21 starts at 48 MHz; META_OVERCLOCK asks for 72 once the clocks are
+ * set up (meta_clock.cpp), past its rating. */
+#define META_CLOCK_DEFAULT (META_OVERCLOCK ? 72 : 48)
 #if META_LCD_12BPP
 /* Panel colours: RGB444 in the low 12 bits (0x0RGB); the ST7735 driver packs
  * two of them into three bytes as each row goes out (meta_lcd_pack.h). */

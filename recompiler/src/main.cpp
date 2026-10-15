@@ -2287,7 +2287,8 @@ int main(int argc, char* argv[]) {
                   << (stats.cart_ram ? (gamegear ? (target == "desktop" ? "  cartridge RAM:      32 KiB, 16 KiB window at 8000-BFFF\n"
                                                                             : "  cartridge RAM:      32 KiB in the save file on the SD card\n")
                                                  : "  cartridge RAM:      8 KiB at 8000-BFFF\n") : "")
-                  << (stats.streamed_pages ? "  ROM streaming:      " + std::to_string(stats.streamed_pages) + " pages of 16 KiB read from the SD card\n" : std::string())
+                  << (stats.streamed_pages ? "  ROM streaming:      " + std::to_string(stats.streamed_pages) + " pages of 16 KiB read from the SD card"
+                                                 + (stats.pool_sectors ? ", " + std::to_string(stats.pool_sectors) + " hot sectors of them kept in flash" : std::string()) + "\n" : std::string())
                   << (meta_precise ? "  mode:               precise (sync per instruction)\n" : "");
         return 0;
     }

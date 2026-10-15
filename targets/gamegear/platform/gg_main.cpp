@@ -55,6 +55,65 @@ static unsigned skipped_run;
 #ifdef GG_SELFTEST
 extern "C" { volatile unsigned gg_selftest_result; }
 #endif
+#ifdef GG_BENCH
+/* Measurement build, run in gm0 (see docs): no pacing and no skipped frame
+ * (with GG_BENCH_PACED: the real pacing and frame skipping; with
+ * GG_BENCH_NOVIDEO: no line drawn; with GG_BENCH_NOLCD on the META: lines
+ * drawn but not sent), buttons from a script or from the host's
+ * random player (gg_host --random), the time of every frame between two frame
+ * numbers and the card sectors read.  The project's gg_bench.h, written by
+ * the person measuring, defines GG_BENCH_FROM, GG_BENCH_TO and either
+ * GG_BENCH_INPUT ("frame:mask:length,...", masks of GG_* keys) or
+ * GG_BENCH_SEED (gg_host --random --start-frame 30).  Read back from
+ * gg_bench: [0] done, [1] microseconds, [2..8] frames that read 0, 1, 2, 3,
+ * 4-5, 6-8, 9+ sectors, [9..11] frames over 16.7, 25 and 33.4 ms, [12] the
+ * longest frame, [13] frames not drawn; gg_bench_window: microseconds of 16
+ * equal parts of the range. */
+#include "gg_bench.h"
+extern "C" { volatile uint32_t gg_bench[16], gg_bench_window[16]; }
+static uint8_t bench_keys(uint32_t frame) {
+    uint8_t keys = 0;
+#ifdef GG_BENCH_SEED
+    static uint32_t state = (uint32_t)GG_BENCH_SEED | 1u, held;
+    static int primed;
+    if (!primed) { primed = 1; state = state * 1103515245u + 12345u; held = (state >> 16) & 63; if (((state >> 24) & 15) == 0 && !GG_SMS) held |= GG_START; }
+    if (frame % 16 == 0 && frame) {
+        state = state * 1103515245u + 12345u;
+        held = (state >> 16) & 63;
+        if (((state >> 24) & 15) == 0 && !GG_SMS) held |= GG_START;
+    }
+    keys = (uint8_t)held;
+    if (frame >= 30 && frame < 40) keys |= GG_IS_SMS ? GG_B1 : GG_START;
+#else
+    for (const char *p = GG_BENCH_INPUT; *p;) {
+        unsigned at = 0, mask = 0, len = 0;
+        while (*p >= '0' && *p <= '9') at = at * 10 + (unsigned)(*p++ - '0');
+        for (p++; *p >= '0' && *p <= '9';) mask = mask * 10 + (unsigned)(*p++ - '0');
+        for (p++; *p >= '0' && *p <= '9';) len = len * 10 + (unsigned)(*p++ - '0');
+        if (frame >= at && frame < at + len) keys |= (uint8_t)mask;
+        while (*p && *p++ != ',') {}
+    }
+#endif
+    return keys;
+}
+static void bench_frame() {
+    static uint32_t t0, last, misses;
+    const uint32_t f = machine.frames, now = meta_micros(), d = gg_stream_misses - misses;
+    misses = gg_stream_misses;
+    if (f == GG_BENCH_FROM) t0 = now;
+    else if (f > GG_BENCH_FROM && f <= GG_BENCH_TO) {
+        const uint32_t us = now - last, part = (f - GG_BENCH_FROM - 1) * 16 / (GG_BENCH_TO - GG_BENCH_FROM);
+        gg_bench[2 + (d < 4 ? d : d < 6 ? 4 : d < 9 ? 5 : 6)]++;
+        gg_bench[9] += us > 16688; gg_bench[10] += us > 25000; gg_bench[11] += us > 33400;
+        if (us > gg_bench[12]) gg_bench[12] = us;
+        gg_bench_window[part] += us;
+        gg_bench[13] += (uint32_t)skip_video; /* the frame just ended was not drawn (paced build) */
+    }
+    last = now;
+    if (f == GG_BENCH_TO) { gg_bench[1] = now - t0; gg_bench[0] = 1; for (;;) {} }
+    gg_buttons(bench_keys(f));
+}
+#endif
 static const char version[] __attribute__((used)) = "m0boy-gg-" META_TARGET_NAME " " SG_GEN_VERSION;
 
 #if GG_SMS
@@ -78,6 +137,9 @@ static void wait_slot(unsigned slot) {
 /* Which lines are drawn, and how (gg.h): every line on the Pokitto; on the
  * META the first of two lines sharing a row is kept, the second averaged in. */
 static int draw_line(void *, unsigned y) {
+#ifdef GG_BENCH_NOVIDEO
+    return 0; /* the game and the VDP alone */
+#endif
     if (skip_video) return 0;
 #if GG_SMS
     return gg_sms_line_shown(y);
@@ -108,6 +170,10 @@ static void row(void *, unsigned y, uint16_t *pixels) {
 }
 #else
 static void row(void *, unsigned y, uint16_t *pixels) {
+#ifdef GG_BENCH_NOLCD /* the lines are drawn, not sent */
+    (void)y; (void)pixels;
+    return;
+#endif
     line_sequences[line_slot] = meta_lcd_send_rows(pixels, (uint8_t)(display_row(y) + (GG_SMS ? 4 : 0)), 1);
     line_slot ^= 1;
     wait_slot(line_slot);
@@ -118,6 +184,10 @@ static void row(void *, unsigned y, uint16_t *pixels) {
 static void frame(void *) {
     meta_audio_frame();
     meta_lcd_end_frame();
+#if defined(GG_BENCH) && !defined(GG_BENCH_PACED)
+    bench_frame();
+    return;
+#endif
     uint8_t keys = 0;
 #if META_TARGET_POKITTO
     uint8_t raw = pokitto_buttons();
@@ -137,6 +207,9 @@ static void frame(void *) {
     if (WDT->CTRL.reg & WDT_CTRL_ENABLE) { WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY; }
 #endif
     gg_buttons(keys);
+#ifdef GG_BENCH_PACED /* the real pacing and frame skipping, scripted buttons */
+    bench_frame();
+#endif
 #if GG_CART_ON_CARD
     gg_save_tick();
 #endif
@@ -157,6 +230,9 @@ int main() {
     PORT->Group[1].OUTSET.reg = 1u << 3;
 #endif
     meta_clock_init();
+#if !META_TARGET_POKITTO && META_CLOCK_DEFAULT != 48
+    meta_clock_set(META_CLOCK_DEFAULT); /* META_OVERCLOCK */
+#endif
     meta_lcd_init();
     meta_lcd_fill(0);
 #if GG_STREAM || GG_CART_ON_CARD

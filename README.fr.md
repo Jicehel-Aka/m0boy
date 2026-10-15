@@ -23,11 +23,11 @@ puces à 32 Kio de RAM, 256 Kio de flash et sans division matérielle.
 
 | | Gamebuino META | Pokitto |
 |---|---|---|
-| Puce | SAMD21, Cortex-M0+ à 48 MHz | LPC11U68, Cortex-M0+ à 48 MHz (72 MHz en option) |
+| Puce | SAMD21, Cortex-M0+ à 48 MHz (72 MHz en option, hors spécification) | LPC11U68, Cortex-M0+ à 48 MHz (72 MHz en option) |
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le firmware | 32 + 2 + 2 Kio de RAM, 228 Kio de flash sous le loader |
 | Écran | 160×128 : les 144 lignes du Game Boy fusionnées en 128 | 220×176 : image 1:1, ou agrandie en 200×176 |
 | Build du firmware | PlatformIO | `make` avec arm-none-eabi-gcc |
-| Version | 0.10.3 | 0.10.3 |
+| Version | 0.10.5 | 0.10.5 |
 | État | Jeux lancés sur la console | Testée en émulateur seulement. Un premier testeur sur vraie Pokitto signale une image retournée verticalement (lignes inversées, colonnes dans l'ordre), compatible avec la perte du bit SS (R01) du panneau à l'init ; la 0.10.1 allonge l'attente après reset et l'impulsion d'écriture des registres et réécrit R01, à vérifier sur la console |
 
 ## SG-1000
@@ -78,11 +78,24 @@ Les cartouches Game Gear (`.gg`) passent par le même recompilateur Z80,
   priorité, interruptions de ligne, CRAM 12 bits) dessiné 1:1 dans la
   fenêtre de 160×144, tuiles de fond en assembleur Thumb-1 ; PSG Sega (mono).
 - **Grosses ROM et sauvegardes** : une ROM qui ne tient pas en flash avec
-  son code y garde ses pages les plus lues et lit les autres dans une copie
-  sur la carte SD ; la RAM de cartouche des jeux à sauvegarde vit dans un
-  fichier `.SAV` sur la carte. Les deux partagent un cache de deux secteurs :
-  les 24 Kio de RAM vidéo et de travail de la console d'origine laissent peu
-  de place.
+  son code y garde la page 0, les instructions qu'elle compile et les
+  secteurs de ROM de 512 octets qui, d'après les parties enregistrées
+  (exécutions et lectures de secteur par image), font gagner le plus de
+  cycles par octet ; elle lit les autres dans une copie sur la carte SD. La
+  RAM de cartouche des jeux à sauvegarde vit dans un fichier `.SAV` sur la
+  carte. Les deux partagent un petit cache de secteurs (quatre sur la Game Gear Pokitto,
+  deux ailleurs) : les 24 Kio de RAM vidéo et de travail de la console
+  d'origine laissent peu de place. `compile.sh` enregistre les parties d'un
+  jeu Game Gear ou Master System : des parties à l'aveugle (10 800 images
+  chacune) et quatre explorations (`--explore`, 120 000 images chacune)
+  où le joueur garde l'état de toutes les parties où il a vu du code ou des
+  données nouveaux et y repart, pour atteindre des niveaux qu'un joueur à
+  l'aveugle ne voit pas. L'explorateur (`targets/common/host/m0_explore.h`)
+  est commun aux harnais Game Boy, SG-1000 et Game Gear/Master System
+  (`EXPLORERS`, `EXPLORE_FRAMES`) ; sur Game Boy il repart d'états
+  sauvegardés, 400 000 images par défaut. Les anciennes parties, sans les comptes d'exécutions
+  ou sans exploration, sont refaites. Les secteurs dont l'interpréteur lit le
+  code, pour ce qui n'est pas compilé, comptent comme ceux lus en données.
 - **Vérifié** : avec `--meta-precise`, le code recompilé reproduit
   exactement l'interpréteur sur les 225 cartouches d'une collection Game Gear.
 - **Vitesse**, mesurée dans gm0 à 48 MHz sur les jeux essayés : pleine
@@ -111,7 +124,8 @@ Sur PC, la lecture passe par la [branche `z80` de gm0](https://github.com/r043v/
 - Avant de compiler une ROM, `compile.sh` y joue tout seul : une partie
   à entrées aléatoires par cœur du processeur, 20 s chacune à pleine
   vitesse (3 000 à 12 000 images par seconde, donc 15 à 60 minutes de jeu
-  par partie), plus les parties que tu enregistres toi-même. Seules les
+  par partie), quatre explorations (plus bas) et les parties que tu
+  enregistres toi-même. Seules les
   instructions exécutées pendant ces parties sont compilées : les données
   ne sont jamais prises pour du code, et le firmware tient en flash.
 - Tout le reste, y compris le code copié en RAM, passe par l'interpréteur

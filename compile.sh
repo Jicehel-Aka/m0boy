@@ -10,9 +10,14 @@
 #   Un dossier explicite accepte .gb/.gbc/.sg/.gg (ou ses sous-dossiers gb/, sg/ et gg/).
 #   SG-1000 : code Z80 recompilé (projets out/sg1000/<cible>/<jeu>/), GCC ou Clang, couverture NTSC automatique
 #   de AUTO_SECONDS secondes émulées (SG_AUTO_FRAMES pour choisir les images) :
-#   bouton 1 maintenu, une partie sans touche (logos, démo), plus SG_SEEDS parties aléatoires (défaut 8).
-#   Game Gear : même chaîne (projets out/gg/<cible>/<jeu>/), parties 3 fois plus longues ; une grosse ROM
-#   laisse des pages sur la carte (<NOM>.GG copié à côté du .bin), la RAM de cartouche vit dans <NOM>.SAV.
+#   bouton 1 maintenu, une partie sans touche (logos, démo), plus SG_SEEDS parties aléatoires (défaut 8)
+#   et EXPLORERS explorations (voir plus bas).
+#   Game Gear : même chaîne (projets out/gg/<cible>/<jeu>/), parties 9 fois plus longues (les jeux sont plus
+#   longs à atteindre) ; une grosse ROM laisse des pages sur la carte (<NOM>.GG copié à côté du .bin), avec
+#   les secteurs les plus lus gardés en flash ; la RAM de cartouche vit dans <NOM>.SAV.  Les parties
+#   enregistrées par une version qui ne comptait pas les exécutions (sans « # frames ») ou sans exploration
+#   sont refaites.  Parties GG/SMS : bouton 1 maintenu, sans touche, SG_SEEDS parties aléatoires et
+#   EXPLORERS explorations.
 #   PLAY=1 utilise le lecteur natif SG ; PACK et les sauvegardes GB ne s’appliquent pas.
 #   (le .elf de débogage reste dans out/<jeu>/.pio/build/meta/)
 #
@@ -83,6 +88,22 @@
 #   AUTO_REDO=1   refaire la partie automatique même si elle est déjà enregistrée
 #                 (sinon seules les graines manquantes sont jouées)
 #   REPLAY=1      rejouer les parties à la main enregistrées (profils à jour)
+#   EXPLORERS=n   (toutes plateformes, défaut 4) explorations guidées par la
+#                 couverture (--explore des harnais, targets/common/host/
+#                 m0_explore.h) : un joueur au hasard qui garde l'état des
+#                 parties où il a vu du code ou des données nouveaux et y
+#                 repart, pour atteindre ce qu'un joueur aveugle ne voit pas.
+#                 EXPLORE_FRAMES images chacune (défaut AUTO_SECONDS x 20000
+#                 en GB, x 6000 en SG/GG/SMS) ; 0 = aucune.  Les profils
+#                 enregistrés sans exploration la reçoivent au lancement
+#                 suivant.  SG_EXPLORERS et SG_EXPLORE_FRAMES : anciens noms.
+#   AI=1          (GB) ajoute AI_GAMES parties (défaut 1) jouées par un modèle de
+#                 décision local servi par Ollama (AI_MODEL, défaut tev1:0.8b ;
+#                 AI_URL, défaut http://localhost:11434) : tools/ai-play/ai_play.py
+#                 lui décrit l'écran (tuiles, défilement, sprites, sprite qui
+#                 suit la croix) et joue ce qu'il choisit, AI_SECONDS secondes
+#                 (défaut 120).  Enregistrées comme les autres (coverage-ai<n>),
+#                 rejouables à l'identique ; AI_REDO=1 pour les refaire.
 #   FIRMWARE_COMPILER=gcc|clang (défaut gcc) : compilateur C/C++ du firmware
 #   PACK=1 (défaut)
 #                 données de ROM peu lues compressées (LZSS) dans la flash au
@@ -91,10 +112,11 @@
 #                 normal si la ROM compressée ne tient pas)
 #   STATIC=0      ne pas ajouter le code trouvé par analyse statique
 #                 (par défaut il complète les parties, dans la limite de la flash)
-#   POKITTO_HC=1  firmwares Pokitto démarrant à 72 MHz au lieu de 48
-#                 (overclock standard de la console, hors spécification du
-#                 LPC11U68 ; SPI carte redivisé à 18 MHz ; le menu
-#                 « Processeur » bascule 48 <-> 72 à l'exécution)
+#   OVERCLOCK=1   firmwares des deux consoles démarrant à 72 MHz au lieu de 48
+#                 (hors spécification : 50 MHz pour le LPC11U68 de la Pokitto,
+#                 48 MHz pour le SAMD21 de la META ; SPI carte redivisé à
+#                 18 MHz sur la Pokitto ; le menu « Processeur » bascule
+#                 48 <-> 72 à l'exécution ; POKITTO_HC est l'ancien nom)
 #
 # Sans aucune partie à la main, la partie automatique et l'analyse statique
 # suffisent à compiler l'essentiel ; le code est gardé du plus exécuté au
@@ -131,17 +153,19 @@ if [ -z "$SRC_SYSTEM" ] && [ -t 0 ]; then
 fi
 export SRC_SYSTEM
 
-# Horloge de la Pokitto, demandée quand elle est concernée : 48 MHz
-# (nominal) ou 72 MHz (overclock standard de la console).  POKITTO_HC
+# Horloge des consoles, demandée une fois : 48 MHz (nominal) ou 72 MHz
+# (overclock : la Pokitto le supporte, la META n'a pas encore été essayée à
+# 72 MHz sur une console).  OVERCLOCK (ou POKITTO_HC, son ancien nom)
 # court-circuite la question (scripts).
-POKITTO_HC="${POKITTO_HC:-}"
-if [ -z "$POKITTO_HC" ] && [ -t 0 ] && { [ "$TARGET" = pokitto ] || [ "$TARGET" = both ]; }; then
-  printf 'Horloge pokitto : 48 (entrée) ou 72 : '
+OVERCLOCK="${OVERCLOCK:-${POKITTO_HC:-}}"
+if [ -z "$OVERCLOCK" ] && [ -t 0 ]; then
+  printf 'Horloge des consoles : 48 (entrée) ou 72 : '
   read -r h
-  case "$h" in 72|hc|HC) POKITTO_HC=1 ;; *) POKITTO_HC=0 ;; esac
+  case "$h" in 72|hc|HC) OVERCLOCK=1 ;; *) OVERCLOCK=0 ;; esac
 fi
-POKITTO_HC="${POKITTO_HC:-0}"
-export POKITTO_HC
+OVERCLOCK="${OVERCLOCK:-0}"
+export OVERCLOCK POKITTO_HC="$OVERCLOCK"
+[ "$OVERCLOCK" = 1 ] && export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=1"
 if [ "$TARGET" = both ] || [ "$TARGET" = all ]; then
   # Une exécution par console.  La sélection des jeux et la confirmation des
   # mises à jour sont demandées une seule fois (pass de capture ci-dessous,
@@ -192,6 +216,16 @@ AUTO_SECONDS="${AUTO_SECONDS:-20}"
 JOBS="${JOBS:-$(( NPROC / 4 > 0 ? NPROC / 4 : 1 ))}"
 AUTO_REDO="${AUTO_REDO:-0}"
 REPLAY="${REPLAY:-0}"
+EXPLORERS="${EXPLORERS:-${SG_EXPLORERS:-4}}"
+EXPLORE_FRAMES="${EXPLORE_FRAMES:-${SG_EXPLORE_FRAMES:-}}" # vide : selon la plateforme
+case "$EXPLORERS" in ''|*[!0-9]*) echo "[x] EXPLORERS doit être un entier."; exit 1 ;; esac
+case "$EXPLORE_FRAMES" in *[!0-9]*) echo "[x] EXPLORE_FRAMES doit être un entier."; exit 1 ;; esac
+AI="${AI:-0}"
+AI_MODEL="${AI_MODEL:-tev1:0.8b}"
+AI_URL="${AI_URL:-http://localhost:11434}"
+AI_GAMES="${AI_GAMES:-1}"
+AI_SECONDS="${AI_SECONDS:-120}"
+AI_REDO="${AI_REDO:-0}"
 FIRMWARE_COMPILER="${FIRMWARE_COMPILER:-gcc}"
 case "$FIRMWARE_COMPILER" in gcc|clang) ;; *) echo "FIRMWARE_COMPILER doit être gcc ou clang."; exit 1 ;; esac
 PACK="${PACK:-1}"  # auto : packe quand ça tient, retombe sur la carte SD sinon (PACK=0 pour désactiver)
@@ -199,11 +233,12 @@ ALL="${ALL:-0}"
 UPDATE="${UPDATE:-0}"
 FORCE="${FORCE:-0}"
 NO_ICONS="${NO_ICONS:-0}"
-# POKITTO_HC=1 : firmwares Pokitto démarrant à 72 MHz (overclock standard de
-# la console, hors spécification du LPC11U68 : voir gbl_profile.h).  Le menu
-# « Processeur » garde la bascule 48 <-> 72 à l'exécution.
-POKITTO_HC="${POKITTO_HC:-0}"
-export POKITTO_HC
+# OVERCLOCK=1 : firmwares démarrant à 72 MHz (hors spécification : voir
+# gbl_profile.h, META_OVERCLOCK).  Le menu « Processeur » garde la bascule
+# 48 <-> 72 à l'exécution.
+OVERCLOCK="${OVERCLOCK:-${POKITTO_HC:-0}}"
+export OVERCLOCK POKITTO_HC="$OVERCLOCK"
+[ "$OVERCLOCK" = 1 ] && export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=1"
 # m0recomp is the console-neutral CLI; keep the historical binary as fallback.
 GBRECOMP="./build/bin/gbrecomp"
 [ -x ./build/bin/m0recomp ] && GBRECOMP="./build/bin/m0recomp"
@@ -522,7 +557,7 @@ assess() {
   local dir="$1" sha="$2" system="${3:-gameboy}" expected_pack="$PACK"
   [ "$system" = sg1000 ] || [ "$system" = gg ] || [ "$system" = sms ] && expected_pack=0
   local expected_hc=0
-  [ "$TARGET" = pokitto ] && [ "$POKITTO_HC" = 1 ] && expected_hc=1
+  [ "$OVERCLOCK" = 1 ] && expected_hc=1
   local zip="$DEST_DIR/$dir.zip"
   local ver="" state_sha="" state_pack="" state_compiler="" state_system="" state_hc="" state tmpbin
   S_todo=1; S_tag="nouvelle"
@@ -551,7 +586,7 @@ assess() {
     elif [ "${state_compiler:-gcc}" != "$FIRMWARE_COMPILER" ]; then
       S_tag="compilateur ${state_compiler:-gcc} -> $FIRMWARE_COMPILER"; S_todo=1
     elif [ "${state_hc:-0}" != "$expected_hc" ]; then
-      S_tag="horloge pokitto ${state_hc:-48} -> $expected_hc"; S_todo=1
+      S_tag="horloge $([ "${state_hc:-0}" = 1 ] && echo 72 || echo 48) -> $([ "$expected_hc" = 1 ] && echo 72 || echo 48) MHz"; S_todo=1
     elif [ -z "$ver" ]; then
       S_tag="version inconnue"; S_todo=2
     elif [ "$ver" = "$CUR_VERSION" ]; then
@@ -589,13 +624,23 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     [ -x "$sg_player" ] || { echo "[x] Lecteur gm0 absent : construire gm0 ou définir SG_PLAYER."; return 1; }
     "$sg_player" "$rom_path" || return 1
   fi
-  if [ "$AUTO" = 1 ] && { [ "$AUTO_REDO" = 1 ] || [ ! -f "$store/coverage-auto.cov" ]; }; then
+  # GG/SMS : un profil sans « # frames » (ancien format) ne dit pas combien de fois chaque instruction
+  # s'exécute : le générateur ne peut pas arbitrer code compilé et secteurs gardés en flash, on le refait ;
+  # de même, toutes plateformes, un profil sans exploration (coverage-explore*.cov, voir plus bas).
+  local stale=0
+  [ "$sys" != sg1000 ] && [ -f "$store/coverage-auto.cov" ] && ! grep -q '^# frames ' "$store/coverage-auto.cov" && stale=1
+  [ "$EXPLORERS" -gt 0 ] && [ -f "$store/coverage-auto.cov" ] && [ ! -f "$store/coverage-explore1.cov" ] && stale=1
+  if [ "$AUTO" = 1 ] && { [ "$AUTO_REDO" = 1 ] || [ "$stale" = 1 ] || [ ! -f "$store/coverage-auto.cov" ]; }; then
     [ -x "$host" ] || { echo "[x] Construire $(basename "$host") avec CMake/Ninja."; return 1; }
     auto_frames="${SG_AUTO_FRAMES:-$((AUTO_SECONDS * 60))}"
-    [ "$sys" != sg1000 ] && auto_frames="${SG_AUTO_FRAMES:-$((AUTO_SECONDS * 180))}" # longer games: 3x
+    [ "$sys" != sg1000 ] && auto_frames="${SG_AUTO_FRAMES:-$((AUTO_SECONDS * 540))}" # longer games: 9x
     case "$auto_frames" in ''|*[!0-9]*|0) echo "[x] SG_AUTO_FRAMES doit être un entier positif."; return 1 ;; esac
-    local seeds="${SG_SEEDS:-8}" seed pids=()
-    echo "[i] Profil $label : $auto_frames images NTSC, bouton 1 pour démarrer et tirer, sans touche, $seeds parties aléatoires"
+    local seeds="${SG_SEEDS:-8}" explorers="$EXPLORERS" explore_frames="${EXPLORE_FRAMES:-$((AUTO_SECONDS * 6000))}" seed pids=()
+    # Explorations guidées par la couverture (--explore) : le profil est celui de toutes les images jouées.
+    [ "$explore_frames" -gt 0 ] || explorers=0
+    local more=""
+    [ "$explorers" -gt 0 ] && more=", $explorers explorations de $explore_frames images"
+    echo "[i] Profil $label : $auto_frames images NTSC, bouton 1 pour démarrer et tirer, sans touche, $seeds parties aléatoires$more"
     "$host" "$rom_path" --frames "$auto_frames" --buttons 16 --start-frame 30 \
       --coverage "$store/coverage-auto.tmp" > /dev/null &
     pids+=($!)
@@ -608,7 +653,15 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
         --coverage "$store/coverage-rand$seed.tmp" > /dev/null &
       pids+=($!)
     done
+    for ((seed = 1; seed <= explorers; seed++)); do
+      "$host" "$rom_path" --explore "$explore_frames" --random "$seed" \
+        --coverage "$store/coverage-explore$seed.tmp" > /dev/null 2>&1 &
+      pids+=($!)
+    done
     for seed in "${pids[@]}"; do wait "$seed" || return 1; done
+    for ((seed = 1; seed <= explorers; seed++)); do
+      mv "$store/coverage-explore$seed.tmp" "$store/coverage-explore$seed.cov" || return 1
+    done
     mv "$store/coverage-auto.tmp" "$store/coverage-auto.cov" || return 1
     mv "$store/coverage-idle.tmp" "$store/coverage-idle.cov" || return 1
     for ((seed = 1; seed <= seeds; seed++)); do
@@ -631,12 +684,12 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
       --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} -o "$out_dir") || return 2
     if [ "$TARGET" = pokitto ]; then
       local hc_flags=""
-      [ "$POKITTO_HC" = 1 ] && hc_flags="-DEXTRA_DEFS=-DPOKITTO_HC=1"
+      [ "$OVERCLOCK" = 1 ] && hc_flags="-DEXTRA_DEFS=-DMETA_OVERCLOCK=1"
       cmake -G Ninja -S "$out_dir" -B "$sg_build" -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake \
         -DSG_COMPILER="$FIRMWARE_COMPILER" ${hc_flags} > /dev/null || return 2
       build_log=$(ninja -C "$sg_build" -j"$NPROC" 2>&1) && return 0
     else
-      build_log=$(pio run -d "$out_dir" 2>&1) && return 0
+      build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0
     fi
     echo "$build_log" | grep -q -E "overflowed|greater than maximum allowed" && return 1
     echo "$build_log" | tail -20
@@ -691,7 +744,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     echo "[i] Pages de ROM lues depuis la carte SD : $game_name/$stream_name (racine ou un dossier)"
   fi
   printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "system": "%s",\n  "pack": 0,\n  "hc": %s,\n  "compiler": "%s"\n}\n' \
-    "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$sys" "$([ "$TARGET" = pokitto ] && [ "$POKITTO_HC" = 1 ] && echo 1 || echo 0)" "$FIRMWARE_COMPILER" > "$game_dir/.gbrmeta.json"
+    "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$sys" "$([ "$OVERCLOCK" = 1 ] && echo 1 || echo 0)" "$FIRMWARE_COMPILER" > "$game_dir/.gbrmeta.json"
   zip_game "$game_dir" "$game_dir.zip" || { echo "[x] Zip impossible : le jeu reste en dossier."; return 1; }
   rm -rf "$game_dir"
   echo "[i] Firmware $label $TARGET v$CUR_VERSION : $game_dir.zip"
@@ -749,7 +802,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
     for inp in "$store"/coverage-*.input; do
       [ -f "$inp" ] || continue
       id=$(basename "$inp" .input); id=${id#coverage-}
-      case "$id" in auto*) continue ;; esac
+      case "$id" in auto*|ai*) continue ;; esac
       last=$(awk 'END { print $1 + 120 }' "$inp")
       echo "[i] Partie $id rejouée ($last frames)"
       "$out_dir/host/build/${prefix}_profile" --interp --frames "$last" --input "$inp" \
@@ -818,6 +871,54 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
             mv "$dir/coverage-auto$seed.tmp" "$dir/coverage-auto$seed.input" ) &
       done
       wait' _ "$out_dir/host/build/${prefix}_profile" "$out_dir" "$AUTO_SECONDS" "$frames" $(seq 1 "$AUTO_SEEDS")
+    save_sessions
+  fi
+
+  # b2bis) Explorations guidées par la couverture (--explore, EXPLORERS) :
+  #     reprennent depuis des états sauvés là où du code ou des données de
+  #     ROM nouveaux sont apparus.  Pas de fichier d'entrées : la couverture
+  #     et le profil de lectures sont enregistrés directement.  Images
+  #     comptées (même partie d'une machine à l'autre) ; AUTO_SECONDS x 15
+  #     secondes au plus, garde-fou que les jeux lents n'atteignent pas.
+  local explore_frames="${EXPLORE_FRAMES:-$((AUTO_SECONDS * 20000))}" todo=()
+  if [ "$AUTO" = "1" ] && [ "$EXPLORERS" -gt 0 ] && [ "$explore_frames" -gt 0 ]; then
+    [ "$AUTO_REDO" = "1" ] && rm -f "$store"/coverage-explore* "$store"/romdata-explore* "$out_dir"/coverage-explore* "$out_dir"/romdata-explore*
+    for seed in $(seq 1 "$EXPLORERS"); do
+      [ -f "$store/coverage-explore$seed.cov" ] || [ -f "$PROFILES_DIR/$rom_sha/coverage-explore$seed.cov" ] || todo+=("$seed")
+    done
+  fi
+  if [ ${#todo[@]} -gt 0 ]; then
+    echo "[i] Explorations : ${#todo[@]} de $explore_frames images"
+    local lock=()
+    command -v flock > /dev/null && lock=(flock "$DEST_DIR/.gbrecomp-auto.lock")
+    "${lock[@]}" bash -c '
+      prof=$1 dir=$2 secs=$3 frames=$4; shift 4
+      for seed in "$@"; do
+        "$prof" --interp --explore "$frames" --random "$seed" --max-seconds $((secs * 15)) \
+          --coverage "$dir/coverage-explore$seed.tmp" --rom-profile-out "$dir/romdata-explore$seed.prof" \
+          > /dev/null 2>&1 && mv "$dir/coverage-explore$seed.tmp" "$dir/coverage-explore$seed.cov" &
+      done
+      wait' _ "$out_dir/host/build/${prefix}_profile" "$out_dir" "$AUTO_SECONDS" "$explore_frames" "${todo[@]}"
+    rm -f "$out_dir"/coverage-explore*.tmp
+    save_sessions
+  fi
+
+  # b2ter) AI=1 : parties jouées par un modèle de décision (Ollama), une à la
+  #     fois pour toutes les ROMs (le modèle répond à une requête à la fois).
+  if [ "$AI" = "1" ] && ! python3 "$(dirname "$0")/tools/ai-play/ai_play.py" --check --model "$AI_MODEL" --url "$AI_URL"; then
+    echo "[!] AI=1 : le modèle $AI_MODEL ne répond pas sur $AI_URL (ollama serve, ollama pull $AI_MODEL) ; parties IA sautées"
+  elif [ "$AI" = "1" ]; then
+    local g ai_lock=()
+    command -v flock > /dev/null && ai_lock=(flock "$DEST_DIR/.gbrecomp-ai.lock")
+    [ "$AI_REDO" = "1" ] && rm -f "$store"/coverage-ai* "$store"/romdata-ai* "$out_dir"/coverage-ai* "$out_dir"/romdata-ai*
+    for g in $(seq 1 "$AI_GAMES"); do
+      [ -f "$store/coverage-ai$g.cov" ] && continue
+      echo "[i] Partie IA $g ($AI_MODEL, ${AI_SECONDS} s)"
+      "${ai_lock[@]}" python3 "$(dirname "$0")/tools/ai-play/ai_play.py" \
+        --harness "$out_dir/host/build/${prefix}_profile" --out "$out_dir/coverage-ai$g.input" \
+        --seconds "$AI_SECONDS" --seed "$g" --model "$AI_MODEL" --url "$AI_URL" -- \
+        --coverage "$out_dir/coverage-ai$g.cov" --rom-profile-out "$out_dir/romdata-ai$g.prof" > /dev/null || true
+    done
     save_sessions
   fi
 
@@ -892,10 +993,10 @@ PY
       fi
     fi
     if [ "$TARGET" = pokitto ]; then
-      [ "$POKITTO_HC" = 1 ] && extra_flags="${extra_flags:+$extra_flags }-DPOKITTO_HC=1"
+      [ "$OVERCLOCK" = 1 ] && extra_flags="${extra_flags:+$extra_flags }-DMETA_OVERCLOCK=1"
       build_log=$(make -C "$out_dir" -j"$NPROC" COMPILER="$FIRMWARE_COMPILER" EXTRA_CFLAGS="${extra_flags:-}" 2>&1) && return 0
     else
-      build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" pio run -d "$out_dir" 2>&1) && return 0
+      build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0
     fi
     echo "$build_log" | grep -q -E "overflowed|greater than maximum allowed" && return 1
     echo "$build_log" | tail -20
@@ -988,7 +1089,7 @@ PY
   {
     printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "pack": %s,\n  "hc": %s,\n  "compiler": "%s",\n  "bpi": %s,\n  "date": "%s"\n}\n' \
       "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$PACK" \
-      "$([ "$TARGET" = pokitto ] && [ "$POKITTO_HC" = 1 ] && echo 1 || echo 0)" "$FIRMWARE_COMPILER" "$best" "$(date +%Y-%m-%d)"
+      "$([ "$OVERCLOCK" = 1 ] && echo 1 || echo 0)" "$FIRMWARE_COMPILER" "$best" "$(date +%Y-%m-%d)"
   } > "$game_dir/.gbrmeta.json"
   local fw_ver
   fw_ver=$(firmware_version "$game_dir/$game_name.BIN")

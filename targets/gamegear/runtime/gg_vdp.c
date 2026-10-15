@@ -131,7 +131,7 @@ static unsigned line_sprites(unsigned y, sprite_t *out) {
             const uint8_t *p = vram + ((tile * 32 + (r & 7) * 4) & 0x3fff);
             sprite_t *s = &out[n++];
             s->x = (int16_t)(sat[0x80 + 2 * i] - shift);
-            memcpy(s->planes, p, 4);
+            s->planes[0] = p[0]; s->planes[1] = p[1]; s->planes[2] = p[2]; s->planes[3] = p[3]; /* no memcpy call */
         }
     return n;
 }
@@ -780,3 +780,15 @@ static void sms_render(unsigned y, uint16_t *out, const sprite_t *spr, unsigned 
     }
     if (blank) for (unsigned i = 0; i < 5; i++) out[i] = bd; /* left column */
 }
+
+#ifdef GG_ROM_TRACE
+/* Host explorer: the machine was copied back from a snapshot, rebuild what
+ * the VDP derives from it (sprite masks, the Master System's palette). */
+void gg_vdp_restore(void) {
+    machine.sprites_dirty = 1;
+    for (unsigned i = 0; i < 32; i++) {
+        if (GG_IS_SMS) cram_colour_sms(i);
+        else cram_colour(i);
+    }
+}
+#endif

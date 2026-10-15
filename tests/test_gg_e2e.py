@@ -40,7 +40,14 @@ def exercise(args, root, system):
                    '--shot', root / 'reference.ppm', '--wav', root / 'reference.wav')
     text = coverage.read_text()
     assert text.startswith('# m0boy.' + system + '.coverage.v1\n') and '# read ' in text
-    assert re.search(r'^02[0-9a-f]{4}$', text, re.M) and re.search(r'^03[0-9a-f]{4}$', text, re.M)  # pages 2 and 3
+    assert re.search(r'^02[0-9a-f]{4} \d+$', text, re.M) and re.search(r'^03[0-9a-f]{4} \d+$', text, re.M)  # pages 2 and 3
+    # The coverage-guided explorer: segments from snapshots, a profile with rates
+    explored = root / 'explored.cov'
+    run(args.host, rom, '--explore', 1500, '--random', 3, '--coverage', explored)
+    text = explored.read_text()
+    played = re.search(r'^# frames (\d+)$', text, re.M)  # the last segment ends past 1500 (2400 frames at most)
+    assert played and 1500 <= int(played.group(1)) < 1500 + 2400 and '# read ' in text
+    assert re.search(r'^[0-9a-f]{6} \d+$', text, re.M)
     for target in ('desktop', 'meta', 'pokitto'):
         # Precise build: the recompiled code reproduces the interpreter,
         # mapper included.
@@ -92,6 +99,60 @@ def exercise(args, root, system):
     assert failed.returncode != 0 and not (root / 'invalid').exists()
 
 
+STUB = r"""
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+/* The SD card of a streamed project, here the cartridge file */
+int gg_platform_rom_read(uint32_t sector, uint8_t *dst) {
+    static FILE *file;
+    if (!file) { file = fopen(ROM_FILE, "rb"); FILE *mark = fopen(ROM_FILE ".read", "wb"); if (mark) fclose(mark); }
+    if (!file || fseek(file, (long)sector * 512, SEEK_SET) || fread(dst, 1, 512, file) != 512) { memset(dst, 0xff, 512); return 0; }
+    return 1;
+}
+"""
+
+
+def exercise_pool(args, root):
+    """A cartridge larger than the flash: the sectors the profile reads most stay in
+    flash (the pool), the others come from the card; same run as the interpreter."""
+    root.mkdir()
+    rom = root / 'big.gg'
+    rom.write_bytes(fixture().ljust(20 * 0x4000, b'\xa5'))  # 320 KiB, more than the flash holds
+    coverage = root / 'big.cov'
+    common = ('--frames', 60, '--input', INPUT)
+    baseline = run(args.host, rom, *common, '--coverage', coverage)
+    text = coverage.read_text()
+    assert '# frames 60\n' in text and re.search(r'^02[0-9a-f]{4} \d+$', text, re.M)  # executions are counted
+    reads = [l for l in text.splitlines() if l.startswith('# read ')]
+    assert reads
+    # Page 3's sectors are not in the profile (they stay on the card); the others are hot.
+    kept = [l for l in text.splitlines() if not (l.startswith('# read ') and 0x60 <= int(l.split()[2], 16) < 0x80)]
+    coverage.write_text('\n'.join(kept) + '\n')
+    for target in ('pokitto', 'meta'):
+        output = root / target
+        log = run(args.recompiler, rom, '--target', target, '--coverage', coverage, '--meta-precise',
+                  '--output-prefix', 'big', '-o', output)
+        assert re.search(r'ROM streaming: +\d+ pages of 16 KiB read from the SD card, \d+ hot sectors', log), log
+        config = (output / 'src/sg_config.h').read_text()
+        pool = int(re.search(r'#define GG_POOL_SECTORS (\d+)', config)[1])
+        assert 0 < pool <= 254
+        data = (output / 'src/sg_rom.c').read_text()
+        assert 'gg_pool_index[640]' in data and 'gg_pool[%d]' % (pool * 512) in data
+        src = output / 'src'
+        (root / (target + '_stub.c')).write_text('#define ROM_FILE "%s"\n' % rom + STUB)
+        exe = root / (target + '_host')
+        run(shutil.which('cc') or 'cc', '-O1', '-DSG_GENERATED=1', '-I', src, '-o', exe, output / 'host/gg_host.c',
+            *(src / n for n in ('z80.c', 'gg.c', 'gg_psg.c', 'gg_vdp.c', 'sg_gen.c', 'sg_rom.c')),
+            root / (target + '_stub.c'), '-lm')
+        native = run(exe, *common)
+        interpreted = run(exe, *common, '--interp')
+        assert fingerprint(native) == fingerprint(interpreted) == fingerprint(baseline)
+        assert int(re.search(r'compiled=(\d+)', native)[1]) > 0
+        assert (root / 'big.gg.read').exists()  # some sectors do come from the card
+        print('gg/%s: %d-sector pool and the card give the interpreter\'s run' % (target, pool))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--recompiler', required=True)
@@ -101,6 +162,7 @@ def main():
         root = Path(temporary)
         for system in ('gg', 'sms'):
             exercise(args, root / system, system)
+        exercise_pool(args, root / 'pool')
 
 
 if __name__ == '__main__':

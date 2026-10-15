@@ -25,6 +25,20 @@
 
 #include "gbl_config.h"
 
+/* META_OVERCLOCK: both consoles start at 72 MHz instead of the nominal
+ * 48 MHz (the converter's choice, compile.sh).  The SAMD21 is rated 48 MHz:
+ * the FDPLL96M runs the core at 72 MHz with two flash wait states
+ * (meta_clock.cpp), past its specification, and the LPC11U68 is rated
+ * 50 MHz.  The menu's "Processeur" entry still switches 48 <-> 72, and the
+ * loader is always entered at 48 MHz.  POKITTO_HC is the old name. */
+#ifndef META_OVERCLOCK
+#if defined(POKITTO_HC) && POKITTO_HC
+#define META_OVERCLOCK 1
+#else
+#define META_OVERCLOCK 0
+#endif
+#endif
+
 /* ---- what the cartridge needs (gbl_config.h, written per game) -----------
  * A profile can choose differently for each kind of build; every game gets
  * its own firmware, so the right variant is picked at compile time, with no
@@ -54,17 +68,12 @@
 #if defined(GBL_TARGET_POKITTO) && GBL_TARGET_POKITTO
 /* ======================================================= Pokitto (LPC11U68) */
 
-/* POKITTO_HC : démarrer à 72 MHz au lieu des 48 MHz nominaux.  Le
- * LPC11U68 est spécifié jusqu'à 50 MHz ; 72 MHz (PLL M = 6, FCCO 288 MHz)
- * est l'overclock standard de la console (wiki Pokitto : « _OSCT=2 »,
- * Pokitto Magazine vol. 1) et tourne aussi dans gm0.  À cette vitesse le
- * SSP redivise (carte SD à 18 MHz, sous la limite Default Speed de 25 MHz
- * du SPI), les tempos flash restent sur leur valeur de réinitialisation
- * (3 horloges, le maximum documenté).  Le menu « Processeur » garde la
- * bascule 48 <-> 72. */
-#ifndef POKITTO_HC
-#define POKITTO_HC 0
-#endif
+/* Pokitto, 72 MHz: see META_OVERCLOCK below.  The LPC11U68 is specified up
+ * to 50 MHz ; 72 MHz (PLL M = 6, FCCO 288 MHz) is the console's standard
+ * overclock (Pokitto wiki « _OSCT=2 », Pokitto Magazine vol. 1) and runs in
+ * gm0 too.  At that speed the SSP redivides (SD card at 18 MHz, under the
+ * 25 MHz Default Speed limit of the SPI) and the flash timings stay at their
+ * reset value (3 clocks, the documented maximum). */
 
 /* Its two 2 KiB RAM banks hold the line signatures, the audio queue, the
  * PPU's BGP table and the dispatch cache (pokitto.ld); the main RAM this

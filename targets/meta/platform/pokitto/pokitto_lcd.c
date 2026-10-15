@@ -31,6 +31,7 @@
 #if POKITTO_LCD_ASM
 void pokitto_push160(const uint16_t *px);
 void pokitto_push200(const uint16_t *px);
+void pokitto_at(unsigned x, unsigned y);
 #endif
 
 static uint32_t seq;
@@ -61,11 +62,15 @@ static void reg(uint16_t c, uint16_t d) {
 }
 
 /* GRAM write from (x, y) on: the pixels follow as data. */
+#if POKITTO_LCD_ASM
+#define at pokitto_at
+#else
 static void at(unsigned x, unsigned y) {
     reg(0x20, (uint16_t)y);
     reg(0x21, (uint16_t)x);
     command(0x22);
 }
+#endif
 
 #if !POKITTO_LCD_ASM
 static void push(const uint16_t *px, unsigned n) {

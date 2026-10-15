@@ -18,19 +18,19 @@ static uint8_t cart_ram[GG_CART_RAM_SIZE];
 static FILE *audio;
 static uint32_t audio_samples;
 static int audio_error;
-static unsigned frames = 300, buttons, start_frame = ~0u;
+static unsigned frames = 300, buttons, start_frame = ~0u, explore_frames;
 static uint32_t *hits;
 static uint8_t *entries;
 static uint32_t *coverage_order;
 #ifdef GG_ROM_TRACE
 /* Profiling: frames in which each 512-byte ROM sector was read as data
  * (the generator keeps the most read pages in flash). */
-static uint32_t *read_frames, *read_last, rom_sectors;
+static uint32_t *read_frames, *read_last, rom_sectors, trace_clock, new_sectors; /* trace_clock: frames run (the explorer rewinds machine.frames) */
 void gg_rom_trace(uint32_t offset) {
     const uint32_t s = offset >> 9;
-    if (!read_frames || s >= rom_sectors || read_last[s] == machine.frames + 1) return;
-    read_last[s] = machine.frames + 1;
-    read_frames[s]++;
+    if (!read_frames || s >= rom_sectors || read_last[s] == trace_clock + 1) return;
+    read_last[s] = trace_clock + 1;
+    if (!read_frames[s]++) new_sectors++;
 }
 #endif
 
@@ -70,8 +70,62 @@ static void inputs(void) {
     if (machine.frames >= start_frame && machine.frames < start_frame + 10) keys |= GG_IS_SMS ? GG_B1 : GG_START;
     gg_buttons((uint8_t)keys);
 }
+#ifdef GG_ROM_TRACE
+/* --explore frames: the coverage-guided player of m0_explore.h, from the
+ * start or from snapshots of the machine (and cartridge RAM) that reached
+ * code or ROM data never seen. */
+#include "m0_explore.h"
+typedef struct { gg_t machine; uint8_t cart[GG_CART_RAM_SIZE]; } snapshot_t;
+static m0x_t explorer;
+static unsigned explore_on;
+static void snapshot_save(void *ctx, void *state) {
+    snapshot_t *s = state;
+    (void)ctx;
+    memcpy(&s->machine, &machine, sizeof machine);
+    memcpy(s->cart, cart_ram, sizeof cart_ram);
+}
+static void snapshot_load(void *ctx, const void *state) {
+    const snapshot_t *s = state;
+    (void)ctx;
+    memcpy(&machine, &s->machine, sizeof machine);
+    memcpy(cart_ram, s->cart, sizeof cart_ram);
+    gg_vdp_restore();
+}
+static void explore_inputs(unsigned k) {
+    unsigned keys = 0;
+    if (k & M0X_RIGHT) keys |= GG_RIGHT_KEY;
+    if (k & M0X_LEFT) keys |= GG_LEFT_KEY;
+    if (k & M0X_UP) keys |= GG_UP;
+    if (k & M0X_DOWN) keys |= GG_DOWN;
+    if (k & M0X_B1) keys |= GG_B1;
+    if (k & M0X_B2) keys |= GG_B2;
+    if (k & M0X_START) keys |= GG_START;
+    gg_buttons((uint8_t)keys);
+}
+static void explore(unsigned total) {
+    const m0x_machine_t m = { 0, sizeof(snapshot_t), snapshot_save, snapshot_load, GG_IS_SMS ? M0X_NO_START : 0 };
+    machine.row = 0; /* nothing is drawn: the game does not need it */
+    if (!m0x_begin(&explorer, &m, random_state, total)) return;
+    explore_on = 1;
+    do {
+        machine.stop = 0;
+        gg_run();
+    } while (m0x_next(&explorer, gg_new_locations + new_sectors));
+    fprintf(stderr, "explore: %u frames, %u segments, %u snapshots, %u locations\n", explorer.frames,
+            explorer.segments, explorer.pool_size, gg_new_locations);
+}
+#endif
 static void frame(void *ctx) {
     (void)ctx;
+#ifdef GG_ROM_TRACE
+    trace_clock++;
+    if (explore_on) {
+        const unsigned k = m0x_keys(&explorer);
+        if (k == M0X_END) machine.stop = 1;
+        else explore_inputs(k);
+        return;
+    }
+#endif
     if (audio) {
         uint8_t buffer[512];
         unsigned n = gg_audio_available();
@@ -142,6 +196,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--buttons") && i + 1 < argc) buttons = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--start-frame") && i + 1 < argc) start_frame = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_script = argv[++i];
+        else if (!strcmp(argv[i], "--explore") && i + 1 < argc) explore_frames = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--random") && i + 1 < argc) random_state = (uint32_t)strtoul(argv[++i], 0, 0) | 1u;
         else if (argv[i][0] != '-' && !rom_path) rom_path = argv[i];
         else { fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]); return 1; }
@@ -206,6 +261,10 @@ int main(int argc, char **argv) {
         gg_audio_rate(22050);
     }
     inputs();
+#ifdef GG_ROM_TRACE
+    if (explore_frames && cov_path) { explore(explore_frames); machine.frames = explorer.frames; }
+    else
+#endif
     if (frames) gg_run();
     if (audio) {
         if (audio_samples & 1) fputc(0, audio);
@@ -219,6 +278,7 @@ int main(int argc, char **argv) {
     if (coverage) {
         fprintf(coverage, GG_IS_SMS ? "# m0boy.sms.coverage.v1\n" : "# m0boy.gg.coverage.v1\n");
         if (machine.cart_ram_used) fprintf(coverage, "# cart-ram\n");
+        fprintf(coverage, "# frames %u\n", machine.frames);
         for (uint32_t loc = 0; loc < locations; loc++) /* dynamic jump targets: region entries */
             if (entries[loc]) fprintf(coverage, "# entry %06x\n", loc);
 #ifdef GG_ROM_TRACE
@@ -231,7 +291,7 @@ int main(int argc, char **argv) {
         for (uint32_t loc = 0; loc < locations; loc++) if (hits[loc]) coverage_order[n++] = loc;
         qsort(coverage_order, n, sizeof *coverage_order, hot_first);
         for (uint32_t i = 0; i < n; i++)
-            if (fprintf(coverage, "%06x\n", coverage_order[i]) < 0) { fclose(coverage); free(loaded); return 1; }
+            if (fprintf(coverage, "%06x %u\n", coverage_order[i], hits[coverage_order[i]]) < 0) { fclose(coverage); free(loaded); return 1; }
         if (fclose(coverage)) { perror("coverage"); free(loaded); return 1; }
     }
     if (shot) {

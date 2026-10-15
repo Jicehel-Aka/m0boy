@@ -110,7 +110,13 @@ hit:
 }
 
 #if GG_STREAM
-uint8_t gg_stream_read(uint32_t offset) { return card_sector((int32_t)(offset >> 9))[offset & 511]; }
+uint8_t gg_stream_read(uint32_t offset) {
+#ifdef GG_POOL_SECTORS
+    const unsigned pool = gg_pool_index[offset >> 9];
+    if (pool != 0xff) return gg_pool[pool << 9 | (offset & 511)];
+#endif
+    return card_sector((int32_t)(offset >> 9))[offset & 511];
+}
 #endif
 #if GG_CART_ON_CARD
 uint8_t gg_cart_read(uint32_t offset) { return card_sector(GG_SAVE_TAG | (int32_t)(offset >> 9))[offset & 511]; }
@@ -451,12 +457,24 @@ static void note_dynamic(const z80_decoded_t *d, uint16_t sp, uint16_t pc) {
     if (loc < m->coverage_size) m->entries[loc] = 1;
 }
 
+/* Host profiling: one more execution of the instruction at loc; the
+ * explorer (gg_host --explore) counts the locations never seen before. */
+#ifdef GG_ROM_TRACE
+uint32_t gg_new_locations;
+static inline void gg_cover(uint32_t loc) {
+    if (!machine.coverage[loc]) gg_new_locations++;
+    machine.coverage[loc]++;
+}
+#else
+static inline void gg_cover(uint32_t loc) { machine.coverage[loc]++; }
+#endif
+
 static int interp_one(void) {
     gg_t *m = &machine;
     z80_t *c = &m->cpu;
     if ((int32_t)(m->cyc - m->next_evt) >= 0 && sg_event(c->pc)) return 0;
     uint16_t pc = c->pc;
-    if (m->coverage) { const uint32_t loc = gg_location(pc); if (loc < m->coverage_size) m->coverage[loc]++; }
+    if (m->coverage) { const uint32_t loc = gg_location(pc); if (loc < m->coverage_size) gg_cover(loc); }
     z80_decoded_t d;
     if (!z80_decode(c, &d)) { c->fault = 1; m->stop = 1; return 0; }
     const uint16_t sp = c->sp;
@@ -484,7 +502,7 @@ static int ram_outx(void) {
     if ((op & 0xf7) != 0xa3) return 0;
     if ((int32_t)(m->cyc - m->next_evt) >= 0 && sg_event(pc)) return -1;
     if (c->pc != pc) return 0; /* the event moved pc */
-    if (m->coverage) { const uint32_t loc = gg_location(pc); if (loc < m->coverage_size) m->coverage[loc]++; }
+    if (m->coverage) { const uint32_t loc = gg_location(pc); if (loc < m->coverage_size) gg_cover(loc); }
     c->pc = (uint16_t)(pc + 2);
     c->r = (uint8_t)((c->r & 128) | ((c->r + 2) & 127));
     const uint8_t v = gg_native_read(c, c->hl);

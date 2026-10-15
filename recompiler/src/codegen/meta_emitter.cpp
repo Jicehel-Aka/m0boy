@@ -2133,6 +2133,10 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     if (!ec)
         fs::copy_file(tpl / "host" / "prefer_compiler.cmake", out / "host" / "prefer_compiler.cmake",
                       fs::copy_options::overwrite_existing, ec);
+    /* The explorer shared with the SG-1000 and Game Gear harnesses. */
+    if (!ec)
+        fs::copy_file(tpl.parent_path() / "common" / "host" / "m0_explore.h", out / "host" / "m0_explore.h",
+                      fs::copy_options::overwrite_existing, ec);
     if (ec) {
         error = "cannot copy host harness: " + ec.message();
         return false;

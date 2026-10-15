@@ -127,6 +127,9 @@ int main() {
     PORT->Group[1].OUTSET.reg = 1u << 3;
 #endif
     meta_clock_init();
+#if !META_TARGET_POKITTO && META_CLOCK_DEFAULT != 48
+    meta_clock_set(META_CLOCK_DEFAULT); /* META_OVERCLOCK */
+#endif
     meta_lcd_init();
     meta_lcd_fill(0);
 #if SG_CART_RAM

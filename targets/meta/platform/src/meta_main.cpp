@@ -608,6 +608,9 @@ int main(void) {
     meta_lcd_fill(meta_dmg_palette[0]);
 #endif
     meta_clock_init();
+#if !META_TARGET_POKITTO && META_CLOCK_DEFAULT != 48
+    meta_clock_set(META_CLOCK_DEFAULT); /* META_OVERCLOCK */
+#endif
     meta_audio_init();
 
 #if META_SCALED_MODES

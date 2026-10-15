@@ -174,6 +174,10 @@ void gg_run(void);
 void gg_mapper_write(uint16_t a, uint8_t v);
 #if GG_STREAM
 extern const uint8_t gg_page_index[]; /* flash slot of each page, 0xff: on the card */
+#ifdef GG_POOL_SECTORS /* hot sectors of the pages left on the card, kept in flash */
+extern const uint8_t gg_pool_index[]; /* slot of each ROM sector in gg_pool, 0xff: on the card */
+extern const uint8_t gg_pool[];
+#endif
 uint8_t gg_stream_read(uint32_t offset);
 /* Platform: sector (512 bytes) of the ROM file into dst; 0 on failure. */
 int gg_platform_rom_read(uint32_t sector, uint8_t *dst);
@@ -238,6 +242,10 @@ void gg_vdp_control_write(uint8_t v);
 uint8_t gg_vdp_status_read(void);
 uint8_t gg_vcounter(void);
 void gg_vdp_frame_start(void);       /* new frame: scroll latch, line counter */
+#ifdef GG_ROM_TRACE
+void gg_vdp_restore(void);            /* host explorer: after the machine is copied back */
+extern uint32_t gg_new_locations;     /* locations executed for the first time */
+#endif
 uint32_t gg_vdp_next_event(void);    /* next line interrupt, or 0 */
 void gg_line_counter_catchup(void);
 void gg_render_line(unsigned y, uint16_t *out); /* VDP line y (window) -> GG_WIDTH pixels */

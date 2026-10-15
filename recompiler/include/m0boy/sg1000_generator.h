@@ -24,6 +24,7 @@ struct GenerateStats {
     size_t covered = 0, compiled = 0, speculative = 0, regions = 0, entries = 0;
     bool cart_ram = false;
     size_t streamed_pages = 0; ///< Game Gear pages left on the SD card
+    size_t pool_sectors = 0;   ///< Game Gear sectors of those pages kept in flash
 };
 
 bool generate(const std::filesystem::path& rom, const GenerateOptions&, GenerateStats&, std::string& error);
