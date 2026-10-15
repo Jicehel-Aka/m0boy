@@ -379,7 +379,28 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             for (const char* name : { "z80.c", "z80.h", "z80_ops.h", "z80_fast.h" }) copy_template(shared / "runtime" / name, src / name);
         const std::string host_c = gg ? "gg_host.c" : "sg_host.c", main_cpp = gg ? "gg_main.cpp" : "sg_main.cpp";
         copy_template(tpl / "host" / host_c, o.output / "host" / host_c);
-        write(o.output / "host" / "CMakeLists.txt", replace(read(tpl / "host" / "CMakeLists.txt.in"), "@NAME@", o.name));
+        /* The CMake files are shared by both consoles (targets/common/cmake),
+         * one for the firmware and one for the host harness: only the source
+         * lists and the console's name change. */
+        const auto cmake_tpl = o.meta_templates.parent_path() / "common" / "cmake";
+        const std::string console = gg ? "gg" : "sg1000";
+        const std::string core_sources = gg ? "${SRC}/z80.c ${SRC}/gg.c ${SRC}/gg_psg.c ${SRC}/gg_vdp.c"
+                                            : "${SRC}/z80.c ${SRC}/sg1000.c ${SRC}/sg_audio.c ${SRC}/tms9918.c";
+        const std::string generated_sources = "${SRC}/sg_gen.c ${SRC}/sg_rom.c";
+        const std::string render_asm = gg ? "gg_render_asm.S" : "sg_render_asm.S";
+        const std::string firmware_sources = core_sources + " " + generated_sources + " ${SRC}/" + main_cpp +
+                                             " ${SRC}/" + render_asm;
+        const std::string host_sources = host_c + " " + core_sources + " " + generated_sources;
+        /* The Game Gear streams its ROM: its FAT reader and SD bus join the
+         * Pokitto platform files in PLATFORM_C. */
+        const std::string platform_extra = gg ? " ${SRC}/pokitto_*.S ${SRC}/gg_stream.c ${SRC}/meta_sd.c ${SRC}/meta_fat.c" : "";
+        {
+            std::string host_cmake = read(cmake_tpl / "host.txt.in");
+            host_cmake = replace(host_cmake, "@NAME@", o.name);
+            host_cmake = replace(host_cmake, "@SYSTEM@", console);
+            host_cmake = replace(host_cmake, "@SOURCES@", host_sources);
+            write(o.output / "host" / "CMakeLists.txt", host_cmake);
+        }
 
         if (o.target != TargetId::desktop) {
             copy_template(tpl / "platform" / main_cpp, src / main_cpp);
@@ -435,7 +456,15 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 fs::create_directories(o.output / "toolchain");
                 for (const auto& entry : fs::directory_iterator(o.meta_templates / "toolchain"))
                     if (entry.is_regular_file()) copy_template(entry.path(), o.output / "toolchain" / entry.path().filename());
-                write(o.output / "CMakeLists.txt", replace(replace(read(tpl / "CMakeLists.txt.in"), "@NAME@", o.name), "@COMPILER@", o.compiler));
+                {
+                    std::string firmware_cmake = read(cmake_tpl / "firmware.txt.in");
+                    firmware_cmake = replace(firmware_cmake, "@NAME@", o.name);
+                    firmware_cmake = replace(firmware_cmake, "@SYSTEM@", console);
+                    firmware_cmake = replace(firmware_cmake, "@SOURCES@", firmware_sources);
+                    firmware_cmake = replace(firmware_cmake, "@PLATFORM_EXTRA@", platform_extra);
+                    firmware_cmake = replace(firmware_cmake, "@COMPILER@", o.compiler);
+                    write(o.output / "CMakeLists.txt", firmware_cmake);
+                }
             } else {
                 for (const char* name : { "meta_startup.c", "meta_clock.cpp", "meta_lcd.cpp", "meta_lcd_pack.h", "meta_lcd_queue.h",
                                           "meta_dma.h", "meta_dma.cpp", "meta_spi.c", "meta_hw.h" })
