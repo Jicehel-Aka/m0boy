@@ -541,7 +541,7 @@ static void __attribute__((unused)) boot_error(uint16_t colour) {
     }
 }
 
-#if GBL_ROM_STREAM && !GBL_ROM_PACKED /* packed: the ROM is all in flash */
+#if GBL_ROM_SD
 /* meta_stream_init's errors: 1 card unreadable (FAT16/FAT32 expected), 2
  * GBL_STREAM_NAME not found (root or one folder), 3 the file is too
  * fragmented (copy it again), 4 it is not this firmware's ROM. */
@@ -563,7 +563,7 @@ int main(void) {
      * the card being in SPI mode when HOME brings it back. */
     int card_ok = meta_sd_init();
     __asm__ volatile("" ::"r"(gbl_gen_version)); /* kept in the binary for compile.sh */
-#if GBL_ROM_STREAM && !GBL_ROM_PACKED
+#if GBL_ROM_SD
     /* Before gbl_reset: the lookup borrows the stream cache. */
     int stream_err = meta_stream_init(card_ok);
     if (stream_err) stream_error_screen(stream_err);

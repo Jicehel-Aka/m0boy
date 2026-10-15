@@ -85,6 +85,9 @@
 #ifndef GBL_ROM_PACKED
 #define GBL_ROM_PACKED 0
 #endif
+#ifndef GBL_ROM_SD
+#define GBL_ROM_SD (GBL_ROM_STREAM && !GBL_ROM_PACKED)
+#endif
 
 /* ---- what the build can do: Thumb-1 paths need an ARMv6-M compiler (not
  * the host harness), the assembly interpreter has no coverage or trace

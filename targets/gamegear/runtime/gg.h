@@ -175,7 +175,14 @@ void gg_mapper_write(uint16_t a, uint8_t v);
 #if GG_STREAM
 extern const uint8_t gg_page_index[]; /* flash slot of each page, 0xff: on the card */
 #ifdef GG_POOL_SECTORS /* hot sectors of the pages left on the card, kept in flash */
+#ifdef GG_POOL_WIDE
+extern const uint16_t gg_pool_index[];
+#define GG_POOL_NONE 65535
+#else
 extern const uint8_t gg_pool_index[]; /* slot of each ROM sector in gg_pool, 0xff: on the card */
+#define GG_POOL_NONE 255
+#endif
+extern const uint32_t gg_pool_records[]; /* codec in bits 31:30, blob offset in bits 29:0 */
 extern const uint8_t gg_pool[];
 #endif
 uint8_t gg_stream_read(uint32_t offset);

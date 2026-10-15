@@ -148,7 +148,18 @@ static uint32_t run_hash(void) {
     h = m0_hash_bytes(h, s->psg_volume, sizeof s->psg_volume);
     h = m0_hash_bytes(h, &s->psg_noise, 1);
     h = m0_hash_bytes(h, &s->psg_latch, 1);
-    if (s->cart_ram && s->cart_ram_used) h = m0_hash_bytes(h, s->cart_ram, GG_CART_RAM_SIZE); /* mapped only when enabled */
+    if (s->cart_ram_used) {
+#if GG_CART_ON_CARD
+        /* Hash the logical cartridge RAM, regardless of its backing store.
+         * Reading through the cache also includes dirty, unflushed bytes. */
+        for (uint32_t i = 0; i < GG_CART_RAM_SIZE; ++i) {
+            uint8_t byte = gg_cart_read(i);
+            h = m0_hash_bytes(h, &byte, 1);
+        }
+#else
+        if (s->cart_ram) h = m0_hash_bytes(h, s->cart_ram, GG_CART_RAM_SIZE);
+#endif
+    }
     return m0_hash_bytes(h, image, sizeof image);
 }
 

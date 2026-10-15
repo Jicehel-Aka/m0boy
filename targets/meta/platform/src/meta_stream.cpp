@@ -17,7 +17,7 @@ extern "C" {
 
 uint32_t meta_stream_errors; /* sectors that could not be read */
 
-#if GBL_ROM_STREAM && !GBL_ROM_PACKED
+#if GBL_ROM_SD
 
 #include <string.h>
 

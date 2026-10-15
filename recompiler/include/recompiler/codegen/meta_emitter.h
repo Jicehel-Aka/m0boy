@@ -72,6 +72,7 @@ struct MetaTargetStats {
     size_t resident_chunks = 0;  ///< 4 KiB chunks kept in flash (bank 0 excluded)
     size_t streamed_chunks = 0;  ///< chunks read from the card (or packed)
     bool packed = false;         ///< streamed chunks compressed in flash
+    bool sd = false;             ///< at least some ROM data may come from the card
     size_t packed_bytes = 0;     ///< their compressed size
     size_t packed_raw_bytes = 0; ///< ... and their size before compression
     std::string pack_note;       ///< why --meta-pack was not applied

@@ -33,7 +33,7 @@ int gg_platform_save_write(uint32_t sector, const uint8_t *src) {
 }
 #endif
 
-#if GG_STREAM
+#if GG_STREAM && !defined(GG_ROM_PACKED)
 static meta_extent extents[MAX_EXTENTS];
 static int n_extents;
 #endif
@@ -41,6 +41,10 @@ static int n_extents;
 /* 0 ready; 1 no card, 2 file not found, 3 fragmented, 4 another ROM.  A
  * missing save file only loses the saves. */
 int gg_stream_open(const uint8_t *rom, uint32_t rom_size) {
+#if defined(GG_ROM_PACKED) && !GG_CART_ON_CARD
+    (void)rom; (void)rom_size;
+    return 0;
+#else
     if (!meta_sd_init()) return 1;
     uint8_t *buf = gg_stream_scratch();
 #if GG_CART_ON_CARD
@@ -48,7 +52,7 @@ int gg_stream_open(const uint8_t *rom, uint32_t rom_size) {
     have_save = meta_fat_find(read_sector, buf, GG_SAVE_NAME83, save_extents, 4, &n_save_extents, &save_size) == META_FAT_OK &&
                 save_size >= GG_CART_RAM_SIZE;
 #endif
-#if !GG_STREAM
+#if !GG_STREAM || defined(GG_ROM_PACKED)
     (void)rom; (void)rom_size;
     return 0;
 #else
@@ -61,15 +65,21 @@ int gg_stream_open(const uint8_t *rom, uint32_t rom_size) {
     if (!meta_sd_read(meta_fat_lba(extents, n_extents, 0), buf)) return 1;
     return memcmp(buf, rom, 512) ? 4 : 0;
 #endif
+#endif
 }
 
 #if GG_STREAM
 int gg_platform_rom_read(uint32_t sector, uint8_t *dst) {
+#ifdef GG_ROM_PACKED
+    (void)sector; (void)dst;
+    return 0;
+#else
     const uint32_t lba = meta_fat_lba(extents, n_extents, sector);
     if (lba)
         for (int attempt = 0; attempt < 3; attempt++)
             if (meta_sd_read(lba, dst)) return 1;
     return 0;
+#endif
 }
 #endif
 #endif

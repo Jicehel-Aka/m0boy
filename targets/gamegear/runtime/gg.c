@@ -19,6 +19,9 @@ static inline void gg_native_write(z80_t *c, uint16_t a, uint8_t v) { (void)c; g
 #define Z80_FAST_FETCH(a) gg_read((a))
 #include "z80_fast.h"
 #include <string.h>
+#ifdef GG_POOL_PACKED
+#include "m0_rom_codec.h"
+#endif
 
 gg_t machine;
 uintptr_t sg_stack_limit;
@@ -102,6 +105,14 @@ static uint8_t *card_sector(int32_t tag) {
     } else
 #endif
 #if GG_STREAM
+#ifdef GG_POOL_PACKED
+    if (gg_pool_index[(uint32_t)tag] != GG_POOL_NONE) {
+        const uint32_t record = gg_pool_records[gg_pool_index[(uint32_t)tag]];
+        const uint8_t *src = gg_pool + (record & 0x3fffffffu);
+        if (record >> 30) m0_rom_unpack512(src, card_buf[slot]);
+        else memcpy(card_buf[slot], src, 512);
+    } else
+#endif
     if (!gg_platform_rom_read((uint32_t)tag, card_buf[slot]))
 #endif
         for (unsigned i = 0; i < 512; i++) card_buf[slot][i] = 0xff;
@@ -117,7 +128,14 @@ hit:
 uint8_t gg_stream_read(uint32_t offset) {
 #ifdef GG_POOL_SECTORS
     const unsigned pool = gg_pool_index[offset >> 9];
-    if (pool != 0xff) return gg_pool[pool << 9 | (offset & 511)];
+    if (pool != GG_POOL_NONE) {
+#ifdef GG_POOL_PACKED
+        const uint32_t record = gg_pool_records[pool];
+        if (!(record >> 30)) return gg_pool[(record & 0x3fffffffu) + (offset & 511)];
+#else
+        return gg_pool[pool << 9 | (offset & 511)];
+#endif
+    }
 #endif
     return card_sector((int32_t)(offset >> 9))[offset & 511];
 }

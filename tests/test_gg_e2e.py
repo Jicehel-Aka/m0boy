@@ -113,12 +113,18 @@ int gg_platform_rom_read(uint32_t sector, uint8_t *dst) {
 """
 
 
-def exercise_pool(args, root):
+def exercise_pool(args, root, packed=False):
     """A cartridge larger than the flash: the sectors the profile reads most stay in
     flash (the pool), the others come from the card; same run as the interpreter."""
     root.mkdir()
     rom = root / 'big.gg'
-    rom.write_bytes(fixture().ljust(20 * 0x4000, b'\xa5'))  # 320 KiB, more than the flash holds
+    data = fixture()
+    if packed:
+        data = data.ljust(20 * 0x4000, b'\xa5')
+    else:
+        import random
+        data += random.Random(12345).randbytes(20 * 0x4000 - len(data))
+    rom.write_bytes(data)  # 320 KiB, more than the flash holds raw
     coverage = root / 'big.cov'
     common = ('--frames', 60, '--input', INPUT)
     baseline = run(args.host, rom, *common, '--coverage', coverage)
@@ -128,17 +134,30 @@ def exercise_pool(args, root):
     assert reads
     # Page 3's sectors are not in the profile (they stay on the card); the others are hot.
     kept = [l for l in text.splitlines() if not (l.startswith('# read ') and 0x60 <= int(l.split()[2], 16) < 0x80)]
+    if not packed:
+        # Fill the flash choice with additional cold-sector candidates so
+        # both raw and compressed flash paths survive the raw promotion pass.
+        kept += ['# read %04x 1' % s for s in range(128, 640)]
+        kept += ['%06x 1' % (4 << 16 | pc) for pc in range(0x4000, 0x5000)]
     coverage.write_text('\n'.join(kept) + '\n')
     for target in ('pokitto', 'meta'):
         output = root / target
         log = run(args.recompiler, rom, '--target', target, '--coverage', coverage, '--meta-precise',
                   '--output-prefix', 'big', '-o', output)
-        assert re.search(r'ROM streaming: +\d+ pages of 16 KiB read from the SD card, \d+ hot sectors', log), log
+        if packed:
+            assert '(whole ROM in flash)' in log and 'ROM streaming:' not in log, log
+        else:
+            assert re.search(r'ROM streaming: +\d+ pages of 16 KiB read from the SD card, \d+ hot sectors', log), log
         config = (output / 'src/sg_config.h').read_text()
         pool = int(re.search(r'#define GG_POOL_SECTORS (\d+)', config)[1])
-        assert 0 < pool <= 254
+        assert 0 < pool <= (640 if packed else 254)
+        assert ('#define GG_ROM_PACKED 1' in config) == packed
         data = (output / 'src/sg_rom.c').read_text()
-        assert 'gg_pool_index[640]' in data and 'gg_pool[%d]' % (pool * 512) in data
+        assert 'gg_pool_index[640]' in data and '#define GG_POOL_PACKED 1' in config
+        records = [int(n) for n in re.findall(r'(\d+)u', re.search(r'gg_pool_records\[\d+\] = \{(.*?)\};', data, re.S)[1])]
+        assert len(records) == pool + 1 and any(r >> 30 == 1 for r in records[:-1])
+        assert all((a & 0x3fffffff) < (b & 0x3fffffff) for a, b in zip(records, records[1:]))
+        assert (records[-1] & 0x3fffffff) < pool * 512  # genuinely packed, not just a flag
         src = output / 'src'
         (root / (target + '_stub.c')).write_text('#define ROM_FILE "%s"\n' % rom + STUB)
         exe = root / (target + '_host')
@@ -149,8 +168,41 @@ def exercise_pool(args, root):
         interpreted = run(exe, *common, '--interp')
         assert fingerprint(native) == fingerprint(interpreted) == fingerprint(baseline)
         assert int(re.search(r'compiled=(\d+)', native)[1]) > 0
-        assert (root / 'big.gg.read').exists()  # some sectors do come from the card
+        assert (root / 'big.gg.read').exists() != packed
+        if packed and target == 'pokitto' and shutil.which('arm-none-eabi-gcc'):
+            build = output / 'build'
+            run('cmake', '-G', 'Ninja', '-S', output, '-B', build,
+                '-DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake')
+            run('ninja', '-C', build)
+            assert (build / 'firmware.bin').stat().st_size < 0x39000
         print('gg/%s: %d-sector pool and the card give the interpreter\'s run' % (target, pool))
+
+
+def exercise_cart_storage(args, root):
+    """Card-backed cartridge RAM participates in the same logical run hash."""
+    root.mkdir()
+    rom = root / 'cart.gg'
+    data = bytearray(fixture())
+    # Replace initial DI; IM 1 with a bootstrap in unused bank-zero space.
+    assert data[:3] == bytes.fromhex('f3 ed 56')
+    data[:3] = bytes.fromhex('c3 00 3e')
+    bootstrap = bytes.fromhex('f3 3e 08 32 fc ff 3e 5a 32 00 80 af 32 fc ff ed 56 c3 03 00')
+    data[0x3e00:0x3e00 + len(bootstrap)] = bootstrap
+    rom.write_bytes(data)
+    coverage = root / 'cart.cov'
+    common = ('--frames', 60)
+    reference = fingerprint(run(args.host, rom, *common, '--coverage', coverage))
+    assert '# cart-ram' in coverage.read_text()
+    for target in ('meta', 'pokitto'):
+        project = root / target
+        run(args.recompiler, rom, '--target', target, '--coverage', coverage, '--meta-precise',
+            '--output-prefix', 'cart', '-o', project)
+        assert '#define GG_CART_SD 1' in (project / 'src/sg_config.h').read_text()
+        build = project / 'host/build'
+        run('cmake', '-G', 'Ninja', '-S', project / 'host', '-B', build)
+        run('ninja', '-C', build)
+        for flags in ([], ['--interp']):
+            assert fingerprint(run(build / 'cart_host', *common, *flags)) == reference
 
 
 def main():
@@ -163,6 +215,8 @@ def main():
         for system in ('gg', 'sms'):
             exercise(args, root / system, system)
         exercise_pool(args, root / 'pool')
+        exercise_pool(args, root / 'packed', packed=True)
+        exercise_cart_storage(args, root / 'cart')
 
 
 if __name__ == '__main__':

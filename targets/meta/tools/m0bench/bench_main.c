@@ -196,7 +196,7 @@ void gbl_platform_vblank(void) {
 #endif
     }
 #endif
-#if defined(BENCH_SD_PER_FRAME) && GBL_ROM_STREAM && !GBL_ROM_PACKED
+#if defined(BENCH_SD_PER_FRAME) && GBL_ROM_SD
     /* SD sectors read so far, at every VBlank, in the stand-in SD region
      * (m0_estimate.py --dump 0x10300000:<4 * frames>): how card reads
      * cluster, for stream cache sizes (their time is not modelled). */

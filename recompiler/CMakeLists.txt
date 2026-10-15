@@ -1,6 +1,10 @@
 # Source CPU, source system and output backend are independent build layers.
 add_library(m0boy_common INTERFACE)
 target_include_directories(m0boy_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+find_package(ZLIB REQUIRED)
+add_library(m0boy_rom_storage STATIC src/rom_storage.cpp)
+target_link_libraries(m0boy_rom_storage PUBLIC m0boy_common ZLIB::ZLIB)
+set_target_properties(m0boy_rom_storage PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # No Nintendo header or mapper dependency in the CPU decoder.
 add_library(m0boy_cpu_sm83 STATIC src/cpu/sm83/decoder.cpp)
@@ -36,7 +40,7 @@ add_library(gbrecomp_core STATIC
     src/codegen/meta_emitter.cpp
 )
 
-target_link_libraries(gbrecomp_core PUBLIC m0boy_frontends m0boy_cpu_sm83 m0boy_cpu_z80 m0boy_z80_runtime)
+target_link_libraries(gbrecomp_core PUBLIC m0boy_frontends m0boy_cpu_sm83 m0boy_cpu_z80 m0boy_z80_runtime m0boy_rom_storage)
 
 target_include_directories(gbrecomp_core
     PUBLIC

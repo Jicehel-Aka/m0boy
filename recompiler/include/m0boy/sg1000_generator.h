@@ -25,6 +25,8 @@ struct GenerateStats {
     bool cart_ram = false;
     size_t streamed_pages = 0; ///< Game Gear pages left on the SD card
     size_t pool_sectors = 0;   ///< Game Gear sectors of those pages kept in flash
+    bool packed = false;      ///< all ROM data in flash, no ROM file required
+    size_t packed_sectors = 0, pool_bytes = 0;
 };
 
 bool generate(const std::filesystem::path& rom, const GenerateOptions&, GenerateStats&, std::string& error);

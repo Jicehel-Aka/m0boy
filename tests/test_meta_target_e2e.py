@@ -456,6 +456,36 @@ def main() -> int:
                           "--frames", str(FRAMES), "--wram-hash-bytes", str(RESULT_BYTES)])
         results["packed"] = parse(packed_out)
         pm = re.search(r"rom_stream sectors_read (\d+)", packed_out)
+        # A large, mostly incompressible cartridge cannot fit wholly packed.
+        # It must combine raw chunks, packed flash and actual SD reads.
+        hybrid_rom = tmp / "hybrid.gb"
+        import random
+        data = bytearray(rom.read_bytes())
+        data.extend(random.Random(12345).randbytes(0x80000 - len(data)))
+        data[0x148] = 4
+        data[0x14D] = (-sum(data[0x134:0x14D]) - 25) & 0xff
+        hybrid_rom.write_bytes(data)
+        hybrid_prof = tmp / "hybrid.prof"
+        lines = [l for l in prof.read_text().splitlines()
+                 if not l.strip() or l.startswith('#') or int(l.split()[0], 16) // 16 != 15]
+        lines += ['%x 1' % (c * 16) for c in range(16, 128)]
+        hybrid_prof.write_text('\n'.join(lines) + '\n')
+        hybrid = tmp / "hybrid"
+        run([args.gbrecomp, str(hybrid_rom), '--target', 'meta', '--coverage', str(cov), '--meta-pack',
+             '--meta-precise', '--rom-profile', str(hybrid_prof), '--meta-rom-resident-kib', '4', '-o', str(hybrid)] + common)
+        config = (hybrid / 'src/gbl_config.h').read_text()
+        assert '#define GBL_ROM_SD 1' in config and '#define GBL_ROM_PACKED 1' in config
+        hybrid_bin = str(build_host(hybrid, 'build', '-DGBL_STREAM_SECTORS=2') / 'e2e_host')
+        for flags in ([], ['--interp']):
+            out = run([hybrid_bin, '--frames', str(FRAMES), '--wram-hash-bytes', str(RESULT_BYTES)] + flags)
+            result = parse(out)
+            assert result['run_hash'] == ref['run_hash'] and result['wram_hash'] == ref['wram_hash']
+            sources = re.search(r'rom_sources sd_reads (\d+) flash_unpacked (\d+)', out)
+            assert sources and int(sources[1]) and int(sources[2]), out
+        for stack in (0, 64, 1024):
+            result = parse(run([hybrid_bin, '--frames', str(FRAMES), '--stack-bytes', str(stack),
+                                '--wram-hash-bytes', str(RESULT_BYTES)], timeout=60))
+            assert result['run_hash'] == ref['run_hash'] and result['wram_hash'] == ref['wram_hash']
         # C stack exhaustion: compiled regions unwind and the dispatcher
         # resumes them. Small budgets (bytes) include the ones where a
         # region is entered with too little room for its own guard, which

@@ -67,6 +67,7 @@ static void stream_reset(void) {
 }
 
 #if GBL_ROM_PACKED
+#include "m0_rom_codec.h"
 /* Compressed flash source: sector k of the ROM is gbl_rom_packed
  * [off[k], off[k + 1]), LZSS-coded, or stored as is when that is 512
  * bytes.  Only sectors outside bank 0 and the resident chunks are used. */
@@ -85,36 +86,17 @@ void gbl_unpack512_asm(const uint8_t *src, uint8_t *dst);
 #define unpack512 gbl_unpack512_asm
 #else
 static void unpack512(const uint8_t *src, uint8_t *dst) {
-    uint8_t *d = dst, *end = dst + 512;
-    uint32_t bits = 0; /* next bit in bit 31 */
-    int32_t count = 0;
-    while (d < end) {
-        while (count < 13) {
-            bits |= (uint32_t)*src++ << (24 - count);
-            count += 8;
-        }
-        uint32_t flag = bits >> 31;
-        bits <<= 1;
-        if (flag) {
-            *d++ = (uint8_t)(bits >> 24);
-            bits <<= 8;
-            count -= 9;
-        } else {
-            uint32_t off = (bits >> 24) + 1u, len = ((bits >> 20) & 15u) + 2u;
-            bits <<= 12;
-            count -= 13;
-            const uint8_t *s = d - off;
-            do { *d++ = *s++; } while (--len && d < end);
-        }
-    }
+    m0_rom_unpack512_c(src, dst);
 }
 #endif
 
-static void rom_unpack(uint32_t sector, uint8_t *dst) {
+static int rom_unpack(uint32_t sector, uint8_t *dst) {
     uint32_t a = gbl_rom_packed_off[sector], n = gbl_rom_packed_off[sector + 1] - a;
+    if (!n) return 0; /* a hybrid build leaves this sector on the card */
     if (n == 512) memcpy(dst, gbl_rom_packed + a, 512);
     else unpack512(gbl_rom_packed + a, dst);
     gbl_stream_unpacked++;
+    return 1;
 }
 uint32_t gbl_stream_unpacked;
 #endif
@@ -128,9 +110,12 @@ static uint8_t stream_read(uint32_t off) {
         if (stream_age[i] < stream_age[slot]) slot = i;
     }
 #if GBL_ROM_PACKED
-    rom_unpack((uint32_t)sec, stream_buf[slot]);
-#else
+    if (!rom_unpack((uint32_t)sec, stream_buf[slot]))
+#endif
+#if GBL_ROM_SD
     if (!gbl_platform_rom_read((uint32_t)sec, stream_buf[slot]))
+        for (int i = 0; i < 512; i++) stream_buf[slot][i] = 0xFF;
+#elif GBL_ROM_PACKED
         for (int i = 0; i < 512; i++) stream_buf[slot][i] = 0xFF;
 #endif
     stream_tag[slot] = sec;

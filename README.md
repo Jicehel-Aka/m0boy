@@ -26,7 +26,7 @@ recompiler and adds everything needed to run on chips with 32 KiB of RAM,
 | Memory | 32 KiB RAM, 240 KiB flash for the firmware | 32 + 2 + 2 KiB RAM, 228 KiB flash below the loader |
 | Screen | 160×128: the 144 Game Boy lines blended into 128 | 220×176: picture 1:1, or enlarged to 200×176 |
 | Firmware build | PlatformIO | `make` with arm-none-eabi-gcc |
-| Version | 0.10.8 | 0.10.7 |
+| Version | 0.10.11 | 0.10.9 |
 | Status | Games run on the console | Tested in an emulator only. A first tester on a real Pokitto reports a picture flipped vertically (rows reversed, columns in order), consistent with the panel's SS bit (R01) being lost at init; 0.10.1 lengthens the post-reset wait and the register write strobe and writes R01 again, still to be checked on the device |
 
 ## SG-1000
@@ -76,9 +76,11 @@ banked code:
   line interrupts, 12-bit CRAM) drawn 1:1 in the 160×144 window, background
   tiles in Thumb-1 assembly; Sega PSG (mono).
 - **Large ROMs and saves**: a ROM that does not fit in flash with its code
-  keeps in flash page 0, the instructions it compiles and the 512-byte ROM
+  first tries independently LZSS-packed sectors in flash, promoting the hot
+  sectors back to direct raw reads with the flash left over. If that does not
+  fit, it keeps in flash page 0, the instructions it compiles and the 512-byte ROM
   sectors that, from the recorded play sessions (executions and sector reads
-  per frame), save the most cycles per byte; it reads the others from a copy
+  per frame), save the most cycles per byte, raw or LZSS-packed; it reads the others from a raw copy
   on the SD card. Battery-backed cartridge RAM lives in a `.SAV` file on the
   card. Both share a small sector cache (four sectors on the Pokitto Game Gear, two
   elsewhere): the console's own 24 KiB of video and work RAM leave little
@@ -94,6 +96,21 @@ banked code:
   sessions, without the execution counts or the explorations, are redone. The
   sectors the interpreter fetches the code of, for what is not compiled, count
   like the sectors read as data.
+  The encoder, C/Thumb-1 LZSS decoders and hot-block promotion policy are
+  shared with Game Boy (`recompiler/src/rom_storage.cpp`,
+  `targets/common/runtime/m0_rom_*`). All-raw storage takes precedence when
+  the whole ROM and requested code fit. Compression decisions use estimated
+  costs, not device measurements. DEFLATE remains benchmark-only for now.
+  Storage validation for 0.10.11: 928 local GG/SMS cartridges matched the
+  reference and generated interpreters over 120 frames (seed 201); 193
+  remaining checks were blocked before comparison by generation/build or
+  storage failures. Six selected GG games also matched over 2000 frames.
+  This is not a whole-collection compatibility claim or a hardware test.
+
+**META hardware issue reported with earlier firmware:** streamed games show
+a blue screen and buttons do not work in other games. The SPI driver is
+under investigation; 0.10.11 is a prerelease until this is addressed. Emulator
+success does not validate electrical bus timing on a console.
 - **Checked**: with `--meta-precise`, the recompiled code reproduces the
   interpreter exactly on all 225 cartridges of a Game Gear collection.
 - **Speed**, measured in gm0 at 48 MHz on the games tried: full speed on
@@ -235,7 +252,8 @@ successful builds, not games checked one by one.
 
 ## Quick start
 
-You need CMake 3.20 or newer, Ninja, gcc or clang, Python 3, and
+You need CMake 3.20 or newer, Ninja, gcc or clang, Python 3, zlib development
+headers/library (host encoder only), and
 [PlatformIO](https://platformio.org/) for the META. The Pokitto only needs
 `arm-none-eabi-gcc` (from PATH, otherwise PlatformIO's).
 
@@ -347,7 +365,7 @@ were then removed from the tree; they remain in the history and in the
 | `targets/meta/host/`, `targets/meta/tools/` | host harness, cycle estimator, font tools |
 | `targets/sg1000/` | SG-1000 runtime (TMS9918A, SN76489, fallback Z80 interpreter), console frontend, host harness |
 | `targets/gamegear/` | Game Gear/Master System runtime (mode 4 VDP, Sega PSG, paging, saves), console frontend, host harness |
-| `targets/common/` | what the Sega backends share: CMake templates, host helpers, play explorer, frontend skeleton, `sg_gen.h`, `sg_psg.h` |
+| `targets/common/` | shared ROM codecs/benchmarks and play explorer (GB and Sega); Sega CMake templates, host helpers, frontend skeleton, `sg_gen.h`, `sg_psg.h` |
 | `compile.sh`, `tools/meta-compiler/` | batch conversion |
 | `tools/gb-emu/` | gamebuino-emulator fork |
 | `tests/`, `targets/meta/tests/` | tests |

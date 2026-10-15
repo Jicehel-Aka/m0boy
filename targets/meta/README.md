@@ -366,14 +366,24 @@ reads from flash instead of the SD card (`GBL_ROM_PACKED`):
 - Every other 512-byte sector is LZSS-compressed in flash (Heatshrink-style:
   a flag bit per token, 8-bit offset, 4-bit length), or stored as is when
   compression does not shrink it.
+  The encoder now uses an optimal bit-cost parse, retaining exactly the same
+  format (8-bit distance, 4-bit length). It is shared with GG/SMS in
+  `recompiler/src/rom_storage.cpp`; the reference and Thumb-1 decoders live
+  in `targets/common/runtime/m0_rom_codec.h` and `m0_rom_lzss.inc`.
 - A cache miss decodes the sector into the same 512-byte slot the SD
   reader would fill. It needs no card, no `.GB` file and no extra RAM:
   back-references read the sector being decoded.
 - `gbl_unpack512_asm` (Thumb-1, in SRAM) decodes on Cortex-M0+
   (`GBL_UNPACK_ASM`); the C version in `gbl_core.c` is the reference.
-- When the compressed ROM leaves less than 16 KiB for code, the generator
-  falls back to SD streaming (256 KiB or more) or to a plain build, and
-  says so.
+- Before packing, if the whole raw ROM and requested code fit the estimated
+  flash budget, a plain build is preferred (explicit streaming/residency
+  requests override this). When the whole compressed ROM does not fit and
+  read profiles are available, a hybrid build keeps hot chunks raw or
+  compressed in flash and reads the rest from SD (`GBL_ROM_PACKED` together
+  with `GBL_ROM_SD`). Otherwise it falls back to SD or a plain build.
+  Hot raw/packed choices account for their actual byte costs, not an average
+  compression ratio. All of these are planning estimates; the final linker
+  report is still the authority on fit.
 - The raw part is chosen from the data-read profiles (`--rom-profile`).
   Without a profile nothing but bank 0 stays raw and every cache miss
   decodes. `compile.sh` therefore replays the recorded inputs once with the
@@ -403,8 +413,45 @@ Measured compression (compressed size / original, 512-byte blocks,
 Heatshrink-style 256-byte window): SML 68%, Batman 63%, R.C. Pro-Am 78%,
 Tetris 73%, Mystic Quest 78%. FastLZ does 5 to 10 points worse on these
 ROMs; zlib does 10 points better, but it needs Huffman tables in RAM.
-Compressing ROM data meant for the SD card would not pay: decoding costs
-more than the transfer it saves.
+The SD remains raw: CMD17 transfers a physical 512-byte sector even when
+the logical payload is smaller; tightly packed variable-length blocks may
+straddle sectors and require two reads. No SD compression speedup has been
+demonstrated.
+
+### Shared storage and codec benchmarks (2026-10-15)
+
+GG/SMS now use the same encoders and C/Thumb-1 LZSS decoders as GB. They
+prefer all-raw flash, then all-flash raw/LZSS with hot sectors promoted to
+raw, then a raw/LZSS flash pool with raw SD fallback. Unused flash is used
+to remove decoding from hot reads; a raw-only pool retains its compact
+original index and has no decoder/record overhead. Native code remains
+directly executable: only source-ROM bytes are packed.
+
+An independent raw-DEFLATE decoder (stored, fixed and dynamic Huffman
+blocks, bounded reads/writes) is available in the common codec header for
+testing. Its 7/5-bit prefix tables reuse code-length scratch; work space is
+**1032 bytes**, not a 32 KiB history window. It is **not selected in generated
+firmwares yet**. On six GG hot-sector pools, the production-encoder M0+
+microbenchmark estimates **11.7–12.7 kcycles/sector** for LZSS Thumb-1 versus
+**66.7–76.1 kcycles/sector** for DEFLATE, plus about 3.4 KiB more decoder
+code and 1032 bytes of working RAM (as opposed to the LZSS decoder's SRAM
+instructions). These are unweighted compressed-sector microbenchmarks,
+not whole-game timings or device measurements. The assumed SD miss cost
+in the GG allocator is 50 kcycles, so DEFLATE is not an automatic hot-ROM
+candidate under that model.
+
+To reproduce (requires the `m0bench` Python dependencies and the ARM compiler):
+
+```sh
+python targets/common/tools/rom_codec_bench.py game.gg --output out/codec-bench
+```
+
+The script builds its host preparation tool with CMake/Ninja and the actual
+common C/Thumb-1 decoders for Cortex-M0+. It checks **every decoded byte**
+and output canaries in Unicorn, reports estimated cycles, static RAM and
+observed stack high-water, and leaves ROM-derived files only in the output
+directory. The host encoder now requires zlib development headers/library;
+no zlib library is linked into firmware.
 
 ## Pokitto (`--target pokitto`)
 

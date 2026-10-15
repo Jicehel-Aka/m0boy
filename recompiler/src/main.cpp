@@ -1893,7 +1893,7 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
                           " blocks, " + std::to_string(stats.thumb_blocks) + " Thumb blocks\n" : "")
               << "  wait loops:         " << stats.spin_loops << " polling, " << stats.counted_loops
               << " delay (fast-forwarded)\n"
-              << (stats.stream && !stats.packed
+              << (stats.stream && stats.sd
                       ? "  ROM streaming:      " + std::to_string(stats.resident_chunks * 4) +
                             " KiB of banks 1+ in flash, " + std::to_string(stats.streamed_chunks * 4) +
                             " KiB read from the SD card as " + stats.stream_file + "\n"
@@ -2287,8 +2287,11 @@ int main(int argc, char* argv[]) {
                   << (stats.cart_ram ? (gamegear ? (target == "desktop" ? "  cartridge RAM:      32 KiB, 16 KiB window at 8000-BFFF\n"
                                                                             : "  cartridge RAM:      32 KiB in the save file on the SD card\n")
                                                  : "  cartridge RAM:      8 KiB at 8000-BFFF\n") : "")
-                  << (stats.streamed_pages ? "  ROM streaming:      " + std::to_string(stats.streamed_pages) + " pages of 16 KiB read from the SD card"
+                  << (stats.streamed_pages && !stats.packed ? "  ROM streaming:      " + std::to_string(stats.streamed_pages) + " pages of 16 KiB read from the SD card"
                                                  + (stats.pool_sectors ? ", " + std::to_string(stats.pool_sectors) + " hot sectors of them kept in flash" : std::string()) + "\n" : std::string())
+                  << (stats.pool_sectors ? "  ROM flash pool:     " + std::to_string(stats.pool_sectors) + " sectors, " +
+                       std::to_string(stats.packed_sectors) + " LZSS, " + std::to_string(stats.pool_bytes) + " bytes" +
+                       (stats.packed ? " (whole ROM in flash)\n" : " (SD fallback raw)\n") : std::string())
                   << (meta_precise ? "  mode:               precise (sync per instruction)\n" : "");
         return 0;
     }

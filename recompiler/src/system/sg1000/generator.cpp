@@ -2,6 +2,7 @@
  * cartridge image, the runtime and, for META/Pokitto, the console drivers
  * shared with the Game Boy frontend. */
 #include "m0boy/sg1000_generator.h"
+#include "m0boy/rom_storage.h"
 #include "m0boy/sg1000.h"
 #include "m0boy/sg1000_emitter.h"
 #include <algorithm>
@@ -221,14 +222,51 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
          * pages most read as data fill the rest. */
         std::vector<int> page_index; /* flash slot of each page, -1: card */
         std::vector<size_t> pool;    /* ROM sectors kept in flash outside whole pages */
+        std::vector<rom::Block> pool_blocks;
+        std::vector<rom::Block> packed_rom;
+        bool packed_all = false;
         const size_t pages = rom_size / 0x4000;
         const size_t per_instruction = o.bytes_per_instruction ? o.bytes_per_instruction
                                        : gg ? gg_bytes_per_instruction : bytes_per_instruction;
         if (o.target != TargetId::desktop) {
             const size_t area = o.target == TargetId::pokitto ? 0x39000 : 240 * 1024;
             const size_t free = area > runtime_bytes ? area - runtime_bytes : 0;
-            const size_t code_need = std::min(hot.size() * per_instruction + 16 * 1024, free / 2);
-            if (gg && rom_size + code_need > free && profile.rated) {
+            const size_t all_code = o.code_budget_bytes ? o.code_budget_bytes : hot.size() * per_instruction + 16 * 1024;
+            const size_t code_need = std::min(all_code, free / 2);
+            const bool raw_fits = pages == 1 || rom::fits_raw(area, runtime_bytes, rom_size, all_code);
+            /* Like GB --meta-pack: try all cold ROM in flash before requiring
+             * a card. Every sector keeps its independent raw/LZSS choice. */
+            if (gg && !raw_fits) {
+                size_t packed_bytes = 0;
+                packed_rom.resize(pages * 32);
+                for (size_t sector = 32; sector < pages * 32; ++sector) {
+                    packed_rom[sector] = rom::encode(rom.data() + sector * 512, 512);
+                    packed_bytes += packed_rom[sector].bytes.size();
+                }
+                const size_t metadata = pages * 32 * 2 + (pages * 32 - 32 + 1) * 4 + 2;
+                if (rom::fits_raw(area, runtime_bytes + rom::lzss_decoder_bytes + metadata + 0x4000,
+                                  packed_bytes, all_code)) {
+                    std::vector<size_t> sizes(pages * 32, 512);
+                    std::vector<double> weights(pages * 32, 0);
+                    for (size_t s = 32; s < sizes.size(); ++s) sizes[s] = packed_rom[s].bytes.size();
+                    for (const auto& [s, count] : reads) if (s < weights.size()) weights[s] = static_cast<double>(count);
+                    const size_t extra = free - rom::lzss_decoder_bytes - metadata - 0x4000 - packed_bytes - all_code;
+                    for (size_t s : rom::raw_units(sizes, weights, 1, 32, rom_size, extra)) {
+                        auto& block = packed_rom[s];
+                        packed_bytes += 512 - block.bytes.size();
+                        block = {rom::Codec::raw, {rom.data() + s * 512, rom.data() + (s + 1) * 512}};
+                    }
+                    packed_all = true;
+                    page_index.assign(pages, -1); page_index[0] = 0;
+                    for (size_t sector = 32; sector < pages * 32; ++sector) {
+                        pool.push_back(sector);
+                        pool_blocks.push_back(std::move(packed_rom[sector]));
+                    }
+                    budget = free - 0x4000 - packed_bytes - metadata - rom::lzss_decoder_bytes;
+                }
+            }
+            if (packed_all) { /* already planned above */ }
+            else if (gg && !raw_fits && profile.rated) {
                 /* Page 0 stays; the rest of the flash goes to what saves the most
                  * cycles per byte, from the profile's rates: an instruction
                  * compiled, or a ROM sector kept (the pool).  A sector is read
@@ -243,27 +281,58 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                     return offset / 512 < pages * 32 ? static_cast<int64_t>(offset / 512) : -1;
                 };
                 std::vector<double> data_rate(pages * 32, 0.0), code_rate(pages * 32, 0.0);
+                auto& packed = packed_rom;
+                std::vector<bool> compressed(pages * 32, false);
+                size_t pool_bytes = 0;
                 for (const auto& [sector, rate] : profile.sector_rate) if (sector < data_rate.size()) data_rate[sector] = std::min(rate, 1.0);
                 size_t compiled = 0;
                 for (int pass = 0; pass < 3; pass++) {
-                    struct Candidate { double density; bool sector; size_t id; };
+                    struct Candidate { double density; bool sector; size_t id; bool packed = false; };
                     std::vector<Candidate> candidates;
                     for (size_t k = 0; k < hot.size(); k++)
                         candidates.push_back({ profile.rate.at(hot[k]) * gg_interpreted_cycles / static_cast<double>(per_instruction), false, k });
                     for (size_t sector = 32; sector < data_rate.size(); sector++) {
                         const double rate = 1.0 - (1.0 - data_rate[sector]) * (1.0 - code_rate[sector]);
-                        if (rate > 0) candidates.push_back({ rate * gg_sector_miss_cycles / 512.0, true, sector });
+                        if (rate > 0) {
+                            candidates.push_back({ rom::density(rate, gg_sector_miss_cycles, rom::Codec::raw, 516), true, sector });
+                            if (packed[sector].codec != rom::Codec::raw)
+                                candidates.push_back({ rom::density(rate, gg_sector_miss_cycles, packed[sector].codec,
+                                                                   packed[sector].bytes.size() + 4), true, sector, true });
+                        }
                     }
                     std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) { return a.density > b.density; });
                     size_t room = free > 0x4000 ? free - 0x4000 : 0;
                     pool.clear();
+                    std::vector<bool> chosen(pages * 32, false);
+                    std::fill(compressed.begin(), compressed.end(), false);
+                    bool decoder = false;
                     compiled = 0;
                     for (const auto& c : candidates) {
                         if (c.density <= 0) break;
                         if (c.sector) {
-                            const size_t cost = 512 + (pool.empty() ? index_bytes : 0);
-                            if (pool.size() < gg_pool_max && room >= cost + per_instruction) { pool.push_back(c.id); room -= cost; }
+                            if (chosen[c.id]) continue;
+                            const size_t cost = (c.packed ? packed[c.id].bytes.size() : 512) + 4 +
+                                                (pool.empty() ? index_bytes + 6 : 0) +
+                                                (c.packed && !decoder ? rom::lzss_decoder_bytes : 0);
+                            if (pool.size() < gg_pool_max && room >= cost + per_instruction) {
+                                pool.push_back(c.id); room -= cost; chosen[c.id] = true;
+                                compressed[c.id] = c.packed;
+                                decoder = decoder || c.packed;
+                            }
                         } else if (room >= per_instruction) { room -= per_instruction; compiled++; }
+                    }
+                    /* Packing is not an end in itself: spend any otherwise
+                     * unused flash making the hottest selected blocks direct
+                     * reads again, without evicting native code or ROM. */
+                    std::vector<size_t> selected_sizes(packed.size(), 512);
+                    std::vector<double> selected_weights(packed.size(), 0);
+                    for (size_t sector : pool) if (compressed[sector]) {
+                        selected_sizes[sector] = packed[sector].bytes.size();
+                        selected_weights[sector] = data_rate[sector] + code_rate[sector];
+                    }
+                    for (size_t sector : rom::raw_units(selected_sizes, selected_weights, 1, 32, pool.size() * 512, room)) {
+                        compressed[sector] = false;
+                        room -= 512 - packed[sector].bytes.size();
                     }
                     /* the instructions not compiled run in the interpreter, which
                      * fetches their bytes: the odds that a frame touches a sector */
@@ -273,13 +342,17 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                         if (sector >= 32) miss[static_cast<size_t>(sector)] *= 1.0 - std::min(profile.rate.at(hot[k]), 1.0);
                     }
                     for (size_t sector = 0; sector < code_rate.size(); sector++) code_rate[sector] = 1.0 - miss[sector];
+                    pool_bytes = free - 0x4000 - room - compiled * per_instruction;
                 }
                 page_index.assign(pages, -1);
                 page_index[0] = 0;
                 std::sort(pool.begin(), pool.end());
-                size_t pool_bytes = pool.size() * 512 + (pool.empty() ? 0 : index_bytes);
+                for (size_t sector : pool) {
+                    if (compressed[sector]) pool_blocks.push_back(std::move(packed[sector]));
+                    else pool_blocks.push_back({rom::Codec::raw, {rom.data() + sector * 512, rom.data() + (sector + 1) * 512}});
+                }
                 budget = free - 0x4000 - pool_bytes;
-            } else if (gg && rom_size + code_need > free) {
+            } else if (gg && !raw_fits) {
                 /* a profile without rates (older runs): the code takes at most
                  * half of the flash, the pages most read as data fill the rest */
                 struct Page { uint64_t score; size_t page; };
@@ -298,8 +371,11 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 for (size_t k = 0; k + 1 < resident && k < score.size(); k++) page_index[score[k].page] = next++;
                 budget = free - static_cast<size_t>(next) * 0x4000;
             } else budget = free > rom_size ? free - rom_size : 0;
+            if (!pool.empty() && std::none_of(pool_blocks.begin(), pool_blocks.end(), [](const auto& b) { return b.codec != rom::Codec::raw; }))
+                budget = free - 0x4000 - pool.size() * 512 - pages * 32;
         }
-        if (o.code_budget_bytes) budget = o.code_budget_bytes;
+        const bool pool_packed = std::any_of(pool_blocks.begin(), pool_blocks.end(), [](const auto& b) { return b.codec != rom::Codec::raw; });
+        if (o.code_budget_bytes) budget = o.target == TargetId::desktop ? o.code_budget_bytes : std::min(budget, o.code_budget_bytes);
         const bool streamed = !page_index.empty();
         if (budget) eo.max_instructions = budget / per_instruction;
         EmitStats es;
@@ -334,8 +410,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         if (gg && (streamed || cart_on_card) && o.target == TargetId::pokitto && !o.mastersystem)
             config << "#define GG_STREAM_SECTORS 4 /* the whole USB RAM bank */\n";
         if (gg) {
-            if (streamed && !pool.empty()) config << "#define GG_POOL_SECTORS " << pool.size() << " /* hot ROM sectors in flash */\n";
-            if (streamed) {
+            if (streamed && !pool.empty()) config << "#define GG_POOL_SECTORS " << pool.size() << " /* raw/LZSS ROM sectors in flash */\n";
+            if (pool_packed) config << "#define GG_POOL_PACKED 1\n";
+            if (packed_all) config << "#define GG_ROM_PACKED 1 /* no ROM file required */\n#define GG_POOL_WIDE 1\n";
+            if (streamed && !packed_all) {
                 const std::string ext = o.mastersystem ? "SMS" : "GG";
                 config << "#define GG_STREAM_NAME \"ROM." << ext << "\"\n#define GG_STREAM_NAME83 \"ROM     "
                        << (o.mastersystem ? std::string("SMS") : std::string("GG ")) << "\"\n";
@@ -364,18 +442,36 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             for (size_t p = 0; p < pages; p++) data << (p ? "," : "") << (page_index[p] < 0 ? 255 : page_index[p]);
             data << "};\n";
             if (!pool.empty()) {
-                std::vector<int> slot(pages * 32, 255);
+                std::vector<int> slot(pages * 32, packed_all ? 65535 : 255);
                 for (size_t k = 0; k < pool.size(); k++) slot[pool[k]] = static_cast<int>(k);
-                data << "const uint8_t gg_pool_index[" << slot.size() << "] = {";
+                data << "const " << (packed_all ? "uint16_t" : "uint8_t") << " gg_pool_index[" << slot.size() << "] = {";
                 for (size_t k = 0; k < slot.size(); k++) data << (k % 32 ? "" : "\n") << slot[k] << ",";
-                data << "\n};\nconst uint8_t gg_pool[" << pool.size() * 512 << "] = {";
+                std::vector<uint8_t> blob;
+                std::vector<uint32_t> records;
+                for (const auto& block : pool_blocks) {
+                    records.push_back(static_cast<uint32_t>(blob.size()) | (static_cast<uint32_t>(block.codec) << 30));
+                    blob.insert(blob.end(), block.bytes.begin(), block.bytes.end());
+                }
+                records.push_back(static_cast<uint32_t>(blob.size()));
+                data << "\n};\n";
+                if (pool_packed) {
+                    blob.push_back(0); blob.push_back(0); /* LZSS decoder lookahead */
+                    data << "const uint32_t gg_pool_records[" << records.size() << "] = {";
+                    for (uint32_t record : records) data << record << "u,";
+                    data << "\n};\n";
+                }
+                data << "const uint8_t gg_pool[" << blob.size() << "] = {";
                 count = 0;
-                for (size_t sector : pool)
-                    for (size_t b = 0; b < 512; b++) data << (count++ % 32 ? "" : "\n") << unsigned(rom[sector * 512 + b]) << ",";
+                for (uint8_t byte : blob) data << (count++ % 32 ? "" : "\n") << unsigned(byte) << ",";
                 data << "\n};\n";
             }
             stats.streamed_pages = pages - kept;
             stats.pool_sectors = pool.size();
+            stats.packed = packed_all;
+            for (const auto& block : pool_blocks) {
+                stats.pool_bytes += block.bytes.size();
+                stats.packed_sectors += block.codec != rom::Codec::raw;
+            }
         } else {
             for (auto byte : rom) data << (count++ % 32 ? "" : "\n") << unsigned(byte) << ",";
             data << "\n};\nconst size_t sg_rom_size = sizeof(sg_rom);\n";
@@ -389,6 +485,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
          * include (sg_psg.h) */
         for (const char* name : { "sg_gen.h", "sg_psg.h" })
             copy_template(common_dir / "runtime" / name, src / name);
+        copy_template(common_dir / "runtime/m0_rom_codec.h", src / "m0_rom_codec.h");
+        copy_template(common_dir / "runtime/m0_rom_lzss.inc", src / "m0_rom_lzss.inc");
+        if (gg) copy_template(common_dir / "runtime/m0_rom_lzss.S", src / "m0_rom_lzss.S");
         if (gg) /* the Z80 core is the SG-1000 runtime's */
             for (const char* name : { "z80.c", "z80.h", "z80_ops.h", "z80_fast.h" }) copy_template(shared / "runtime" / name, src / name);
         const std::string host_c = gg ? "gg_host.c" : "sg_host.c", main_cpp = gg ? "gg_main.cpp" : "sg_main.cpp";
@@ -403,8 +502,26 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const std::string generated_sources = "${SRC}/sg_gen.c ${SRC}/sg_rom.c";
         const std::string render_asm = gg ? "gg_render_asm.S" : "sg_render_asm.S";
         const std::string firmware_sources = core_sources + " " + generated_sources + " ${SRC}/" + main_cpp +
-                                             " ${SRC}/" + render_asm;
-        const std::string host_sources = host_c + " " + core_sources + " " + generated_sources;
+                                              " ${SRC}/" + render_asm + (gg ? " ${SRC}/m0_rom_lzss.S" : "");
+        std::string host_sources = host_c + " " + core_sources + " " + generated_sources;
+        if (gg && (streamed || cart_on_card)) {
+            /* A generated host project must exercise the same storage plan,
+             * not silently replace it with a fully resident ROM. Only this
+             * host translation unit contains the card's complete image. */
+            std::ostringstream card;
+            card << "#include <stdint.h>\n#include <string.h>\nstatic const uint8_t rom_card[] = {";
+            for (size_t i = 0; i < rom.size(); ++i) card << (i % 32 ? "" : "\n") << unsigned(rom[i]) << ',';
+            card << "\n};\nint gg_platform_rom_read(uint32_t sector, uint8_t *dst) {\n"
+                    " if (sector >= sizeof(rom_card) / 512) return 0;\n"
+                    " memcpy(dst, rom_card + (size_t)sector * 512, 512); return 1;\n}\n"
+                    "static uint8_t save_card[32768];\n"
+                    "int gg_platform_save_read(uint32_t sector, uint8_t *dst) {\n"
+                    " if (sector >= 64) return 0;\n memcpy(dst, save_card + sector * 512, 512); return 1;\n}\n"
+                    "int gg_platform_save_write(uint32_t sector, const uint8_t *src) {\n"
+                    " if (sector >= 64) return 0;\n memcpy(save_card + sector * 512, src, 512); return 1;\n}\n";
+            write(o.output / "host" / "rom_card.c", card.str());
+            host_sources += " rom_card.c";
+        }
         /* The Game Gear streams its ROM: its FAT reader and SD bus join the
          * Pokitto platform files in PLATFORM_C. */
         const std::string platform_extra = gg ? " ${SRC}/pokitto_*.S ${SRC}/gg_stream.c ${SRC}/meta_sd.c ${SRC}/meta_fat.c" : "";

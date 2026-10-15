@@ -18,6 +18,7 @@
  */
 
 #include "recompiler/codegen/meta_emitter.h"
+#include "m0boy/rom_storage.h"
 #include "recompiler/decoder.h"
 #include "recompiler/codegen/register_ir.h"
 
@@ -374,6 +375,9 @@ private:
     size_t spin_loops_ = 0, counted_loops_ = 0;
     bool replaying_ = false;
     bool stream_ = false, pack_ = false;
+    bool partial_pack_ = false;
+    size_t flash_data_budget_ = 0;
+    std::vector<bool> packed_keep_;
     size_t stream_code_budget_ = 0, resident_budget_ = 0;
     /* Flash for the application: META 240 KiB above its 16 KiB loader,
      * Pokitto 228 KiB below its loader at 0x39000. */
@@ -432,6 +436,7 @@ bool Generator::load_coverage(MetaTargetStats& stats, std::string& error) {
      * closed by a backward branch) are likely hot, bank 0 holds the shared
      * routines. */
     size_t budget = opt_.code_budget_bytes;
+    if (budget && stream_) budget = std::min(budget, stream_code_budget_);
     if (!budget && stream_) {
         budget = stream_code_budget_;
     } else if (!budget) {
@@ -519,55 +524,28 @@ Ins* Generator::resolve(const Ins& from, uint16_t target, int& bank_check) {
     return found;
 }
 
-namespace {
-/* LZSS as decoded by gbl_core.c (unpack512 / gbl_unpack512_asm): per token
- * a flag bit, 1 = literal byte, 0 = back-reference of 8-bit offset - 1 and
- * 4-bit length - 2 into the bytes already produced; MSB-first bitstream.
- * Greedy longest match (offsets 1-256, lengths 2-17). */
-std::vector<uint8_t> lzss_encode(const uint8_t* data, size_t n) {
-    std::vector<uint8_t> out;
-    uint32_t acc = 0;
-    int nbits = 0;
-    auto put = [&](uint32_t v, int bits) {
-        for (int b = bits - 1; b >= 0; b--) {
-            acc = (acc << 1) | ((v >> b) & 1u);
-            if (++nbits == 8) {
-                out.push_back(static_cast<uint8_t>(acc));
-                acc = 0;
-                nbits = 0;
+bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
+    /* No need to introduce a sector cache when the entire ROM and played
+     * native code fit raw. Explicit streaming/residency requests still win
+     * (in particular the packed/cache regression tests). */
+    if (opt_.stream != 1 && !opt_.rom_resident_bytes) {
+        std::set<uint32_t> locations;
+        for (const auto& path : opt_.coverage_files) {
+            std::ifstream in(path);
+            std::string line;
+            while (std::getline(in, line)) {
+                unsigned bank, address, flags;
+                if (std::sscanf(line.c_str(), "%x %x %x", &bank, &address, &flags) == 3 && address < 0x8000)
+                    locations.insert((address < 0x4000 ? 0 : bank) << 16 | address);
             }
         }
-    };
-    size_t i = 0;
-    while (i < n) {
-        size_t best = 0, best_off = 0;
-        const size_t lo = i > 256 ? i - 256 : 0;
-        for (size_t p = i; p-- > lo;) {
-            size_t m = 0;
-            while (m < 17 && i + m < n && data[p + m] == data[i + m]) m++;
-            if (m > best) {
-                best = m;
-                best_off = i - p;
-                if (m == 17) break;
-            }
-        }
-        if (best >= 2) {
-            put(0, 1);
-            put(static_cast<uint32_t>(best_off - 1), 8);
-            put(static_cast<uint32_t>(best - 2), 4);
-            i += best;
-        } else {
-            put(1, 1);
-            put(data[i], 8);
-            i++;
+        const size_t code = opt_.code_budget_bytes ? opt_.code_budget_bytes :
+                            locations.size() * (opt_.bytes_per_instruction ? opt_.bytes_per_instruction : 20) + 16384;
+        if (m0boy::rom::fits_raw(app_flash(), 40960, rom_.size(), code)) {
+            stream_ = pack_ = false;
+            return true;
         }
     }
-    if (nbits) out.push_back(static_cast<uint8_t>(acc << (8 - nbits)));
-    return out;
-}
-} // namespace
-
-bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
     const size_t chunks = (rom_.size() + 4095) / 4096;
     chunk_weight_.assign(chunks, 0);
     resident_index_.assign(chunks, -1);
@@ -600,8 +578,9 @@ bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
         size_t packed_total = 0, banked = 0;
         for (size_t k = 32; k < sectors; k++) {
             const size_t len = std::min<size_t>(512, rom_.size() - k * 512);
-            std::vector<uint8_t> c = lzss_encode(rom_.data() + k * 512, len);
-            if (c.size() >= len || len < 512) c.assign(rom_.data() + k * 512, rom_.data() + k * 512 + len);
+            auto block = m0boy::rom::encode(rom_.data() + k * 512, len);
+            std::vector<uint8_t> c = std::move(block.bytes);
+            if (len < 512) c.assign(rom_.data() + k * 512, rom_.data() + k * 512 + len);
             packed_total += c.size();
             banked += len;
             packed_sector_[k] = std::move(c);
@@ -621,6 +600,20 @@ bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
         const long long min_code = 16384;
         if (code_left(resident) < min_code && code_left(0) >= min_code) resident = 0;
         if (code_left(resident) < min_code) {
+            /* All packed data does not fit. Keep a useful raw/packed hot
+             * subset, using the same density/cost policy as GG/SMS; the
+             * remaining sectors still come from the uncompressed card. */
+            const size_t hybrid_fixed = fixed + 4096; /* SD runtime allowance */
+            if (touched && app > hybrid_fixed + min_code + 4096) {
+                partial_pack_ = true;
+                const size_t free = app - hybrid_fixed;
+                stream_code_budget_ = std::max<size_t>(min_code, free / 2);
+                flash_data_budget_ = free - stream_code_budget_;
+                resident_budget_ = opt_.rom_resident_bytes ? opt_.rom_resident_bytes : flash_data_budget_;
+                packed_keep_.assign(sectors, false);
+                stats.stream = stats.packed = stats.sd = true;
+                return true;
+            }
             char note[160];
             std::snprintf(note, sizeof(note),
                           "compressed ROM (%zu KiB) leaves no room for code",
@@ -651,15 +644,46 @@ bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
     resident_budget_ = std::min(resident_budget_ / 4096 * 4096, available / 4096 * 4096);
     stream_code_budget_ = available - resident_budget_;
     stats.stream = true;
+    stats.sd = true;
     return true;
 }
 
 void Generator::choose_resident(MetaTargetStats& stats) {
+    if (partial_pack_) {
+        std::vector<size_t> sizes;
+        for (const auto& sector : packed_sector_) sizes.push_back(sector.size());
+        std::vector<double> weights(chunk_weight_.begin(), chunk_weight_.end());
+        auto selected = m0boy::rom::select_units(sizes, weights, 8, 4, flash_data_budget_, resident_budget_, 50000);
+        int slot = 0;
+        for (size_t c : selected.raw) resident_index_[c] = slot++;
+        for (size_t c : selected.packed)
+            for (size_t s = c * 8; s < (c + 1) * 8; ++s) {
+                packed_keep_[s] = true;
+                stats.packed_bytes += packed_sector_[s].size();
+                stats.packed_raw_bytes += 512;
+            }
+        stats.resident_chunks = selected.raw.size();
+        stats.streamed_chunks = chunk_weight_.size() - 4 - selected.raw.size() - selected.packed.size();
+        if (selected.packed.empty()) {
+            pack_ = partial_pack_ = false;
+            stats.packed = false; /* no decoder/index overhead for a raw-only subset */
+        }
+        return;
+    }
     std::vector<size_t> order;
     for (size_t c = 4; c < chunk_weight_.size(); c++)
         if (chunk_weight_[c]) order.push_back(c);
     std::stable_sort(order.begin(), order.end(),
-                     [&](size_t a, size_t b) { return chunk_weight_[a] > chunk_weight_[b]; });
+                      [&](size_t a, size_t b) { return chunk_weight_[a] > chunk_weight_[b]; });
+    if (pack_) {
+        size_t packed = 0;
+        std::vector<size_t> sizes;
+        for (const auto& sector : packed_sector_) { sizes.push_back(sector.size()); packed += sector.size(); }
+        const size_t fixed = 40960 + 1024 + 0x4000 + chunk_weight_.size() + 4 * (packed_sector_.size() + 1) + 4;
+        const size_t used = fixed + stream_code_budget_ + packed;
+        std::vector<double> weights(chunk_weight_.begin(), chunk_weight_.end());
+        order = m0boy::rom::raw_units(sizes, weights, 8, 4, resident_budget_, app_flash() > used ? app_flash() - used : 0);
+    }
     int slot = 0;
     for (size_t k = 0; k < order.size() && static_cast<size_t>(slot) < resident_budget_ / 4096; k++)
         resident_index_[order[k]] = slot++;
@@ -1713,7 +1737,7 @@ std::string Generator::emit_rom() const {
             for (size_t k = 0; k < packed_sector_.size(); k++) {
                 offs.push_back(static_cast<uint32_t>(blob.size()));
                 const size_t c = k / 8;
-                if (k >= 32 && c < chunks && resident_index_[c] < 0)
+                if (k >= 32 && c < chunks && resident_index_[c] < 0 && (!partial_pack_ || packed_keep_[k]))
                     blob.insert(blob.end(), packed_sector_[k].begin(), packed_sector_[k].end());
             }
             offs.push_back(static_cast<uint32_t>(blob.size()));
@@ -1938,9 +1962,9 @@ std::string Generator::emit_config(std::string& error) const {
              std::to_string(1 + (18432 + eram + 511) / 512) + "\n"
       << (stream_ ? "#define GBL_ROM_STREAM 1\n#define GBL_ROM_CHUNKS " +
                         std::to_string(chunk_weight_.size()) + "\n" +
-                        (pack_ ? std::string("#define GBL_ROM_PACKED 1\n")
-                               : "#define GBL_STREAM_NAME \"ROM.GB\"\n"
-                                 "#define GBL_STREAM_NAME83 \"ROM     GB\"\n")
+                         (pack_ ? std::string("#define GBL_ROM_PACKED 1\n") : std::string()) +
+                         (!pack_ || partial_pack_ ? std::string("#define GBL_ROM_SD 1\n#define GBL_STREAM_NAME \"ROM.GB\"\n"
+                                                               "#define GBL_STREAM_NAME83 \"ROM     GB\"\n") : std::string())
                   : std::string())
       /* The console; its optimisation switches are in gbl_profile.h. */
       << (opt_.pokitto ? "#define GBL_TARGET_POKITTO 1\n" : "")
@@ -2043,7 +2067,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     if (!gen.load_coverage(stats, error)) return false;
     if (gen.streaming()) {
         gen.choose_resident(stats);
-        if (!stats.packed) stats.stream_file = stream_name(options.name) + ".GB";
+        if (!stats.packed || stats.sd) stats.stream_file = stream_name(options.name) + ".GB";
     }
     gen.build();
 
@@ -2097,6 +2121,12 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         !copy_dir_files(platform_tpl, src, error))
         return false;
     if (!copy_dir_files(tpl / "toolchain", out / "toolchain", error)) return false;
+    fs::copy_file(tpl.parent_path() / "common/runtime/m0_rom_codec.h", src / "m0_rom_codec.h",
+                  fs::copy_options::overwrite_existing, ec);
+    if (ec) { error = "cannot copy shared ROM codecs: " + ec.message(); return false; }
+    fs::copy_file(tpl.parent_path() / "common/runtime/m0_rom_lzss.inc", src / "m0_rom_lzss.inc",
+                  fs::copy_options::overwrite_existing, ec);
+    if (ec) { error = "cannot copy shared ROM assembler: " + ec.message(); return false; }
     fs::remove_all(out / "variants", ec);
     /* Subdirectories (the META's boards/) as they are. */
     for (const auto& entry : fs::directory_iterator(platform_tpl)) {

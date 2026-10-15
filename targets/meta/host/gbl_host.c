@@ -384,6 +384,7 @@ int gbl_platform_save_write(uint32_t sector, const uint8_t *src) {
 #if GBL_ROM_STREAM
 /* SD sectors read per frame (histogram capped at 63). */
 static uint32_t stream_hist[64], stream_frames, stream_prev, stream_max;
+static uint32_t stream_sd_reads;
 
 static void stream_frame(void) {
     uint32_t d = gbl_stream_misses - stream_prev;
@@ -396,6 +397,7 @@ static void stream_frame(void) {
 /* Streaming project on the host: the whole ROM is linked in. */
 extern const uint8_t gbl_rom_full[];
 int gbl_platform_rom_read(uint32_t sector, uint8_t *dst) {
+    stream_sd_reads++;
     uint32_t off = sector * 512u;
     for (uint32_t i = 0; i < 512u; i++) dst[i] = off + i < gbl_rom_size ? gbl_rom_full[off + i] : 0xFF;
     return 1;
@@ -443,6 +445,11 @@ static void finish(void) {
         }
         printf("rom_stream sectors_read %u per_frame mean %.3f p95 %u p99 %u max %u frames>10 %u frames>30 %u\n",
                gbl_stream_misses, (double)gbl_stream_misses / n, p95, p99, stream_max, over10, over30);
+        printf("rom_sources sd_reads %u", stream_sd_reads);
+#if GBL_ROM_PACKED
+        printf(" flash_unpacked %u", gbl_stream_unpacked);
+#endif
+        printf("\n");
     }
 #endif
     printf("line_skip unchanged %u of %u wrong %u\n", lines_same, lines_checked, lines_same_wrong);

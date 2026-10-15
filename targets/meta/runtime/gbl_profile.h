@@ -58,7 +58,10 @@
 #ifndef GBL_ERAM_ON_SD
 #define GBL_ERAM_ON_SD (GBL_ERAM_SIZE > 2048)
 #endif
-#if defined(GBL_ROM_STREAM) && GBL_ROM_STREAM && !(defined(GBL_ROM_PACKED) && GBL_ROM_PACKED)
+#ifndef GBL_ROM_SD
+#define GBL_ROM_SD (GBL_ROM_STREAM && !GBL_ROM_PACKED)
+#endif
+#if GBL_ROM_SD
 #define GBL_PROFILE_SD_ROM 1
 #else
 #define GBL_PROFILE_SD_ROM 0
