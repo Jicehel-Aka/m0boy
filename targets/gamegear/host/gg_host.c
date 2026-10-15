@@ -35,39 +35,14 @@ void gg_rom_trace(uint32_t offset) {
 }
 #endif
 
-static void le32(FILE *f, uint32_t v) { for (unsigned i = 0; i < 4; i++) fputc((v >> (8 * i)) & 255, f); }
-static void wav_header(FILE *f, uint32_t n) {
-    fwrite("RIFF", 1, 4, f); le32(f, 36 + n); fwrite("WAVEfmt ", 1, 8, f); le32(f, 16);
-    fputc(1, f); fputc(0, f); fputc(1, f); fputc(0, f); le32(f, 22050); le32(f, 22050);
-    fputc(1, f); fputc(0, f); fputc(8, f); fputc(0, f); fwrite("data", 1, 4, f); le32(f, n);
-}
-/* --input "frame:mask:frames,...": buttons held from frame for frames
- * (bits: up, down, left, right, 1, 2, START) */
+/* --input / --random: parsing and RNG live in m0_host_util.h, these are the
+ * harness's own knobs.  START joins the random pad on Game Gear only (bits:
+ * up, down, left, right, 1, 2, START). */
 static const char *input_script;
-static unsigned scripted(unsigned frame) {
-    unsigned keys = 0;
-    for (const char *p = input_script; p && *p;) {
-        unsigned at = 0, mask = 0, len = 0;
-        if (sscanf(p, "%u:%u:%u", &at, &mask, &len) == 3 && frame >= at && frame < at + len) keys |= mask;
-        p = strchr(p, ',');
-        if (p) p++;
-    }
-    return keys;
-}
-/* --random seed: buttons redrawn every 16 frames, START now and then */
 static uint32_t random_state;
-static unsigned random_keys;
-static unsigned randomized(unsigned frame) {
-    if (!random_state) return 0;
-    if (frame % 16 == 0) {
-        random_state = random_state * 1103515245u + 12345u;
-        random_keys = (random_state >> 16) & 63;
-        if (((random_state >> 24) & 15) == 0 && !GG_IS_SMS) random_keys |= GG_START;
-    }
-    return random_keys;
-}
 static void inputs(void) {
-    unsigned keys = buttons | scripted(machine.frames) | randomized(machine.frames);
+    unsigned keys = buttons | m0_scripted(input_script, machine.frames) |
+                    m0_randomized(&random_state, machine.frames, GG_IS_SMS ? 0u : (unsigned)GG_START);
     if (machine.frames >= start_frame && machine.frames < start_frame + 10) keys |= GG_IS_SMS ? GG_B1 : GG_START;
     gg_buttons((uint8_t)keys);
 }
@@ -146,42 +121,29 @@ static void row(void *ctx, unsigned y, uint16_t *pixels) {
         image[y - GG_WIN_TOP][x] = pixels[x];
 #endif
 }
-static int hot_first(const void *a, const void *b) {
-    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
-    if (hits[x] != hits[y]) return hits[x] > hits[y] ? -1 : 1;
-    return x < y ? -1 : x > y;
-}
-static uint32_t hash_bytes(uint32_t h, const void *data, size_t n) {
-    const uint8_t *p = data;
-    while (n--) h = (h ^ *p++) * 16777619u;
-    return h;
-}
 static uint32_t run_hash(void) {
     gg_t *s = &machine;
-    uint32_t h = 2166136261u;
+    uint32_t h = M0_RUN_HASH_INIT;
     uint16_t registers[] = { s->cpu.bc, s->cpu.de, s->cpu.hl, s->cpu.bc2, s->cpu.de2, s->cpu.hl2, s->cpu.af2,
                              s->cpu.ix, s->cpu.iy, s->cpu.sp, s->cpu.pc };
-    for (unsigned i = 0; i < sizeof registers / sizeof *registers; i++) {
-        uint8_t bytes[] = { (uint8_t)registers[i], (uint8_t)(registers[i] >> 8) };
-        h = hash_bytes(h, bytes, 2);
-    }
+    h = m0_hash_u16s(h, registers, sizeof registers / sizeof *registers);
     uint8_t flags[] = { s->cpu.a, s->cpu.f, s->cpu.i, s->cpu.r, s->cpu.im, s->cpu.iff1, s->cpu.iff2, s->cpu.halted,
                         s->cpu.ei_delay, s->vdp_status, s->vdp_latch, s->vdp_pending, s->vdp_buffer, s->vdp_code,
                         s->cram_latch, s->line_irq, s->lc_count, s->cpu.irq, s->cpu.nmi, s->cpu.fault,
                         s->page[0], s->page[1], s->page[2], s->ram_ctl };
-    h = hash_bytes(h, flags, sizeof flags);
+    h = m0_hash_bytes(h, flags, sizeof flags);
     uint32_t counters[] = { s->cyc, s->frames, s->render_line, s->vdp_address };
-    h = hash_bytes(h, counters, sizeof counters);
-    h = hash_bytes(h, s->ram, sizeof s->ram);
-    h = hash_bytes(h, s->vram, sizeof s->vram);
-    h = hash_bytes(h, s->cram, sizeof s->cram);
-    h = hash_bytes(h, s->vdp, sizeof s->vdp);
-    h = hash_bytes(h, s->psg_tone, sizeof s->psg_tone);
-    h = hash_bytes(h, s->psg_volume, sizeof s->psg_volume);
-    h = hash_bytes(h, &s->psg_noise, 1);
-    h = hash_bytes(h, &s->psg_latch, 1);
-    if (s->cart_ram && s->cart_ram_used) h = hash_bytes(h, s->cart_ram, GG_CART_RAM_SIZE); /* mapped only when enabled */
-    return hash_bytes(h, image, sizeof image);
+    h = m0_hash_bytes(h, counters, sizeof counters);
+    h = m0_hash_bytes(h, s->ram, sizeof s->ram);
+    h = m0_hash_bytes(h, s->vram, sizeof s->vram);
+    h = m0_hash_bytes(h, s->cram, sizeof s->cram);
+    h = m0_hash_bytes(h, s->vdp, sizeof s->vdp);
+    h = m0_hash_bytes(h, s->psg_tone, sizeof s->psg_tone);
+    h = m0_hash_bytes(h, s->psg_volume, sizeof s->psg_volume);
+    h = m0_hash_bytes(h, &s->psg_noise, 1);
+    h = m0_hash_bytes(h, &s->psg_latch, 1);
+    if (s->cart_ram && s->cart_ram_used) h = m0_hash_bytes(h, s->cart_ram, GG_CART_RAM_SIZE); /* mapped only when enabled */
+    return m0_hash_bytes(h, image, sizeof image);
 }
 
 static int sms __attribute__((unused));
@@ -218,17 +180,9 @@ int main(int argc, char **argv) {
     sms = dot && (!strcmp(dot, ".sms") || !strcmp(dot, ".SMS"));
     FILE *file = fopen(rom_path, "rb");
     if (!file) { perror(rom_path); return 1; }
-    if (fseek(file, 0, SEEK_END) || ftell(file) < 0x400 || ftell(file) > 0x400000) { fclose(file); fprintf(stderr, "Unsupported cartridge size\n"); return 1; }
-    size = (size_t)ftell(file);
-    long skip = (long)m0_copier_skip(size); /* copier header */
-    size -= (size_t)skip;
-    fseek(file, skip, SEEK_SET);
-    size_t paged = m0_rom_page_bytes(size); /* whole pages, padded with FF */
-    loaded = malloc(paged);
-    if (!loaded) { fclose(file); return 1; }
-    memset(loaded, 0xff, paged);
-    if (fread(loaded, 1, size, file) != size) { fclose(file); free(loaded); return 1; }
+    loaded = m0_rom_load(file, 0x400000, 1, &size); /* whole pages, padded with FF */
     fclose(file);
+    if (!loaded || size < 0x400) { free(loaded); fprintf(stderr, "Unsupported cartridge size\n"); return 1; }
     rom = loaded;
 #endif
     FILE *coverage = 0;
@@ -259,7 +213,7 @@ int main(int argc, char **argv) {
     if (wav_path) {
         audio = fopen(wav_path, "wb");
         if (!audio) { perror(wav_path); if (coverage) fclose(coverage); free(loaded); return 1; }
-        wav_header(audio, 0);
+        m0_wav_header(audio, 0);
         gg_audio_rate(22050);
     }
     inputs();
@@ -268,14 +222,8 @@ int main(int argc, char **argv) {
     else
 #endif
     if (frames) gg_run();
-    if (audio) {
-        if (audio_samples & 1) fputc(0, audio);
-        if (fseek(audio, 0, SEEK_SET)) audio_error = 1;
-        wav_header(audio, audio_samples);
-        if (audio_samples & 1) { fseek(audio, 4, SEEK_SET); le32(audio, 36 + audio_samples + 1); }
-        if (ferror(audio)) audio_error = 1;
-        if (fclose(audio)) audio_error = 1;
-        if (audio_error) { perror("audio"); if (coverage) fclose(coverage); free(loaded); return 1; }
+    if (audio && (m0_wav_finish(audio, audio_samples) || audio_error)) {
+        perror("audio"); if (coverage) fclose(coverage); free(loaded); return 1;
     }
     if (coverage) {
         /* v2: every address line carries its execution count, so the
@@ -289,13 +237,11 @@ int main(int argc, char **argv) {
         for (uint32_t sec = 0; sec < rom_sectors; sec++) /* data reads: sector, frames */
             if (read_frames[sec]) fprintf(coverage, "# read %04x %u\n", sec, read_frames[sec]);
 #endif
-        uint32_t n = 0;
         coverage_order = malloc(sizeof *coverage_order * locations);
-        if (!coverage_order) return 1;
-        for (uint32_t loc = 0; loc < locations; loc++) if (hits[loc]) coverage_order[n++] = loc;
-        qsort(coverage_order, n, sizeof *coverage_order, hot_first);
-        for (uint32_t i = 0; i < n; i++)
-            if (fprintf(coverage, "%06x %u\n", coverage_order[i], hits[coverage_order[i]]) < 0) { fclose(coverage); free(loaded); return 1; }
+        if (!coverage_order || m0_coverage_dump(coverage, hits, coverage_order, locations, 6) < 0) {
+            fclose(coverage); free(loaded); return 1;
+        }
+        free(coverage_order);
         if (fclose(coverage)) { perror("coverage"); free(loaded); return 1; }
     }
     if (shot) {

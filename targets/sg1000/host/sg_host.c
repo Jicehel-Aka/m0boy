@@ -23,39 +23,15 @@ static int audio_error;
 static unsigned frames = 300, buttons, start_frame = ~0u, pause_frame = ~0u, explore_frames;
 static uint32_t hits[65536];
 static uint8_t entries[65536];
-static uint16_t coverage_order[65536];
+static uint32_t coverage_order[65536];
 
-static void le32(FILE *f, uint32_t v) { for (unsigned i = 0; i < 4; i++) fputc((v >> (8 * i)) & 255, f); }
-static void wav_header(FILE *f, uint32_t n) {
-    fwrite("RIFF", 1, 4, f); le32(f, 36 + n); fwrite("WAVEfmt ", 1, 8, f); le32(f, 16);
-    fputc(1, f); fputc(0, f); fputc(1, f); fputc(0, f); le32(f, 22050); le32(f, 22050);
-    fputc(1, f); fputc(0, f); fputc(8, f); fputc(0, f); fwrite("data", 1, 4, f); le32(f, n);
-}
-/* --input "frame:mask:frames,...": buttons held from frame for frames */
+/* --input / --random: parsing and RNG live in m0_host_util.h, these are the
+ * harness's own knobs */
 static const char *input_script;
-static unsigned scripted(unsigned frame) {
-    unsigned keys = 0;
-    for (const char *p = input_script; p && *p;) {
-        unsigned at = 0, mask = 0, len = 0;
-        if (sscanf(p, "%u:%u:%u", &at, &mask, &len) == 3 && frame >= at && frame < at + len) keys |= mask;
-        p = strchr(p, ',');
-        if (p) p++;
-    }
-    return keys;
-}
-/* --random seed: buttons redrawn every 16 frames (coverage profiling) */
 static uint32_t random_state;
-static unsigned random_keys;
-static unsigned randomized(unsigned frame) {
-    if (!random_state) return 0;
-    if (frame % 16 == 0) {
-        random_state = random_state * 1103515245u + 12345u;
-        random_keys = (random_state >> 16) & 63;
-    }
-    return random_keys;
-}
 static void inputs(void) {
-    unsigned keys = buttons | scripted(machine.frames) | randomized(machine.frames);
+    unsigned keys = buttons | m0_scripted(input_script, machine.frames) |
+                    m0_randomized(&random_state, machine.frames, 0);
     if (machine.frames >= start_frame && machine.frames < start_frame + 10) keys |= 16;
     sg1000_buttons(0, (uint8_t)keys);
     sg1000_pause(machine.frames == pause_frame);
@@ -129,47 +105,34 @@ static void ref_row(void *ctx, unsigned y, const uint8_t *pixels) {
     sg1000_filter_line(pixels, expected);
     if (memcmp(out_row, expected, sizeof expected)) out_mismatch++;
 }
-static int hot_first(const void *a, const void *b) {
-    unsigned x = *(const uint16_t *)a, y = *(const uint16_t *)b;
-    if (hits[x] != hits[y]) return hits[x] > hits[y] ? -1 : 1;
-    return x < y ? -1 : x > y;
-}
-static uint32_t hash_bytes(uint32_t h, const void *data, size_t n) {
-    const uint8_t *p = data;
-    while (n--) h = (h ^ *p++) * 16777619u;
-    return h;
-}
 static uint32_t run_hash(void) {
     sg1000_t *s = &machine;
-    uint32_t h = 2166136261u;
+    uint32_t h = M0_RUN_HASH_INIT;
     uint16_t registers[] = { s->cpu.bc, s->cpu.de, s->cpu.hl, s->cpu.bc2, s->cpu.de2, s->cpu.hl2, s->cpu.af2,
                              s->cpu.ix, s->cpu.iy, s->cpu.sp, s->cpu.pc };
-    for (unsigned i = 0; i < sizeof registers / sizeof *registers; i++) {
-        uint8_t bytes[] = { (uint8_t)registers[i], (uint8_t)(registers[i] >> 8) };
-        h = hash_bytes(h, bytes, 2);
-    }
+    h = m0_hash_u16s(h, registers, sizeof registers / sizeof *registers);
     uint8_t flags[] = { s->cpu.a, s->cpu.f, s->cpu.i, s->cpu.r, s->cpu.im, s->cpu.iff1, s->cpu.iff2, s->cpu.halted,
                         s->cpu.ei_delay, s->vdp_status, s->vdp_latch, s->vdp_pending, s->vdp_buffer, s->cpu.irq,
                         s->cpu.nmi, s->cpu.fault, s->pause };
-    h = hash_bytes(h, flags, sizeof flags);
+    h = m0_hash_bytes(h, flags, sizeof flags);
     uint32_t counters[] = { s->cyc, s->frames, s->render_line, s->vdp_address };
-    h = hash_bytes(h, counters, sizeof counters);
-    h = hash_bytes(h, s->ram, sizeof s->ram);
-    h = hash_bytes(h, s->vram, sizeof s->vram);
-    h = hash_bytes(h, s->vdp, sizeof s->vdp);
-    h = hash_bytes(h, s->buttons, sizeof s->buttons);
-    h = hash_bytes(h, s->psg_tone, sizeof s->psg_tone);
-    h = hash_bytes(h, s->psg_volume, sizeof s->psg_volume);
-    h = hash_bytes(h, &s->psg_noise, 1);
-    h = hash_bytes(h, &s->psg_latch, 1);
+    h = m0_hash_bytes(h, counters, sizeof counters);
+    h = m0_hash_bytes(h, s->ram, sizeof s->ram);
+    h = m0_hash_bytes(h, s->vram, sizeof s->vram);
+    h = m0_hash_bytes(h, s->vdp, sizeof s->vdp);
+    h = m0_hash_bytes(h, s->buttons, sizeof s->buttons);
+    h = m0_hash_bytes(h, s->psg_tone, sizeof s->psg_tone);
+    h = m0_hash_bytes(h, s->psg_volume, sizeof s->psg_volume);
+    h = m0_hash_bytes(h, &s->psg_noise, 1);
+    h = m0_hash_bytes(h, &s->psg_latch, 1);
     /* cartridge RAM: the generic harness always maps it; generated projects
      * only when the profile saw it written */
 #ifdef SG_GENERATED
-    if (SG_CART_RAM) h = hash_bytes(h, s->cart_ram, SG_CART_RAM_SIZE);
+    if (SG_CART_RAM) h = m0_hash_bytes(h, s->cart_ram, SG_CART_RAM_SIZE);
 #else
-    if (s->cart_ram_used) h = hash_bytes(h, s->cart_ram, SG_CART_RAM_SIZE);
+    if (s->cart_ram_used) h = m0_hash_bytes(h, s->cart_ram, SG_CART_RAM_SIZE);
 #endif
-    return hash_bytes(h, image, sizeof image);
+    return m0_hash_bytes(h, image, sizeof image);
 }
 
 int main(int argc, char **argv) {
@@ -206,15 +169,9 @@ int main(int argc, char **argv) {
     if (!rom_path) { fprintf(stderr, "Usage: sg1000_host cartridge.sg [--frames N] [--shot file.ppm] [--coverage file]\n"); return 1; }
     FILE *file = fopen(rom_path, "rb");
     if (!file) { perror(rom_path); return 1; }
-    if (fseek(file, 0, SEEK_END) || ftell(file) <= 0) { fclose(file); fprintf(stderr, "Unsupported cartridge size\n"); return 1; }
-    long file_bytes = ftell(file);
-    long skip = (long)m0_copier_skip((size_t)file_bytes); /* copier header */
-    size = (size_t)(file_bytes - skip);
-    if (size > 0xc000) { fclose(file); fprintf(stderr, "Unsupported cartridge size\n"); return 1; }
-    fseek(file, skip, SEEK_SET);
-    loaded = malloc(size);
-    if (!loaded || fread(loaded, 1, size, file) != size) { fclose(file); free(loaded); return 1; }
+    loaded = m0_rom_load(file, 0xc000, 0, &size); /* unbanked: no page padding */
     fclose(file);
+    if (!loaded) { fprintf(stderr, "Unsupported cartridge size\n"); return 1; }
     rom = loaded;
 #endif
     FILE *coverage = 0;
@@ -231,7 +188,7 @@ int main(int argc, char **argv) {
     if (wav_path) {
         audio = fopen(wav_path, "wb");
         if (!audio) { perror(wav_path); if (coverage) fclose(coverage); free(loaded); return 1; }
-        wav_header(audio, 0);
+        m0_wav_header(audio, 0);
         sg1000_audio_rate(22050);
     }
     inputs();
@@ -240,14 +197,8 @@ int main(int argc, char **argv) {
     else
 #endif
     if (frames) sg1000_run();
-    if (audio) {
-        if (audio_samples & 1) fputc(0, audio); /* RIFF chunks are padded to an even size */
-        if (fseek(audio, 0, SEEK_SET)) audio_error = 1;
-        wav_header(audio, audio_samples);
-        if (audio_samples & 1) { fseek(audio, 4, SEEK_SET); le32(audio, 36 + audio_samples + 1); }
-        if (ferror(audio)) audio_error = 1;
-        if (fclose(audio)) audio_error = 1;
-        if (audio_error) { perror("audio"); if (coverage) fclose(coverage); free(loaded); return 1; }
+    if (audio && (m0_wav_finish(audio, audio_samples) || audio_error)) {
+        perror("audio"); if (coverage) fclose(coverage); free(loaded); return 1;
     }
     if (coverage) {
         /* v2: every address line carries its execution count, so the
@@ -256,11 +207,7 @@ int main(int argc, char **argv) {
         if (machine.cart_ram_used) fprintf(coverage, "# cart-ram\n");
         for (unsigned pc = 0; pc < 65536; pc++) /* dynamic jump targets: region entries */
             if (entries[pc]) fprintf(coverage, "# entry %04x\n", pc);
-        unsigned n = 0;
-        for (unsigned pc = 0; pc < 65536; pc++) if (hits[pc]) coverage_order[n++] = (uint16_t)pc;
-        qsort(coverage_order, n, sizeof *coverage_order, hot_first);
-        for (unsigned i = 0; i < n; i++)
-            if (fprintf(coverage, "%04x %u\n", coverage_order[i], hits[coverage_order[i]]) < 0) { fclose(coverage); free(loaded); return 1; }
+        if (m0_coverage_dump(coverage, hits, coverage_order, 65536, 4) < 0) { fclose(coverage); free(loaded); return 1; }
         if (fclose(coverage)) { perror("coverage"); free(loaded); return 1; }
     }
     if (shot) {
