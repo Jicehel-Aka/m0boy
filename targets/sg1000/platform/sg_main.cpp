@@ -44,7 +44,7 @@ static unsigned skipped_run;
 #ifdef SG_SELFTEST
 extern "C" { volatile unsigned sg_selftest_result; }
 #endif
-static const char version[] __attribute__((used)) = "m0boy-sg1000-" META_TARGET_NAME " " SG_GEN_VERSION;
+static const char version[] __attribute__((used)) = "m0boy-sg1000-" META_TARGET_NAME " " GBL_GEN_VERSION;
 
 static unsigned display_row(unsigned y) {
 #if META_TARGET_POKITTO

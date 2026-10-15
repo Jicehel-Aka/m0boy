@@ -436,10 +436,14 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             audio = replace(replace(audio, "gbl_apu_render", "sg_platform_audio_render"), "gbl_apu_set_rate", "sg_platform_audio_rate");
             if (gg && o.target == TargetId::meta) audio = replace(audio, "#define RING 1024u", "#define RING 512u"); /* RAM: about 1.4 frames */
             write(src / audio_name, audio);
-            std::string version = read(o.meta_templates / (o.target == TargetId::pokitto ? fs::path("platform/pokitto/VERSION") : fs::path("VERSION")));
-            while (!version.empty() && (version.back() == '\n' || version.back() == '\r')) version.pop_back();
+            /* One version stamp for all three frontends: the target console
+             * runtime's version, compiled into gbrecomp from the VERSION
+             * files (targets/meta/VERSION, platform/pokitto/VERSION) by
+             * CMake.  gbrecomp --meta-version/--pokitto-version print it and
+             * compile.sh reads it back from firmware.bin. */
             write(src / "gbl_config.h", "#pragma once\n#define GBL_TARGET_POKITTO " + std::to_string(o.target == TargetId::pokitto) +
-                                        "\n#define SG_GEN_VERSION \"" + version + "\"\n");
+                                        "\n#define GBL_GEN_VERSION \"" +
+                                        (o.target == TargetId::pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) + "\"\n");
             /* gbl_board.h carries the META's SPI rates and display pipeline
              * switches, shared with the Game Boy profile; only what this
              * build decides differently is written here. */

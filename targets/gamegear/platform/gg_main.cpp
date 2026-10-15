@@ -114,7 +114,7 @@ static void bench_frame() {
     gg_buttons(bench_keys(f));
 }
 #endif
-static const char version[] __attribute__((used)) = "m0boy-gg-" META_TARGET_NAME " " SG_GEN_VERSION;
+static const char version[] __attribute__((used)) = "m0boy-gg-" META_TARGET_NAME " " GBL_GEN_VERSION;
 
 #if GG_SMS
 /* One source line per row (the 256 -> 160 filter is already the costly
