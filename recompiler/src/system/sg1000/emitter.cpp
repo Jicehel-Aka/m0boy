@@ -565,7 +565,7 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
             else o << "    " << rr << " = (uint16_t)(" << mem_read(nn) << " | (" << mem_read(n1) << " << 8));\n";
             return true;
         }
-        if (x == 2 && (y == 4 || y == 5) && z == 3 && opt_.banked) { /* OUTI / OUTD: unrolled VRAM uploads */
+        if (x == 2 && (y == 4 || y == 5) && z == 3) { /* OUTI / OUTD: unrolled VRAM uploads */
             o << (y == 4 ? "    sg_outi();\n" : "    sg_outd();\n");
             return true;
         }

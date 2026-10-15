@@ -17,8 +17,10 @@
 #include "sg_config.h"
 #if SG_SYSTEM_GG
 #include "gg.h"
+#define SG_IO_OUT gg_out
 #else
 #include "sg1000.h"
+#define SG_IO_OUT sg1000_out
 #endif
 
 extern const uint8_t sg_rom[];
@@ -118,19 +120,17 @@ SG_HELPER void sg_hl16(unsigned adc, uint16_t b) {
     Z.hl = r;
 }
 SG_HELPER void sg_neg(void) { Z.a = z80_add8(&Z, 0, Z.a, 0, 1); }
-#if SG_SYSTEM_GG
 /* OUTI / OUTD, as in z80_execute (port C: the bus decodes the low byte) */
 static inline __attribute__((always_inline)) void sg_outx(int delta) {
     const uint8_t v = RD(Z.hl);
     Z.b--;
     Z.hl = (uint16_t)(Z.hl + delta);
-    gg_out(Z.c, v);
+    SG_IO_OUT(Z.c, v);
     const unsigned s = v + Z.l;
     Z.f = (uint8_t)(z80_sz(Z.b) | (v & 0x80 ? Z80_N : 0) | (s > 255 ? Z80_H | Z80_C : 0) | z80_parity((uint8_t)((s & 7) ^ Z.b)));
 }
 SG_HELPER void sg_outi(void) { sg_outx(1); }
 SG_HELPER void sg_outd(void) { sg_outx(-1); }
-#endif
 /* Instructions without a generated lowering: the interpreter's semantics
  * (pc and refresh included), expanded once here. */
 SG_HELPER unsigned sg_op(const z80_decoded_t *d) { return z80_execute(&Z, d); }
