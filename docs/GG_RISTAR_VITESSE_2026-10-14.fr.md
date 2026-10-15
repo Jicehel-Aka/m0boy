@@ -242,3 +242,27 @@ image (le jeu parcourt plus de ROM que la réserve n'en tient), et un jeu qu'un
 joueur automatique ne sait pas démarrer reste hors de portée. Le temps de
 profil passe de quelques secondes à une vingtaine de secondes par jeu (quatre
 explorations de 30 000 images, en parallèle).
+
+## 2026-10-15 : cache de dispatch négatif, essayé et écarté
+
+`sg_gen_lookup` (code généré) cache les adresses **trouvées** dans une table
+directe de 32 places ; une adresse sans code compilé repasse par la
+recherche binaire dans `entry_pc` (440 entrées sur Ristar, ~9 tours).
+
+Mesuré sur Ristar, harnais hôte du projet généré, 2 400 images, entrée
+`20:64:5,30:16:10,40:8:20` : 218 461 appels au dispatch, 144 299 servis par
+le cache, **74 162 recherches binaires** (≈31 par image), `run_hash`
+inchangé (2fec1b3d) et `out_mismatch=0`.  Le chemin négatif n'est donc pas
+rare dès qu'une partie du code reste interprétée : c'est là que le coût se
+cache, pas dans les positifs.
+
+Version naïve (négatifs rangés dans le *même* cache de 32 places, marqueur
+`(sg_fn)1`) : **1 012 746 341 instructions hôte contre 1 011 880 209**
+(+0,09 %, `perf stat -e instructions:u`, même image) — les négatifs
+chassent des positifs et la recherche binaire revient ailleurs.  Écartée.
+
+La variante à cache négatif *séparé* (32 places à part) est la suite
+logique, mais la première mesure était fausse (un store placé après le
+`return 0` du chemin négatif faisait répondre « interpréteur » pour des
+adresses compilées : +23 % d'instructions, essai invalide).  À mesurer
+proprement avant d'être retenue.
