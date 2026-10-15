@@ -27,7 +27,7 @@ puces à 32 Kio de RAM, 256 Kio de flash et sans division matérielle.
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le firmware | 32 + 2 + 2 Kio de RAM, 228 Kio de flash sous le loader |
 | Écran | 160×128 : les 144 lignes du Game Boy fusionnées en 128 | 220×176 : image 1:1, ou agrandie en 200×176 |
 | Build du firmware | PlatformIO | `make` avec arm-none-eabi-gcc |
-| Version | 0.10.7 | 0.10.6 |
+| Version | 0.10.8 | 0.10.7 |
 | État | Jeux lancés sur la console | Testée en émulateur seulement. Un premier testeur sur vraie Pokitto signale une image retournée verticalement (lignes inversées, colonnes dans l'ordre), compatible avec la perte du bit SS (R01) du panneau à l'init ; la 0.10.1 allonge l'attente après reset et l'impulsion d'écriture des registres et réécrit R01, à vérifier sur la console |
 
 ## SG-1000
@@ -53,7 +53,9 @@ même chaîne : le code Z80 est recompilé, pas émulé.
   assembleur Thumb-1, exécutées en RAM). Les masques de sprites par ligne
   suivent chaque écriture d'un Y de sprite. Le SN76489 est rattrapé avant
   chaque écriture, par blocs partagés entre ses quatre canaux. La RAM de
-  cartouche de 8 Kio (The Castle) est détectée au profilage.
+  cartouche de 8 Kio (The Castle) est détectée au profilage. `OUTI`/`OUTD`,
+  que les jeux déroulent pour remplir la VRAM, sont compilés comme sur Game
+  Gear au lieu d'appeler l'interpréteur.
 - **Vérifié** : avec `--meta-precise`, le code recompilé reproduit
   exactement l'interpréteur (registres, mémoire, VDP, PSG, image) sur les
   68 cartouches d'une collection. Le noyau Z80 passe ZEXDOC et 66 tests
@@ -211,6 +213,15 @@ Sur PC, la lecture passe par la [branche `z80` de gm0](https://github.com/r043v/
 - Les firmwares sont bare metal : pas de cœur Arduino sur la META, ni mbed
   ni PokittoLib sur la Pokitto. Démarrage, horloges, SPI, écran, son,
   boutons et carte SD sont écrits pour chaque puce.
+- Les cibles Sega (SG-1000, Game Gear, Master System) partagent plus que le
+  cœur Z80 : un gabarit CMake par binaire, les helpers des harnais, le
+  squelette de façade, l'interface du code généré (`sg_gen.h`) et le PSG
+  (`sg_psg.h`) vivent dans `targets/common/` ; ce qui diffère est derrière un
+  aiguillage (`sg_config.h`) ou une macro.
+- Les débits du bus META sont dans `targets/meta/runtime/gbl_board.h` :
+  écran à 48 MHz (36 MHz quand le CPU tourne à 72), carte SD à 24 MHz après
+  l'initialisation à 250 kHz, boutons à 12 MHz. Un jeu peut demander un écran
+  plus lent par ses propres `build_flags` (`-DMETA_LCD_SPI_MHZ=24`).
 
 ### Les outils
 
@@ -310,6 +321,14 @@ Un second agent (GLM, via ZCode) a écrit le reste : 26 commits,
 (runtime 0.7.0) et des corrections Pokitto. Il a aussi écrit l'émulateur
 [gm0](https://github.com/r043v/gm0).
 
+Un troisième agent (DeepSeek V4.1 Flash Free, via OpenCode) s'est occupé des
+bus et du code dupliqué : écran de la META à 48 MHz (36 avec le
+surcadençage à 72 MHz), carte SD à 24 MHz, et les cibles SG-1000, Game Gear
+et Master System réunies sur un seul gabarit CMake, un seul jeu de helpers,
+un seul squelette de façade et une seule interface de code généré. 9 commits,
+39 fichiers, 861 lignes ajoutées et 859 supprimées — le même code à moins
+d'endroits.
+
 Les chiffres viennent des transcriptions de Claude Code et de l'historique
 git. Le recompilateur de départ (`recompiler/`, environ 17 000 lignes) est
 celui de gb-recompiled.
@@ -340,6 +359,8 @@ restent dans l'historique et dans le [dépôt d'origine](https://github.com/arca
 | `targets/meta/platform/` | frontend commun (menu, sauvegardes, carte SD, affichage) et pilotes de chaque console |
 | `targets/meta/host/`, `targets/meta/tools/` | harnais PC, estimateur de cycles, outils de police |
 | `targets/sg1000/` | runtime SG-1000 (TMS9918A, SN76489, interpréteur Z80 de repli), frontend des consoles, harnais PC |
+| `targets/gamegear/` | runtime Game Gear/Master System (VDP mode 4, PSG Sega, pagination, sauvegardes), frontend des consoles, harnais PC |
+| `targets/common/` | ce que les cibles Sega partagent : gabarits CMake, helpers des harnais, explorateur de jeu, squelette de façade, `sg_gen.h`, `sg_psg.h` |
 | `compile.sh`, `tools/meta-compiler/` | conversion en lot |
 | `tools/gb-emu/` | fork de gamebuino-emulator |
 | `tests/`, `targets/meta/tests/` | tests |

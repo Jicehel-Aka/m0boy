@@ -26,7 +26,7 @@ recompiler and adds everything needed to run on chips with 32 KiB of RAM,
 | Memory | 32 KiB RAM, 240 KiB flash for the firmware | 32 + 2 + 2 KiB RAM, 228 KiB flash below the loader |
 | Screen | 160×128: the 144 Game Boy lines blended into 128 | 220×176: picture 1:1, or enlarged to 200×176 |
 | Firmware build | PlatformIO | `make` with arm-none-eabi-gcc |
-| Version | 0.10.7 | 0.10.6 |
+| Version | 0.10.8 | 0.10.7 |
 | Status | Games run on the console | Tested in an emulator only. A first tester on a real Pokitto reports a picture flipped vertically (rows reversed, columns in order), consistent with the panel's SS bit (R01) being lost at init; 0.10.1 lengthens the post-reset wait and the register write strobe and writes R01 again, still to be checked on the device |
 
 ## SG-1000
@@ -50,6 +50,8 @@ pipeline: the Z80 code is recompiled, not emulated.
   from RAM). Sprite line masks follow each sprite Y write. The SN76489 is
   caught up before each write, in blocks shared by its four channels.
   8 KiB cartridge RAM (The Castle) is detected while profiling.
+  `OUTI`/`OUTD`, which the games unroll for VRAM uploads, are compiled as on
+  the Game Gear instead of calling the interpreter.
 - **Checked**: built with `--meta-precise`, the recompiled code reproduces
   the interpreter exactly (registers, memory, VDP, PSG, picture) on all 68
   cartridges of a collection. The Z80 core passes ZEXDOC and 66 of 67 ZEXALL
@@ -201,6 +203,15 @@ Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
 - The firmwares are bare metal: no Arduino core on the META, no mbed or
   PokittoLib on the Pokitto. Startup, clocks, SPI, display, sound, buttons
   and SD card are written for each chip.
+- The Sega backends (SG-1000, Game Gear, Master System) share more than the
+  Z80 core: one CMake template per binary, the host helpers, the frontend
+  skeleton, the generated code's interface (`sg_gen.h`) and the PSG
+  (`sg_psg.h`) live in `targets/common/`; what differs is behind a switch
+  (`sg_config.h`) or a macro.
+- The META's bus rates live in `targets/meta/runtime/gbl_board.h`: panel at
+  48 MHz (36 MHz while the CPU runs at 72), SD card at 24 MHz after the
+  250 kHz init, buttons at 12 MHz. A game can ask for a slower panel with
+  its own `build_flags` (`-DMETA_LCD_SPI_MHZ=24`).
 
 ### Tools
 
@@ -297,6 +308,13 @@ A second agent (GLM, via ZCode) wrote the rest: 26 commits,
 (runtime 0.7.0) and Pokitto fixes. It also wrote the
 [gm0](https://github.com/r043v/gm0) emulator.
 
+A third agent (DeepSeek V4.1 Flash Free, via OpenCode) worked on the buses
+and on the duplicated code: the META panel at 48 MHz (36 with the 72 MHz
+overclock), the SD card at 24 MHz, and the SG-1000, Game Gear and Master
+System backends merged onto one CMake template, host helpers, frontend
+skeleton and Z80 engine interface. 9 commits, 39 files, 861 lines added and
+859 removed — the same code in fewer places.
+
 The figures come from the Claude Code transcripts and the git history. The
 recompiler m0boy started from (`recompiler/`, about 17,000 lines) is
 gb-recompiled's.
@@ -326,6 +344,8 @@ were then removed from the tree; they remain in the history and in the
 | `targets/meta/platform/` | shared frontend (menu, saves, SD card, display) and each console's drivers |
 | `targets/meta/host/`, `targets/meta/tools/` | host harness, cycle estimator, font tools |
 | `targets/sg1000/` | SG-1000 runtime (TMS9918A, SN76489, fallback Z80 interpreter), console frontend, host harness |
+| `targets/gamegear/` | Game Gear/Master System runtime (mode 4 VDP, Sega PSG, paging, saves), console frontend, host harness |
+| `targets/common/` | what the Sega backends share: CMake templates, host helpers, play explorer, frontend skeleton, `sg_gen.h`, `sg_psg.h` |
 | `compile.sh`, `tools/meta-compiler/` | batch conversion |
 | `tools/gb-emu/` | gamebuino-emulator fork |
 | `tests/`, `targets/meta/tests/` | tests |
