@@ -261,8 +261,21 @@ Version naïve (négatifs rangés dans le *même* cache de 32 places, marqueur
 (+0,09 %, `perf stat -e instructions:u`, même image) — les négatifs
 chassent des positifs et la recherche binaire revient ailleurs.  Écartée.
 
-La variante à cache négatif *séparé* (32 places à part) est la suite
-logique, mais la première mesure était fausse (un store placé après le
-`return 0` du chemin négatif faisait répondre « interpréteur » pour des
-adresses compilées : +23 % d'instructions, essai invalide).  À mesurer
-proprement avant d'être retenue.
+La variante à cache négatif *séparé* (32 places à part, indexées par un
+second hachage) a été mesurée proprement le même jour, la première mesure
+étant fausse (un store placé après le `return 0` du chemin négatif faisait
+répondre « interpréteur » pour des adresses compilées : +23 %
+d'instructions, essai invalide).  Résultat : **1 702 461 334 instructions
+contre 1 702 107 123** sur 4 000 images, soit **+354 211 (+0,02 %)**,
+`run_hash` inchangé.  Compteurs posés dans la fonction, même partie :
+380 990 appels, 269 043 servis par le cache positif (70,6 %), 96 430
+recherches binaires, et **15 517 résultats négatifs servis par le cache,
+soit 13,9 % des 111 947 réponses négatives**.  Chaque appel qui rate le
+cache positif paie la vérification (~8 instructions, estimation) ; chaque
+succès évite une recherche binaire, ~35 instructions compte tenu de
+l'écart mesuré : le seuil de rentabilité est vers **23 % de succès**, pas
+14 %.  Le chemin négatif est chaud mais **peu répétitif** — les adresses
+interprétées se suivent plus qu'elles ne se répètent.  Les deux variantes
+sont écartées et `sg_gen_lookup` reste inchangé : les 218 461 appels de
+l'instrumentation précédente coûtent moins que n'importe quel cache de
+leurs résultats négatifs.
