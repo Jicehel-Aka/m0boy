@@ -86,6 +86,12 @@ from the DFLL48M, 36 and 48 from the FDPLL96M at 72 or 96 MHz.  In
 `tools/gb-emu` (no PLL model) a 36/48 request falls back to 24 and the
 game runs.  A panel or card that does not take its rate: rebuild with
 `-DMETA_LCD_SPI_MHZ=24` or `-DMETA_SD_SPI_HZ=12000000` in build_flags.
+
+2026-10-15: with no META to try them on, the display went back to its 24 MHz
+default (`gbl_board.h`, runtime 0.10.9) -- the rate meta-lapinou runs this
+panel at; 36 and 48 stay on the menu's "SPI ecran" and in a game's
+build_flags.  The card keeps its 24 MHz default, the SD specification's
+limit.
 Donkey Kong Land: −15.0 KiB flash, −1,880 B RAM; the RAM pays for
 `GBL_STREAM_SECTORS` 8 (4 with 2 KiB of cartridge RAM in RAM), streamed
 builds keep ~1.8 KiB of stack (2.0 before). Evidence: `ctest -R meta`,
@@ -192,12 +198,11 @@ function is a livelock, not slowness.
 
 - Run on hardware: SD streaming, saves, asm paths, frame pacing, and now
   the bare-metal startup (clocks, DAC, SPI rates, HOME back to the loader).
-- On a META: the panel at 48 MHz (the new boot default; "SPI ecran" in the
-  menu, frame rate in its info line), and the card at its new 24 MHz
-  default.  Both are unverified on hardware: gm0 ran the panel at 36, no
-  META has been seen at 48, and the card had only ever run at 12.  A panel
-  that garbles (or a card that fails) goes back with
-  `-DMETA_LCD_SPI_MHZ=24` / `-DMETA_SD_SPI_HZ=12000000` in build_flags.
+- On a META: the card at its new 24 MHz default (the display is back at its
+  24 MHz default since 2026-10-15; 36 and 48 wait on the menu for a console
+  to try them).  Both are unverified on hardware: gm0 ran the panel at 36,
+  no META has been seen above 24, and the card had only ever run at 12.  A
+  card that fails goes back with `-DMETA_SD_SPI_HZ=12000000` in build_flags.
 - Option menu (HOME held ½ s, 2026-10-01): save states in `<NAME>.STA`,
   volume, palettes, frame skip, speed, 72 MHz (untested on a META), restart;
   checked in gamebuino-emulator and by the host `--state-test`.

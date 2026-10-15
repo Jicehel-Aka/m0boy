@@ -20,18 +20,22 @@
  * option menu's "SPI ecran" changes it in the Game Boy firmware; the SG-1000
  * and Game Gear frontends have no menu and keep the boot value.
  *
- * 48 is the maximum the clock tree gives: a synchronous SPI runs at half its
- * SERCOM clock, and SERCOM4's generator 6 is the DFLL48M (12 and 24 MHz) or
- * the FDPLL96M at 72 or 96 MHz (36 and 48) -- past the SERCOM's 48 MHz clock
- * rating and past the ST7735's 15 MHz write cycle.  meta-lapinou drives this
- * panel at 24; gm0's overclocked META port ran it at 36.  The PLL has one
- * frequency, so the CPU at 72 MHz caps the display at 36 (meta_clock.cpp
- * reduces it), and when the PLL does not lock apply() falls back to 24.
+ * 24 is the boot default: the rate meta-lapinou drives this panel at, and
+ * the only panel rate with runs on a real META.  12 comes from the DFLL48M,
+ * 24 from the DFLL48M too (half its SERCOM clock), and 36 and 48 only from
+ * the FDPLL96M at 72 or 96 MHz -- past the SERCOM's 48 MHz clock rating and
+ * past the ST7735's 15 MHz write cycle.  gm0's overclocked META port ran 36;
+ * nothing has been seen at 48 on a panel, so the default stays at 24 and
+ * 36/48 are opt-in: "SPI ecran" in the Game Boy firmware's menu (SG-1000 and
+ * Game Gear frontends have no menu and keep the boot value), or a game's own
+ * `-DMETA_LCD_SPI_MHZ=36|48` in its build_flags.  The PLL has one frequency,
+ * so the CPU at 72 MHz caps the display at 36 (meta_clock.cpp reduces it),
+ * and when the PLL does not lock apply() falls back to 24.
  * A full frame is 40,960 bytes: 13.7 ms at 24 MHz, 9.1 at 36, 6.8 at 48
  * (30,720 / 10.2 / 6.8 / 5.1 in 12-bit colour, META_LCD_12BPP).  A rate the
  * panel does not take scrambles the screen, menu included. */
 #ifndef META_LCD_SPI_MHZ
-#define META_LCD_SPI_MHZ 48
+#define META_LCD_SPI_MHZ 24
 #endif
 
 /* META_SD_SPI_HZ: the card's clock outside identification, 24 MHz -- the

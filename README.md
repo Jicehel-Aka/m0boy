@@ -209,9 +209,10 @@ Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
   (`sg_psg.h`) live in `targets/common/`; what differs is behind a switch
   (`sg_config.h`) or a macro.
 - The META's bus rates live in `targets/meta/runtime/gbl_board.h`: panel at
-  48 MHz (36 MHz while the CPU runs at 72), SD card at 24 MHz after the
-  250 kHz init, buttons at 12 MHz. A game can ask for a slower panel with
-  its own `build_flags` (`-DMETA_LCD_SPI_MHZ=24`).
+  24 MHz (the rate meta-lapinou runs this panel at; 36 and 48 come from the
+  PLL and are opt-in — "SPI ecran" in the Game Boy firmware's menu, or a
+  game's own `build_flags`, `-DMETA_LCD_SPI_MHZ=36`), SD card at 24 MHz
+  after the 250 kHz init, buttons at 12 MHz.
 
 ### Tools
 
@@ -309,11 +310,12 @@ A second agent (GLM, via ZCode) wrote the rest: 26 commits,
 [gm0](https://github.com/r043v/gm0) emulator.
 
 A third agent (DeepSeek V4.1 Flash Free, via OpenCode) worked on the buses
-and on the duplicated code: the META panel at 48 MHz (36 with the 72 MHz
-overclock), the SD card at 24 MHz, and the SG-1000, Game Gear and Master
-System backends merged onto one CMake template, host helpers, frontend
-skeleton and Z80 engine interface. 9 commits, 39 files, 861 lines added and
-859 removed — the same code in fewer places.
+and on the duplicated code: the SD card from 12 to 24 MHz, a rate per SERCOM4
+device, and the SG-1000, Game Gear and Master System backends merged onto one
+CMake template, host helpers, frontend skeleton and Z80 engine interface.
+9 commits, 39 files, 861 lines added and 859 removed — the same code in fewer
+places. It also took the panel to 48 MHz and back to 24 in 0.10.9: nothing
+above 24 has been on a real META, and 36/48 stay one menu press away.
 
 The figures come from the Claude Code transcripts and the git history. The
 recompiler m0boy started from (`recompiler/`, about 17,000 lines) is

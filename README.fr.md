@@ -219,9 +219,10 @@ Sur PC, la lecture passe par la [branche `z80` de gm0](https://github.com/r043v/
   (`sg_psg.h`) vivent dans `targets/common/` ; ce qui diffère est derrière un
   aiguillage (`sg_config.h`) ou une macro.
 - Les débits du bus META sont dans `targets/meta/runtime/gbl_board.h` :
-  écran à 48 MHz (36 MHz quand le CPU tourne à 72), carte SD à 24 MHz après
-  l'initialisation à 250 kHz, boutons à 12 MHz. Un jeu peut demander un écran
-  plus lent par ses propres `build_flags` (`-DMETA_LCD_SPI_MHZ=24`).
+  écran à 24 MHz (le débit de meta-lapinou sur ce panneau ; 36 et 48 viennent
+  de la PLL et s'essaient au menu « SPI ecran » du firmware Game Boy, ou par
+  les `build_flags` d'un jeu, `-DMETA_LCD_SPI_MHZ=36`), carte SD à 24 MHz
+  après l'initialisation à 250 kHz, boutons à 12 MHz.
 
 ### Les outils
 
@@ -322,12 +323,13 @@ Un second agent (GLM, via ZCode) a écrit le reste : 26 commits,
 [gm0](https://github.com/r043v/gm0).
 
 Un troisième agent (DeepSeek V4.1 Flash Free, via OpenCode) s'est occupé des
-bus et du code dupliqué : écran de la META à 48 MHz (36 avec le
-surcadençage à 72 MHz), carte SD à 24 MHz, et les cibles SG-1000, Game Gear
-et Master System réunies sur un seul gabarit CMake, un seul jeu de helpers,
-un seul squelette de façade et une seule interface de code généré. 9 commits,
-39 fichiers, 861 lignes ajoutées et 859 supprimées — le même code à moins
-d'endroits.
+bus et du code dupliqué : carte SD passée de 12 à 24 MHz, un débit par
+périphérique du SERCOM4, et les cibles SG-1000, Game Gear et Master System
+réunies sur un seul gabarit CMake, un seul jeu de helpers, un seul squelette
+de façade et une seule interface de code généré. 9 commits, 39 fichiers,
+861 lignes ajoutées et 859 supprimées — le même code à moins d'endroits. Il a
+aussi monté l'écran à 48 MHz puis ramené à 24 en 0.10.9 : rien au-dessus de 24
+n'est passé sur une vraie META, et 36/48 restent à une touche du menu.
 
 Les chiffres viennent des transcriptions de Claude Code et de l'historique
 git. Le recompilateur de départ (`recompiler/`, environ 17 000 lignes) est
