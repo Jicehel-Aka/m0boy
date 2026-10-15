@@ -740,7 +740,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     echo "[i] Sauvegarde : $game_name/$save_name (déjà sur la carte : ne plus y toucher)"
   fi
   if [ -n "$stream_name" ]; then
-    if [ $(( $(stat -c %s "$rom_path") % 16384 )) -eq 512 ]; then # copier header: the card holds the ROM itself
+    if [ $(( $(stat -c %s "$rom_path") % 16384 )) -eq 512 ]; then # copier header (same rule as m0boy/sg1000.h and targets/common/host/m0_host_util.h): the card holds the ROM itself
       tail -c +513 "$rom_path" > "$game_dir/$stream_name" || return 1
     else cp "$rom_path" "$game_dir/$stream_name" || return 1; fi
     echo "[i] Pages de ROM lues depuis la carte SD : $game_name/$stream_name (racine ou un dossier)"

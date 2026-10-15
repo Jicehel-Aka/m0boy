@@ -9,6 +9,16 @@
 
 namespace m0boy::sg1000 {
 
+// Cartridges dumped by some copiers and emulators start with a 512-byte
+// header (the ROM itself is then a whole number of 16 KiB pages).  One rule,
+// here, used by the cartridge readers and the project generator; the host
+// harnesses repeat it in C (targets/common/host/m0_host_util.h) and
+// compile.sh applies it to the card copy of a streamed ROM.
+inline constexpr size_t copier_header_bytes = 512;
+inline constexpr size_t copier_header_skip(size_t file_bytes) {
+    return (file_bytes & 0x3fffu) == copier_header_bytes ? copier_header_bytes : size_t{0};
+}
+
 // Initial frontend: unbanked ROM only. Expansion RAM and cartridge mappers
 // require separate profiles rather than silently treating them as this board.
 class Cartridge final : public ByteReader {

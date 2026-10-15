@@ -154,8 +154,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         std::ifstream file(path, std::ios::binary);
         if (!file) { error = "Cannot read Game Gear cartridge: " + path.string(); return false; }
         rom.assign(std::istreambuf_iterator<char>(file), {});
-        if (o.mastersystem && (rom.size() & 0x3fff) == 512) rom.erase(rom.begin(), rom.begin() + 512); /* copier header */
-        if (rom.size() < 0x400 || rom.size() > 0x400000) { error = "Game Gear cartridge must contain 1 KiB to 4 MiB"; return false; }
+        /* copier header, same rule for Game Gear and Master System dumps
+         * (m0boy/sg1000.h; the card copy compile.sh writes is stripped the
+         * same way, so their pages stay aligned) */
+        rom.erase(rom.begin(), rom.begin() + static_cast<std::ptrdiff_t>(copier_header_skip(rom.size())));        if (rom.size() < 0x400 || rom.size() > 0x400000) { error = "Game Gear cartridge must contain 1 KiB to 4 MiB"; return false; }
         rom.resize((rom.size() + 0x3fff) & ~size_t(0x3fff), 0xff);
     } else {
         auto cartridge = Cartridge::load(path, error);
@@ -382,7 +384,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         /* The CMake files are shared by both consoles (targets/common/cmake),
          * one for the firmware and one for the host harness: only the source
          * lists and the console's name change. */
-        const auto cmake_tpl = o.meta_templates.parent_path() / "common" / "cmake";
+        const auto common_dir = o.meta_templates.parent_path() / "common";
+        const auto cmake_tpl = common_dir / "cmake";
         const std::string console = gg ? "gg" : "sg1000";
         const std::string core_sources = gg ? "${SRC}/z80.c ${SRC}/gg.c ${SRC}/gg_psg.c ${SRC}/gg_vdp.c"
                                             : "${SRC}/z80.c ${SRC}/sg1000.c ${SRC}/sg_audio.c ${SRC}/tms9918.c";
@@ -400,6 +403,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             host_cmake = replace(host_cmake, "@SYSTEM@", console);
             host_cmake = replace(host_cmake, "@SOURCES@", host_sources);
             write(o.output / "host" / "CMakeLists.txt", host_cmake);
+            /* shared host helpers (the copier-header rule, m0boy/sg1000.h
+             * states it for the recompiler) */
+            copy_template(common_dir / "host" / "m0_host_util.h", o.output / "host" / "m0_host_util.h");
         }
 
         if (o.target != TargetId::desktop) {

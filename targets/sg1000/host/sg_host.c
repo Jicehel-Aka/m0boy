@@ -2,6 +2,7 @@
  * comparison (run_hash) and the device renderer checked against the
  * reference one on every displayed line. */
 #include "sg1000.h"
+#include "m0_host_util.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -205,9 +206,12 @@ int main(int argc, char **argv) {
     if (!rom_path) { fprintf(stderr, "Usage: sg1000_host cartridge.sg [--frames N] [--shot file.ppm] [--coverage file]\n"); return 1; }
     FILE *file = fopen(rom_path, "rb");
     if (!file) { perror(rom_path); return 1; }
-    if (fseek(file, 0, SEEK_END) || ftell(file) <= 0 || ftell(file) > 0xc000) { fclose(file); fprintf(stderr, "Unsupported cartridge size\n"); return 1; }
-    size = (size_t)ftell(file);
-    rewind(file);
+    if (fseek(file, 0, SEEK_END) || ftell(file) <= 0) { fclose(file); fprintf(stderr, "Unsupported cartridge size\n"); return 1; }
+    long file_bytes = ftell(file);
+    long skip = (long)m0_copier_skip((size_t)file_bytes); /* copier header */
+    size = (size_t)(file_bytes - skip);
+    if (size > 0xc000) { fclose(file); fprintf(stderr, "Unsupported cartridge size\n"); return 1; }
+    fseek(file, skip, SEEK_SET);
     loaded = malloc(size);
     if (!loaded || fread(loaded, 1, size, file) != size) { fclose(file); free(loaded); return 1; }
     fclose(file);

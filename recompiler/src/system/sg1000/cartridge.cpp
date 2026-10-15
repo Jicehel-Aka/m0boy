@@ -26,7 +26,8 @@ std::optional<Cartridge> Cartridge::load(const std::filesystem::path& path,
         return std::nullopt;
     }
     const auto size = stream.tellg();
-    if (size <= 0 || size > static_cast<std::streamoff>(max_rom_bytes)) {
+    /* a possible 512-byte copier header is not part of the cartridge */
+    if (size <= 0 || size > static_cast<std::streamoff>(max_rom_bytes + copier_header_bytes)) {
         error = "SG-1000 unbanked cartridge must contain 1 to 49152 bytes; "
                 "larger cartridges need a mapper profile";
         return std::nullopt;
@@ -37,6 +38,7 @@ std::optional<Cartridge> Cartridge::load(const std::filesystem::path& path,
         error = "Incomplete SG-1000 cartridge read";
         return std::nullopt;
     }
+    bytes.erase(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(copier_header_skip(bytes.size())));
     return from_bytes(std::move(bytes), error);
 }
 
@@ -62,13 +64,13 @@ std::optional<CartridgeInfo> inspect_gamegear(const std::filesystem::path& path,
         error = "Game Gear cartridge must contain 1 KiB to 4 MiB: " + path.string();
         return std::nullopt;
     }
-    return CartridgeInfo{SystemId::gamegear, path.stem().string(), static_cast<size_t>(size), 0, "sega"};
+    const size_t rom_bytes = static_cast<size_t>(size) - copier_header_skip(static_cast<size_t>(size));
+    return CartridgeInfo{SystemId::gamegear, path.stem().string(), rom_bytes, 0, "sega"};
 }
 std::optional<CartridgeInfo> inspect_mastersystem(const std::filesystem::path& path, std::string& error) {
     auto info = inspect_gamegear(path, error);
     if (!info) return info;
     info->system = SystemId::mastersystem;
-    if ((info->rom_bytes & 0x3fff) == 512) info->rom_bytes -= 512; /* copier header */
     return info;
 }
 } // namespace m0boy::sg1000

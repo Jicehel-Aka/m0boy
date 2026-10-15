@@ -2,6 +2,7 @@
  * comparison (run_hash over CPU, memory, devices and the picture), captures
  * and sound. */
 #include "gg.h"
+#include "m0_host_util.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -219,12 +220,13 @@ int main(int argc, char **argv) {
     if (!file) { perror(rom_path); return 1; }
     if (fseek(file, 0, SEEK_END) || ftell(file) < 0x400 || ftell(file) > 0x400000) { fclose(file); fprintf(stderr, "Unsupported cartridge size\n"); return 1; }
     size = (size_t)ftell(file);
-    long skip = (size & 0x3fff) == 512 ? 512 : 0; /* copier header */
+    long skip = (long)m0_copier_skip(size); /* copier header */
     size -= (size_t)skip;
     fseek(file, skip, SEEK_SET);
-    loaded = malloc((size + 0x3fff) & ~(size_t)0x3fff); /* whole pages, padded with FF */
+    size_t paged = m0_rom_page_bytes(size); /* whole pages, padded with FF */
+    loaded = malloc(paged);
     if (!loaded) { fclose(file); return 1; }
-    memset(loaded, 0xff, (size + 0x3fff) & ~(size_t)0x3fff);
+    memset(loaded, 0xff, paged);
     if (fread(loaded, 1, size, file) != size) { fclose(file); free(loaded); return 1; }
     fclose(file);
     rom = loaded;
