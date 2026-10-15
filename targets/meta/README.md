@@ -762,7 +762,13 @@ Tried and dropped:
   advance already processes several lines in one loop, so it gained nothing
   and cost STAT reads more;
 - inlining the page lookup of `gbl_rd`/`gbl_wr` in generated code: with
-  `-Os` GCC does not inline it and adds a call (+3%).
+  `-Os` GCC does not inline it and adds a call (+3%);
+- a larger dispatch cache: `GBL_LOOKUP_CACHE` 128 and 256, measured with
+  `m0_estimate.py` (120 frames, generated projects in `out/`) on the two
+  ROMs where the interpreter runs most, change the frame by less than 0.1%
+  (Kirby's Dream Land, 12.7% interpreted: 363,134 → 362,913 core cycles at
+  128; Super Mario Land, 21.8%: 314,771 → 314,780 → 314,797 at 128 and 256).
+  The misses are not capacity-driven, so the 64 entries stay.
 
 A 24-byte array initializer in the sprite code had become a `memset` call:
 it is now cleared with explicit stores. Every change keeps the state hash identical on five
