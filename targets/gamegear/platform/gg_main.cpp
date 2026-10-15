@@ -20,12 +20,11 @@
 #else
 #include "meta_hw.h"
 #endif
+#include "sg_frontend.h"
 extern "C" {
 extern const uint8_t sg_rom[];
 extern const size_t sg_rom_size;
 sg_fn sg_gen_lookup(uint16_t pc);
-extern char end; /* end of .bss: the C stack grows down to it */
-extern char __StackTop;
 #if META_TARGET_POKITTO
 #if !GG_STREAM && !GG_CART_ON_CARD /* else pokitto_sd.c */
 void pokitto_sd_clock_changed(uint32_t) {}
@@ -189,17 +188,16 @@ static void frame(void *) {
     return;
 #endif
     uint8_t keys = 0;
+    const uint8_t raw = SG_PAD_RAW();
 #if META_TARGET_POKITTO
-    uint8_t raw = pokitto_buttons();
     keys = ((raw & POKITTO_UP) ? GG_UP : 0) | ((raw & POKITTO_DOWN) ? GG_DOWN : 0) |
            ((raw & POKITTO_LEFT) ? GG_LEFT_KEY : 0) | ((raw & POKITTO_RIGHT) ? GG_RIGHT_KEY : 0) |
            ((raw & POKITTO_A) ? GG_B1 : 0) | ((raw & POKITTO_B) ? GG_B2 : 0) | ((raw & POKITTO_C) ? (GG_SMS ? GG_PAUSE : GG_START) : 0);
 #else
-    uint8_t raw = meta_pad_read(); /* META_BUTTONS_SPI_HZ, library bit order */
     /* META: A is button 1, B button 2, MENU is START */
     keys = ((raw & 8) ? GG_UP : 0) | ((raw & 1) ? GG_DOWN : 0) | ((raw & 2) ? GG_LEFT_KEY : 0) |
            ((raw & 4) ? GG_RIGHT_KEY : 0) | ((raw & 16) ? GG_B1 : 0) | ((raw & 32) ? GG_B2 : 0) | ((raw & 64) ? (GG_SMS ? GG_PAUSE : GG_START) : 0);
-    if (WDT->CTRL.reg & WDT_CTRL_ENABLE) { WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY; }
+    SG_PAD_WDT();
 #endif
     gg_buttons(keys);
 #ifdef GG_BENCH_PACED /* the real pacing and frame skipping, scripted buttons */
@@ -208,26 +206,11 @@ static void frame(void *) {
 #if GG_CART_ON_CARD
     gg_save_tick();
 #endif
-    /* NTSC: 59736 T-states at 3.579545 MHz */
-    deadline += 16688u;
-    skip_video = (int32_t)(meta_micros() - deadline) > 0 && skipped_run < GG_MAX_SKIP;
-    skipped_run = skip_video ? skipped_run + 1 : 0;
-    while ((int32_t)(meta_micros() - deadline) < 0) meta_audio_idle();
-    if ((int32_t)(meta_micros() - deadline) > 100128) deadline = meta_micros();
+    SG_PACE_FRAME(deadline, skip_video, skipped_run, GG_MAX_SKIP);
 }
 
 int main() {
-#if META_TARGET_POKITTO
-    pokitto_buttons_init();
-#else
-    meta_spi_init();
-#endif
-    meta_clock_init();
-#if !META_TARGET_POKITTO && META_CLOCK_DEFAULT != 48
-    meta_clock_set(META_CLOCK_DEFAULT); /* META_OVERCLOCK */
-#endif
-    meta_lcd_init();
-    meta_lcd_fill(0);
+    SG_PLATFORM_INIT();
 #if GG_STREAM || GG_CART_ON_CARD
     /* ROM pages on the card: no card, file missing, fragmented, another ROM
      * fill the screen red, magenta, yellow, blue */
@@ -253,11 +236,7 @@ int main() {
     machine.row_out = line_buffers[0] + GG_ROW_PAD;
     machine.row_tmp = line_buffers[1] + GG_ROW_PAD;
     machine.frame = frame;
-    {   /* stack below the guard for runtime calls; at least 1 KiB for nesting */
-        uintptr_t stack = (uintptr_t)&__StackTop - (uintptr_t)&end, reserve = 2560;
-        if (stack < reserve + 1024) reserve = stack > 2048 ? stack - 1024 : stack / 2;
-        sg_stack_limit = (uintptr_t)&end + reserve;
-    }
+    SG_STACK_GUARD();
 #ifdef GG_SELFTEST
     gg_selftest_result = gg_render_selftest() + 1; /* read back by gm0 or a debugger */
     for (;;) {}

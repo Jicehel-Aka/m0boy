@@ -12,12 +12,11 @@
 #else
 #include "meta_hw.h"
 #endif
+#include "sg_frontend.h"
 extern "C" {
 extern const uint8_t sg_rom[];
 extern const size_t sg_rom_size;
 sg_fn sg_gen_lookup(uint16_t pc);
-extern char end; /* end of .bss: the C stack grows down to it */
-extern char __StackTop;
 #if META_TARGET_POKITTO
 void pokitto_sd_clock_changed(uint32_t) {}
 #endif
@@ -88,43 +87,22 @@ static void frame(void *) {
     meta_audio_frame();
     meta_lcd_end_frame();
     uint8_t keys = 0, pause = 0;
+    const uint8_t raw = SG_PAD_RAW();
 #if META_TARGET_POKITTO
-    uint8_t raw = pokitto_buttons();
     keys = ((raw & POKITTO_UP) ? 1 : 0) | ((raw & POKITTO_DOWN) ? 2 : 0) | ((raw & POKITTO_LEFT) ? 4 : 0) |
            ((raw & POKITTO_RIGHT) ? 8 : 0) | ((raw & POKITTO_A) ? 16 : 0) | ((raw & POKITTO_B) ? 32 : 0);
     pause = raw & POKITTO_C;
 #else
-    uint8_t raw = meta_pad_read(); /* META_BUTTONS_SPI_HZ, library bit order */
     keys = ((raw & 8) ? 1 : 0) | ((raw & 1) ? 2 : 0) | ((raw & 2) ? 4 : 0) | ((raw & 4) ? 8 : 0) | (raw & 48);
     pause = raw & 64;
-    if (WDT->CTRL.reg & WDT_CTRL_ENABLE) { WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY; }
+    SG_PAD_WDT();
 #endif
     sg1000_buttons(0, keys);
     sg1000_pause(pause);
-    /* NTSC: 59736 T-states at 3.579545 MHz.  CPU, PSG and sprite status
-     * keep full precision whatever is skipped. */
-    deadline += 16688u;
-    /* Late: skip presentations, at most SG_MAX_SKIP in a row (as the Game
-     * Boy runtime's META_MAX_SKIP); the game itself keeps its speed. */
-    skip_video = (int32_t)(meta_micros() - deadline) > 0 && skipped_run < SG_MAX_SKIP;
-    skipped_run = skip_video ? skipped_run + 1 : 0;
-    while ((int32_t)(meta_micros() - deadline) < 0) meta_audio_idle();
-    /* behind by more than 6 frames (a stall): restart from now instead of
-     * running fast to catch up; smaller debts are paid back */
-    if ((int32_t)(meta_micros() - deadline) > 100128) deadline = meta_micros();
+    SG_PACE_FRAME(deadline, skip_video, skipped_run, SG_MAX_SKIP);
 }
 int main() {
-#if META_TARGET_POKITTO
-    pokitto_buttons_init();
-#else
-    meta_spi_init();
-#endif
-    meta_clock_init();
-#if !META_TARGET_POKITTO && META_CLOCK_DEFAULT != 48
-    meta_clock_set(META_CLOCK_DEFAULT); /* META_OVERCLOCK */
-#endif
-    meta_lcd_init();
-    meta_lcd_fill(0);
+    SG_PLATFORM_INIT();
 #if SG_CART_RAM
     sg1000_init(sg_rom, sg_rom_size, cart_ram);
 #else
@@ -139,14 +117,7 @@ int main() {
     machine.row_out = line_buffers[0][0];
 #endif
     machine.frame = frame;
-    /* Below the guard, runtime calls made from a region still need stack:
-     * sync, line rendering, audio catch-up, LCD/audio drivers and
-     * interrupts (about 2 KiB, -fstack-usage); the rest is for nesting. */
-    {   /* at least 1 KiB left for nesting when RAM is tight (cartridge RAM) */
-        uintptr_t stack = (uintptr_t)&__StackTop - (uintptr_t)&end, reserve = 2560;
-        if (stack < reserve + 1024) reserve = stack > 2048 ? stack - 1024 : stack / 2;
-        sg_stack_limit = (uintptr_t)&end + reserve;
-    }
+    SG_STACK_GUARD();
 #ifdef SG_SELFTEST
     sg_selftest_result = sg1000_render_selftest() + 1; /* read back by a debugger or gm0 */
     for (;;) {}

@@ -410,6 +410,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
 
         if (o.target != TargetId::desktop) {
             copy_template(tpl / "platform" / main_cpp, src / main_cpp);
+            /* frontend pieces both consoles share (setup, pad, pacing, stack
+             * guard) */
+            copy_template(common_dir / "platform" / "sg_frontend.h", src / "sg_frontend.h");
             /* files of an earlier generation that this one does not use */
             for (const char* name : { "gg_stream.c", "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_sd_bus.cpp", "pokitto_sd.c" })
                 fs::remove(src / name);
