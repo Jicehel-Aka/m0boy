@@ -45,8 +45,8 @@ def exercise(args, root, system):
     explored = root / 'explored.cov'
     run(args.host, rom, '--explore', 1500, '--random', 3, '--coverage', explored)
     text = explored.read_text()
-    played = re.search(r'^# frames (\d+)$', text, re.M)  # the last segment ends past 1500 (2400 frames at most)
-    assert played and 1500 <= int(played.group(1)) < 1500 + 2400 and '# read ' in text
+    played = re.search(r'^# frames (\d+)$', text, re.M)  # a whole segment: 1920 + up to 3840 frames
+    assert played and 1500 <= int(played.group(1)) < 1920 + 3840 and '# read ' in text
     assert re.search(r'^[0-9a-f]{6} \d+$', text, re.M)
     for target in ('desktop', 'meta', 'pokitto'):
         # Precise build: the recompiled code reproduces the interpreter,

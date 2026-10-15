@@ -279,3 +279,71 @@ interprétées se suivent plus qu'elles ne se répètent.  Les deux variantes
 sont écartées et `sg_gen_lookup` reste inchangé : les 218 461 appels de
 l'instrumentation précédente coûtent moins que n'importe quel cache de
 leurs résultats négatifs.
+
+## 2026-10-15 : couverture, deux leviers mesurés
+
+Ce qui n'est jamais atteint pendant les parties automatiques (autres niveaux,
+combats de boss) reste interprété : c'est la limite laissée ouverte plus haut.
+Six jeux GG mal couverts (Aladdin, Garfield, Mortal Kombat, Ristar, Shinobi,
+Sonic Chaos), 120 000 images d'exploration — le budget réel de `compile.sh`
+(`AUTO_SECONDS=20` : `20 * 6000`) — et la métrique « locations » du joueur
+automatique : les adresses de code distinctes qu'il atteint.  `--random N`
+force la graine à un nombre impair, deux graines paires voisines jouent donc
+la même partie.
+
+### Segments plus longs
+
+Un segment dure `M0X_SEGMENT_MIN` plus 0 à `M0X_SEGMENT_SPAN` images ; un sur
+huit repart du démarrage de la console.  Moyenne de deux séries de quatre
+graines (les réglages se suivent, la seconde série départage les deux
+derniers) :
+
+| locations, contre 480 + 1920 | 960 + 2880 | 1920 + 3840 | 2880 + 5760 |
+|---|---:|---:|---:|
+| Aladdin | +1,2 % | +2,5 % | +2,3 % |
+| Garfield | +2,8 % | +1,1 % | +3,2 % |
+| Mortal Kombat | +2,0 % | +2,4 % | +4,1 % |
+| Ristar | +0,8 % | +3,6 % | +6,5 % |
+| Shinobi | +4,2 % | +4,0 % | +5,5 % |
+| Sonic Chaos | +3,1 % | +4,5 % | +0,8 % |
+
+Les écarts par jeu valent ±5 % pour quatre graines : les trois réglages se
+valent, tous au-dessus du défaut.  Retenu : le pas le plus petit,
+**1920 + 3840**, et seulement dans le harnais GG/SMS (`gg_host.c`) — les
+autres consoles n'ont pas été mesurées ici.
+
+Écartés : `M0X_POOL` 96 (la réserve d'instantanés n'est jamais pleine à ce
+budget : mêmes locations que 48, au chiffre près), `M0X_RESTART` 4 (un
+segment sur quatre repart du début : mitigé, Ristar −9 %), START plus souvent
+(8 % des changements de direction au lieu de 2 %) et START + bouton 1 en
+rafale sur les segments repartant du démarrage (essais à 30 000 images) :
+les deux derniers font moins de locations que le défaut sur cinq jeux sur six,
+jusqu'à −20 % — la pause de START coûte plus qu'elle ne rapporte.
+
+### Les profils de la collection sont restés en v1
+
+Les 225 profils GG de la collection locale datent du 13 octobre : format v1
+(sans « # frames », sans « # read »), aucune exploration.  Le générateur ne
+peut alors ni classer les instructions par exécutions par image ni garder les
+secteurs utiles, et `compile.sh` les refait à la prochaine compilation (un
+profil sans « # frames » est périmé).
+
+Mesure : même générateur, mode précis (`--meta-precise` ; sans lui le natif et
+l'interpréteur divergent sur ces jeux et la comparaison n'a plus de sens),
+parties de contrôle de 20 000 images, graines 201 et 202.  Les trois variantes
+jouent exactement la même partie (`run_hash` identique) ; seuls les profils
+changent.  Moyenne des deux graines :
+
+| | Mortal Kombat | | Garfield | | Aladdin | |
+|---|---:|---:|---:|---:|---:|---:|
+| | interp./image | SD/1000 | interp./image | SD/1000 | interp./image | SD/1000 |
+| v1 (collection) | 1 021 | 5 893 | 1 309 | 6 903 | 443 | 272 |
+| v2, sessions auto | 348 | 985 | 164 | 1 286 | 262 | 24 |
+| v2 + 4 explorations | 351 | 967 | **137** | **486** | 261 | 20 |
+
+Le format v2 vaut à lui seul 1,7× à 8× moins d'instructions interprétées et 5
+à 11× moins de lectures SD ; les explorations ajoutent surtout sur Garfield
+(−16 % d'interprété, −62 % de lectures) et rien de visible ici sur Mortal
+Kombat ni Aladdin (profil déjà complet, flash plein à 97 %).  Les deux termes
+sont ceux que le générateur compare (300 cycles par instruction interprétée,
+50 000 par lecture : des estimations, pas des mesures de console).

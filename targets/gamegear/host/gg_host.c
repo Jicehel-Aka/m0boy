@@ -49,7 +49,13 @@ static void inputs(void) {
 #ifdef GG_ROM_TRACE
 /* --explore frames: the coverage-guided player of m0_explore.h, from the
  * start or from snapshots of the machine (and cartridge RAM) that reached
- * code or ROM data never seen. */
+ * code or ROM data never seen.
+ * Segments plus longs que le défaut partagé : sur six jeux GG, 120 000 images
+ * d'exploration et huit graines, 1920 + 3840 gagne 1 à 4 % de « locations »
+ * en moyenne (2880 + 5760 ne fait pas mieux ; voir
+ * docs/GG_RISTAR_VITESSE_2026-10-14.fr.md). */
+#define M0X_SEGMENT_MIN 1920
+#define M0X_SEGMENT_SPAN 3840
 #include "m0_explore.h"
 typedef struct { gg_t machine; uint8_t cart[GG_CART_RAM_SIZE]; } snapshot_t;
 static m0x_t explorer;
