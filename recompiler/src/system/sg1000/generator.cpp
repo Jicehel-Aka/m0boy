@@ -385,8 +385,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         for (const auto& entry : fs::directory_iterator(tpl / "runtime"))
             if (entry.is_regular_file()) copy_template(entry.path(), src / entry.path().filename());
         /* the Z80 engine both consoles run (the memory map differs, see
-         * sg_gen.h) */
-        copy_template(common_dir / "runtime" / "sg_gen.h", src / "sg_gen.h");
+         * sg_gen.h), and the PSG sample generation sg_audio.c / gg_psg.c
+         * include (sg_psg.h) */
+        for (const char* name : { "sg_gen.h", "sg_psg.h" })
+            copy_template(common_dir / "runtime" / name, src / name);
         if (gg) /* the Z80 core is the SG-1000 runtime's */
             for (const char* name : { "z80.c", "z80.h", "z80_ops.h", "z80_fast.h" }) copy_template(shared / "runtime" / name, src / name);
         const std::string host_c = gg ? "gg_host.c" : "sg_host.c", main_cpp = gg ? "gg_main.cpp" : "sg_main.cpp";

@@ -24,12 +24,14 @@ add_subdirectory(recompiler)
 add_library(m0boy_z80_runtime STATIC targets/sg1000/runtime/z80.c)
 target_include_directories(m0boy_z80_runtime PUBLIC targets/sg1000/runtime)
 add_library(m0boy_sg1000_runtime STATIC targets/sg1000/runtime/sg1000.c targets/sg1000/runtime/sg_audio.c targets/sg1000/runtime/tms9918.c)
+target_include_directories(m0boy_sg1000_runtime PUBLIC targets/common/runtime) # sg_psg.h
 target_link_libraries(m0boy_sg1000_runtime PUBLIC m0boy_z80_runtime)
 add_executable(sg1000_host targets/sg1000/host/sg_host.c)
 target_include_directories(sg1000_host PRIVATE targets/common/host) # m0_explore.h
 target_link_libraries(sg1000_host PRIVATE m0boy_sg1000_runtime)
 add_library(m0boy_gg_runtime STATIC targets/gamegear/runtime/gg.c targets/gamegear/runtime/gg_vdp.c targets/gamegear/runtime/gg_psg.c)
 target_include_directories(m0boy_gg_runtime PUBLIC targets/gamegear/runtime)
+target_include_directories(m0boy_gg_runtime PUBLIC targets/common/runtime) # sg_psg.h
 target_link_libraries(m0boy_gg_runtime PUBLIC m0boy_z80_runtime)
 target_compile_definitions(m0boy_gg_runtime PUBLIC GG_ROM_TRACE=1) # host profiling of ROM data reads
 add_executable(gg_host targets/gamegear/host/gg_host.c)

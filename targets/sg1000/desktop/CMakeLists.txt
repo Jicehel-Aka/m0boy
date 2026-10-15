@@ -11,7 +11,7 @@ set(SG_EMBEDDED_ROM_HEADER "" CACHE FILEPATH "Generated embedded cartridge heade
 set(SG ${CMAKE_CURRENT_SOURCE_DIR}/..)
 add_executable(sg1000_play ${SG}/host/sg_player.c ${SG}/runtime/z80.c
     ${SG}/runtime/sg1000.c ${SG}/runtime/sg_audio.c ${SG}/runtime/tms9918.c)
-target_include_directories(sg1000_play PRIVATE ${SG}/runtime)
+target_include_directories(sg1000_play PRIVATE ${SG}/runtime ${SG}/../common/runtime) # sg_psg.h
 if(TARGET SDL2::SDL2main)
     target_link_libraries(sg1000_play PRIVATE SDL2::SDL2main)
 endif()
