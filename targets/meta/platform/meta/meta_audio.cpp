@@ -131,7 +131,14 @@ static void channel_start(const meta_dma_descriptor *first) {
     meta_dma_desc[META_DMA_AUDIO] = *first;
     __disable_irq();
     DMAC->CHID.reg = DMAC_CHID_ID(META_DMA_AUDIO);
+    /* A chain that ran into its invalid descriptor may leave the channel
+     * enabled (suspended with a fetch error): disable it before the reset.
+     * SWRST written to an enabled channel faulted on device (2026-10-16:
+     * HardFault on this write, 400 ms into every game). */
+    DMAC->CHCTRLA.reg = 0;
+    while (DMAC->CHCTRLA.reg & DMAC_CHCTRLA_ENABLE) {}
     DMAC->CHCTRLA.reg = DMAC_CHCTRLA_SWRST;
+    while (DMAC->CHCTRLA.reg & DMAC_CHCTRLA_SWRST) {}
     DMAC->CHCTRLB.reg = DMAC_CHCTRLB_LVL(1) | DMAC_CHCTRLB_TRIGSRC(TC4_DMAC_ID_OVF) |
                         DMAC_CHCTRLB_TRIGACT_BEAT;
     DMAC->CHCTRLA.reg = DMAC_CHCTRLA_ENABLE;

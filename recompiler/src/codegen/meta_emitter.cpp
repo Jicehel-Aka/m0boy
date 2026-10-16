@@ -152,6 +152,14 @@ std::string hex4(unsigned v) {
 
 /* 8.3 name of a streamed ROM on the SD card: up to 8 upper-case letters
  * and digits of the project name, extension GB. */
+/* "NAME    EXT" as a FAT directory entry holds it. */
+std::string name83(std::string base, const std::string& ext) {
+    base.resize(8, ' ');
+    std::string e = ext;
+    e.resize(3, ' ');
+    return base + e;
+}
+
 std::string stream_name(const std::string& project) {
     std::string n;
     for (char c : project) {
@@ -1943,28 +1951,30 @@ std::string Generator::emit_config(std::string& error) const {
                          cart == 0x0F || cart == 0x10 || cart == 0x13 || cart == 0x1B ||
                          cart == 0x1E || cart == 0xFF;
     unsigned banks = rom_.bank_count();
+    const std::string sd = opt_.sd_name.empty() ? stream_name(opt_.name) : opt_.sd_name;
     std::ostringstream o;
     o << "/* Generated cartridge configuration for gbl. */\n#ifndef GBL_CONFIG_H\n#define GBL_CONFIG_H\n"
       << "#define GBL_MBC " << mbc << "\n"
       << "#define GBL_ROM_BANKS " << banks << "\n"
       << "#define GBL_ERAM_SIZE " << eram << "\n"
       << (battery && eram ? "#define GBL_BATTERY 1\n" : "")
-      << (eram ? "#define GBL_SAVE_NAME \"" + stream_name(opt_.name) + ".SAV\"\n#define GBL_SAVE_NAME83 \"" +
-                     stream_name(opt_.name).append(8 - std::min<size_t>(8, stream_name(opt_.name).size()), ' ') +
-                     "SAV\"\n"
+      /* The game's files on the card share the .BIN's 8.3 base; the
+       * firmware looks for them in the folder of its own .BIN. */
+      << "#define GBL_SD_NAME \"" + sd + "\"\n#define GBL_BIN_NAME83 \"" + name83(sd, "BIN") + "\"\n"
+      << (eram ? "#define GBL_SAVE_NAME \"" + sd + ".SAV\"\n#define GBL_SAVE_NAME83 \"" + name83(sd, "SAV") + "\"\n"
                : std::string())
       /* Save states: GBL_STATE_SLOTS slots of GBL_STATE_SLOT_SECTORS sectors
        * (a header, the machine within 18 KiB, the cartridge RAM) in a file
        * the converters create; the firmware offers them when it is there. */
-      << "#define GBL_STATE_NAME \"" + stream_name(opt_.name) + ".STA\"\n#define GBL_STATE_NAME83 \"" +
-             stream_name(opt_.name).append(8 - std::min<size_t>(8, stream_name(opt_.name).size()), ' ') +
-             "STA\"\n#define GBL_STATE_SLOTS 10\n#define GBL_STATE_SLOT_SECTORS " +
+      << "#define GBL_STATE_NAME \"" + sd + ".STA\"\n#define GBL_STATE_NAME83 \"" + name83(sd, "STA") +
+             "\"\n#define GBL_STATE_SLOTS 10\n#define GBL_STATE_SLOT_SECTORS " +
              std::to_string(1 + (18432 + eram + 511) / 512) + "\n"
       << (stream_ ? "#define GBL_ROM_STREAM 1\n#define GBL_ROM_CHUNKS " +
                         std::to_string(chunk_weight_.size()) + "\n" +
                          (pack_ ? std::string("#define GBL_ROM_PACKED 1\n") : std::string()) +
-                         (!pack_ || partial_pack_ ? std::string("#define GBL_ROM_SD 1\n#define GBL_STREAM_NAME \"ROM.GB\"\n"
-                                                               "#define GBL_STREAM_NAME83 \"ROM     GB\"\n") : std::string())
+                         (!pack_ || partial_pack_ ? "#define GBL_ROM_SD 1\n#define GBL_STREAM_NAME \"" + sd +
+                                                        ".GB\"\n#define GBL_STREAM_NAME83 \"" + name83(sd, "GB") + "\"\n"
+                                                  : std::string())
                   : std::string())
       /* The console; its optimisation switches are in gbl_profile.h. */
       << (opt_.pokitto ? "#define GBL_TARGET_POKITTO 1\n" : "")
@@ -2067,7 +2077,8 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     if (!gen.load_coverage(stats, error)) return false;
     if (gen.streaming()) {
         gen.choose_resident(stats);
-        if (!stats.packed || stats.sd) stats.stream_file = stream_name(options.name) + ".GB";
+        if (!stats.packed || stats.sd) stats.stream_file =
+            (options.sd_name.empty() ? stream_name(options.name) : options.sd_name) + ".GB";
     }
     gen.build();
 

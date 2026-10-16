@@ -204,13 +204,18 @@ most at half the SERCOM's clock, so the display's rate picks the source:
 ran the ST7735 at 36). The PLL has one frequency: with the CPU at 72 MHz
 the display gets 36 MHz at most. `meta_spi_rate()` derives every divider
 from the SERCOM's actual clock, so the card and the buttons keep their own
-rates: the card at 24 MHz (`META_SD_SPI_HZ`, under the SD's 25 MHz
-Default-Speed limit for SPI mode; 18 MHz when the display is at 36, the
-pair the Pokitto's SSP gives at 48 and 72 MHz) and the buttons at 12
-(gbl_board.h). When the PLL does not lock the menu stays at 48 MHz, and the
-loader is always entered at 48 MHz. Not yet run on a META: on the M0
-estimator a frame at 72 MHz (two wait states) costs about 1.35 times less
-of its budget than at 48 MHz.
+rates: the card and the buttons at 12 MHz (`META_SD_SPI_HZ`,
+`META_BUTTONS_SPI_HZ`, gbl_board.h). The SAMD21's SPI master does not
+sample MISO reliably above about 12 MHz: on a META (2026-10-16) every
+sector read failed at 24 MHz while identification at 250 kHz worked; the
+display only writes and is not limited by this. When the PLL does not lock the menu stays at 48 MHz, and the
+loader is always entered at 48 MHz. On the one META tried (2026-10-17),
+72 MHz is not usable: the first frames after the switch compute wrong
+values (an odd address the code cannot produce) and fault, with the PLL
+referenced to the DFLL48M or to the 32.768 kHz crystal (LBYPASS), and two
+or three flash wait states; the game then restarts at 48 MHz (fault log
+above). On the M0 estimator a frame at 72 MHz (two wait states) costs
+about 1.35 times less of its budget than at 48 MHz.
 
 Display modes (144 DMG lines on 128 META lines), chosen in the menu:
 
@@ -256,13 +261,28 @@ tables against the formula and a run of sprites moving down. `<name>_metaview
 --mode … --dump N file.ppm` writes the exact META screen of a game on the
 host.
 
-The buttons are read by the bus driver (`meta_pad_read`, meta_spi.c) at
-12 MHz in the Gamebuino library bit order (`META_BUTTONS_SPI_HZ`, read
-again at 12 whatever rate the display and the card use: 48/4, 72/6 and
-96/8 all give it). Do not raise it: at 24 MHz the bits come in another
-order (meta-lapinou's, `-DMETA_BUTTONS_LAPINOU_ORDER`) and UP is lost.
-The pad's chip select is left inactive by `meta_spi_init()`, and the read
-drains the display's leftovers from the receive FIFO first.
+Faults and hangs (meta_startup.c): a HardFault, an unhandled interrupt or
+the watchdog's early warning (the main loop fed it last 2 s ago:
+`meta_watchdog_feed`, once per frame, in the menus and on every SD sector)
+logs the exception frame in `meta_fault` (`.noinit`, kept across resets),
+answers USB for two seconds, then restarts the game with a software reset.
+Three faults in a row within 5 s of boot stop the restarts (the firmware
+then waits for the host). The watchdog itself resets after 4 s when
+interrupts are off; the bootloader then starts the launcher, and the next
+boot's reset cause says so. `tools/meta-usb.py fault --elf firmware.elf`
+prints the log with addr2line.
+
+The buttons are read by the bus driver (`meta_pad_read`, meta_spi.c) the
+Gamebuino library's way: 12 MHz (`META_BUTTONS_SPI_HZ`; 48/4, 72/6 and
+96/8 all give it), CS low, 1 us for the parallel load
+(`META_BUTTONS_PL_US`), one byte, in the library's bit order (0 down,
+1 left, 2 right, 3 up, 4 A, 5 B, 6 MENU, 7 HOME), measured on a META on
+2026-10-16 from a RAM log read back through sam-ba, in game and on the
+error screens. The read first waits for the display's strips (its CS is
+low between strips of a frame), lets the last byte leave the shifter and
+drains the receive FIFO. `meta_spi_init()` sets PA12 (MISO) as an input
+(INEN) and every chip select inactive: without INEN the pad and the card
+read 0.
 
 ## Saves and large cartridge RAM
 
@@ -331,9 +351,8 @@ default; `on` / `off` force it):
   sector at a time, into an LRU cache of `GBL_STREAM_SECTORS` sectors
   (8, i.e. 4 KiB; 4 when 2 KiB of cartridge RAM stay in RAM). A read
   first lets the display's DMA queue drain and frees the shared SPI bus,
-  then issues CMD17 at 24 MHz (`META_SD_SPI_HZ`; 18 when the display runs
-  at 36).  A 512-byte sector spends 341 us on the wire at 12 MHz and 171
-  at 24, card latency on top.
+  then issues CMD17 at 12 MHz (`META_SD_SPI_HZ`). A 512-byte sector
+  spends 341 us on the wire, card latency on top.
 - The resident set comes from ROM data-read profiles. In streaming
   projects, the host `_profile` and `_play` builds record them with
   `--rom-profile-out FILE`; pass them back with `--rom-profile FILE`.
@@ -706,8 +725,9 @@ run (same picture in Link's Awakening).
 | `GBL_UNPACK_ASM` | 1 on Cortex-M0+ | Thumb-1 decoder for those sectors |
 | `GBL_STACK_GUARD` | 1 | C stack check on entry to every compiled region |
 | `META_SWAP_AB` | 1 | META A = Game Boy B, META B = Game Boy A |
-| `META_SD_SPI_HZ` | 24000000 | SPI clock asked for SD sector reads, under the card's 25 MHz Default-Speed limit for SPI mode: 24 MHz from the DFLL48M and from the PLL at 96, 18 from the PLL at 72 (identification stays at 250 kHz) |
-| `META_BUTTONS_SPI_HZ` | 12000000 | SPI clock for the buttons' shift register; at 24 MHz the bits shift and UP is lost. `META_BUTTONS_PL_US` (0) is an optional wait after CS low for the register's parallel load |
+| `META_SD_SPI_HZ` | 12000000 | SPI clock for SD sector reads (identification stays at 250 kHz); 24 MHz failed every read on a META, past what the SAMD21's SPI master samples reliably |
+| `META_BUTTONS_SPI_HZ` | 12000000 | SPI clock for the buttons' shift register, the library's. `META_BUTTONS_PL_US` (1) is the wait after CS low for the register's parallel load |
+| `META_USB` | 1 | USB serial port (`meta_usb.c`; about 600 bytes of RAM and 2.6 KiB of flash on Super Mario Land): the 1200-baud touch of upload tools (`pio run -t upload`, bossac, `tools/meta-usb.py flash`) resets into sam-ba without touching the console (the META's bootloader starts sam-ba when 0x20007FFC holds 0x3aecfd88 after a software reset; read from its code). For debugging, `tools/meta-usb.py`: `read`/`write` memory by ELF symbol while the game runs (sam-ba's `R`, `W`, `O`), `prof` (SysTick samples the interrupted PC into a ring of 32, the host drains it: about 1000 samples a second, under 1% of the CPU), `press` (buttons ORed into `meta_pad_read`, for scripted tests), `fault` (below). 0 removes all of it |
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND and DARK display modes (1 KiB table, a spare line); TBLEND then blends two pixels per lookup |
 | `META_TBLEND` | 1 | TBLEND, the default mode, in every build: 600 bytes of held lines and, without `META_MERGE_MODES`, a 16-colour table (one lookup per pixel) instead of the 1 KiB one |
 | `META_LCD_12BPP` | 0 | ST7735 in RGB444 (COLMOD 03h): `META_COLOR` gives 0x0RGB, each row is packed in Thumb-1 as it goes out (`meta_lcd_pack_asm.S`), 240 bytes per row instead of 320. meta-emu-sdl estimate on Super Mario Land: display waits 8.5% → 1.3% of the CPU, audio restarts 7 → 1 per minute |

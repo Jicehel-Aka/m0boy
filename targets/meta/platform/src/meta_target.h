@@ -50,6 +50,9 @@
 #define META_SCALED_MODES 1 /* 144 lines onto 128: TBLEND, SMOOTH, ... */
 #define META_SCREEN_ROWS 128
 #define META_SWAP_AB_DEFAULT 1 /* the META's A is the right-hand button */
+/* Where the loader copies the game's .BIN (gamebuino_meta.ld): its first
+ * sector identifies the game's folder on the card (meta_fat_game_dir). */
+#define META_APP_START ((const uint8_t *)0x4000u)
 /* The SAMD21 starts at 48 MHz; META_OVERCLOCK asks for 72 once the clocks are
  * set up (meta_clock.cpp), past its rating. */
 #define META_CLOCK_DEFAULT (META_OVERCLOCK ? 72 : 48)

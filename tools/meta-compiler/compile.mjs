@@ -14,8 +14,14 @@
  *   (le .elf de débogage reste dans out/<jeu>/.pio/build/meta/)
  *
  * Chaque jeu devient un dossier à copier tel quel à la racine de la carte SD :
- *   gb/<Jeu>/<Jeu>.bin     le firmware (nommé simplement : « Zerd (J) [!] »
- *                          -> « Zerd » ; c'est ce nom que montre le loader)
+ *   Tous les fichiers du jeu portent le même nom court 8.3, <NOM> (lettres
+ *   et chiffres du nom du jeu en majuscules ; au-delà de 8, les 6 premiers
+ *   et 2 chiffres hexadécimaux du SHA-1 de la ROM), comme compile.sh :
+ *   gb/<Jeu>/<NOM>.BIN     le firmware ; le dossier garde le nom simple
+ *                          (« Zerd (J) [!] » -> « Zerd »), que montre le
+ *                          loader, qui prend le premier .bin du dossier.  Le
+ *                          firmware retrouve son dossier par ce .BIN et y
+ *                          cherche ses autres fichiers.
  *   <Jeu>/ICON.BMP         icône 32x32 du menu (grille)
  *   <Jeu>/TITLESCREEN.BMP  écran titre 80x64 du menu (détail)
  *     Icônes tirées de thumbnails.libretro.com (Named_Titles), mises en cache
@@ -28,7 +34,7 @@
  *   <Jeu>/<NOM>.GB         la ROM entière, pour les ROMs qui ne tiennent pas
  *                          dans la flash (256 Kio et plus) : le firmware
  *                          garde banque 0 et données les plus lues en flash
- *                          et lit le reste sur la carte.  Pas de limite de
+ *                          et lit le reste sur la carte.  <NOM>.STA : états.  Pas de limite de
  *                          taille de ROM.
  *   <Jeu>/.gbrmeta.json    état interne (ROM, sha1, version, pack) ; ignorable.
  *   (compatible avec l'état écrit par compile.sh : les deux scripts
@@ -515,7 +521,7 @@ async function fetchIcons(gameDir, name, romBase, gbc, cfg, log) {
 /* État d'un jeu : tag lisible + décision de (re)construction.
  * todo : 0 rien, 1 à faire, 2 à confirmer. */
 function assess(game, cfg, curVersion) {
-  const bin = path.join(cfg.destDir, SYS_DIR, game.dir, `${game.dir}.bin`);
+  const bin = path.join(cfg.destDir, SYS_DIR, game.dir, `${sdNameOf(game.dir, game.sha)}.BIN`);
   game.todo = 1;
   game.tag = 'nouvelle';
   if (!fs.existsSync(bin)) return;
@@ -592,12 +598,21 @@ function copyGlobIfMissing(dir, pattern, dstDir) {
 
 /* ------------------------------------------------------------- compilation */
 
+/* Nom court 8.3 des fichiers d'un jeu sur la carte (comme sd_name_of de
+ * compile.sh). */
+function sdNameOf(gameName, sha) {
+  let s = gameName.replace(/[^A-Za-z0-9]/g, '').toUpperCase() || 'GAME';
+  if (s.length > 8) s = s.slice(0, 6) + sha.slice(0, 2).toUpperCase();
+  return s;
+}
+
 async function buildGame(game, cfg, curVersion, log) {
   const { romPath, prefix, dir: gameName, sha } = game;
   const gameDir = path.join(cfg.destDir, SYS_DIR, gameName);
   const outDir = path.join(ROOT, 'out', prefix);
   const store = path.join(cfg.sessionsDir, sha);
   const gbc = /\.(gbc)$/i.test(romPath);
+  const sdName = sdNameOf(gameName, sha);
   const hostBin = (name) => path.join(outDir, 'host', 'build', name + EXE);
 
   fs.mkdirSync(outDir, { recursive: true });
@@ -636,7 +651,7 @@ async function buildGame(game, cfg, curVersion, log) {
   /* a) Projet interpréteur seul et outils PC */
   const packArgs = cfg.pack ? ['--meta-pack'] : [];
   let r = await runTool(GBRECOMP, [romPath, '--target', 'meta', '--meta-compiler', cfg.compiler, '--output-prefix', prefix,
-    ...packArgs, '-o', outDir]);
+    '--sd-name', sdName, ...packArgs, '-o', outDir]);
   if (r.code !== 0) { log(r.out + r.err); return false; }
   r = await runTool('cmake', ['-G', 'Ninja', '-S', path.join(outDir, 'host'), '-B', path.join(outDir, 'host', 'build')]);
   if (r.code !== 0) { log(r.out + r.err); return false; }
@@ -747,7 +762,7 @@ async function buildGame(game, cfg, curVersion, log) {
   let buildLog = '';
   const buildWith = async (bytesPerInstr) => {
     const g = await runTool(GBRECOMP, [romPath, '--target', 'meta', '--meta-compiler', cfg.compiler, '--output-prefix', prefix,
-      ...covArgs, ...staticArgs, ...packArgs,
+      '--sd-name', sdName, ...covArgs, ...staticArgs, ...packArgs,
       '--meta-bytes-per-instruction', String(bytesPerInstr), '-o', outDir]);
     if (g.code !== 0) {
       genLog = g.out + g.err;
@@ -802,7 +817,7 @@ async function buildGame(game, cfg, curVersion, log) {
   }
 
   fs.copyFileSync(path.join(outDir, '.pio', 'build', 'meta', 'firmware.bin'),
-    path.join(gameDir, `${gameName}.bin`));
+    path.join(gameDir, `${sdName}.BIN`));
 
   /* Icônes du loader (PNG libretro -> BMP 24 bits), sans bloquer le jeu. */
   if (!await fetchIcons(gameDir, gameName, path.basename(romPath), gbc, cfg, log)) {
@@ -829,7 +844,7 @@ async function buildGame(game, cfg, curVersion, log) {
   /* ROM trop grosse pour la flash : le firmware la lit sur la carte SD. */
   if (def.streamName) {
     fs.copyFileSync(romPath, path.join(gameDir, def.streamName));
-    log(`[i] ROM lue depuis la carte SD : ${def.streamName} (racine ou un dossier)`);
+    log(`[i] ROM lue depuis la carte SD : ${def.streamName} (dans le dossier du jeu)`);
   }
 
   /* État pour les lancements suivants : version, ROM exacte, fichiers. */
@@ -837,7 +852,7 @@ async function buildGame(game, cfg, curVersion, log) {
   game.pack = cfg.pack;
   game.compiler = cfg.compiler;
   writeState(gameDir, game);
-  const fwVer = firmwareVersion(path.join(gameDir, `${gameName}.bin`)) || curVersion;
+  const fwVer = firmwareVersion(path.join(gameDir, `${sdName}.BIN`)) || curVersion;
   log(`[i] Firmware produit par gbrecomp v${fwVer}`);
   return true;
 }
@@ -1227,7 +1242,7 @@ async function main() {
     g.state = ok ? 'ok' : 'fail';
     g.phase = ok ? 'terminé' : 'échec';
     const tail = ok
-      ? `[+] Terminé : ${path.join(cfg.destDir, g.dir, `${g.dir}.bin`)}`
+      ? `[+] Terminé : ${path.join(cfg.destDir, g.dir, `${sdNameOf(g.dir, g.sha)}.BIN`)}`
       : `[x] Échec pour ${g.dir} (voir ${path.relative(ROOT, logFile)})`;
     if (ok) counts.ok++; else { counts.fail++; failed.push(g.dir); }
     if (dashboard) pushLog(tail.replace(/^\[.\] /, `${ok ? '✔' : '✘'} ${g.dir} : `));

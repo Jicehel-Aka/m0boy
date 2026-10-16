@@ -23,6 +23,9 @@ namespace gbrecomp {
 
 struct MetaTargetOptions {
     std::string name;                                  ///< C identifier for files
+    /* 8.3 base of the game's files on the SD card (NAME.BIN, NAME.GB,
+     * NAME.SAV, NAME.STA); empty: derived from name. */
+    std::string sd_name;
     std::filesystem::path output_dir;
     std::filesystem::path template_dir;                ///< targets/meta
     /* Console: the Gamebuino META (PlatformIO, Arduino core) or the Pokitto

@@ -189,6 +189,15 @@ SECTIONS
 		__bss_end__ = .;
 	} > RAM
 
+	/* Kept across resets (meta_startup.c: the fault log): above .bss, away
+	 * from the bootloader's own variables at the bottom of RAM. */
+	.noinit (NOLOAD) :
+	{
+		. = ALIGN(4);
+		*(.noinit*)
+		. = ALIGN(4);
+	} > RAM
+
 	.heap (COPY):
 	{
 		__end__ = .;

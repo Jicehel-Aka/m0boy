@@ -30,7 +30,24 @@ extern char __StackTop;
         meta_lcd_fill(0); \
     } while (0)
 #else
+/* USB serial port (META_USB, meta_usb.c): the upload tools' 1200-baud touch
+ * resets into the bootloader at the next frame. */
+#if META_USB
+#include "meta_usb.h"
+#define SG_USB_INIT() meta_usb_init()
+#define SG_USB_POLL() do { \
+        if (meta_usb_bootloader_request) { \
+            meta_lcd_end_frame(); \
+            meta_audio_stop(); \
+            meta_reset_to_bootloader(); \
+        } \
+    } while (0)
+#else
+#define SG_USB_INIT() do { } while (0)
+#define SG_USB_POLL() do { } while (0)
+#endif
 #define SG_PLATFORM_INIT() do { \
+        SG_USB_INIT(); \
         meta_spi_init(); \
         meta_clock_init(); \
         if (META_CLOCK_DEFAULT != 48) meta_clock_set(META_CLOCK_DEFAULT); /* META_OVERCLOCK */ \
@@ -47,7 +64,10 @@ extern char __StackTop;
 #define SG_PAD_WDT() do { } while (0)
 #else
 #define SG_PAD_RAW() meta_pad_read()
-#define SG_PAD_WDT() do { if (WDT->CTRL.reg & WDT_CTRL_ENABLE) { WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY; } } while (0)
+#define SG_PAD_WDT() do { \
+        meta_watchdog_feed(); \
+        SG_USB_POLL(); \
+    } while (0)
 #endif
 
 /* Frame pacing: the game itself keeps its speed, a presentation late by less

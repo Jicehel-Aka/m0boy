@@ -24,16 +24,116 @@ void __libc_init_array(void);
 uint32_t SystemCoreClock = 1000000u;
 static volatile uint32_t ticks; /* milliseconds */
 
-static void default_handler(void) {
-    for (;;) {}
+/* A fault, an interrupt nothing handles, or the watchdog's early warning
+ * (the main loop has not fed it for 2 s, meta_watchdog_start): the
+ * exception frame (r0-r3, r12, lr, pc, xpsr) and the exception number go to
+ * meta_fault, which survives resets (.noinit).  With META_USB the handler
+ * answers the host for two seconds (tools/meta-usb.py fault; the 1200-baud
+ * touch still works), then the console restarts: a software reset, which
+ * the bootloader turns into the game again. */
+#define META_FAULT_MAGIC 0x46415532u /* layout 2 */
+__attribute__((section(".noinit"))) volatile meta_fault_log meta_fault;
+void USB_Handler(void);
+void meta_watchdog_feed(void);
+void meta_reset_to_bootloader(void) __attribute__((weak));
+extern volatile uint8_t meta_usb_bootloader_request __attribute__((weak));
+
+void meta_fault_c(uint32_t *frame) {
+    for (int i = 0; i < 8; i++) meta_fault.frame[i] = frame[i];
+    uint32_t ipsr;
+    __asm__ volatile("mrs %0, ipsr" : "=r"(ipsr));
+    meta_fault.exception = ipsr;
+    meta_fault.count++;
+    meta_fault.early = ticks < 5000u ? meta_fault.early + 1u : 0u;
+    /* About two seconds: the SysTick counter keeps running with its
+     * interrupt masked, one wrap of VAL per millisecond.  Forever when the
+     * game keeps faulting right after boot: a restart loop would leave only
+     * the RESET button to reach the bootloader. */
+    int restart = meta_fault.early < 3u;
+    uint32_t last = SysTick->VAL;
+    for (uint32_t ms = 0, spins = 0; !restart || (ms < 2000u && spins < 20000000u); spins++) {
+        uint32_t now = SysTick->VAL;
+        if (now > last) ms++; /* counts down: it wrapped */
+        last = now;
+        meta_watchdog_feed(); /* not a bare CLEAR write: during a sync it stalls the bus for ms */
+        if (meta_reset_to_bootloader) {
+            USB_Handler();
+            if (meta_usb_bootloader_request) meta_reset_to_bootloader();
+        }
+    }
+    NVIC_SystemReset();
 }
 
-void SysTick_Handler(void) { ticks++; }
+__attribute__((naked)) static void default_handler(void) {
+    __asm__ volatile("movs r0, #4\n mov r1, lr\n tst r0, r1\n beq 1f\n mrs r0, psp\n b meta_fault_c\n"
+                     "1: mrs r0, msp\n b meta_fault_c\n");
+}
+
+/* The watchdog: 4 s without meta_watchdog_feed resets the console (the
+ * bootloader then starts the Gamebuino launcher); its early warning at 2 s
+ * goes through default_handler first, which logs where the main loop was
+ * and restarts the game.  Clock: generator 2, OSCULP32K / 32 = 1024 Hz. */
+void meta_watchdog_start(void) {
+    /* Generator 2's divider is 5 bits; with DIVSEL it divides by 2^(DIV+1). */
+    GCLK->GENDIV.reg = GCLK_GENDIV_ID(2) | GCLK_GENDIV_DIV(4);
+    while (GCLK->STATUS.reg & GCLK_STATUS_SYNCBUSY) {}
+    GCLK->GENCTRL.reg = GCLK_GENCTRL_ID(2) | GCLK_GENCTRL_SRC_OSCULP32K | GCLK_GENCTRL_DIVSEL | GCLK_GENCTRL_GENEN;
+    while (GCLK->STATUS.reg & GCLK_STATUS_SYNCBUSY) {}
+    GCLK->CLKCTRL.reg = (uint16_t)(GCLK_CLKCTRL_ID(GCLK_CLKCTRL_ID_WDT_Val) | GCLK_CLKCTRL_GEN_GCLK2 | GCLK_CLKCTRL_CLKEN);
+    while (GCLK->STATUS.reg & GCLK_STATUS_SYNCBUSY) {}
+    WDT->CONFIG.reg = WDT_CONFIG_PER_4K;
+    WDT->EWCTRL.reg = WDT_EWCTRL_EWOFFSET_2K;
+    while (WDT->STATUS.reg & WDT_STATUS_SYNCBUSY) {}
+    WDT->INTFLAG.reg = WDT_INTFLAG_EW;
+    WDT->INTENSET.reg = WDT_INTENSET_EW;
+    NVIC_SetPriority(WDT_IRQn, 0);
+    NVIC_EnableIRQ(WDT_IRQn);
+    WDT->CTRL.reg = WDT_CTRL_ENABLE;
+    while (WDT->STATUS.reg & WDT_STATUS_SYNCBUSY) {}
+}
+
+void meta_watchdog_stop(void) {
+    NVIC_DisableIRQ(WDT_IRQn);
+    WDT->INTENCLR.reg = WDT_INTENCLR_EW;
+    WDT->CTRL.reg = 0;
+    while (WDT->STATUS.reg & WDT_STATUS_SYNCBUSY) {}
+}
+
+/* Writes during a synchronisation are ignored: no need to wait. */
+void meta_watchdog_feed(void) {
+    if (!(WDT->STATUS.reg & WDT_STATUS_SYNCBUSY)) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
+}
+
+/* meta_usb.c, when the firmware has it (META_USB). */
+extern volatile uint32_t meta_usb_prof[] __attribute__((weak)); /* count, then a ring of 32 PCs */
+
+void SysTick_body(uint32_t *frame);
+
+/* The exception frame is on the main stack (no thread uses the process
+ * stack): its PC is where the CPU was, for the host's profiler. */
+__attribute__((naked)) void SysTick_Handler(void) {
+    __asm__ volatile("mrs r0, msp\n b SysTick_body\n");
+}
+
+void SysTick_body(uint32_t *frame) {
+    ticks++;
+    if (meta_usb_prof) {
+        uint32_t n = meta_usb_prof[0];
+        meta_usb_prof[1 + (n & 31u)] = frame[6];
+        meta_usb_prof[0] = n + 1u;
+    }
+    /* The 1200-baud touch while the frontend never reaches its frame hook
+     * (a hung game, a long boot): reset into the bootloader anyway. */
+    static uint16_t request_ms;
+    if (&meta_usb_bootloader_request && meta_usb_bootloader_request && ++request_ms > 1000)
+        meta_reset_to_bootloader();
+}
 
 /* The drivers' interrupts (meta_lcd.cpp, meta_audio.cpp without DMA); a
  * build without one keeps the default handler. */
 void DMAC_Handler(void) __attribute__((weak, alias("default_handler")));
 void TC4_Handler(void) __attribute__((weak, alias("default_handler")));
+void USB_Handler(void) __attribute__((weak, alias("default_handler")));
 
 typedef void (*vector_fn)(void);
 
@@ -52,7 +152,7 @@ __attribute__((section(".isr_vector"), used)) const vector_fn meta_vectors[45] =
     default_handler, default_handler, default_handler, default_handler, /* PM, SYSCTRL, WDT, RTC */
     default_handler, default_handler,                                   /* EIC, NVMCTRL */
     DMAC_Handler,                                                       /* 6 */
-    default_handler, default_handler,                                   /* USB, EVSYS */
+    USB_Handler, default_handler,                                       /* USB, EVSYS */
     default_handler, default_handler, default_handler, default_handler, /* SERCOM0..3 */
     default_handler, default_handler,                                   /* SERCOM4, 5 */
     default_handler, default_handler, default_handler, default_handler, /* TCC0..2, TC3 */
@@ -134,6 +234,12 @@ void Reset_Handler(void) {
     WDT->CTRL.reg = 0;
     while (WDT->STATUS.reg & WDT_STATUS_SYNCBUSY) {}
 
+    if (meta_fault.magic != META_FAULT_MAGIC) {
+        for (unsigned i = 0; i < sizeof meta_fault / 4u; i++) ((volatile uint32_t *)&meta_fault)[i] = 0;
+        meta_fault.magic = META_FAULT_MAGIC;
+    }
+    meta_fault.rcause = PM->RCAUSE.reg; /* 0x20: the watchdog itself (a lockup) */
+
     uint32_t *src = &__etext, *dst = &__data_start__;
     while (dst < &__data_end__) *dst++ = *src++;
     for (dst = &__bss_start__; dst < &__bss_end__;) *dst++ = 0;
@@ -149,6 +255,8 @@ void Reset_Handler(void) {
                         PM_APBCMASK_SERCOM4 | PM_APBCMASK_SERCOM5 | PM_APBCMASK_TCC0 | PM_APBCMASK_TCC1 |
                         PM_APBCMASK_TCC2 | PM_APBCMASK_TC3 | PM_APBCMASK_TC4 | PM_APBCMASK_TC5 |
                         PM_APBCMASK_ADC | PM_APBCMASK_DAC;
+
+    meta_watchdog_start();
 
     __libc_init_array();
     main();

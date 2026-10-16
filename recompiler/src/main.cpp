@@ -139,6 +139,8 @@ void print_usage(const char* program) {
     std::cout << "  --runtime-dir <dir>   Runtime snapshot to embed (normally auto-detected)\n";
     std::cout << "  --native-patch <json> Apply an exact-ROM native replacement manifest\n";
     std::cout << "  --output-prefix <id>  Stable generated target/file prefix (single-ROM only)\n";
+    std::cout << "  --sd-name <NAME>      META/Pokitto: 8.3 base of the game's files on the SD card\n"
+                 "                        (NAME.BIN, NAME.GB/.GG/.SMS, NAME.SAV, NAME.STA)\n";
     std::cout << "  --progress-json <file> Write privacy-safe JSON Lines generation progress\n";
     std::cout << "  -d, --disasm          Disassemble only (don't generate code)\n";
     std::cout << "  -a, --analyze         Analyze control flow only\n";
@@ -1785,6 +1787,7 @@ static int g_meta_stream = -1;                  /* --meta-stream auto|on|off */
 static std::vector<fs::path> g_rom_profiles;    /* --rom-profile FILE */
 static size_t g_meta_resident = 0;              /* --meta-rom-resident-kib */
 static bool g_meta_pack = false;                /* --meta-pack */
+static std::string g_sd_name;                   /* --sd-name */
 
 static int run_meta_target(const char* argv0, const std::string& rom_path,
                            const std::string& output_dir, const std::string& output_prefix,
@@ -1808,6 +1811,7 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
     }
     options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string())
                                          : output_prefix;
+    options.sd_name = g_sd_name;
     options.output_dir = output_dir.empty()
                              ? fs::path(fs::path(rom_path).stem().string() + (pokitto ? "_pokitto" : "_meta"))
                              : fs::path(output_dir);
@@ -1995,6 +1999,10 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--native-patch") {
             if (i + 1 < argc) {
                 native_patch_manifest_path = argv[++i];
+            }
+        } else if (arg == "--sd-name") {
+            if (i + 1 < argc) {
+                g_sd_name = argv[++i];
             }
         } else if (arg == "--output-prefix") {
             if (i + 1 < argc) {
@@ -2245,6 +2253,16 @@ int main(int argc, char* argv[]) {
         }
         return 0;
     }
+    /* --sd-name: an 8.3 base, upper case (the FAT keeps short names so). */
+    if (!g_sd_name.empty()) {
+        for (char& c : g_sd_name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        bool ok = g_sd_name.size() <= 8;
+        for (char c : g_sd_name) ok = ok && (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-');
+        if (!ok) {
+            std::cerr << "Error: --sd-name must be 1 to 8 letters, digits, '_' or '-'\n";
+            return 1;
+        }
+    }
     if (source.id == m0boy::SystemId::sg1000 || source.id == m0boy::SystemId::gamegear ||
         source.id == m0boy::SystemId::mastersystem) {
         const bool mastersystem = source.id == m0boy::SystemId::mastersystem;
@@ -2267,6 +2285,7 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: invalid " << system_label << " output prefix\n";
             return 1;
         }
+        options.sd_name = g_sd_name;
         options.output = output_dir.empty() ? fs::path(options.name + (mastersystem ? "_sms_" : gamegear ? "_gg_" : "_sg1000_") + target) : fs::path(output_dir);
         options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
         options.coverage = coverage_paths;
@@ -2322,6 +2341,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error: --native-patch is only supported when generating code\n";
         return 1;
     }
+
     if (!output_prefix.empty() && sanitize_prefix(output_prefix) != output_prefix) {
         std::cerr << "Error: --output-prefix must be a non-empty C identifier\n";
         return 1;

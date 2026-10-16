@@ -222,7 +222,7 @@ int main() {
 #else
         meta_lcd_fill((uint16_t)(c << 8 | c >> 8));
 #endif
-        for (;;) {}
+        for (;;) SG_PAD_WDT(); /* watchdog fed, USB touch served */
     }
 #endif
 #if SG_CART_RAM && !GG_CART_ON_CARD

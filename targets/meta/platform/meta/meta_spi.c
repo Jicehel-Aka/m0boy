@@ -17,6 +17,7 @@
 #include "meta_target.h"
 
 #include "meta_clock.h" /* meta_micros, META_BUTTONS_PL_US */
+#include "meta_lcd.h"   /* meta_lcd_end_frame */
 
 #define SPI SERCOM4->SPI
 
@@ -24,6 +25,9 @@
 #define PAD_CS_MASK (1u << 3)
 
 static uint8_t baud = 0xFF; /* not configured */
+
+/* meta_usb.c, when the firmware has it: buttons the host presses (tests). */
+extern volatile uint8_t meta_usb_buttons __attribute__((weak));
 static uint32_t sercom_hz = 48000000u;
 
 static void pin_function_d(unsigned group, unsigned pin) {
@@ -70,52 +74,36 @@ void meta_spi_init(void) {
 }
 
 /* The pad's 74HC165 shift register: one byte per frame, active low, in the
- * Gamebuino library's bit order at META_BUTTONS_SPI_HZ (gbl_board.h; at 24
- * MHz the bits come in another order and UP is lost).  Call it only when the
- * bus is free: the frame loops postpone it by one frame while a strip is in
- * flight (close_frame, meta_main.cpp). */
+ * Gamebuino library's bit order (0 down, 1 left, 2 right, 3 up, 4 A, 5 B,
+ * 6 MENU, 7 HOME), read the library's way: CS low, about a microsecond for
+ * the parallel load, one byte at META_BUTTONS_SPI_HZ (gbl_board.h).  Measured
+ * on device (2026-10-16, RAM log read back through sam-ba): this read gives
+ * all eight buttons in that order; restarting the receiver and pulsing CS
+ * before it (0.10.12) shifted the byte by one bit and lost DOWN.  The frame
+ * loops call it once the frame's strips are out (close_frame, meta_main.cpp);
+ * from anywhere else it first waits for them. */
 uint8_t meta_pad_read(void) {
+    /* The display's strips (and its CS, low between strips of a frame) must
+     * be done: the byte clocked out here would otherwise land in the panel.
+     * Free when the frame loop already closed the frame. */
+    meta_lcd_end_frame();
     meta_spi_rate(META_BUTTONS_SPI_HZ);
     /* The display's DMA completes on its write to DATA, before the wire is
-     * idle: the last strip byte may still be leaving the shifter (and land
-     * in the receive FIFO during the read below).  Wait for TXC, then drop
-     * what it left. */
+     * idle: wait until the last byte has left the shifter, then drop what
+     * display writes left in the receive buffer. */
     for (int t = 0; t < 1000 && !(SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_TXC); t++) {}
-    for (int i = 0; i < 2 && (SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
+    for (int i = 0; i < 4 && (SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
         (void)SPI.DATA.reg;
     SPI.STATUS.reg = SERCOM_SPI_STATUS_BUFOVF;
-    /* A frame of display bytes overflows the two-deep receive FIFO, and the
-     * SAMD21's SPI then reads stale bytes until the receiver is restarted:
-     * CTRLB (RXEN) can only be rewritten while the SERCOM is disabled, so
-     * the read reconfigures it (measured on device 2026-10-15: without this
-     * the pad reads one constant byte for the whole game). */
-    SPI.CTRLA.bit.ENABLE = 0;
-    while (SPI.SYNCBUSY.bit.ENABLE) {}
-    SPI.CTRLA.reg = SERCOM_SPI_CTRLA_MODE_SPI_MASTER | SERCOM_SPI_CTRLA_DOPO(1) | SERCOM_SPI_CTRLA_DIPO(0);
-    SPI.CTRLB.reg = SERCOM_SPI_CTRLB_CHSIZE(0) | SERCOM_SPI_CTRLB_RXEN;
-    while (SPI.SYNCBUSY.bit.CTRLB) {}
-    SPI.BAUD.reg = baud;
-    SPI.CTRLA.bit.ENABLE = 1;
-    while (SPI.SYNCBUSY.bit.ENABLE) {}
-    /* The pad's shift register loads on one edge of its CS and shifts with
-     * every SCK edge while CS is high: the display's frame traffic between
-     * two reads rotates the byte (measured on device 2026-10-15: START read
-     * as HOME, the rotation followed the display's edge count).  Resynchronise
-     * with a CS pulse on both edges, the bus idle, so whichever edge loads
-     * this board's register it happens within a few microseconds of the
-     * transfer. */
-    PORT->Group[1].OUTCLR.reg = PAD_CS_MASK;
-    for (uint32_t t = meta_micros(); meta_micros() - t < 2;) {}
-    PORT->Group[1].OUTSET.reg = PAD_CS_MASK;
-    for (uint32_t t = meta_micros(); meta_micros() - t < 2;) {}
     PORT->Group[1].OUTCLR.reg = PAD_CS_MASK;
 #if META_BUTTONS_PL_US > 0
-    /* The library waits about a microsecond for the parallel load. */
     for (uint32_t t = meta_micros(); meta_micros() - t < META_BUTTONS_PL_US;) {}
 #endif
     uint8_t raw = meta_spi_transfer(1);
     PORT->Group[1].OUTSET.reg = PAD_CS_MASK;
-    return (uint8_t)~raw; /* active low */
+    uint8_t pressed = (uint8_t)~raw; /* active low */
+    if (&meta_usb_buttons) pressed |= meta_usb_buttons;
+    return pressed;
 }
 
 void meta_spi_clock(uint32_t hz) {
@@ -128,6 +116,11 @@ void meta_spi_rate(uint32_t hz) {
     uint8_t b = (uint8_t)(n > 256u ? 255u : n - 1u);
     if (b == baud) return;
     baud = b;
+    /* Let the last byte leave the shifter: disabling the SERCOM cuts it (a
+     * display strip ends when its DMA writes DATA, not when the byte is
+     * out).  TXC only rises after a transmission: bounded wait. */
+    if (SPI.CTRLA.bit.ENABLE)
+        for (int t = 0; t < 4000 && !(SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_TXC); t++) {}
     /* Disable, reconfigure, enable: the Arduino core's SPI.beginTransaction
      * sequence.  A full SERCOM reset (SWRST) here froze the pad byte: the
      * released pads clock the 74HC165 while its parallel load is asserted

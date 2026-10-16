@@ -114,6 +114,25 @@ def main() -> int:
                                  stdout=subprocess.PIPE, text=True).stdout
         if "result -3" not in missing:
             raise SystemExit("missing file not reported: " + missing)
+
+        # One folder per game, each with ROM.GG and ROM.SAV (compile.sh's
+        # layout): the lookup must take the ROM whose first sector matches,
+        # not the first ROM.GG, and the save from the same folder.
+        vg = tmp / "games.img"
+        make_volume(vg, 16, 32)
+        for game in ("Aladdin 48", "Ristar 48", "Sonic 48"):
+            data = tmp / (game + ".gg")
+            data.write_bytes(bytes(rng.randrange(256) for _ in range(64 * 1024)))
+            save = tmp / (game + ".sav")
+            save.write_bytes(bytes(rng.randrange(256) for _ in range(8 * 1024)))
+            sh("mmd", "-i", str(vg), "::/" + game)
+            sh("mcopy", "-i", str(vg), str(data), "::/%s/ROM.GG" % game)
+            sh("mcopy", "-i", str(vg), str(save), "::/%s/ROM.SAV" % game)
+        out = subprocess.run([args.fat_check, str(vg), "ROM     GG ", str(tmp / "Ristar 48.gg"), "16", "match",
+                              "ROM     SAV", str(tmp / "Ristar 48.sav")], stdout=subprocess.PIPE, text=True)
+        if out.returncode != 0:
+            raise SystemExit("per-game folders: " + out.stdout.strip())
+        results.append("folders " + out.stdout.strip())
         print("meta FAT lookup:", "; ".join(results))
         return 0
     finally:

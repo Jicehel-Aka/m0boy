@@ -11,6 +11,8 @@ typedef struct {
     uint32_t fat_lba, root_lba, root_sectors, data_lba, root_cluster;
     uint32_t spc; /* sectors per cluster */
     uint8_t fat32;
+    meta_fat_accept_fn accept;
+    void *ctx;
 } volume;
 
 static uint16_t u16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
@@ -105,8 +107,16 @@ static int scan_dir(volume *v, uint32_t cluster, const char *name83, uint32_t *f
                 continue;
             }
             if (!memcmp(e, name83, 11)) {
+                uint32_t size = u32(e + 28);
+                if (v->accept) {
+                    /* The candidate may use the buffer: read the directory
+                     * sector again before going on. */
+                    int take = first >= 2 && v->accept(cluster_lba(v, first), size, v->buf, v->ctx);
+                    if (!v->rd(lba, v->buf)) return META_FAT_IO;
+                    if (!take) continue;
+                }
                 *file_cluster = first;
-                *file_size = u32(e + 28);
+                *file_size = size;
                 return 1;
             }
         }
@@ -114,20 +124,41 @@ static int scan_dir(volume *v, uint32_t cluster, const char *name83, uint32_t *f
     }
 }
 
+uint32_t meta_fat_dir = META_FAT_ANY_DIR;
+
 int meta_fat_find(meta_fat_read_fn rd, uint8_t *buf, const char *name83, meta_extent *ext,
                   int max_ext, int *n_ext, uint32_t *size) {
+    uint32_t dir = meta_fat_dir;
+    return meta_fat_find_in(rd, buf, name83, 0, 0, &dir, ext, max_ext, n_ext, size);
+}
+
+int meta_fat_find_in(meta_fat_read_fn rd, uint8_t *buf, const char *name83, meta_fat_accept_fn accept,
+                     void *ctx, uint32_t *dir, meta_extent *ext, int max_ext, int *n_ext, uint32_t *size) {
     volume v;
     memset(&v, 0, sizeof(v));
     v.rd = rd;
     v.buf = buf;
+    v.accept = accept;
+    v.ctx = ctx;
     int r = mount(&v);
     if (r) return r;
-    uint32_t subdirs[MAX_SUBDIRS], first = 0;
-    int n_sub = 0;
-    r = scan_dir(&v, v.root_cluster, name83, &first, size, subdirs, &n_sub);
-    for (int i = 0; r == 0 && i < n_sub; i++) r = scan_dir(&v, subdirs[i], name83, &first, size, 0, 0);
+    uint32_t first = 0, where;
+    if (dir && *dir != META_FAT_ANY_DIR) {
+        where = *dir;
+        r = scan_dir(&v, where, name83, &first, size, 0, 0);
+    } else {
+        uint32_t subdirs[MAX_SUBDIRS];
+        int n_sub = 0;
+        where = v.root_cluster;
+        r = scan_dir(&v, where, name83, &first, size, subdirs, &n_sub);
+        for (int i = 0; r == 0 && i < n_sub; i++) {
+            where = subdirs[i];
+            r = scan_dir(&v, where, name83, &first, size, 0, 0);
+        }
+    }
     if (r < 0) return r;
     if (r == 0) return META_FAT_NOT_FOUND;
+    if (dir) *dir = where;
 
     /* Cluster chain -> runs of consecutive sectors. */
     uint32_t need = (*size + 511u) / 512u, have = 0;
@@ -159,4 +190,23 @@ uint32_t meta_fat_lba(const meta_extent *ext, int n_ext, uint32_t sector) {
         sector -= ext[i].sectors;
     }
     return 0;
+}
+
+typedef struct {
+    meta_fat_read_fn rd;
+    const uint8_t *app;
+} same_first;
+
+static int same_first_sector(uint32_t first_lba, uint32_t size, uint8_t *buf, void *ctx) {
+    const same_first *m = (const same_first *)ctx;
+    return size >= 512 && m->rd(first_lba, buf) && !memcmp(buf, m->app, 512);
+}
+
+uint32_t meta_fat_game_dir(meta_fat_read_fn rd, uint8_t *buf, const char *bin83, const uint8_t *app) {
+    same_first m = {rd, app};
+    uint32_t dir = META_FAT_ANY_DIR, size = 0;
+    meta_extent ext[1];
+    int n = 0;
+    int r = meta_fat_find_in(rd, buf, bin83, same_first_sector, &m, &dir, ext, 1, &n, &size);
+    return r == META_FAT_OK || r == META_FAT_FRAGMENTED ? dir : META_FAT_ANY_DIR;
 }

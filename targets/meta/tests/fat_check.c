@@ -5,6 +5,12 @@
  * through the extent list and compares it with EXPECTED_FILE.  Prints the
  * number of extents; exits 0 on a match.  With EXPECTED_FILE "-" it prints
  * the lookup's return code instead (for the expected-failure cases).
+ *
+ * fat_check IMAGE NAME83 EXPECTED_FILE MAX_EXTENTS match [NAME2 EXPECTED2]
+ *
+ * Several folders hold NAME83: takes the one whose first sector is
+ * EXPECTED_FILE's (meta_fat_find_in), then looks NAME2 up in that folder
+ * only and compares it with EXPECTED2 (a game's save next to its ROM).
  */
 #include "meta_fat.h"
 
@@ -13,6 +19,33 @@
 #include <string.h>
 
 static FILE *img;
+static uint8_t want_first[512];
+
+static int rd(uint32_t lba, uint8_t *buf);
+
+static int first_sector_matches(uint32_t first_lba, uint32_t size, uint8_t *buf, void *ctx) {
+    (void)size;
+    (void)ctx;
+    return rd(first_lba, buf) && !memcmp(buf, want_first, 512);
+}
+
+/* Reads the file the extents describe and compares it with path. */
+static int compare(const char *path, const meta_extent *ext, int n, uint32_t size, uint8_t *buf) {
+    FILE *ef = fopen(path, "rb");
+    if (!ef) { perror(path); return 2; }
+    fseek(ef, 0, SEEK_END);
+    long want = ftell(ef);
+    fseek(ef, 0, SEEK_SET);
+    if ((long)size != want) { printf("size %u, expected %ld\n", size, want); return 1; }
+    for (uint32_t s = 0; s * 512u < size; s++) {
+        uint8_t exp[512];
+        size_t k = fread(exp, 1, 512, ef);
+        uint32_t lba = meta_fat_lba(ext, n, s);
+        if (!lba || !rd(lba, buf) || memcmp(buf, exp, k)) { printf("mismatch at sector %u\n", s); return 1; }
+    }
+    fclose(ef);
+    return 0;
+}
 
 static int rd(uint32_t lba, uint8_t *buf) {
     if (fseek(img, (long)lba * 512L, SEEK_SET)) return 0;
@@ -31,21 +64,29 @@ int main(int argc, char **argv) {
     uint8_t buf[512];
     int n = 0;
     uint32_t size = 0;
+    if (argc > 5 && !strcmp(argv[5], "match")) {
+        FILE *ef = fopen(argv[3], "rb");
+        if (!ef || fread(want_first, 1, 512, ef) != 512) { perror(argv[3]); return 2; }
+        fclose(ef);
+        uint32_t dir = META_FAT_ANY_DIR;
+        int r = meta_fat_find_in(rd, buf, name, first_sector_matches, 0, &dir, ext, max_ext, &n, &size);
+        if (r) { printf("lookup failed: %d\n", r); return 1; }
+        if (compare(argv[3], ext, n, size, buf)) return 1;
+        if (argc > 7) {
+            char name2[12];
+            memset(name2, ' ', 11);
+            memcpy(name2, argv[6], strlen(argv[6]) < 11 ? strlen(argv[6]) : 11);
+            r = meta_fat_find_in(rd, buf, name2, 0, 0, &dir, ext, max_ext, &n, &size);
+            if (r) { printf("second lookup failed: %d\n", r); return 1; }
+            if (compare(argv[7], ext, n, size, buf)) return 1;
+        }
+        printf("ok matched size %u\n", size);
+        return 0;
+    }
     int r = meta_fat_find(rd, buf, name, ext, max_ext, &n, &size);
     if (!strcmp(argv[3], "-")) { printf("result %d\n", r); return 0; }
     if (r) { printf("lookup failed: %d\n", r); return 1; }
-    FILE *ef = fopen(argv[3], "rb");
-    if (!ef) { perror(argv[3]); return 2; }
-    fseek(ef, 0, SEEK_END);
-    long want = ftell(ef);
-    fseek(ef, 0, SEEK_SET);
-    if ((long)size != want) { printf("size %u, expected %ld\n", size, want); return 1; }
-    for (uint32_t s = 0; s * 512u < size; s++) {
-        uint8_t exp[512];
-        size_t k = fread(exp, 1, 512, ef);
-        uint32_t lba = meta_fat_lba(ext, n, s);
-        if (!lba || !rd(lba, buf) || memcmp(buf, exp, k)) { printf("mismatch at sector %u\n", s); return 1; }
-    }
+    if (compare(argv[3], ext, n, size, buf)) return 1;
     printf("ok extents %d size %u\n", n, size);
     return 0;
 }

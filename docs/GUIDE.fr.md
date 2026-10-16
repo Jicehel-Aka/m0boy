@@ -28,8 +28,9 @@ exécute le reste.
   rangée). Les trois périphériques du bus SPI ont leur débit dans
   `gbl_board.h` : 24 MHz pour l'écran (le débit de meta-lapinou sur ce
   panneau, et le seul essayé sur une vraie META ; 36 et 48 s'essaient au menu
-  « SPI ecran »), 24 MHz pour la carte SD (sous sa limite de 25 MHz en mode
-  SPI) et 12 MHz pour les boutons, qui ne supportent pas plus.
+  « SPI ecran »), 12 MHz pour la carte SD et pour les boutons : le SPI
+  maître du SAMD21 ne lit pas MISO de façon fiable au-delà (à 24 MHz,
+  toutes les lectures de secteur échouaient sur une META).
 
 ## Nouveautés de la version 0.5.0
 
@@ -409,10 +410,11 @@ Ajoute-les dans `build_flags` du `platformio.ini` généré, par exemple
 | `GBL_PPU_RAMFUNC` | 1 | Ces deux boucles tournent depuis la SRAM (≈150 octets), sans état d'attente de la flash |
 | `META_LCD_DMA` | 1 | Écran en DMA avec file de transferts ; 0 = envoi par le CPU |
 | `META_LCD_SPI_MHZ` | 24 | Débit SPI de l'écran au démarrage : 12, 24, 36 ou 48 (24 par défaut, le débit connu de ce panneau ; 36/48 viennent de la PLL et ne sont pas validés sur une META ; ramené à 36 quand le processeur est à 72 MHz, à 24 si la PLL ne s'accroche pas) ; le menu « SPI ecran » le change |
-| `META_SD_SPI_HZ` | 24000000 | Débit SPI de la carte SD hors identification, sous la limite de 25 MHz du mode SPI (18 MHz quand l'écran est à 36) |
+| `META_SD_SPI_HZ` | 12000000 | Débit SPI de la carte SD hors identification (24 MHz : lectures en échec sur une META) |
+| `META_USB` | 1 | Port série USB : le « 1200 bauds » des outils de téléversement (`pio run -t upload`, `tools/meta-usb.py flash`) relance la console en sam-ba sans toucher aux boutons ; `tools/meta-usb.py` lit et écrit la mémoire par symbole pendant le jeu, profile (échantillons du PC, moins de 1 % du processeur), appuie sur les touches (tests) et lit le journal des fautes ; 0 retire tout |
 | `META_LCD_BUFFERS` / `META_STRIP_LINES` | 3 / 4 | Buffers d'écran et lignes par buffer |
 | `META_MAX_SKIP` | 3 | Frames consécutives sautées au maximum en cas de retard |
-| `META_BUTTONS_LAPINOU_ORDER` | off | Autre ordre des bits des boutons (lecture à 24 MHz, avec `-DMETA_BUTTONS_SPI_HZ=24000000`) |
+| `META_BUTTONS_LAPINOU_ORDER` | off | Ordre des bits de meta-lapinou au lieu de celui de la bibliothèque (inutile sur la META testée) |
 
 ## Vérifier sur PC
 

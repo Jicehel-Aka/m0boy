@@ -38,35 +38,39 @@
 #define META_LCD_SPI_MHZ 24
 #endif
 
-/* META_SD_SPI_HZ: the card's clock outside identification, 24 MHz -- the
- * fastest divider output at or below the SD's 25 MHz Default-Speed limit for
- * SPI mode.  Identification itself runs at 250 kHz (meta_sd_bus.cpp).  The
- * rate is derived from the SERCOM's actual clock (meta_spi_rate), so it is
- * 24 MHz from the DFLL48M and from the PLL at 96 MHz (display at 48), and
- * 18 MHz from the PLL at 72 MHz (display at 36) -- the same pair the
- * Pokitto's SSP gives at 48 and 72 MHz.  A 512-byte sector takes 341 us to
- * shift at 12 MHz and 171 us at 24 (card latency on top). */
+/* META_SD_SPI_HZ: the card's clock outside identification, 12 MHz.  The
+ * SAMD21's SPI master does not sample MISO reliably above about 12 MHz: at
+ * 24 MHz every sector read failed on device (2026-10-16; identification at
+ * 250 kHz was fine).  The display only writes and is not affected.  The
+ * Arduino core capped every rate at 12 MHz, so the Gamebuino library read
+ * its card at that rate.  The rate is derived from the SERCOM's actual clock
+ * (meta_spi_rate).  A 512-byte sector takes 341 us to shift at 12 MHz (card
+ * latency on top). */
 #ifndef META_SD_SPI_HZ
-#define META_SD_SPI_HZ 24000000
+#define META_SD_SPI_HZ 12000000
 #endif
 
 /* META_BUTTONS_SPI_HZ: the pad's 74HC165 shift register (CS PB03), 12 MHz,
- * the rate the Gamebuino library reads it at.  24 MHz returned shifted
- * buttons on the META tested here (device, 2026-10-15): keep 12.
- * META_BUTTONS_LAPINOU_ORDER: on the META tested here the byte comes back in
- * meta-lapinou's bit order (left, right, up, A, B, MENU, down, HOME) at both
- * rates; the frontends remap it (meta_main.cpp).
+ * the rate the Gamebuino library reads it at.
  * META_BUTTONS_PL_US: wait after CS low for the register's parallel load, in
- * microseconds; the library's 1 us -- without it the load is missed when CS
- * falls right after a display burst (measured on device 2026-10-15). */
+ * microseconds (the library's 1).  Measured on device (2026-10-16): 12 MHz
+ * and 1 us read all eight buttons in the library's order.
+ * META_BUTTONS_LAPINOU_ORDER: define it to read meta-lapinou's bit order
+ * (left, right, up, A, B, MENU, down, HOME) instead; not needed on the META
+ * tested so far. */
 #ifndef META_BUTTONS_SPI_HZ
-#define META_BUTTONS_SPI_HZ 24000000
+#define META_BUTTONS_SPI_HZ 12000000
 #endif
 #ifndef META_BUTTONS_PL_US
 #define META_BUTTONS_PL_US 1
 #endif
-#ifndef META_BUTTONS_LAPINOU_ORDER
-#define META_BUTTONS_LAPINOU_ORDER 1
+
+/* META_USB: 1 makes the firmware a USB serial port (meta_usb.c): the
+ * 1200-baud touch of upload tools resets it into the bootloader (no double
+ * press on RESET), and sam-ba's "R<addr>,<count>#" reads memory while the
+ * game runs.  About 450 bytes of RAM and 2 KiB of flash. */
+#ifndef META_USB
+#define META_USB 1
 #endif
 
 /* META_LCD_DMA: 1 streams pixels with DMA while emulation continues (queue

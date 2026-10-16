@@ -12,7 +12,13 @@ void meta_dma_init(void) {
     done = true;
     PM->AHBMASK.reg |= PM_AHBMASK_DMAC;
     PM->APBBMASK.reg |= PM_APBBMASK_DMAC;
-    /* BASEADDR and WRBADDR can only be written while the DMAC is off. */
+    /* BASEADDR and WRBADDR can only be written while the DMAC is off: reset
+     * it first in case whatever ran before left it on (the loader of the
+     * META tested on 2026-10-16 left it off). */
+    DMAC->CTRL.reg = 0;
+    while (DMAC->CTRL.reg & DMAC_CTRL_DMAENABLE) {}
+    DMAC->CTRL.reg = DMAC_CTRL_SWRST;
+    while (DMAC->CTRL.reg & DMAC_CTRL_SWRST) {}
     DMAC->BASEADDR.reg = (uint32_t)meta_dma_desc;
     DMAC->WRBADDR.reg = (uint32_t)meta_dma_wb;
     DMAC->CTRL.reg = DMAC_CTRL_DMAENABLE | DMAC_CTRL_LVLEN(0xF);

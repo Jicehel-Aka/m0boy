@@ -29,6 +29,7 @@ void meta_sd_cs(int selected) {
 }
 
 void meta_sd_bus_begin(int init) {
+    meta_watchdog_feed(); /* long sector runs (state saves, the FAT walk) */
     if (init) {
         meta_spi_rate(250000);
         return;
@@ -36,7 +37,7 @@ void meta_sd_bus_begin(int init) {
     meta_lcd_end_frame();
     meta_spi_rate(META_SD_SPI_HZ);
     /* Drop bytes left in the receive FIFO by display writes. */
-    for (int i = 0; i < 2 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
+    for (int i = 0; i < 4 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
         (void)SERCOM4->SPI.DATA.reg;
     SERCOM4->SPI.STATUS.reg = SERCOM_SPI_STATUS_BUFOVF;
 }

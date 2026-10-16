@@ -62,6 +62,8 @@ elif name=='nproc':print('4')
     assert all(args[args.index('--system')+1]=='sg1000' for args in sg)
     assert all(not any(flag in args for flag in ('--meta-pack','--meta-static','--meta-bytes-per-instruction')) for args in sg)
     assert all(args[args.index('--meta-compiler')+1]=='gcc' for args in sg)  # recompiled Z80: firmware compiler forwarded
+    # Every generation names the game's files on the card (--sd-name, 8.3).
+    assert all('--sd-name' in args and 1 <= len(args[args.index('--sd-name')+1]) <= 8 for args in generations), generations
     assert any(name=='make' for name,args in calls)  # GB pipeline unchanged
     assert any(name=='cmake' and '-DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake' in args for name,args in calls)
     # Un .zip par jeu, le répertoire du jeu (avec .gbrmeta.json) dedans.
@@ -72,7 +74,13 @@ elif name=='nproc':print('4')
         with zf.ZipFile(z) as a:
             names = a.namelist()
             game = z.stem
-            assert f'{game}/{game}.BIN' in names or f'{game}/{game}.bin' in names, names
+            # META: <NOM>.BIN, the 8.3 base of the game's files (sd_name_of);
+            # Pokitto: <Jeu>.bin.
+            bins = [n for n in names if n.startswith(game + '/') and n.lower().endswith('.bin')]
+            assert len(bins) == 1, names
+            base = bins[0][len(game) + 1:-4]
+            assert base == game or (bins[0].endswith('.BIN') and 1 <= len(base) <= 8
+                                    and base.isalnum() and base.isupper() or base.isdigit()), names
             assert f'{game}/.gbrmeta.json' in names, names
     (root/'calls.jsonl').write_text('')
     output=run(PACK='1')  # SG ignores GB packing, already-built SG stays cached

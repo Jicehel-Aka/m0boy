@@ -135,9 +135,11 @@ static void command_list(const uint8_t *p) {
 /* ---- DMA (SERCOM4 TX, channel 0) ---------------------------------------- */
 
 extern "C" void DMAC_Handler(void) {
+    uint8_t chid = DMAC->CHID.reg; /* the interrupted code may be using another channel */
     DMAC->CHID.reg = DMAC_CHID_ID(META_DMA_LCD); /* the only channel with interrupts */
     DMAC->CHINTFLAG.reg = DMAC_CHINTFLAG_TCMPL | DMAC_CHINTFLAG_TERR | DMAC_CHINTFLAG_SUSP;
     lcdq_on_complete(); /* starts the next queued strip, if any */
+    DMAC->CHID.reg = chid;
 }
 
 #endif

@@ -38,13 +38,21 @@
 # (décompressé) à la racine de la carte SD — <Sortie>/<source>/<Jeu>.zip,
 # avec <source>/<Jeu>/ dedans, <source> étant la plateforme de la ROM
 # (gb, sg, gg ou sms) :
-#   <Jeu>/<Jeu>.BIN        le firmware, nommé comme le jeu (« Zerd (J) [!] »
-#                          -> « Zerd/Zerd.BIN »), c'est ce que cherche le
-#                          loader en premier.  (Pokitto : <Jeu>/<Jeu>.bin.)
-#   <Jeu>/ROM.GB           la ROM entière, pour les jeux qui ne tiennent pas
-#   (ou ROM.GG, ROM.SMS)   dans la flash : nom unique pour tous les jeux,
-#                          chaque jeu vit dans son répertoire.  La RAM de
-#                          cartouche Game Gear voit de même dans ROM.SAV.
+#   Les fichiers du jeu portent tous le même nom court 8.3, <NOM> (les
+#   lettres et chiffres du nom du jeu, en majuscules ; au-delà de 8, les 6
+#   premiers et 2 chiffres hexadécimaux du SHA-1 de la ROM : « Zerd (J) [!] »
+#   -> ZERDJ, « Super Mario Land » -> SUPERM<xx>) :
+#   <Jeu>/<NOM>.BIN        le firmware.  Le loader essaie « /Jeu/Jeu.bin »
+#                          puis prend le premier .bin du dossier ; le
+#                          dossier garde le nom long, affiché par le loader.
+#                          Le firmware retrouve son dossier sur la carte par
+#                          ce .BIN (premier secteur = le firmware en flash)
+#                          et y cherche ses autres fichiers : deux dossiers
+#                          (variantes 48 et 72 MHz) peuvent porter le même
+#                          <NOM>.  (Pokitto : <Jeu>/<Jeu>.bin.)
+#   <Jeu>/<NOM>.GB         la ROM entière, pour les jeux qui ne tiennent pas
+#   (ou .GG, .SMS)         dans la flash.  La RAM de cartouche Game Gear vit
+#                          de même dans <NOM>.SAV.
 #   <Jeu>/ICON.BMP         icône 32x32 du menu (grille)
 #   <Jeu>/TITLESCREEN.BMP  écran titre 80x64 du menu (détail)
 #     Icônes tirées de thumbnails.libretro.com (Named_Titles), mises en cache
@@ -331,8 +339,16 @@ loader_name() {
   printf '%s' "$s" | sed -E 's/[ ,:-]+$//'
 }
 
-# Firmware d'un jeu : <Jeu>/<Jeu>.BIN — le nom du jeu, comme la ROM ; le
-# loader essaie « /Nom/Nom.bin » en premier.
+# Nom court 8.3 des fichiers d'un jeu sur la carte (<NOM>.BIN, .GB/.GG/.SMS,
+# .SAV, .STA) : $1 nom du jeu, $2 SHA-1 de la ROM.  Le loader prend le
+# premier .bin du dossier quand « /Jeu/Jeu.bin » manque.
+sd_name_of() {
+  local LC_ALL=C s
+  s=$(printf '%s' "$1" | tr -dc 'A-Za-z0-9' | tr 'a-z' 'A-Z')
+  [ -n "$s" ] || s=GAME
+  if [ "${#s}" -gt 8 ]; then s="${s:0:6}$(printf '%s' "$2" | cut -c1-2 | tr 'a-z' 'A-Z')"; fi
+  printf '%s' "$s"
+}
 
 url_quote() {
   python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1]))' "$1" \
@@ -616,6 +632,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     sms|SMS) sys=sms host=./build/bin/gg_host label="Master System" icons=sms ;;
   esac
   local out_dir="out/$sys/$TARGET/$prefix" game_dir="$DEST_DIR/$(sys_dir "$sys")/$game_name"
+  local sd_name; sd_name=$(sd_name_of "$game_name" "$rom_sha")
   local store="$SESSIONS_DIR/$rom_sha/$sys" cov auto_frames
   local cov_args=() firmware
   mkdir -p "$out_dir" "$store" "$game_dir" || return 1
@@ -682,7 +699,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   local size_bin
   size_bin=$(command -v arm-none-eabi-size || echo "$HOME/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size")
   sg_build_once() { # 0 ok, 1 flash full, 2 error
-    gen_log=$("$GBRECOMP" "$rom_path" --system "$sys" --target "$TARGET" --output-prefix "$prefix" \
+    gen_log=$("$GBRECOMP" "$rom_path" --system "$sys" --target "$TARGET" --output-prefix "$prefix" --sd-name "$sd_name" \
       --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} -o "$out_dir") || return 2
     if [ "$TARGET" = pokitto ]; then
       local hc_flags=""
@@ -730,7 +747,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     cp "$firmware" "$game_dir/$game_name.bin" || return 1
   else
     firmware="$out_dir/.pio/build/meta/firmware.bin"
-    cp "$firmware" "$game_dir/$game_name.BIN" || return 1
+    cp "$firmware" "$game_dir/$sd_name.BIN" || return 1
     fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" "$icons" || echo "[i] (jeu conservé sans icône)"
   fi
   local save_name
@@ -743,7 +760,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     if [ $(( $(stat -c %s "$rom_path") % 16384 )) -eq 512 ]; then # copier header (same rule as m0boy/sg1000.h and targets/common/host/m0_host_util.h): the card holds the ROM itself
       tail -c +513 "$rom_path" > "$game_dir/$stream_name" || return 1
     else cp "$rom_path" "$game_dir/$stream_name" || return 1; fi
-    echo "[i] Pages de ROM lues depuis la carte SD : $game_name/$stream_name (racine ou un dossier)"
+    echo "[i] Pages de ROM lues depuis la carte SD : $game_name/$stream_name (dans le dossier du jeu)"
   fi
   printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "system": "%s",\n  "pack": 0,\n  "hc": %s,\n  "compiler": "%s"\n}\n' \
     "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$sys" "$([ "$OVERCLOCK" = 1 ] && echo 1 || echo 0)" "$FIRMWARE_COMPILER" > "$game_dir/.gbrmeta.json"
@@ -758,6 +775,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   local SRC_DIR="$(dirname "$rom_path")"
   local SESSIONS_DIR="${SESSIONS_CUSTOM:-$SRC_DIR/profiles}"
   local game_dir="$DEST_DIR/gb/$game_name"
+  local sd_name; sd_name=$(sd_name_of "$game_name" "$rom_sha")
   local out_dir="$OUT_ROOT/$prefix"
   local flags_file="$DEST_DIR/gb/$game_name.flags" extra_flags=""
 
@@ -793,7 +811,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   # a) Projet interpréteur seul et outils PC
   local pack_args=()
   [ "$PACK" = "1" ] && pack_args=(--meta-pack)
-  "$GBRECOMP" "$rom_path" --target "$TARGET" --meta-compiler "$FIRMWARE_COMPILER" --output-prefix "$prefix" "${pack_args[@]}" -o "$out_dir" || return 1
+  "$GBRECOMP" "$rom_path" --target "$TARGET" --meta-compiler "$FIRMWARE_COMPILER" --output-prefix "$prefix" --sd-name "$sd_name" "${pack_args[@]}" -o "$out_dir" || return 1
   cmake -G Ninja -S "$out_dir/host" -B "$out_dir/host/build" > /dev/null || return 1
   ninja -C "$out_dir/host/build" || return 1
 
@@ -970,7 +988,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   #    (= le plus de code) qui tient encore dans les 240 Kio de la META
   #    (228 Kio sur la Pokitto).
   build_with() { # $1 = octets par instruction ; 0 ok, 1 flash pleine, 2 erreur
-    gen_log=$("$GBRECOMP" "$rom_path" --target "$TARGET" --meta-compiler "$FIRMWARE_COMPILER" --output-prefix "$prefix" \
+    gen_log=$("$GBRECOMP" "$rom_path" --target "$TARGET" --meta-compiler "$FIRMWARE_COMPILER" --output-prefix "$prefix" --sd-name "$sd_name" \
       "${cov_args[@]}" "${static_args[@]}" "${pack_args[@]}" --meta-bytes-per-instruction "$1" -o "$out_dir") || return 2
     # build_flags du jeu (<dossier_sortie>/<Jeu>/build_flags, une option par
     # ligne, # = commentaire ; ex. -D META_TBLEND=0 pour un jeu à la pile
@@ -1046,9 +1064,9 @@ PY
     cp "$out_dir/$firmware_build/firmware.bin" "$game_dir/$game_name.bin"
   else
     echo "$build_log" | grep -E "RAM:|Flash:"
-    # Le .bin porte le nom du jeu : c'est le premier chemin que le loader
-    # essaie (« /Nom/Nom.bin »).
-    cp "$out_dir/.pio/build/meta/firmware.bin" "$game_dir/$game_name.BIN"
+    # Le .bin porte le nom court des fichiers du jeu : le loader prend le
+    # premier .bin du dossier, le firmware retrouve son dossier par lui.
+    cp "$out_dir/.pio/build/meta/firmware.bin" "$game_dir/$sd_name.BIN"
     # Icônes du loader (PNG libretro -> BMP 24 bits), sans bloquer le jeu.
     fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" "$gbc" \
       || echo "[i] (jeu conservé sans icône)"
@@ -1085,7 +1103,7 @@ PY
   stream_name=$(sed -n 's/^#define GBL_STREAM_NAME "\(.*\)"$/\1/p' "$out_dir/src/gbl_config.h")
   if [ -n "$stream_name" ]; then
     cp "$rom_path" "$game_dir/$stream_name"
-    echo "[i] ROM lue depuis la carte SD : $game_name/$stream_name (racine ou un dossier)"
+    echo "[i] ROM lue depuis la carte SD : $game_name/$stream_name (dans le dossier du jeu)"
   fi
   # État pour les lancements suivants : version, ROM exacte, fichiers.
   {
@@ -1094,7 +1112,8 @@ PY
       "$([ "$OVERCLOCK" = 1 ] && echo 1 || echo 0)" "$FIRMWARE_COMPILER" "$best" "$(date +%Y-%m-%d)"
   } > "$game_dir/.gbrmeta.json"
   local fw_ver
-  fw_ver=$(firmware_version "$game_dir/$game_name.BIN")
+  if [ "$TARGET" = pokitto ]; then fw_ver=$(firmware_version "$game_dir/$game_name.bin")
+  else fw_ver=$(firmware_version "$game_dir/$sd_name.BIN"); fi
   [ -n "$fw_ver" ] || fw_ver="$CUR_VERSION (pas de marqueur : gbrecomp trop ancien)"
   echo "[i] Firmware produit par gbrecomp v$fw_ver"
   zip_game "$game_dir" "$game_dir.zip" || { echo "[x] Zip impossible : le jeu reste en dossier."; return 1; }

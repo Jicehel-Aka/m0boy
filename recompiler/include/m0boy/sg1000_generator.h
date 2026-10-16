@@ -10,6 +10,7 @@ namespace m0boy::sg1000 {
 struct GenerateOptions {
     std::filesystem::path output, meta_templates;
     std::string name;
+    std::string sd_name; ///< 8.3 base of NAME.BIN, NAME.GG/.SMS, NAME.SAV; empty: derived from name
     TargetId target;
     std::vector<std::filesystem::path> coverage;
     bool precise = false;          ///< sync before every instruction (differential tests)

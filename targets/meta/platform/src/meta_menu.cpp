@@ -26,7 +26,7 @@ static const uint16_t title_bg = META_COLOR(0x346856);
 
 static inline void feed_watchdog(void) {
 #if !META_TARGET_POKITTO
-    if (WDT->CTRL.reg & WDT_CTRL_ENABLE) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
+    meta_watchdog_feed();
 #endif
 }
 

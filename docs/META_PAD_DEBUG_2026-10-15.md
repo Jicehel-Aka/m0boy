@@ -120,3 +120,107 @@ $BOSSAC -p /dev/ttyACM0 -o 0x4000 -e -w -v <projet>/.pio/build/meta/firmware.bin
 5. **SD** : jamais testée sur console (l'écran bleu initial = MISO mort).
    Reflasher `out/hw-sd-sml` (rebuild avec tous les correctifs) : bleu =
    carte illisible, rouge = `SUPERMAR.GB` absent, boot = OK.
+
+## Suite du 2026-10-16 : pad, crash, carte SD, USB (version 0.10.13)
+
+Méthode : un firmware de diagnostic (hors dépôt) garde un journal en RAM
+`.noinit` (lectures du pad, réponses SD, cadre de pile d'une faute,
+RCAUSE, WDT) ; après un double appui sur RESET, le bootloader laisse la RAM
+intacte et la commande sam-ba `R<adresse>,<nombre>#` la relit. Puis, une
+fois l'USB du firmware en place, la même commande pendant le jeu.
+
+| Symptôme | Cause mesurée | Correction |
+| --- | --- | --- |
+| Touches décalées, Bas jamais lu | La lecture de 0.10.12 (redémarrage du récepteur + impulsion CS avant la lecture) rend l'octet décalé d'un bit : Bas sort du registre. La lecture de la bibliothèque (12 MHz, CS bas, 1 µs, un octet) donne les 8 touches dans l'ordre de la bibliothèque (0 bas, 1 gauche, 2 droite, 3 haut, 4 A, 5 B, 6 MENU, 7 HOME), en jeu comme sur l'écran d'erreur, et le second octet d'une lecture 16 bits vaut 0x00 (entrée série du 165 à la masse) | `meta_pad_read` revenu à la lecture de la bibliothèque ; ordre meta-lapinou désactivé par défaut |
+| Crash « au bout d'un court moment » (tous les jeux) | HardFault 400 ms après le démarrage, PC dans `meta_audio_frame` → `channel_start`, sur l'écriture `DMAC->CHCTRLA = SWRST` du canal audio : la chaîne de descripteurs arrivée au bout laisse le canal activé (suspendu), et ce SWRST sur un canal activé fait une faute de bus sur le SAMD21 réel. PAC (protection d'écriture) mesuré non armé, DMAC trouvé éteint au démarrage : pas en cause | Le canal est désactivé (attente de ENABLE = 0) avant le SWRST. Mario 197 s, 11 779 images, aucune faute |
+| Écran bleu des jeux streamés | Carte identifiée (CMD0/8/41 à 250 kHz), mais chaque CMD17 à 24 MHz échouait (`META_FAT_IO`) : le SPI maître du SAMD21 ne lit pas MISO de façon fiable au-delà de ~12 MHz (le noyau Arduino plafonnait tout à 12) | `META_SD_SPI_HZ` = 12 MHz : la FAT se monte et les dossiers se parcourent (vérifié jusqu'au « fichier absent » ; un jeu streamé de bout en bout n'a pas encore tourné, voir ouvert) |
+
+Autres corrections, sans symptôme isolé : `meta_spi_rate` attend que le
+dernier octet ait quitté le registre (TXC) avant de couper le SERCOM ;
+`meta_pad_read` attend lui-même la fin des bandes de l'écran (au démarrage,
+la palette lisait le pad pendant les bandes, CS écran bas) ;
+`DMAC_Handler` restaure CHID.
+
+Hypothèses de 0.10.12 démenties par les mesures : la « rotation du byte
+par le trafic écran » (la lecture simple ne tourne pas, en jeu), la
+nécessité de réanimer le récepteur (inutile), l'ordre meta-lapinou (c'est
+l'artefact du décalage d'un bit), le bouton Bas défectueux (il marche).
+
+### USB (`META_USB`, `meta_usb.c`)
+
+CDC-ACM nu (VID:PID 2341:804D, « Gamebuino META m0boy »). Le bootloader
+de cette META (désassemblé depuis la flash, 0x1964) : après un reset
+logiciel il lance l'application quoi qu'il y ait en RAM, sauf si
+0x20007FFC vaut **0x3aecfd88** (la demande « enter bootloader » du
+launcher) ; après un reset watchdog il lance le **launcher** ; le magique
+double-tap Arduino (0x07738135) ne compte qu'après un appui sur RESET. Le
+firmware écrit donc 0x3aecfd88 puis `NVIC_SystemReset`. Vérifié : deux
+cycles complets jeu → touche 1200 bauds → sam-ba → flash → jeu, sans
+toucher la console. Le firmware reste détaché 200 ms au démarrage, sinon
+l'hôte (Linux derrière un hub) gardait le périphérique du bootloader.
+
+Matériel : le hub VIA VL813 a perdu la trace de la META (périphérique
+fantôme bloquant le `hub_wq` jusqu'à son débranchement) ; ensuite, liaison
+intermittente (erreurs -71, détection « low-speed ») avec le câble ou le
+connecteur de la META, bootloader compris.
+
+### Jeux streamés : le mauvais `ROM.*`
+
+Une fois la carte lisible, Ristar affichait encore une erreur : le code 4
+« autre ROM » (bleu dans la table RGB565 du frontend GG, vu **rouge** sur
+cette dalle câblée BGR ; de même l'erreur 1 « bleue » du frontend GB était
+vue rouge). Chaque dossier de jeu de la carte a son `ROM.GG` (convention de
+compile.sh) et la recherche prenait le premier trouvé (celui d'Aladdin,
+256 Kio, relu en direct par USB : une seule extension de 512 secteurs).
+`meta_fat_find_in` (meta_fat.c) appelle désormais un filtre sur chaque
+candidat : le frontend GG garde le fichier dont le premier secteur est celui
+de la ROM en flash, le frontend GB celui dont l'en-tête de cartouche
+correspond ; la sauvegarde GG (`ROM.SAV`) est cherchée dans le dossier de la
+ROM retenue. Test : `tests/test_meta_fat.py` (trois dossiers de jeux).
+Ristar 48 (sources 0.10.13, sans profil de couverture donc presque tout
+interprété, d'où la lenteur) démarre et se joue depuis la carte.
+
+### Ouvert
+
+1. Ristar construit par compile.sh (avec ses profils) pour juger la vitesse
+   réelle avec la carte à 12 MHz.
+2. Les sauvegardes GB (`<NOM>.SAV`, `.STA`) et les GG sans ROM sur la carte
+   prennent encore le premier fichier du nom : les variantes 48 et 72 d'un
+   même jeu partagent ce nom. Piste : reconnaître le dossier du jeu par son
+   `.BIN` (premier secteur identique au firmware en flash à 0x4000).
+3. Le hub VIA VL813 ne voit pas le redémarrage de la META après un flash
+   (`bossac -R`) et se fige ; en direct sur le PC, aucun souci.
+4. Le retour au bootloader depuis un écran d'erreur (avant l'audio) n'a
+   pas été revu sur console après la correction de `usb_poll`.
+
+## Suite du 2026-10-17 : noms 8.3, USB de débogage, fautes, 72 MHz
+
+- **Fichiers du jeu** : tous nommés comme le `.BIN`, d'un nom court 8.3
+  (`--sd-name`, choisi par compile.sh et compile.mjs : lettres et chiffres
+  du nom du jeu, au-delà de 8 les 6 premiers et 2 chiffres du SHA-1 de la
+  ROM). Le dossier garde son nom long (le loader l'affiche et prend le
+  premier `.bin` du dossier). Le firmware retrouve son dossier par son
+  `.BIN` (premier secteur identique à la flash en 0x4000,
+  `meta_fat_game_dir`) et y cherche ROM, sauvegarde et états : les
+  variantes 48/72 d'un même jeu peuvent porter le même nom. Firmware flashé
+  par USB, différent de celui de la carte : repli sur la recherche par
+  contenu de la ROM. Cartes existantes : renommer `ROM.SAV` / l'ancien
+  `.SAV` du jeu au nouveau nom pour garder la progression.
+- **USB de débogage** (`META_USB`, `tools/meta-usb.py`) : lecture/écriture
+  mémoire par symbole, profilage (anneau de 32 PC échantillonnés par
+  SysTick : ~1000 échantillons/s, 0 perdu, 0,6 % du CPU mesuré), touches
+  injectées (le menu a été piloté à distance), journal des fautes, flash
+  sans toucher la console.
+- **Fautes et blocages** : journal `.noinit`, redémarrage automatique
+  (mesuré : HardFault -> jeu relancé ; boucle principale bloquée par une
+  écriture USB de `pace_owed` -> alerte du watchdog à 2 s, PC dans
+  `meta_micros`, jeu relancé ~4 s après). Piège trouvé : écrire
+  `WDT->CLEAR` pendant une synchronisation bloque le bus plusieurs ms
+  (`meta_watchdog_feed` teste SYNCBUSY) ; le générateur 2 n'a qu'un
+  diviseur 5 bits (DIVSEL).
+- **72 MHz** : inutilisable sur cette console. HardFault dans
+  `gbl_ppu_fetch_asm` au premier rendu, sur un pointeur impair que le code
+  ne peut pas produire (`trow` toujours pair) ; essayé : PLL depuis la
+  DFLL48M, PLL depuis le quartz 32 kHz avec LBYPASS, RWS 2 et 3, routine en
+  flash au lieu de la SRAM (blocage total). À reprendre avec les réglages
+  de l'émulateur GB de l'utilisateur qui tenait 72 MHz.

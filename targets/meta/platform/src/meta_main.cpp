@@ -40,6 +40,9 @@
 #include "pokitto_hw.h"
 #else
 #include "meta_hw.h"
+#if META_USB
+#include "meta_usb.h"
+#endif
 #endif
 #include <setjmp.h>
 
@@ -52,6 +55,7 @@
 #include "meta_save.h"
 #include "meta_state.h"
 #include "meta_stream.h"
+#include "meta_fat.h"
 
 extern "C" {
 #include "gbl.h"
@@ -117,6 +121,10 @@ static void enter_loader(void) {
     gbl_save_flush(); /* unsaved cartridge RAM changes */
     meta_audio_stop();
     NVIC_DisableIRQ(DMAC_IRQn);
+    meta_watchdog_stop(); /* the loader does not feed it */
+#if META_USB
+    meta_usb_stop();
+#endif
     meta_sd_deselect();
     ((void (*)(void))(*((uint32_t *)0x3FF4)))();
 }
@@ -168,6 +176,24 @@ static uint8_t meta_buttons(void) {
 }
 
 #endif /* !META_TARGET_POKITTO */
+
+#if !META_TARGET_POKITTO && META_USB
+/* The upload tools' 1200-baud touch (meta_usb.c): cartridge RAM saved,
+ * then the bootloader.  playing: 0 on the boot error screens, where
+ * neither the cartridge RAM nor the audio has been set up (stopping the
+ * audio timer before meta_clock_init routes its clock would hang). */
+static void usb_poll(int playing) {
+    if (!meta_usb_bootloader_request) return;
+    meta_lcd_end_frame();
+    if (playing) {
+        gbl_save_flush();
+        meta_audio_stop();
+    }
+    meta_reset_to_bootloader();
+}
+#else
+static void usb_poll(int playing) { (void)playing; }
+#endif
 
 static uint32_t home_since;
 static uint8_t home_held, home_stage, select_frames, menu_request;
@@ -465,10 +491,9 @@ extern "C" void gbl_platform_safe_point(void) {
 
 extern "C" void gbl_platform_vblank(void) {
 #if !META_TARGET_POKITTO
-    /* If the loader locked the watchdog on (ALWAYSON), meta_startup.c could
-     * not disable it: feed it once per frame instead. */
-    if (WDT->CTRL.reg & WDT_CTRL_ENABLE) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
+    meta_watchdog_feed(); /* once per frame (meta_startup.c) */
 #endif
+    usb_poll(1);
     int bus_free = close_frame();
     int was_shown = !gbl_skip_render;
     if (was_shown) shown++;
@@ -514,7 +539,13 @@ extern "C" void gbl_platform_vblank(void) {
     }
 }
 
+#if META_TARGET_POKITTO
 extern "C" char __bss_end__;
+#define DATA_END __bss_end__
+#else
+extern "C" char end; /* after .bss and .noinit (gamebuino_meta.ld) */
+#define DATA_END end
+#endif
 
 /* A file the game needs is missing or unusable: a coloured screen tells
  * which, HOME (Pokitto: C) held 3 s returns to the loader.  Red: ROM not
@@ -525,11 +556,12 @@ static void __attribute__((unused)) boot_error(uint16_t colour) {
     uint32_t held = 0;
     for (;;) {
 #if !META_TARGET_POKITTO
-        if (WDT->CTRL.reg & WDT_CTRL_ENABLE) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
+        meta_watchdog_feed();
         uint8_t m = meta_pad_read();
 #else
         uint8_t m = meta_buttons();
 #endif
+        usb_poll(0);
         uint32_t now = millis();
         if (m & 0x80) {
             if (!held) held = now;
@@ -555,6 +587,9 @@ static void stream_error_screen(int err) {
 int main(void) {
 #if !META_TARGET_POKITTO
     meta_sd_deselect(); /* the card off the shared SPI bus from the start */
+#if META_USB
+    meta_usb_init();
+#endif
 #else
     pokitto_buttons_init();
 #endif
@@ -562,6 +597,15 @@ int main(void) {
     /* Like the Gamebuino library's SD.begin at boot: the loader relies on
      * the card being in SPI mode when HOME brings it back. */
     int card_ok = meta_sd_init();
+#if !META_TARGET_POKITTO
+    /* The game's files (ROM, save, states) are the ones in the folder of
+     * its own .BIN: other games' folders may hold files of the same name. */
+    if (card_ok) {
+        unsigned rows;
+        meta_fat_dir = meta_fat_game_dir(meta_sd_read, (uint8_t *)meta_display_scratch(&rows), GBL_BIN_NAME83,
+                                         META_APP_START);
+    }
+#endif
     __asm__ volatile("" ::"r"(gbl_gen_version)); /* kept in the binary for compile.sh */
 #if GBL_ROM_SD
     /* Before gbl_reset: the lookup borrows the stream cache. */
@@ -605,7 +649,7 @@ int main(void) {
      * unwinds to the nearest dispatcher loop. */
     char probe;
     uintptr_t limit = (uintptr_t)&probe - 3072u;
-    uintptr_t floor_addr = (uintptr_t)&__bss_end__ + 768u; /* interrupt headroom */
+    uintptr_t floor_addr = (uintptr_t)&DATA_END + 768u; /* interrupt headroom */
     gbl_stack_limit = limit > floor_addr ? limit : floor_addr;
 
     /* The menu's "Redemarrer" comes back here (from inside the emulation:

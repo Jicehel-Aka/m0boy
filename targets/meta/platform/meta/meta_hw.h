@@ -33,6 +33,22 @@ uint8_t meta_spi_transfer(uint8_t out);
  * drained first; call it only when the bus is free. */
 uint8_t meta_pad_read(void);
 
+/* ---- faults and watchdog (meta_startup.c) -------------------------------- */
+/* The last fault, kept across resets: exception frame (r0-r3, r12, lr, pc,
+ * xpsr), exception number (3 HardFault, 18 the watchdog's early warning),
+ * how many since the log was created, and the reset cause of this boot. */
+typedef struct {
+    uint32_t magic, count, rcause;
+    uint32_t early; /* faults in a row within 5 s of boot: 3 stop the restarts */
+    uint32_t frame[8];
+    uint32_t exception;
+} meta_fault_log;
+extern volatile meta_fault_log meta_fault;
+/* 4 s without a feed resets the console; the early warning at 2 s logs the
+ * PC and restarts the game.  Feed once per frame and in long waits. */
+void meta_watchdog_feed(void);
+void meta_watchdog_stop(void);
+
 #ifdef __cplusplus
 }
 #endif
