@@ -169,6 +169,7 @@ static void start_dma(const void *buf, uint32_t bytes) {
 
 /* Main loop or DMA interrupt: nothing else is using the bus. */
 static void lcdq_start(const lcdq_entry *e) {
+    meta_spi_rate(TFT_SPI_HZ); /* a pad or SD read may have changed it */
     set_window(e->row0, (uint8_t)(e->row0 + e->rows - 1));
     start_dma(e->buf, (uint32_t)e->rows * LCD_ROW_BYTES);
 }

@@ -46,11 +46,25 @@ void meta_spi_init(void) {
     pin_function_d(0, 12); /* MISO, PAD0 */
     pin_function_d(1, 10); /* MOSI, PAD2 */
     pin_function_d(1, 11); /* SCK, PAD3 */
+    /* Do not inherit the loader's PORT state. PA12 is the shared input from
+     * both the SD card and the buttons; muxing alone does not explicitly
+     * enable its digital input buffer. Never drive MISO or pull it down. */
+    PORT->Group[0].DIRCLR.reg = 1u << 12;
+    PORT->Group[0].PINCFG[12].reg = PORT_PINCFG_PMUXEN | PORT_PINCFG_INEN;
+    /* All other bus devices must be deselected before the first clock.
+     * In particular plain/packed Sega games do not open the SD driver. */
+    PORT->Group[0].PINCFG[27].reg = 0; /* SD CS, GPIO */
+    PORT->Group[0].OUTSET.reg = 1u << 27;
+    PORT->Group[0].DIRSET.reg = 1u << 27;
+    PORT->Group[1].PINCFG[22].reg = 0; /* LCD CS, GPIO */
+    PORT->Group[1].OUTSET.reg = 1u << 22;
+    PORT->Group[1].DIRSET.reg = 1u << 22;
     /* The pad's chip select is an output, inactive, from the start: its shift
      * register must not drive MISO while the display or the card is using the
      * bus (the Gamebuino library sets it the same way at boot). */
-    PORT->Group[1].DIRSET.reg = PAD_CS_MASK;
+    PORT->Group[1].PINCFG[3].reg = 0; /* buttons CS, GPIO */
     PORT->Group[1].OUTSET.reg = PAD_CS_MASK;
+    PORT->Group[1].DIRSET.reg = PAD_CS_MASK;
     baud = 0xFF;
     meta_spi_rate(4000000); /* the library's default until a device asks */
 }
@@ -62,10 +76,38 @@ void meta_spi_init(void) {
  * flight (close_frame, meta_main.cpp). */
 uint8_t meta_pad_read(void) {
     meta_spi_rate(META_BUTTONS_SPI_HZ);
-    /* Drop bytes left by display writes (the receive FIFO holds two). */
+    /* The display's DMA completes on its write to DATA, before the wire is
+     * idle: the last strip byte may still be leaving the shifter (and land
+     * in the receive FIFO during the read below).  Wait for TXC, then drop
+     * what it left. */
+    for (int t = 0; t < 1000 && !(SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_TXC); t++) {}
     for (int i = 0; i < 2 && (SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
         (void)SPI.DATA.reg;
     SPI.STATUS.reg = SERCOM_SPI_STATUS_BUFOVF;
+    /* A frame of display bytes overflows the two-deep receive FIFO, and the
+     * SAMD21's SPI then reads stale bytes until the receiver is restarted:
+     * CTRLB (RXEN) can only be rewritten while the SERCOM is disabled, so
+     * the read reconfigures it (measured on device 2026-10-15: without this
+     * the pad reads one constant byte for the whole game). */
+    SPI.CTRLA.bit.ENABLE = 0;
+    while (SPI.SYNCBUSY.bit.ENABLE) {}
+    SPI.CTRLA.reg = SERCOM_SPI_CTRLA_MODE_SPI_MASTER | SERCOM_SPI_CTRLA_DOPO(1) | SERCOM_SPI_CTRLA_DIPO(0);
+    SPI.CTRLB.reg = SERCOM_SPI_CTRLB_CHSIZE(0) | SERCOM_SPI_CTRLB_RXEN;
+    while (SPI.SYNCBUSY.bit.CTRLB) {}
+    SPI.BAUD.reg = baud;
+    SPI.CTRLA.bit.ENABLE = 1;
+    while (SPI.SYNCBUSY.bit.ENABLE) {}
+    /* The pad's shift register loads on one edge of its CS and shifts with
+     * every SCK edge while CS is high: the display's frame traffic between
+     * two reads rotates the byte (measured on device 2026-10-15: START read
+     * as HOME, the rotation followed the display's edge count).  Resynchronise
+     * with a CS pulse on both edges, the bus idle, so whichever edge loads
+     * this board's register it happens within a few microseconds of the
+     * transfer. */
+    PORT->Group[1].OUTCLR.reg = PAD_CS_MASK;
+    for (uint32_t t = meta_micros(); meta_micros() - t < 2;) {}
+    PORT->Group[1].OUTSET.reg = PAD_CS_MASK;
+    for (uint32_t t = meta_micros(); meta_micros() - t < 2;) {}
     PORT->Group[1].OUTCLR.reg = PAD_CS_MASK;
 #if META_BUTTONS_PL_US > 0
     /* The library waits about a microsecond for the parallel load. */
@@ -86,12 +128,17 @@ void meta_spi_rate(uint32_t hz) {
     uint8_t b = (uint8_t)(n > 256u ? 255u : n - 1u);
     if (b == baud) return;
     baud = b;
+    /* Disable, reconfigure, enable: the Arduino core's SPI.beginTransaction
+     * sequence.  A full SERCOM reset (SWRST) here froze the pad byte: the
+     * released pads clock the 74HC165 while its parallel load is asserted
+     * (the library and meta-lapinou never reset the SERCOM either).  Stale
+     * receive bytes across the switch are fine: the pad read and the SD bus
+     * both drain the FIFO after a rate change. */
     SPI.CTRLA.bit.ENABLE = 0;
     while (SPI.SYNCBUSY.bit.ENABLE) {}
-    SPI.CTRLA.bit.SWRST = 1;
-    while (SPI.CTRLA.bit.SWRST || SPI.SYNCBUSY.bit.SWRST) {}
     SPI.CTRLA.reg = SERCOM_SPI_CTRLA_MODE_SPI_MASTER | SERCOM_SPI_CTRLA_DOPO(1) | SERCOM_SPI_CTRLA_DIPO(0);
     SPI.CTRLB.reg = SERCOM_SPI_CTRLB_CHSIZE(0) | SERCOM_SPI_CTRLB_RXEN;
+    while (SPI.SYNCBUSY.bit.CTRLB) {}
     SPI.BAUD.reg = b;
     SPI.CTRLA.bit.ENABLE = 1;
     while (SPI.SYNCBUSY.bit.ENABLE) {}

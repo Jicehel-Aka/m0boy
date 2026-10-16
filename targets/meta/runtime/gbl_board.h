@@ -51,17 +51,22 @@
 #endif
 
 /* META_BUTTONS_SPI_HZ: the pad's 74HC165 shift register (CS PB03), 12 MHz,
- * the rate the Gamebuino library reads it at.  Do not raise it: at 24 MHz the
- * bits come in another order (meta-lapinou's, META_BUTTONS_LAPINOU_ORDER) and
- * UP is lost.  12 MHz is reachable from all three SERCOM clocks (48/4, 72/6,
- * 96/8), so the pad keeps it whatever the display and the card use.
- * META_BUTTONS_PL_US: optional wait after CS low for the register's parallel
- * load, in microseconds; 0 works on the META tested so far. */
+ * the rate the Gamebuino library reads it at.  24 MHz returned shifted
+ * buttons on the META tested here (device, 2026-10-15): keep 12.
+ * META_BUTTONS_LAPINOU_ORDER: on the META tested here the byte comes back in
+ * meta-lapinou's bit order (left, right, up, A, B, MENU, down, HOME) at both
+ * rates; the frontends remap it (meta_main.cpp).
+ * META_BUTTONS_PL_US: wait after CS low for the register's parallel load, in
+ * microseconds; the library's 1 us -- without it the load is missed when CS
+ * falls right after a display burst (measured on device 2026-10-15). */
 #ifndef META_BUTTONS_SPI_HZ
-#define META_BUTTONS_SPI_HZ 12000000
+#define META_BUTTONS_SPI_HZ 24000000
 #endif
 #ifndef META_BUTTONS_PL_US
-#define META_BUTTONS_PL_US 0
+#define META_BUTTONS_PL_US 1
+#endif
+#ifndef META_BUTTONS_LAPINOU_ORDER
+#define META_BUTTONS_LAPINOU_ORDER 1
 #endif
 
 /* META_LCD_DMA: 1 streams pixels with DMA while emulation continues (queue
