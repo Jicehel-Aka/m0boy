@@ -171,8 +171,8 @@
 #ifndef POKITTO_AUDIO_ASM
 #define POKITTO_AUDIO_ASM 1
 #endif
-/* C stack kept below gbl_stack_limit (meta_main.cpp); the META's 1024 is
- * from its own frames, not measured here. */
+/* C stack kept below gbl_stack_limit (meta_main.cpp); the META's value
+ * comes from its own frames, not measured here. */
 #ifndef META_STACK_RESERVE
 #define META_STACK_RESERVE 768
 #endif
@@ -280,11 +280,13 @@
 #endif
 /* C stack kept below gbl_stack_limit (meta_main.cpp): generated code checks
  * the limit on entry only, and what it calls below it is unguarded.  Static
- * worst case from -fstack-usage frames and the call graph (2026-10-17):
- * the option menu opened from a VBlank at the limit, about 720 bytes, plus
- * the USB and DMA interrupts, about 190: 768 bytes were short. */
+ * worst case from the frames and call graph of the Super Mario Land 2
+ * firmware (2026-10-17): a slow-path read that renders a line, about 390
+ * bytes with the region's frame, plus the USB and DMA interrupts nested,
+ * about 220.  The option menu (about 590 more) runs on the ROM cache's
+ * buffers in streamed builds (meta_main.cpp). */
 #ifndef META_STACK_RESERVE
-#define META_STACK_RESERVE 1024
+#define META_STACK_RESERVE 640
 #endif
 /* Number of rows per DMA strip (not a boolean). Default 2 saves 1280
  * bytes with two buffers; 4 reduces transfer/IRQ count.

@@ -378,6 +378,31 @@ static char slot_text[GBL_STATE_SLOTS_OR_1][8];
 static const char *slot_names[GBL_STATE_SLOTS_OR_1];
 static const char *const volume_names[9] = {"0", "1", "2", "3", "4", "5", "6", "7", "8"};
 
+#if defined(GBL_ROM_STREAM) && GBL_ROM_STREAM && GBL_STREAM_SECTORS >= 2 && defined(__ARM_ARCH_6M__)
+/* The option menu needs about 600 bytes of stack, and VBlank can come deep
+ * in the game's calls (always, in Super Mario Land 2): it runs on the ROM
+ * cache's buffers instead, emptied afterwards (a few sectors read again).
+ * It reads no ROM; its interrupts use that stack too.  "Redemarrer" and
+ * "Quitter" leave it by longjmp or reset. */
+__attribute__((naked, noinline)) static void call_on_stack(void (*fn)(void), uintptr_t top) {
+    __asm__ volatile("push {r4, lr}\n\t"
+                     "mov r4, sp\n\t"
+                     "mov sp, r1\n\t"
+                     "blx r0\n\t"
+                     "mov sp, r4\n\t"
+                     "pop {r4, pc}\n\t");
+}
+
+static void option_menu(void);
+static void run_menu(void) {
+    uintptr_t top = ((uintptr_t)gbl_stream_scratch() + GBL_STREAM_SECTORS * 512u) & ~(uintptr_t)7;
+    call_on_stack(option_menu, top);
+    gbl_stream_invalidate();
+}
+#else
+#define run_menu option_menu
+#endif
+
 #if META_TARGET_POKITTO
 extern "C" char __bss_end__;
 #define DATA_END __bss_end__
@@ -527,7 +552,7 @@ extern "C" void gbl_platform_vblank(void) {
     if (bus_free) poll_input(); /* else keep last frame's buttons */
     if (menu_request) {
         menu_request = 0;
-        option_menu();
+        run_menu();
         static_next = 0;
     }
     /* Audio first: a save flush can block on the SD card, and the DMA then

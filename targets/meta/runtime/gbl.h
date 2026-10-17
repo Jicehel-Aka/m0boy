@@ -120,6 +120,9 @@ int gbl_platform_rom_read(uint32_t sector, uint8_t *dst);
 /* 512 bytes of the stream cache, free for the platform before gbl_reset()
  * (e.g. to locate the ROM file); gbl_reset() empties the cache. */
 uint8_t *gbl_stream_scratch(void);
+/* Empties the stream cache, after the platform used all its buffers
+ * (GBL_STREAM_SECTORS x 512 bytes from gbl_stream_scratch()). */
+void gbl_stream_invalidate(void);
 extern uint32_t gbl_stream_misses;  /* sectors read so far */
 extern uint32_t gbl_stream_unpacked; /* ... decoded from compressed flash */
 

@@ -66,6 +66,8 @@ static void stream_reset(void) {
     stream_last = 0;
 }
 
+void gbl_stream_invalidate(void) { stream_reset(); }
+
 #if GBL_ROM_PACKED
 #include "m0_rom_codec.h"
 /* Compressed flash source: sector k of the ROM is gbl_rom_packed
