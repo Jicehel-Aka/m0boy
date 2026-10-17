@@ -134,11 +134,12 @@ int gbl_platform_save_write(uint32_t sector, const uint8_t *src);
 void gbl_save_flush(void);           /* write back what changed */
 int gbl_save_pending(void);          /* changes not written yet */
 extern uint32_t gbl_save_last_change; /* gbl_frame of the last change */
-/* With GBL_ERAM_ON_SD: newest cartridge RAM sector, read and written by
- * gbl_rd / gbl_wr without the slow path (gbl_core.c). */
-#define GBL_ERAM_WIN_NONE 0x10000u
-extern uint32_t gbl_eram_rwin, gbl_eram_wwin;
-extern uint8_t *gbl_eram_rptr, *gbl_eram_wptr;
+/* With GBL_ERAM_ON_SD: the cached sectors of A000-BFFF, 512 bytes each,
+ * read and written by gbl_rd / gbl_wr without the slow path (biased like
+ * gbl_rmap; gbl_eram_wmap only for dirty sectors), and their CLOCK bits,
+ * set on every access (gbl_core.c). */
+extern uint8_t *gbl_eram_rmap[16], *gbl_eram_wmap[16];
+extern uint8_t gbl_eram_ref[16];
 /* 512 bytes free for the platform before gbl_reset() (NULL without
  * cartridge RAM). */
 uint8_t *gbl_save_scratch(void);
