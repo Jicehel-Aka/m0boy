@@ -167,15 +167,22 @@ Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
   cycles per frame (estimate).
 - **ROMs of 256 KiB and more** stream from the SD card. Bank 0 and the hot
   chunks stay in flash, chosen from data-read profiles recorded during the
-  play sessions; the rest is read 512 bytes at a time into an 8-sector LRU
-  cache. The firmware finds the ROM file through FAT16/FAT32 at boot. There
+  play sessions (the generator also LZSS-packs more of them when flash is
+  left); the rest is read 512 bytes at a time into a sector cache (8 by
+  default, 2–3 when the cartridge RAM is on the card too), at 17.5 MHz on
+  the META. The firmware finds the ROM file through FAT16/FAT32 at boot. There
   is no ROM size limit: Link's Awakening, Pokémon Yellow and Donkey Kong
   Land are converted this way.
 - **Cartridge RAM** larger than 2 KiB (8 KiB for Link's Awakening, 32 KiB
-  for Pokémon) lives in a `.SAV` file on the card behind a two-sector
-  write-back cache, so these games fit in 32 KiB of RAM. Battery saves are
-  written back when the game disables its RAM, two seconds after the last
-  change, and before returning to the loader.
+  for Pokémon) lives in a `.SAV` file on the card behind a write-back cache
+  of 512-byte sectors (8 by default in streamed builds), so these games fit
+  in 32 KiB of RAM. The cached sectors are mapped directly for the CPU's
+  reads and writes, with CLOCK replacement. A dirty sector is written back
+  when it is evicted, when the game disables its RAM, 120 frames after the
+  last change, and before returning to the loader. Super Mario Land 2 keeps
+  most of its variables there (about 5 KiB of work RAM): with 10 sectors
+  (`GBL_ERAM_CACHE_SECTORS`, per-game build flags) the card saw 3 reads and
+  2 writes a second in level 1 on a META, instead of up to 100 and 49.
 
 ### Speed on a 48 MHz Cortex-M0+
 
@@ -184,7 +191,9 @@ Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
   the dispatch cache of compiled code, OAM DMA, the pixel pushes of the
   Pokitto and the LZSS decoder. On 15 games this cut the emulation time
   per frame by 15% to 53% (median 19%), with frames identical to the C
-  runtime.
+  runtime. Cartridge RAM on the card has the same direct path: on Super
+  Mario Land 2, 593k → 393k cycles a frame (estimate), the slow path having
+  taken about 46% of the CPU on the META (USB profiler).
 - Devices are lazy: one cycle counter drives everything, the PPU renders a
   whole line at the end of mode 3, and timers, STAT, LYC and VBlank only
   raise events when they become observable.
