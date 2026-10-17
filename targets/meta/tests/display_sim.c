@@ -151,6 +151,12 @@ int main(void) {
         gbl_io_wr(0x4A, 90);
         gbl_io_wr(0x4B, 60);
         meta_display_set_mode(mode);
+#if !META_TBLEND
+        if (mode == META_MODE_TBLEND) {
+            if (meta_display_mode() != META_MODE_TILE) return 1;
+            mode = META_MODE_TILE;
+        }
+#endif
         memset(panel, 0, sizeof(panel));
         uint32_t frames_bad = 0, frames_late = 0, rows_before = rows_sent;
         for (int frame = 0; frame < 400; frame++) {

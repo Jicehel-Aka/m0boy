@@ -154,10 +154,17 @@ static void map_rom_bank(void) {
     if (bank == mapped_bank) return;
     mapped_bank = (uint16_t)bank;
 #if GBL_ROM_STREAM
-    const uint8_t *m = gbl_rom_chunk_map + bank * 4u;
+    /* Bank 0 is already resident at gbl_rom. MBC5 can also select it in
+     * the upper slot: keep those reads out of the SD cache as well. */
+    if (bank == 0) {
+        const uint8_t *base = BIAS(gbl_rom, 0x4000u);
+        gbl_rmap[4] = gbl_rmap[5] = gbl_rmap[6] = gbl_rmap[7] = base;
+    } else {
+        const uint8_t *m = gbl_rom_chunk_map + bank * 4u;
 #define CHUNK(i) gbl_rmap[4 + i] = m[i] ? BIAS(gbl_rom_resident[m[i] - 1u], 0x4000u + i * 0x1000u) : 0
-    CHUNK(0); CHUNK(1); CHUNK(2); CHUNK(3);
+        CHUNK(0); CHUNK(1); CHUNK(2); CHUNK(3);
 #undef CHUNK
+    }
 #else
     const uint8_t *base = BIAS(gbl_rom + bank * 0x4000u, 0x4000u);
     gbl_rmap[4] = gbl_rmap[5] = gbl_rmap[6] = gbl_rmap[7] = base;
@@ -205,11 +212,28 @@ static uint8_t save_pending;
 #define GBL_ERAM_CACHE_SECTORS 2
 #endif
 #define ERAM_WAYS GBL_ERAM_CACHE_SECTORS
+#if ERAM_WAYS < 1 || ERAM_WAYS > 256
+#error "GBL_ERAM_CACHE_SECTORS must be between 1 and 256"
+#endif
 static uint8_t eram_buf[ERAM_WAYS][512] __attribute__((aligned(4)));
 static int32_t eram_tag[ERAM_WAYS];
-static uint16_t eram_used[ERAM_WAYS]; /* eram_clock when last switched to: the oldest is evicted */
-static uint8_t eram_dirty[ERAM_WAYS], eram_mru, eram_prev;
-static uint16_t eram_clock;
+/* Circular LRU list, newest at eram_mru, oldest at eram_newer[eram_mru].
+ * Two bytes per way, as with the old timestamps, without clock wraparound.
+ * Repeated accesses to the newest way do not touch the list. */
+static uint8_t eram_older[ERAM_WAYS], eram_newer[ERAM_WAYS];
+static uint8_t eram_dirty[ERAM_WAYS], eram_mru;
+
+static void eram_touch(unsigned i) {
+    unsigned older = eram_older[i], newer = eram_newer[i];
+    eram_older[newer] = (uint8_t)older;
+    eram_newer[older] = (uint8_t)newer;
+    unsigned tail = eram_newer[eram_mru];
+    eram_older[tail] = (uint8_t)i;
+    eram_newer[i] = (uint8_t)tail;
+    eram_older[i] = eram_mru;
+    eram_newer[eram_mru] = (uint8_t)i;
+    eram_mru = (uint8_t)i;
+}
 
 static void eram_writeback(unsigned i) {
     if (eram_dirty[i]) {
@@ -228,25 +252,20 @@ static uint8_t *eram_sector(uint32_t off) {
     if (eram_tag[i] != sec) {
         /* Games alternate between two sectors (a pointer table and the
          * data): the previous one before the scan. */
-        if (eram_tag[eram_prev] == sec) {
-            i = eram_prev;
-            eram_prev = eram_mru;
-            eram_mru = (uint8_t)i;
+        i = eram_older[eram_mru];
+        if (eram_tag[i] == sec) {
+            eram_touch(i);
             return eram_buf[i];
         }
-        unsigned victim = 0;
-        for (i = 0; i < ERAM_WAYS && eram_tag[i] != sec; i++)
-            if ((uint16_t)(eram_clock - eram_used[i]) > (uint16_t)(eram_clock - eram_used[victim])) victim = i;
+        for (i = 0; i < ERAM_WAYS && eram_tag[i] != sec; i++) {}
         if (i == ERAM_WAYS) {
-            i = victim;
+            i = eram_newer[eram_mru];
             eram_writeback(i);
             if (!gbl_platform_save_read((uint32_t)sec, eram_buf[i]))
                 for (int k = 0; k < 512; k++) eram_buf[i][k] = 0xFF;
             eram_tag[i] = sec;
         }
-        eram_used[i] = ++eram_clock;
-        eram_prev = eram_mru;
-        eram_mru = (uint8_t)i;
+        if (i != eram_mru) eram_touch(i);
     }
     return eram_buf[i];
 }
@@ -273,10 +292,10 @@ static void eram_reset(void) {
     for (unsigned i = 0; i < ERAM_WAYS; i++) {
         eram_tag[i] = -1;
         eram_dirty[i] = 0;
-        eram_used[i] = 0;
+        eram_older[i] = (uint8_t)((i + 1u) % ERAM_WAYS);
+        eram_newer[i] = (uint8_t)((i + ERAM_WAYS - 1u) % ERAM_WAYS);
     }
-    eram_clock = 0;
-    eram_mru = eram_prev = 0;
+    eram_mru = 0;
     save_pending = 0;
 }
 #else

@@ -51,6 +51,7 @@
  * META_TBLEND            TBLEND (672 bytes: the held lines and, without
  *                        META_MERGE_MODES, a 16-colour table looked up
  *                        once per pixel instead of the 1 KiB one)
+ * META_DISPLAY_COMPACT   flash layouts and bitmap line-valid flags (0 restores RAM arrays)
  * META_LINE_SKIP         rows whose inputs did not change since they were
  *                        drawn are neither rendered nor sent (exact: see
  *                        GBL_LINE_SIGNATURE)
@@ -63,8 +64,11 @@
 #endif
 #if !defined(META_STRIP_LINES) || !defined(META_LCD_BUFFERS) || !defined(META_SMOOTH_ASM) || \
     !defined(META_SMOOTH_SPECULATE) || !defined(META_MERGE_MODES) || !defined(META_LINE_SKIP) || \
-    !defined(META_TBLEND)
+    !defined(META_TBLEND) || !defined(META_DISPLAY_COMPACT)
 #error "gbl_profile.h: a META display switch is missing"
+#endif
+#if META_STRIP_LINES < 1 || META_STRIP_LINES > 128 || META_LCD_BUFFERS < 1
+#error "META_STRIP_LINES must be 1..128 and META_LCD_BUFFERS must be positive"
 #endif
 
 
@@ -128,7 +132,15 @@ static uint8_t index_palette; /* PPU currently emits shade indices */
  * keep whole lines index it like their rows).  A mode change voids them
  * all, so the mode needs no place in the signature. */
 static uint32_t line_sig[144];
+#if META_DISPLAY_COMPACT
+static uint8_t line_valid[18];
+#define LINE_VALID(ly) ((line_valid[(ly) >> 3] >> ((ly) & 7)) & 1u)
+#define LINE_MARK(ly) (line_valid[(ly) >> 3] |= (uint8_t)(1u << ((ly) & 7)))
+#else
 static uint8_t line_valid[144];
+#define LINE_VALID(ly) line_valid[ly]
+#define LINE_MARK(ly) (line_valid[ly] = 1)
+#endif
 static uint32_t pending_sig; /* merge modes: signature of the held line 7 */
 #endif
 
@@ -268,9 +280,19 @@ uint16_t *meta_display_scratch(unsigned *rows) {
 
 /* Per-line layout of the current mode: what each DMG line becomes. */
 enum { L_ROW, L_HOLD, L_MERGE, L_DROP };
+#if META_DISPLAY_COMPACT
+#include "meta_display_layout.h"
+static const uint8_t *line_kind = display_layout[META_MODE_TILE][0];
+static const uint8_t *line_row = display_layout[META_MODE_TILE][1];
+#else
 static uint8_t line_kind[144], line_row[144];
+#endif
 
 static void build_layout(void) {
+#if META_DISPLAY_COMPACT
+    line_kind = display_layout[display_mode][0];
+    line_row = display_layout[display_mode][1];
+#else
     unsigned row = 0;
     for (unsigned ly = 0; ly < 144; ly++) {
         uint8_t kind = L_ROW;
@@ -298,6 +320,7 @@ static void build_layout(void) {
         if (kind == L_MERGE) line_row[ly] = line_row[ly - 1];
         else if (kind != L_DROP) line_row[ly] = (uint8_t)row++;
     }
+#endif
 }
 
 void meta_display_flush(void) {
@@ -324,9 +347,9 @@ static int smooth_check(uint8_t ly, uint32_t sig) {
     unsigned group = DIV9(ly), j = ly - group * 9u;
     if (j == 0) smooth_prev_ok = smooth_prev_changed = 0; /* rows never span groups */
 #if META_LINE_SKIP
-    unsigned changed = !line_valid[ly] || line_sig[ly] != sig;
+    unsigned changed = !LINE_VALID(ly) || line_sig[ly] != sig;
     line_sig[ly] = sig;
-    line_valid[ly] = 1;
+    LINE_MARK(ly);
 #else
     (void)sig;
     unsigned changed = 1;
@@ -371,9 +394,9 @@ int gbl_platform_line_check(uint8_t ly, uint32_t sig) {
     if (display_mode == META_MODE_TBLEND && line_kind[ly] != L_ROW) {
         /* The held line is rendered only when it changed (its packed copy
          * stays valid); the merged row is redrawn when either line did. */
-        unsigned changed = !line_valid[ly] || line_sig[ly] != sig;
+        unsigned changed = !LINE_VALID(ly) || line_sig[ly] != sig;
         line_sig[ly] = sig;
-        line_valid[ly] = 1;
+        LINE_MARK(ly);
         if (line_kind[ly] == L_HOLD) return (int)(tb_hold_fresh = (uint8_t)changed);
         if (changed || tb_hold_fresh) return 1;
         meta_display_rows_skipped++;
@@ -383,9 +406,9 @@ int gbl_platform_line_check(uint8_t ly, uint32_t sig) {
 #if META_LINE_SKIP
     if (line_kind[ly] == L_HOLD) { pending_sig = sig; return 1; } /* needed if its pair changed */
     if (line_kind[ly] == L_MERGE) sig = gbl_sig_combine(pending_sig, sig);
-    if (line_valid[ly] && line_sig[ly] == sig) { meta_display_rows_skipped++; return 0; }
+    if (LINE_VALID(ly) && line_sig[ly] == sig) { meta_display_rows_skipped++; return 0; }
     line_sig[ly] = sig;
-    line_valid[ly] = 1;
+    LINE_MARK(ly);
 #else
     (void)sig;
 #endif

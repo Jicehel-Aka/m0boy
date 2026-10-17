@@ -273,8 +273,15 @@
 #ifndef META_AUDIO_DMA
 #define META_AUDIO_DMA 1
 #endif
+/* Number of rows per DMA strip (not a boolean). Default 2 saves 1280
+ * bytes with two buffers; 4 reduces transfer/IRQ count.
+ * Both sizes work with the menu (it slices glyphs to the scratch size). */
 #ifndef META_STRIP_LINES
-#define META_STRIP_LINES 4
+#define META_STRIP_LINES 2
+#endif
+/* Same picture: flash layouts and bitmap validity. 0 restores RAM arrays. */
+#ifndef META_DISPLAY_COMPACT
+#define META_DISPLAY_COMPACT 1
 #endif
 #ifndef META_SMOOTH_ASM
 #define META_SMOOTH_ASM 1
@@ -283,8 +290,8 @@
 #define META_SMOOTH_SPECULATE 1
 #endif
 /* Builds with a ROM sector cache (SD or packed) or cartridge RAM on the
- * card have 2-2.5 KiB of RAM left (the stack) instead of 3-5: two strips in
- * flight instead of three, no BLEND/DARK (their 1.3 KiB of tables).  TBLEND
+ * card use two strips in flight instead of three, no BLEND/DARK (their
+ * 1.3 KiB of tables). Check the linked RAM/stack budget per game. TBLEND
  * (META_TBLEND, the default mode) stays everywhere: 672 bytes, with a
  * 16-colour table instead of the 1 KiB one when the merge modes are out. */
 #ifndef META_TBLEND

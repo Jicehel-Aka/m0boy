@@ -720,8 +720,8 @@ run (same picture in Link's Awakening).
 | `GBL_INTERP_ASM` | 1 on Cortex-M0+ (not in coverage or trace builds) | Interpreter loop and common opcodes in Thumb-1 (`gbl_interp_asm.S`); DAA, EI, RETI, HALT, STOP, PUSH/POP AF, SP arithmetic and `LD (nn),SP` go through the C `gbl_interp_op` |
 | `GBL_RENDER_LINE_ASM` | follows `GBL_PPU_ASM` | `render_line` (sprite selection, line signature, frontend calls) in Thumb-1 (`gbl_ppu_asm.S`); needs `GBL_LINE_SIGNATURE` |
 | `GBL_LOOKUP_CACHE` | 64 | Entries of the dispatch cache, a power of two (0 disables it) |
-| `GBL_STREAM_SECTORS` | 8 | Sector cache of a streamed or packed ROM (512 bytes each). More reads the card much less (Donkey Kong Land, 3,000 frames: 764 reads with 4, 400 with 6, 217 with 8). The RAM the Arduino core used pays for 8: streamed builds keep about 1.8 KiB of stack (2 KiB with the core and 4 sectors). 4 when 2 KiB of cartridge RAM are in RAM. The Pokitto uses 8. |
-| `GBL_ERAM_ON_SD` | 1 above 2 KiB of cartridge RAM | Cartridge RAM kept in the save file behind a 1 KiB cache |
+| `GBL_STREAM_SECTORS` | META: 2 with ROM and cartridge RAM on SD, 4 with >512 B of resident cartridge RAM, otherwise 8 | ROM sector cache (512 bytes plus metadata per entry). Donkey Kong Land over 3,000 frames: 764 reads with 4, 400 with 6, 217 with 8. Check the linked stack budget before increasing it. Pokitto defaults are separate. |
+| `GBL_ERAM_ON_SD` | 1 above 2 KiB of cartridge RAM | Cartridge RAM kept in the save file behind `GBL_ERAM_CACHE_SECTORS` write-back sectors |
 | `GBL_ROM_PACKED` | set by `--meta-pack` | Streamed ROM sectors LZSS-compressed in flash instead of on the SD card |
 | `GBL_UNPACK_ASM` | 1 on Cortex-M0+ | Thumb-1 decoder for those sectors |
 | `GBL_STACK_GUARD` | 1 | C stack check on entry to every compiled region |
@@ -729,7 +729,7 @@ run (same picture in Link's Awakening).
 | `META_SD_SPI_HZ` | 12000000 | SPI clock for SD sector reads (identification stays at 250 kHz); 24 MHz failed every read on a META, past what the SAMD21's SPI master samples reliably |
 | `META_BUTTONS_SPI_HZ` | 12000000 | SPI clock for the buttons' shift register, the library's. `META_BUTTONS_PL_US` (1) is the wait after CS low for the register's parallel load |
 | `META_LCD_BGR` | 0 | BGR order in the ST7735's MADCTL; 0 on the META tested (with 1, red and blue were swapped) |
-| `GBL_ERAM_CACHE_SECTORS` | 8 with the ROM and the cartridge RAM on the card (the ROM cache then gets 2), else 2 | Write-back cache of cartridge RAM kept in the save file (`GBL_ERAM_ON_SD`): Super Mario Land 2 uses its RAM as work RAM (about seven sectors); 2 sectors gave 157 card writes a second, 8 bring them down to the 2 s flush |
+| `GBL_ERAM_CACHE_SECTORS` | 8 with the ROM and the cartridge RAM on the card (the ROM cache then gets 2), else 2 | Write-back cache of cartridge RAM kept in the save file (`GBL_ERAM_ON_SD`): Super Mario Land 2 uses its RAM as work RAM (about seven sectors); 2 sectors gave 157 card writes a second, 8 reduced them to about 4/s in the measured run. Exact LRU with no timestamp wrap; deferred flush occurs 120 frames after the last change |
 | `META_USB` | 1 | USB serial port (`meta_usb.c`; about 600 bytes of RAM and 2.6 KiB of flash on Super Mario Land): the 1200-baud touch of upload tools (`pio run -t upload`, bossac, `tools/meta-usb.py flash`) resets into sam-ba without touching the console (the META's bootloader starts sam-ba when 0x20007FFC holds 0x3aecfd88 after a software reset; read from its code). For debugging, `tools/meta-usb.py`: `read`/`write` memory by ELF symbol while the game runs (sam-ba's `R`, `W`, `O`), `prof` (SysTick samples the interrupted PC into a ring of 32, the host drains it: about 1000 samples a second, under 1% of the CPU), `press` (buttons ORed into `meta_pad_read`, for scripted tests), `fault` (below). 0 removes all of it |
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND and DARK display modes (1 KiB table, a spare line); TBLEND then blends two pixels per lookup |
 | `META_TBLEND` | 1 | TBLEND, the default mode, in every build: 600 bytes of held lines and, without `META_MERGE_MODES`, a 16-colour table (one lookup per pixel) instead of the 1 KiB one |
@@ -737,16 +737,47 @@ run (same picture in Link's Awakening).
 | `META_AUDIO_DMA` | 1 | Audio samples go to the DAC by DMA (TC4-triggered DMAC channel 1, chained descriptors) instead of a 22 kHz TC4 interrupt (about 3% of the CPU); 0 restores the interrupt |
 | `META_LCD_SPI_MHZ` | 48 | Display SPI clock at boot: 12, 24, 36 or 48 (menu "SPI ecran"). 48 is the maximum the clock tree gives (shown fine on a META), 35 with the CPU at 70 MHz, the default (the menu's "36", reduced by `meta_clock.cpp`), 24 when the PLL does not lock. A panel that does not take it: rebuild with `-DMETA_LCD_SPI_MHZ=24` (or 36) in build_flags. A full frame 40,960 bytes: 13.7 ms at 24, 9.1 at 36, 6.8 at 48. The Arduino core capped every rate at 12 MHz, so firmwares built before 2026-10-03 sent the picture at 12. |
 | `META_LCD_DMA` | 1 | Strips are sent by DMA through a queue: the DMA-complete interrupt programs the next window and starts the next strip, so rendering waits only when every buffer is in flight. At VBlank, if the bus is still busy, the button read is postponed by one frame (never two in a row). 0 writes pixels from the CPU. |
-| `META_LCD_BUFFERS` | 3 | Strip buffers (triple buffering by default) |
-| `META_STRIP_LINES` | 4 | Rows per strip |
+| `META_LCD_BUFFERS` | 2 with a ROM cache or cartridge RAM on SD, otherwise 3 | DMA strip buffers |
+| `META_STRIP_LINES` | 2 | Number of rows per DMA strip, not an on/off flag. Saves 1,280 bytes with two buffers compared with 4; more transfers/IRQs. The menu slices its text bands to fit the scratch rows. |
+| `META_DISPLAY_COMPACT` | 1 | GB META display layouts in flash and line-valid flags in an 18-byte bitmap. Set 0 for the original RAM arrays; pixels are unchanged. |
 | `META_MAX_SKIP` | 3 | Maximum run of frames skipped for speed |
+
+### GB META RAM options (0.10.16)
+
+The three options are independent; default display settings use two-line
+DMA strips and TBLEND, with compact metadata enabled. To enable all RAM savings,
+put these lines in the game's `build_flags` and rebuild:
+
+```
+-DMETA_STRIP_LINES=2
+-DMETA_TBLEND=0
+-DMETA_DISPLAY_COMPACT=1
+```
+
+Set `META_STRIP_LINES=4` for four rows per DMA strip, `META_TBLEND=1`
+to enable TBLEND, or `META_DISPLAY_COMPACT=0` to restore RAM metadata.
+No additional menu buffer is allocated: it
+renders vertical glyph slices into the existing scratch area. Compact
+metadata preserves the image; turning off TBLEND selects TILE instead.
+Short strips trade RAM for more transfers/interrupts. On the synthetic streamed
+GB fixture, all three options save 2,384 bytes at the ARM GCC link; setting
+`GBL_STREAM_SECTORS=4` then leaves 2,232 bytes for the stack with eight ERAM
+sectors. This is a per-build RAM budget, not a device performance measurement.
+These display options apply to the GB META frontend, not the Pokitto renderer
+or the Sega frontends.
+
+Reserve stack space before increasing `GBL_STREAM_SECTORS` (ROM cache) or
+`GBL_ERAM_CACHE_SECTORS` (cartridge RAM cache). The fixed lower ROM bank 0
+already bypasses the SD cache; the streamed MBC5 upper slot now also maps
+bank 0 straight to its resident flash copy. Cartridge RAM sector 0 remains
+in the LRU: it contains mutable data and is unrelated to that ROM bank.
 
 `META_LCD_SPI_MHZ`, `META_SD_SPI_HZ`, `META_BUTTONS_SPI_HZ`, `META_LCD_DMA`
 and `META_LCD_12BPP` are defined in `runtime/gbl_board.h` only: `gbl_profile.h`
 includes it, and so does the profile the SG-1000/Game Gear generator writes,
 so one file holds the META's board settings for all three firmwares.
 
-The output is identical with every option on or off (SML host `run_hash`,
+The CPU/runtime optimization comparison kept identical output (SML host `run_hash`,
 3,000 frames, two input scripts). The line-signature contract is checked on
 every run: on SML 74–79% of lines were unchanged, with 0 false "unchanged"
 among about 850k lines. It is also checked by the random-mutation part of

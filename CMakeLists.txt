@@ -159,6 +159,46 @@ if(BUILD_TESTS)
     target_compile_definitions(test_meta_display_sim_12bpp PRIVATE META_LCD_12BPP=1)
     add_test(NAME meta_display_12bpp_matches_reference COMMAND test_meta_display_sim_12bpp)
 
+    # Exercise both compact data structures and the original layout, including
+    # short DMA strips, TBLEND fallback and the 12-bit panel path.
+    foreach(variant legacy short short_tile short_12bpp)
+        set(test_name test_meta_display_${variant})
+        add_executable(${test_name} "${GBL_META_DIR}/tests/display_sim.c"
+            "${GBL_META_DIR}/platform/meta/meta_display.c"
+            "${GBL_META_DIR}/platform/src/meta_palettes.c" ${GBL_META_RUNTIME_SOURCES})
+        target_include_directories(${test_name} PRIVATE "${GBL_META_DIR}/runtime"
+            "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/platform/src"
+            "${GBL_META_DIR}/platform/meta" "${GBL_META_DIR}/tests")
+        if(variant STREQUAL "legacy")
+            target_compile_definitions(${test_name} PRIVATE META_DISPLAY_COMPACT=0 META_STRIP_LINES=4)
+        else()
+            target_compile_definitions(${test_name} PRIVATE META_DISPLAY_COMPACT=1
+                META_STRIP_LINES=2 META_LCD_BUFFERS=2 META_MERGE_MODES=0)
+            if(variant STREQUAL "short_tile")
+                target_compile_definitions(${test_name} PRIVATE META_TBLEND=0)
+            elseif(variant STREQUAL "short_12bpp")
+                target_compile_definitions(${test_name} PRIVATE META_LCD_12BPP=1)
+            endif()
+        endif()
+        add_test(NAME meta_display_${variant}_matches_reference COMMAND ${test_name})
+    endforeach()
+
+    add_executable(test_meta_menu_slices "${GBL_META_DIR}/tests/menu_slices.cpp"
+        "${GBL_META_DIR}/platform/src/meta_menu.cpp")
+    target_include_directories(test_meta_menu_slices PRIVATE "${GBL_META_DIR}/tests/stubs"
+        "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/runtime" "${GBL_META_DIR}/platform/src")
+    target_compile_options(test_meta_menu_slices PRIVATE -UNDEBUG)
+    add_test(NAME meta_menu_short_scratch_matches_full_band COMMAND test_meta_menu_slices)
+
+    foreach(ways 1 2 8)
+        add_executable(test_meta_cache_${ways} "${GBL_META_DIR}/tests/cache_lru.c" ${GBL_META_RUNTIME_SOURCES})
+        target_include_directories(test_meta_cache_${ways} PRIVATE "${GBL_META_DIR}/tests/config_stream"
+            "${GBL_META_DIR}/runtime")
+        target_compile_definitions(test_meta_cache_${ways} PRIVATE GBL_ERAM_CACHE_SECTORS=${ways})
+        target_compile_options(test_meta_cache_${ways} PRIVATE -UNDEBUG)
+        add_test(NAME meta_cache_lru_${ways}_ways_and_resident_bank0 COMMAND test_meta_cache_${ways})
+    endforeach()
+
     add_executable(test_meta_lcd_pack "${GBL_META_DIR}/tests/lcd_pack.c")
     target_include_directories(test_meta_lcd_pack PRIVATE "${GBL_META_DIR}/platform/meta")
     add_test(NAME meta_lcd_pack444_matches_st7735 COMMAND test_meta_lcd_pack)
