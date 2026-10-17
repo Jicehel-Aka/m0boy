@@ -27,7 +27,7 @@ puces à 32 Kio de RAM, 256 Kio de flash et sans division matérielle.
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le firmware | 32 + 2 + 2 Kio de RAM, 228 Kio de flash sous le loader |
 | Écran | 160×128 : les 144 lignes du Game Boy fusionnées en 128 | 220×176 : image 1:1, ou agrandie en 200×176 |
 | Build du firmware | PlatformIO | `make` avec arm-none-eabi-gcc |
-| Version | 0.10.20 | 0.10.16 |
+| Version | 0.10.21 | 0.10.17 |
 | État | Jeux lancés sur la console | Testée en émulateur seulement. Un premier testeur sur vraie Pokitto signale une image retournée verticalement (lignes inversées, colonnes dans l'ordre), compatible avec la perte du bit SS (R01) du panneau à l'init ; la 0.10.1 allonge l'attente après reset et l'impulsion d'écriture des registres et réécrit R01, à vérifier sur la console |
 
 ## SG-1000
@@ -158,9 +158,10 @@ Sur PC, la lecture passe par la [branche `z80` de gm0](https://github.com/r043v/
   La banque 0 et les blocs les plus lus restent en flash, choisis d'après
   les profils de lecture enregistrés pendant les parties (le générateur en
   compresse d'autres en LZSS s'il reste de la flash) ; le reste est lu par
-  secteurs de 512 octets dans un cache de secteurs (8 par défaut, 2 à 3
-  quand la RAM de cartouche est aussi sur la carte), à 17,5 MHz sur la
-  META. Le firmware
+  secteurs de 512 octets dans un cache de secteurs (8 par défaut), à
+  17,5 MHz sur la META. Quand la RAM de cartouche est aussi sur la carte,
+  secteurs de ROM et de RAM se partagent un même réservoir, pondéré par ce
+  que chacun coûte à recharger. Le firmware
   trouve le fichier de la ROM en FAT16/FAT32 au démarrage. Il n'y a pas de
   limite de taille : Link's Awakening, Pokémon Jaune et Donkey Kong Land
   sont convertis ainsi.
@@ -170,12 +171,13 @@ Sur PC, la lecture passe par la [branche `z80` de gm0](https://github.com/r043v/
   les builds streamés) : ces jeux tiennent ainsi dans 32 Kio de RAM. Les
   secteurs en cache sont lus et écrits directement par le CPU, remplacement
   CLOCK. Un secteur modifié est écrit quand il est évincé, quand le jeu
-  désactive sa RAM, 120 images après la dernière modification, et avant le
+  désactive sa RAM, 120 images après la dernière modification, au plus
+  tard 30 s après sa modification (un secteur par image), et avant le
   retour au loader. Super Mario Land 2 y garde l'essentiel de ses variables
-  (environ 5 Kio de RAM de travail) : avec 10 secteurs
-  (`GBL_ERAM_CACHE_SECTORS`, options de build du jeu), la carte a vu 3
-  lectures et 2 écritures par seconde au niveau 1 sur une META, au lieu de
-  jusqu'à 100 et 49.
+  (environ 5 Kio de RAM de travail) : avec un réservoir de 12 secteurs
+  (`GBL_CACHE_SECTORS`, options de build du jeu), la carte a vu 2 à 4
+  lectures RAM et 2 écritures par seconde en jeu sur une META, au lieu de
+  jusqu'à 100 et 49 avec 8 secteurs de RAM.
 
 ### La vitesse sur un Cortex-M0+ à 48 MHz
 

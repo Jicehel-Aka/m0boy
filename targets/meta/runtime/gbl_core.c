@@ -49,24 +49,50 @@ extern const uint8_t gbl_rom_resident[][4096];
 extern const uint8_t gbl_rom_chunk_map[];
 
 /* Buffers, tags and the last slot are global: the assembly gbl_rd reads a
- * byte of the last sector used without calling gbl_rd_slow. */
-uint8_t gbl_stream_buf[GBL_STREAM_SECTORS][512] __attribute__((aligned(4)));
-int32_t gbl_stream_tag[GBL_STREAM_SECTORS];
+ * byte of the last sector used without calling gbl_rd_slow.  With
+ * GBL_CACHE_SHARED the buffers are a pool shared with the cartridge RAM
+ * (eram_* below): a way holds a ROM sector (gbl_stream_tag), a RAM sector
+ * (eram_tag) or nothing, under one CLOCK (cache_victim). */
+#define STREAM_WAYS GBL_STREAM_WAYS
+uint8_t gbl_stream_buf[STREAM_WAYS][512] __attribute__((aligned(4)));
+int32_t gbl_stream_tag[STREAM_WAYS];
 uint8_t gbl_stream_last;
 #define stream_buf gbl_stream_buf
 #define stream_tag gbl_stream_tag
 #define stream_last gbl_stream_last
-static uint32_t stream_age[GBL_STREAM_SECTORS], stream_clock;
+#if GBL_CACHE_SHARED
+static unsigned cache_victim(void);
+static void cache_take(unsigned w);
+static void cache_touch(unsigned w);
+static void cache_cost(unsigned w, uint8_t passes);
+#else
+static uint32_t stream_age[STREAM_WAYS], stream_clock;
+#endif
 uint32_t gbl_stream_misses;
 
 uint8_t *gbl_stream_scratch(void) { return stream_buf[0]; }
 
 static void stream_reset(void) {
-    for (int i = 0; i < GBL_STREAM_SECTORS; i++) { stream_tag[i] = -1; stream_age[i] = 0; }
+    for (int i = 0; i < STREAM_WAYS; i++) {
+        stream_tag[i] = -1;
+#if !GBL_CACHE_SHARED
+        stream_age[i] = 0;
+#endif
+    }
     stream_last = 0;
 }
 
+#if GBL_CACHE_SHARED
+static void eram_drop(void);
+/* The cartridge RAM sectors of the pool must have been written back
+ * (gbl_save_flush) before the platform used the buffers. */
+void gbl_stream_invalidate(void) {
+    stream_reset();
+    eram_drop();
+}
+#else
 void gbl_stream_invalidate(void) { stream_reset(); }
+#endif
 
 #if GBL_ROM_PACKED
 #include "m0_rom_codec.h"
@@ -107,23 +133,41 @@ static uint8_t stream_read(uint32_t off) {
     int32_t sec = (int32_t)(off >> 9);
     if (stream_tag[stream_last] == sec) return stream_buf[stream_last][off & 511u];
     unsigned slot = 0;
-    for (unsigned i = 0; i < GBL_STREAM_SECTORS; i++) {
+#if GBL_CACHE_SHARED
+    for (unsigned i = 0; i < STREAM_WAYS; i++)
+        if (stream_tag[i] == sec) { slot = i; goto hit; }
+    slot = cache_victim();
+    cache_take(slot);
+#else
+    for (unsigned i = 0; i < STREAM_WAYS; i++) {
         if (stream_tag[i] == sec) { slot = i; goto hit; }
         if (stream_age[i] < stream_age[slot]) slot = i;
     }
+#endif
+#if GBL_CACHE_SHARED
+    cache_cost(slot, 1); /* read again from the card; nothing from flash */
+#endif
 #if GBL_ROM_PACKED
-    if (!rom_unpack((uint32_t)sec, stream_buf[slot]))
+    if (rom_unpack((uint32_t)sec, stream_buf[slot])) {
+#if GBL_CACHE_SHARED
+        cache_cost(slot, 0);
 #endif
+    } else
+#endif
+    {
 #if GBL_ROM_SD
-    if (!gbl_platform_rom_read((uint32_t)sec, stream_buf[slot]))
-        for (int i = 0; i < 512; i++) stream_buf[slot][i] = 0xFF;
-#elif GBL_ROM_PACKED
-        for (int i = 0; i < 512; i++) stream_buf[slot][i] = 0xFF;
+        if (!gbl_platform_rom_read((uint32_t)sec, stream_buf[slot]))
 #endif
+            for (int i = 0; i < 512; i++) stream_buf[slot][i] = 0xFF;
+    }
     stream_tag[slot] = sec;
     gbl_stream_misses++;
 hit:
+#if GBL_CACHE_SHARED
+    cache_touch(slot);
+#else
     stream_age[slot] = ++stream_clock;
+#endif
     stream_last = (uint8_t)slot;
     return stream_buf[slot][off & 511u];
 }
@@ -213,14 +257,21 @@ static uint8_t save_pending;
 #ifndef GBL_ERAM_CACHE_SECTORS
 #define GBL_ERAM_CACHE_SECTORS 2
 #endif
+#if GBL_CACHE_SHARED
+#define ERAM_WAYS GBL_CACHE_SECTORS
+#define eram_buf gbl_stream_buf /* the shared pool */
+#else
 #define ERAM_WAYS GBL_ERAM_CACHE_SECTORS
+#endif
 #if ERAM_WAYS < 1 || ERAM_WAYS > 254
-#error "GBL_ERAM_CACHE_SECTORS must be between 1 and 254"
+#error "GBL_ERAM_CACHE_SECTORS / GBL_CACHE_SECTORS must be between 1 and 254"
 #endif
 #if GBL_ERAM_SIZE % 0x2000
 #error "GBL_ERAM_ON_SD needs whole 8 KiB banks"
 #endif
+#if !GBL_CACHE_SHARED
 static uint8_t eram_buf[ERAM_WAYS][512] __attribute__((aligned(4)));
+#endif
 static int32_t eram_tag[ERAM_WAYS];
 static uint8_t eram_dirty[ERAM_WAYS];
 
@@ -239,6 +290,22 @@ uint8_t gbl_eram_ref[16];
 static uint8_t way_slot[ERAM_WAYS]; /* slot of the way's sector, or ERAM_NO_SLOT */
 static uint8_t way_ref[ERAM_WAYS];  /* referenced while unmapped */
 static uint8_t eram_hand;
+#if GBL_CACHE_SHARED
+/* CLOCK passes a way survives unmarked: 0 for a ROM sector unpacked from
+ * flash, 1 for one read from the card, GBL_CACHE_RAM_PASSES for a RAM
+ * sector and GBL_CACHE_DIRTY_PASSES more while it is changed (a card write
+ * to evict).  Host, Super Mario Land 2, four sessions (539,000 frames),
+ * card reads x 0.8 ms + writes x 2 ms: separate caches 2 + 8 sectors 125 s,
+ * 3 + 10 57 s; one pool of 10 with weights 1/1 299 s (its RAM thrashed
+ * against ROM sectors), 3/3 123 s, 5/5 111 s; pool of 13: 40, 33, 31 s. */
+static uint8_t way_cost[ERAM_WAYS], way_passes[ERAM_WAYS];
+#ifndef GBL_CACHE_RAM_PASSES
+#define GBL_CACHE_RAM_PASSES 5
+#endif
+#ifndef GBL_CACHE_DIRTY_PASSES
+#define GBL_CACHE_DIRTY_PASSES 5
+#endif
+#endif
 
 static uint32_t eram_base_sector(void) { return (eram_bank() * 0x2000u) % GBL_ERAM_SIZE / 512u; }
 
@@ -291,6 +358,10 @@ static unsigned eram_way(uint32_t off) {
     unsigned w;
     for (w = 0; w < ERAM_WAYS && eram_tag[w] != sec; w++) {}
     if (w == ERAM_WAYS) {
+#if GBL_CACHE_SHARED
+        w = cache_victim();
+        cache_take(w);
+#else
         for (;;) {
             w = eram_hand;
             eram_hand = (uint8_t)(w + 1u == ERAM_WAYS ? 0 : w + 1u);
@@ -299,6 +370,7 @@ static unsigned eram_way(uint32_t off) {
         }
         eram_unmap_way(w);
         eram_writeback(w);
+#endif
         if (!gbl_platform_save_read((uint32_t)sec, eram_buf[w]))
             for (int k = 0; k < 512; k++) eram_buf[w][k] = 0xFF;
         eram_tag[w] = sec;
@@ -353,7 +425,60 @@ static void eram_reset(void) {
     }
     eram_hand = 0;
     save_pending = 0;
+#if GBL_CACHE_SHARED
+    for (unsigned i = 0; i < ERAM_WAYS; i++) way_cost[i] = way_passes[i] = 0;
+    stream_reset(); /* state copies go through buffer 0, whatever it held */
+#endif
 }
+
+#if GBL_CACHE_SHARED
+/* The pool's RAM sectors, written back already, are no longer cached. */
+static void eram_drop(void) {
+    for (unsigned i = 0; i < ERAM_WAYS; i++) {
+        eram_unmap_way(i);
+        eram_tag[i] = -1;
+        eram_dirty[i] = 0;
+        way_ref[i] = way_passes[i] = 0;
+    }
+    save_pending = 0;
+}
+
+/* One CLOCK over ROM and RAM sectors, weighted (way_cost above).  The last
+ * ROM sector read is never evicted: the assembly gbl_rd reads it without
+ * marking it. */
+static unsigned cache_victim(void) {
+    for (;;) {
+        unsigned w = eram_hand;
+        eram_hand = (uint8_t)(w + 1u == ERAM_WAYS ? 0 : w + 1u);
+        if (ERAM_WAYS > 1 && w == stream_last && stream_tag[w] >= 0) continue;
+        if (eram_get_ref(w)) {
+            eram_set_ref(w, 0);
+            way_passes[w] = 0;
+            continue;
+        }
+        if (way_passes[w] < way_cost[w] + GBL_CACHE_DIRTY_PASSES * eram_dirty[w]) {
+            way_passes[w]++;
+            continue;
+        }
+        return w;
+    }
+}
+
+/* Way w emptied for a new sector: a RAM sector is written back if changed. */
+static void cache_take(unsigned w) {
+    if (eram_tag[w] >= 0) {
+        eram_unmap_way(w);
+        eram_writeback(w);
+        eram_tag[w] = -1;
+    }
+    stream_tag[w] = -1;
+    way_passes[w] = 0;
+    way_cost[w] = GBL_CACHE_RAM_PASSES; /* RAM, or ROM until cache_cost says otherwise */
+}
+
+static void cache_touch(unsigned w) { eram_set_ref(w, 1); }
+static void cache_cost(unsigned w, uint8_t passes) { way_cost[w] = passes; }
+#endif
 #else
 static uint32_t eram_dirty_mask; /* bit per 512-byte sector */
 

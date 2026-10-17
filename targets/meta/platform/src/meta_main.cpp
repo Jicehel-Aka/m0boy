@@ -378,10 +378,11 @@ static char slot_text[GBL_STATE_SLOTS_OR_1][8];
 static const char *slot_names[GBL_STATE_SLOTS_OR_1];
 static const char *const volume_names[9] = {"0", "1", "2", "3", "4", "5", "6", "7", "8"};
 
-#if defined(GBL_ROM_STREAM) && GBL_ROM_STREAM && GBL_STREAM_SECTORS >= 2 && defined(__ARM_ARCH_6M__)
+#if defined(GBL_ROM_STREAM) && GBL_ROM_STREAM && GBL_STREAM_WAYS >= 2 && defined(__ARM_ARCH_6M__)
 /* The option menu needs about 600 bytes of stack, and VBlank can come deep
  * in the game's calls (always, in Super Mario Land 2): it runs on the ROM
- * cache's buffers instead, emptied afterwards (a few sectors read again).
+ * cache's buffers instead (the shared pool, cartridge RAM written back
+ * first), emptied afterwards (a few sectors read again).
  * It reads no ROM; its interrupts use that stack too.  "Redemarrer" and
  * "Quitter" leave it by longjmp or reset. */
 __attribute__((naked, noinline)) static void call_on_stack(void (*fn)(void), uintptr_t top) {
@@ -395,7 +396,8 @@ __attribute__((naked, noinline)) static void call_on_stack(void (*fn)(void), uin
 
 static void option_menu(void);
 static void run_menu(void) {
-    uintptr_t top = ((uintptr_t)gbl_stream_scratch() + GBL_STREAM_SECTORS * 512u) & ~(uintptr_t)7;
+    gbl_save_flush(); /* with GBL_CACHE_SHARED the buffers hold cartridge RAM too */
+    uintptr_t top = ((uintptr_t)gbl_stream_scratch() + GBL_STREAM_WAYS * 512u) & ~(uintptr_t)7;
     call_on_stack(option_menu, top);
     gbl_stream_invalidate();
 }

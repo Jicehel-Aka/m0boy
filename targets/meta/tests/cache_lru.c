@@ -1,7 +1,10 @@
-/* Public bus accesses against a separate CLOCK model (every access marks
- * its sector, the hand evicts the first unmarked way), including dirty
- * eviction, cartridge RAM banks (GBL_ERAM_SIZE above 8 KiB) and ROM
- * bank 0. */
+/* Public bus accesses against a separate model of the cache: one pool of
+ * GBL_STREAM_WAYS buffers shared by ROM and cartridge RAM sectors (both on
+ * the card here), CLOCK (every access marks its sector, the hand evicts the
+ * first unmarked way), GBL_CACHE_RAM_PASSES extra passes for a RAM sector
+ * and GBL_CACHE_DIRTY_PASSES more while it is changed, the last ROM sector
+ * never evicted.  Also dirty eviction, periodic write-back,
+ * cartridge RAM banks (GBL_ERAM_SIZE above 8 KiB) and ROM bank 0. */
 #include "gbl.h"
 #include "gbl_options.h"
 #include <assert.h>
@@ -31,25 +34,36 @@ void gbl_platform_line_end(uint8_t ly) { (void)ly; }
 void gbl_platform_vblank(void) {}
 int gbl_platform_line_check(uint8_t ly, uint32_t sig) { (void)ly; (void)sig; return 0; }
 
-#define W GBL_ERAM_CACHE_SECTORS
+#define W GBL_STREAM_WAYS
+#define ROM_TAG 100000 /* model tags: RAM sector s, ROM sector ROM_TAG + s */
 static int tag[W];
-static uint8_t ref[W];
+static uint8_t ref[W], dirty[W], passes[W];
 static unsigned hand, bank = ~0u;
+static int last_rom = -1;
+static unsigned victim(void) {
+    for (;;) {
+        unsigned w = hand;
+        hand = (hand + 1) % W;
+        if (W > 1 && (int)w == last_rom) continue;
+        if (ref[w]) { ref[w] = 0; passes[w] = 0; continue; }
+        if (passes[w] < 5 + 5 * dirty[w]) { passes[w]++; continue; } /* RAM: the ROM way is the last */
+        return w;
+    }
+}
+static void model_load(unsigned w, int t) {
+    if (last_rom == (int)w) last_rom = -1;
+    tag[w] = t;
+    ref[w] = 1;
+    dirty[w] = passes[w] = 0;
+}
+static void model_clean(void) { for (unsigned w = 0; w < W; ++w) dirty[w] = 0; }
 static uint8_t values[NSEC];
 static void access_sector(unsigned s, unsigned step) {
     unsigned i = 0;
     while (i < W && tag[i] != (int)s) ++i;
     unsigned before = reads;
     unsigned miss = i == W;
-    if (miss) {
-        for (;;) {
-            i = hand;
-            hand = (hand + 1) % W;
-            if (!ref[i]) break;
-            ref[i] = 0;
-        }
-        tag[i] = (int)s;
-    }
+    if (miss) model_load(i = victim(), (int)s);
     ref[i] = 1;
     if (s / 16 != bank) {
         bank = s / 16;
@@ -61,6 +75,7 @@ static void access_sector(unsigned s, unsigned step) {
     if ((step & 3u) == 0) {
         values[s] = (uint8_t)(values[s] + 1);
         gbl_wr(a, values[s]);
+        dirty[i] = 1;
     }
 }
 int main(void) {
@@ -69,6 +84,7 @@ int main(void) {
         memset(disk[i], i, 512);
     }
     for (unsigned i = 0; i < W; ++i) tag[i] = -1;
+    assert(GBL_CACHE_SHARED);
     gbl_reset();
     /* Lower slot: always bank 0. Upper slot: MBC5 explicitly selects 0. */
     assert(gbl_rd(0) == 0xA5 && gbl_rd(0x2345) == 0x5A);
@@ -77,6 +93,9 @@ int main(void) {
     assert(rom_reads == 0 && gbl_stream_misses == 0);
     gbl_wr(0x2000, 1);
     assert(gbl_rd(0x4000) == 0x77 && rom_reads == 1);
+    model_load(victim(), ROM_TAG + 32); /* bank 1, first sector */
+    last_rom = 0;
+    for (unsigned w = 0; w < W; ++w) if (tag[w] == ROM_TAG + 32) last_rom = (int)w;
     /* Switch back to resident bank 0 after filling a ROM cache entry. */
     gbl_wr(0x2000, 0);
     assert(gbl_rd(0x6345) == 0x5A && rom_reads == 1);
@@ -97,6 +116,7 @@ int main(void) {
     assert(gbl_save_pending());
     unsigned before = writes, steps = 0;
     for (int i = 0; (i = gbl_save_flush_next(i)) >= 0;) ++steps;
+    model_clean();
     assert(writes == before + steps && steps <= W && !gbl_save_pending());
     assert(gbl_save_flush_next(0) < 0 && writes == before + steps);
     for (unsigned i = 0; i < NSEC; ++i) assert(disk[i][0] == values[i]);
