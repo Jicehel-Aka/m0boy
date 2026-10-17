@@ -118,7 +118,8 @@ def functions(elf: str) -> tuple[list[int], list[str]]:
     starts, names = [], []
     for line in out.splitlines():
         f = line.split(None, 2)
-        if len(f) == 3 and f[1] in "tTwW":
+        # code in flash, and the routines copied to SRAM (named in .data)
+        if len(f) == 3 and (f[1] in "tTwW" or (f[1] in "dD" and int(f[0], 16) >= 0x20000000)):
             starts.append(int(f[0], 16) & ~1)
             names.append(f[2])
     return starts, names

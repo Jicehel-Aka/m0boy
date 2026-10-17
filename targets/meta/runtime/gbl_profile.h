@@ -214,8 +214,12 @@
 #ifndef GBL_RENDER_LINE_ASM
 #define GBL_RENDER_LINE_ASM 1
 #endif
+/* GBL_PPU_RAMFUNC 0 on the META: code run from SRAM faulted with the CPU
+ * overclocked (device, 2026-10-17: HardFaults in these loops at 70 and 72
+ * MHz, none in minutes once they ran from flash).  From SRAM they took 3.9%
+ * of the CPU at 48 MHz, from flash 4.8% (USB profiler, title screen). */
 #ifndef GBL_PPU_RAMFUNC
-#define GBL_PPU_RAMFUNC 1
+#define GBL_PPU_RAMFUNC 0
 #endif
 #ifndef GBL_CORE_ASM
 #define GBL_CORE_ASM 1

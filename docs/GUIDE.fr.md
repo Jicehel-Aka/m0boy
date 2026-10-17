@@ -407,7 +407,7 @@ Ajoute-les dans `build_flags` du `platformio.ini` généré, par exemple
 | `META_AUDIO_DMA` | 1 | Son envoyé au DAC par DMA au lieu d'une interruption à 22 kHz (environ 3 % du processeur) ; 0 si le son est faux sur ta console |
 | `GBL_INTERP_DELAY_LOOP` | 1 | Raccourci de l'interpréteur pour l'attente DMA `DEC A / JR NZ` en HRAM |
 | `GBL_PPU_ASM` | 1 sur M0+ | Chargement des tuiles et conversion des couleurs en assembleur Thumb-1 (`gbl_ppu_asm.S`) |
-| `GBL_PPU_RAMFUNC` | 1 | Ces deux boucles tournent depuis la SRAM (≈150 octets), sans état d'attente de la flash |
+| `GBL_PPU_RAMFUNC` | 0 (META), 1 (Pokitto) | Ces boucles tournent depuis la SRAM, sans état d'attente de la flash ; coupé sur la META, où le code en SRAM plantait processeur à 70/72 MHz (≈1 % de processeur en plus à 48 MHz) |
 | `META_LCD_DMA` | 1 | Écran en DMA avec file de transferts ; 0 = envoi par le CPU |
 | `META_LCD_SPI_MHZ` | 24 | Débit SPI de l'écran au démarrage : 12, 24, 36 ou 48 (24 par défaut, le débit connu de ce panneau ; 36/48 viennent de la PLL et ne sont pas validés sur une META ; ramené à 36 quand le processeur est à 72 MHz, à 24 si la PLL ne s'accroche pas) ; le menu « SPI ecran » le change |
 | `META_SD_SPI_HZ` | 12000000 | Débit SPI de la carte SD hors identification (24 MHz : lectures en échec sur une META) |

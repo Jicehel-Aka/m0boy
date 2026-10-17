@@ -1,12 +1,13 @@
 /*
- * Clocks of the Gamebuino META: CPU at 48 or 72 MHz, display SPI at 12, 24,
- * 36 or 48 MHz (the option menu's "Processeur" and "SPI ecran").
+ * Clocks of the Gamebuino META: CPU at 48 or 70 MHz (the frontends' "72",
+ * OC_MHZ below), display SPI at 12, 24, 35 or 48 MHz (the option menu's
+ * "Processeur" and "SPI ecran", which says 36).
  *
  * 48 MHz: generator 0 runs from the DFLL48M as meta_startup.c sets it up.
- * 72 MHz: generator 5 divides the DFLL48M down to 1 MHz, the FDPLL96M
- * multiplies it by 72 and generator 0 (CPU) switches to it, with two flash
- * wait states instead of one.  This is past the SAMD21's 48 MHz rating: it
- * works on many parts, not necessarily on every console.  SysTick is
+ * 70 MHz: generator 5 divides the DFLL48M down to 1 MHz, the FDPLL96M
+ * multiplies it by 70 and generator 0 (CPU) switches to it, with two flash
+ * wait states instead of one.  This is past the SAMD21's 48 MHz rating; on
+ * the META tried, code run from SRAM faulted there (GBL_PPU_RAMFUNC).  SysTick is
  * reloaded for 1 ms ticks at the new clock and meta_micros() scales its
  * fraction.  TC4/TC5 and the DAC stay on generator 4 (DFLL48M).
  *
@@ -27,6 +28,13 @@
 #if META_LCD_SPI_MHZ != 12 && META_LCD_SPI_MHZ != 24 && META_LCD_SPI_MHZ != 36 && META_LCD_SPI_MHZ != 48
 #error "META_LCD_SPI_MHZ: 12, 24, 36 or 48"
 #endif
+
+/* The overclock: the frontends ask for 72 (the Pokitto's rate); the META
+ * runs 70.  Measured on a META (2026-10-17): 72 MHz faulted within the first
+ * frames, 70 held for minutes once no code runs from SRAM
+ * (GBL_PPU_RAMFUNC 0, gbl_profile.h); 70 is also what an earlier Game Boy
+ * emulator ran on the META. */
+#define OC_MHZ 70
 
 static uint8_t clock_mhz = 48, lcd_mhz = 24, pll_mhz; /* pll_mhz 0: off */
 static uint32_t frac_mul = 1048576u * 1000u / 48000u; /* 2^20 us per tick */
@@ -71,7 +79,7 @@ static int pll_start(uint8_t mhz) {
 
 /* CPU and display SPI clocks.  Nothing may be using the SPI bus. */
 static void apply(uint8_t cpu, uint8_t lcd) {
-    uint8_t pll = cpu == 72 || lcd == 36 ? 72 : lcd == 48 ? 96 : 0;
+    uint8_t pll = cpu == 72 || lcd == 36 ? OC_MHZ : lcd == 48 ? 96 : 0;
     if (cpu == 72 && lcd == 48) lcd = 36;
     int pll_change = pll != pll_mhz;
     if (clock_mhz == 72 && (cpu != 72 || pll_change)) {
@@ -95,7 +103,7 @@ static void apply(uint8_t cpu, uint8_t lcd) {
         __disable_irq();
         NVMCTRL->CTRLB.bit.RWS = 2; /* before the clock goes up */
         gen_source(0, GCLK_GENCTRL_SRC_FDPLL);
-        systick_for(72);
+        systick_for(OC_MHZ);
         __enable_irq();
         clock_mhz = 72;
     }

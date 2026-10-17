@@ -156,7 +156,7 @@ kept across power-off), from fgb's menu where they apply on the META:
 | Palette | Vert (default), GBC (only when gbrecomp recognised the title: the Game Boy Color boot ROM's palette for this game, resolved at conversion time — the table lives in the converter, the firmware embeds the four colours), Gris, Pocket, Ambre, Bleu: every mode but SMOOTH, whose 4 KiB colour tables are built at compile time for the first one. TBLEND's ½-weight table is built from the palette in RAM (1 KiB in the union of mode buffers, or 16 colours without `META_MERGE_MODES`). The boot ROM's 12 generic palettes are in every firmware too (its 30 base palettes and the (OBJ0, OBJ1, BG) triplets, `GBL_GBC_BASE`/`GBL_GBC_COMBOS` in `gbl_config.h`): a direction held at power-on, plus A and/or B, picks one like on the GBC — until sprites get palettes of their own, only the BG third shows |
 | Images | frame skip: Auto (default: when emulation falls a frame behind, up to `META_MAX_SKIP` frames in a row are not rendered), Aucun, 1 sur 2/3/4 (one frame rendered in two, three, four) |
 | Vitesse | Normale, or Rapide: no frame limit (fgb's Synchronization off) |
-| Processeur | 48 MHz (default) or 72 MHz (below) |
+| Processeur | 48 MHz (default) or 70 MHz (below; the Pokitto runs 72) |
 | SPI ecran | display SPI clock: 12, 24, 36 or 48 MHz, 48 (default, `META_LCD_SPI_MHZ`) at 48 MHz CPU and 36 with the CPU at 72 MHz (below). A rate the panel does not take scrambles the screen, menu included: switching off restores the default, and a firmware rebuilt with `-DMETA_LCD_SPI_MHZ=24` (build_flags) boots at that rate |
 | Quitter | back to the Gamebuino loader |
 
@@ -209,12 +209,13 @@ rates: the card and the buttons at 12 MHz (`META_SD_SPI_HZ`,
 sample MISO reliably above about 12 MHz: on a META (2026-10-16) every
 sector read failed at 24 MHz while identification at 250 kHz worked; the
 display only writes and is not limited by this. When the PLL does not lock the menu stays at 48 MHz, and the
-loader is always entered at 48 MHz. On the one META tried (2026-10-17),
-72 MHz is not usable: the first frames after the switch compute wrong
-values (an odd address the code cannot produce) and fault, with the PLL
-referenced to the DFLL48M or to the 32.768 kHz crystal (LBYPASS), and two
-or three flash wait states; the game then restarts at 48 MHz (fault log
-above). On the M0 estimator a frame at 72 MHz (two wait states) costs
+loader is always entered at 48 MHz. On the META the overclock is 70 MHz
+(the menu's "72" asks for it, `OC_MHZ` in meta_clock.cpp), with no code in
+SRAM (`GBL_PPU_RAMFUNC` 0). Measured on one META (2026-10-17): at 72 MHz,
+and at 70 with the PPU loops in SRAM, the first frames computed wrong
+values and faulted (PLL from the DFLL48M or the 32.768 kHz crystal, two or
+three flash wait states); at 70 MHz from flash, minutes of play without a
+fault. An earlier Game Boy emulator ran the META at 70 MHz too. On the M0 estimator a frame at 72 MHz (two wait states) costs
 about 1.35 times less of its budget than at 48 MHz.
 
 Display modes (144 DMG lines on 128 META lines), chosen in the menu:
@@ -713,7 +714,7 @@ run (same picture in Link's Awakening).
 | `GBL_SPIN` | 1 | Fast-forwards the wait loops the generator marked; 0 runs every iteration (identical results, for checking) |
 | `GBL_INTERP_DELAY_LOOP` | 1 | Interpreter shortcut for `DEC A / JR NZ,-3` (not in coverage or trace builds) |
 | `GBL_PPU_ASM` | 1 on Cortex-M0+ | Tile fetch and colour conversion in hand-written Thumb-1 (`gbl_ppu_asm.S`); the C loops are used on other targets |
-| `GBL_PPU_RAMFUNC` | 1 | Runs those loops from SRAM (about 220 bytes, copied with `.data`), with no flash wait state |
+| `GBL_PPU_RAMFUNC` | 0 on the META, 1 on the Pokitto | Runs those loops from SRAM (about 220 bytes, copied with `.data`), with no flash wait state: 3.9% of the CPU instead of 4.8% at 48 MHz on the META, where it faulted with the CPU overclocked |
 | `GBL_CORE_ASM` | 1 on Cortex-M0+ | `gbl_rd`, `gbl_wr`, `gbl_push`, `gbl_pop`, `gbl_cp` and the OAM DMA copy in Thumb-1 (`gbl_core_asm.S`) |
 | `GBL_TIMING_ASM` | 1 on Cortex-M0+ | PPU line state machine (`gbl_ppu_advance`), next event (`gbl_update_evt`), `gbl_sync`, the PPU register paths of `gbl_io_rd`/`gbl_io_wr` and the dispatch-cache hit of `gbl_lookup` in Thumb-1 (`gbl_timing_asm.S`) |
 | `GBL_INTERP_ASM` | 1 on Cortex-M0+ (not in coverage or trace builds) | Interpreter loop and common opcodes in Thumb-1 (`gbl_interp_asm.S`); DAA, EI, RETI, HALT, STOP, PUSH/POP AF, SP arithmetic and `LD (nn),SP` go through the C `gbl_interp_op` |

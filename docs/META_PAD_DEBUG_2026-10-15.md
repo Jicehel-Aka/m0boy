@@ -218,9 +218,24 @@ interprété, d'où la lenteur) démarre et se joue depuis la carte.
   `WDT->CLEAR` pendant une synchronisation bloque le bus plusieurs ms
   (`meta_watchdog_feed` teste SYNCBUSY) ; le générateur 2 n'a qu'un
   diviseur 5 bits (DIVSEL).
-- **72 MHz** : inutilisable sur cette console. HardFault dans
+- **72 MHz** : inutilisable sur cette console (suite plus bas : 70 MHz). HardFault dans
   `gbl_ppu_fetch_asm` au premier rendu, sur un pointeur impair que le code
   ne peut pas produire (`trow` toujours pair) ; essayé : PLL depuis la
   DFLL48M, PLL depuis le quartz 32 kHz avec LBYPASS, RWS 2 et 3, routine en
   flash au lieu de la SRAM (blocage total). À reprendre avec les réglages
   de l'émulateur GB de l'utilisateur qui tenait 72 MHz.
+
+### 70 MHz (version 0.10.14)
+
+Le vieil émulateur GB de l'utilisateur (drmario.bin, désassemblé) : RWS 2,
+FDPLL96M à **70 MHz** (LDR 69) depuis la DFLL48M / 48 par un GCLK, sans
+LBYPASS ; USB déplacé sur un générateur DFLL ; boutons lus à 8 MHz parce que
+son SPI suivait le PLL. Même méthode que m0boy, sauf 70 au lieu de 72.
+Sur console : 70 MHz avec les boucles PPU en SRAM -> HardFault en moins
+d'une minute (dans `gbl_ppu_convert_fine_asm`, `gbl_ppu_convert4_asm`,
+en SRAM) ; 70 MHz avec ces boucles en flash -> plus de 3 minutes sans
+faute (deux essais), CPU 70 % en attente d'image sur Super Mario Land.
+Retenu : `OC_MHZ` 70, `GBL_PPU_RAMFUNC` 0 sur la META (en SRAM : 3,9 % du
+CPU à 48 MHz, en flash : 4,8 %, profileur USB). Les boutons gardent
+~12 MHz : le SERCOM n'est sur le PLL qu'avec l'écran au-delà de 24 MHz
+(70/6 = 11,7 MHz).

@@ -352,7 +352,11 @@ static const char *const mode_names[POKITTO_MODE_COUNT] = {"1:1", "200x176", "20
 #endif
 static const char *const skip_names[FSKIP_MODES] = {"Auto", "Aucun", "1 sur 2", "1 sur 3", "1 sur 4"};
 static const char *const speed_names[2] = {"Normale", "Rapide"};
+#if META_TARGET_POKITTO
 static const char *const clock_names[2] = {"48 MHz", "72 MHz"};
+#else
+static const char *const clock_names[2] = {"48 MHz", "70 MHz"}; /* meta_clock.cpp: 72 asked, 70 run */
+#endif
 #if !META_TARGET_POKITTO
 static const char *const lcd_spi_names[4] = {"12 MHz", "24 MHz", "36 MHz", "48 MHz"};
 #endif
