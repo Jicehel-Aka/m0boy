@@ -309,6 +309,16 @@ ctest --test-dir build --output-on-failure
   has no partner.
 - On the META, the 144 lines are reduced to 128.
 - Frames are skipped when the console falls behind.
+- Game Boy code that the recorded sessions never reached runs in the
+  interpreter, much slower: Super Mario Land 2's game-over castle runs at
+  about 37 frames a second on the META. Record a session through it with
+  `compile.sh`.
+- Disabled cartridge RAM reads as `$FF`. Tokyo Disneyland reads a pointer
+  there and writes through it, which then lands on IE (`$FFFF`); not tested.
+- The Cortex-M0+ estimator (`m0bench`) stops with an unmapped write on
+  streamed projects that keep part of the ROM in flash (resident or
+  LZSS-packed), which is what `compile.sh` builds; projects that read the
+  whole ROM from the card run.
 - SG-1000: unbanked cartridges up to 48 KiB, NTSC only, no SC-3000
   keyboard; code never seen while profiling runs in the interpreter.
 

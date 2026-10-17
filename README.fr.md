@@ -306,6 +306,17 @@ ctest --test-dir build --output-on-failure
   l'image, le câble link n'a pas de partenaire.
 - Sur la META, les 144 lignes sont ramenées à 128.
 - Des images sont sautées quand la console prend du retard.
+- Le code Game Boy jamais atteint pendant les parties enregistrées passe par
+  l'interpréteur, bien plus lent : le château du game over de Super Mario
+  Land 2 tourne à environ 37 images par seconde sur la META. Enregistrer une
+  partie qui y passe avec `compile.sh`.
+- La RAM de cartouche désactivée se lit `$FF`. Tokyo Disneyland y lit un
+  pointeur et écrit à travers, ce qui tombe alors sur IE (`$FFFF`) ; non
+  testé.
+- L'estimateur Cortex-M0+ (`m0bench`) s'arrête sur une écriture hors
+  mémoire avec les projets streamés qui gardent une partie de la ROM en
+  flash (résidente ou compressée LZSS), ce que construit `compile.sh` ; les
+  projets qui lisent toute la ROM sur la carte passent.
 - SG-1000 : cartouches sans mapper de 48 Kio au plus, NTSC seulement, sans
   clavier SC-3000 ; le code jamais vu au profilage passe par l'interpréteur.
 
