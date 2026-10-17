@@ -86,7 +86,7 @@ void meta_save_tick(void) {
         return;
     }
     if (round_next < 0) {
-        if (gbl_frame - pending_since < META_SAVE_PERIOD) return;
+        if (!META_SAVE_PERIOD || gbl_frame - pending_since < META_SAVE_PERIOD) return;
         round_next = 0;
         pending_since = gbl_frame; /* changes from now on wait for the next round */
     }
