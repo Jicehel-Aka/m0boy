@@ -147,7 +147,7 @@ static void map_rom_bank(void) {
     bank = mbc.lo & 0x7F;
     if (bank == 0) bank = 1;
 #elif GBL_MBC == 5
-    bank = (uint32_t)mbc.lo | ((uint32_t)(mbc.hi & 1) << 8);
+    bank = (uint32_t)mbc.lo | ((uint32_t)(mbc.mode & 1) << 8); /* MBC5: mode holds bit 8 */
 #else
     bank = 1;
 #endif
@@ -436,8 +436,10 @@ void mbc_write(uint16_t a, uint8_t v) {
 #elif GBL_MBC == 5
     if (a < 0x2000) { set_ram_enable(v); map_eram(); }
     else if (a < 0x3000) { mbc.lo = v; map_rom_bank(); }
-    else if (a < 0x4000) { mbc.hi = (mbc.hi & 0xF0) | (v & 1); map_rom_bank(); }
-    else if (a < 0x6000) { mbc.hi = (uint8_t)((v & 0x0F) | (mbc.hi & 1)); map_eram(); }
+    /* ROM bank bit 8 in mbc.mode, RAM bank in mbc.hi: they shared hi's
+     * bit 0, so RAM bank 1 then 0 stayed on 1 and moved the ROM bank. */
+    else if (a < 0x4000) { mbc.mode = v & 1; map_rom_bank(); }
+    else if (a < 0x6000) { mbc.hi = v & 0x0F; map_eram(); }
 #else
     (void)a; (void)v;
 #endif

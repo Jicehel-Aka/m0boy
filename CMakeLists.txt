@@ -195,13 +195,18 @@ if(BUILD_TESTS)
     target_compile_options(test_meta_menu_slices PRIVATE -UNDEBUG)
     add_test(NAME meta_menu_short_scratch_matches_full_band COMMAND test_meta_menu_slices)
 
-    foreach(ways 1 2 8)
-        add_executable(test_meta_cache_${ways} "${GBL_META_DIR}/tests/cache_lru.c" ${GBL_META_RUNTIME_SOURCES})
-        target_include_directories(test_meta_cache_${ways} PRIVATE "${GBL_META_DIR}/tests/config_stream"
+    # Cartridge RAM cache on the card: 8 KiB, and 32 KiB in four MBC5 banks.
+    foreach(variant 1 2 8 8_32k)
+        string(REPLACE "_32k" "" ways ${variant})
+        add_executable(test_meta_cache_${variant} "${GBL_META_DIR}/tests/cache_lru.c" ${GBL_META_RUNTIME_SOURCES})
+        target_include_directories(test_meta_cache_${variant} PRIVATE "${GBL_META_DIR}/tests/config_stream"
             "${GBL_META_DIR}/runtime")
-        target_compile_definitions(test_meta_cache_${ways} PRIVATE GBL_ERAM_CACHE_SECTORS=${ways})
-        target_compile_options(test_meta_cache_${ways} PRIVATE -UNDEBUG)
-        add_test(NAME meta_cache_lru_${ways}_ways_and_resident_bank0 COMMAND test_meta_cache_${ways})
+        target_compile_definitions(test_meta_cache_${variant} PRIVATE GBL_ERAM_CACHE_SECTORS=${ways})
+        if(variant MATCHES "_32k")
+            target_compile_definitions(test_meta_cache_${variant} PRIVATE GBL_ERAM_SIZE=32768)
+        endif()
+        target_compile_options(test_meta_cache_${variant} PRIVATE -UNDEBUG)
+        add_test(NAME meta_cache_lru_${variant}_ways_and_resident_bank0 COMMAND test_meta_cache_${variant})
     endforeach()
 
     add_executable(test_meta_lcd_pack "${GBL_META_DIR}/tests/lcd_pack.c")
