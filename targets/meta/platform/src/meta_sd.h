@@ -31,6 +31,11 @@ void meta_sd_bus_end(int init, int ok);
 void meta_sd_cs(int selected);     /* chip select low (1) or high (0) */
 uint8_t meta_sd_xfer(uint8_t out); /* one byte each way */
 void meta_sd_recv(uint8_t *dst, unsigned n); /* n bytes in, 0xFF out */
+/* After a 512-byte data block: 1 if crc (the block's CRC16, as sent) matches
+ * what meta_sd_recv received, or if the bus does not check it. */
+int meta_sd_block_ok(uint16_t crc);
+/* A read failed: 1 if the bus lowered its rate (worth reading again). */
+int meta_sd_slower(void);
 uint32_t meta_sd_ms(void);         /* milliseconds, for timeouts */
 
 #ifdef __cplusplus

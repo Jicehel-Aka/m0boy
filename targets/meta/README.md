@@ -204,11 +204,16 @@ most at half the SERCOM's clock, so the display's rate picks the source:
 ran the ST7735 at 36). The PLL has one frequency: with the CPU at 72 MHz
 the display gets 36 MHz at most. `meta_spi_rate()` derives every divider
 from the SERCOM's actual clock, so the card and the buttons keep their own
-rates: the card and the buttons at 12 MHz (`META_SD_SPI_HZ`,
-`META_BUTTONS_SPI_HZ`, gbl_board.h). The SAMD21's SPI master does not
-sample MISO reliably above about 12 MHz: on a META (2026-10-16) every
-sector read failed at 24 MHz while identification at 250 kHz worked; the
-display only writes and is not limited by this. When the PLL does not lock the menu stays at 48 MHz, and the
+rates: the buttons at 12 MHz, the card at 17.5 with the CPU at 70 MHz
+(`META_SD_SPI_HZ` asks 18; `META_BUTTONS_SPI_HZ`, gbl_board.h). The
+SAMD21's SPI master does not sample MISO at its fastest rates: on a META
+no data token came at 24 MHz (DFLL48M, 2026-10-16) nor at 35 (PLL at 70,
+2026-10-17); 17.5 read Super Mario Land 2 without error. Every block's
+CRC16 is checked and a failed read halves the rate (down to 12 MHz) and
+is tried again. The display only writes and is not limited by this. The
+SAMD21 has a single FDPLL96M: with the CPU at 70 MHz the display's SERCOM
+runs from it too, so 35 MHz is the display's ceiling; 48 MHz needs the PLL
+at 96 MHz, which only the CPU at 48 MHz leaves free. When the PLL does not lock the menu stays at 48 MHz, and the
 loader is always entered at 48 MHz. On the META the overclock is 70 MHz
 (the menu's "72" asks for it, `OC_MHZ` in meta_clock.cpp), with no code in
 SRAM (`GBL_PPU_RAMFUNC` 0). Measured on one META (2026-10-17): at 72 MHz,
@@ -352,8 +357,9 @@ default; `on` / `off` force it):
   sector at a time, into an LRU cache of `GBL_STREAM_SECTORS` sectors
   (8, i.e. 4 KiB; 4 when 2 KiB of cartridge RAM stay in RAM). A read
   first lets the display's DMA queue drain and frees the shared SPI bus,
-  then issues CMD17 at 12 MHz (`META_SD_SPI_HZ`). A 512-byte sector
-  spends 341 us on the wire, card latency on top.
+  then issues CMD17 at `META_SD_SPI_HZ`. A 512-byte sector spends 234 us
+  on the wire at 17.5 MHz (341 at 12), card latency on top: about 0.95 ms
+  a read in all at 12 MHz on the META (USB profiler, Super Mario Land 2).
 - The resident set comes from ROM data-read profiles. In streaming
   projects, the host `_profile` and `_play` builds record them with
   `--rom-profile-out FILE`; pass them back with `--rom-profile FILE`.
@@ -726,9 +732,10 @@ run (same picture in Link's Awakening).
 | `GBL_UNPACK_ASM` | 1 on Cortex-M0+ | Thumb-1 decoder for those sectors |
 | `GBL_STACK_GUARD` | 1 | C stack check on entry to every compiled region |
 | `META_SWAP_AB` | 1 | META A = Game Boy B, META B = Game Boy A |
-| `META_SD_SPI_HZ` | 12000000 | SPI clock for SD sector reads (identification stays at 250 kHz); 24 MHz failed every read on a META, past what the SAMD21's SPI master samples reliably |
+| `META_SD_SPI_HZ` | 18000000 | SPI clock for SD sector reads (identification stays at 250 kHz): 17.5 MHz with the SERCOM on the PLL at 70. 24 and 35 MHz found no data token on a META. Each block's CRC16 is checked (`meta_sd_bus.cpp`); a failed read halves the rate down to 12 MHz and reads again. `meta_sd_spi_hz`, `meta_sd_read_errors`, `meta_save_reads` can be read (or the rate set) with `tools/meta-usb.py` |
 | `META_BUTTONS_SPI_HZ` | 12000000 | SPI clock for the buttons' shift register, the library's. `META_BUTTONS_PL_US` (1) is the wait after CS low for the register's parallel load |
 | `META_LCD_BGR` | 0 | BGR order in the ST7735's MADCTL; 0 on the META tested (with 1, red and blue were swapped) |
+| `GBL_ERAM_CACHE_SECTORS` (window) | — | With the cartridge RAM on the card, `gbl_rd`/`gbl_wr` (C and assembly) read the newest cached sector directly, and write it once it is dirty, without `gbl_rd_slow` and `eram_sector`. Estimator on Super Mario Land 2 (2,400 frames into level 1, same pixel and state hashes): 593k → 497k cycles a frame, frames over the 60 Hz budget 455 → 27. Host, four sessions (539,000 frames): cartridge RAM writes / reads with 8 sectors 12,899 / 34,330, 9: 7,833 / 27,725, 10: 3,066 / 4,820, 12: 2,450 / 2,882 |
 | `GBL_ERAM_CACHE_SECTORS` | 8 with the ROM and the cartridge RAM on the card (the ROM cache then gets 2), else 2 | Write-back cache of cartridge RAM kept in the save file (`GBL_ERAM_ON_SD`): Super Mario Land 2 uses its RAM as work RAM (about seven sectors); 2 sectors gave 157 card writes a second, 8 reduced them to about 4/s in the measured run. Exact LRU with no timestamp wrap; deferred flush occurs 120 frames after the last change |
 | `META_USB` | 1 | USB serial port (`meta_usb.c`; about 600 bytes of RAM and 2.6 KiB of flash on Super Mario Land): the 1200-baud touch of upload tools (`pio run -t upload`, bossac, `tools/meta-usb.py flash`) resets into sam-ba without touching the console (the META's bootloader starts sam-ba when 0x20007FFC holds 0x3aecfd88 after a software reset; read from its code). For debugging, `tools/meta-usb.py`: `read`/`write` memory by ELF symbol while the game runs (sam-ba's `R`, `W`, `O`), `prof` (SysTick samples the interrupted PC into a ring of 32, the host drains it: about 1000 samples a second, under 1% of the CPU), `press` (buttons ORed into `meta_pad_read`, for scripted tests), `fault` (below). 0 removes all of it |
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND and DARK display modes (1 KiB table, a spare line); TBLEND then blends two pixels per lookup |

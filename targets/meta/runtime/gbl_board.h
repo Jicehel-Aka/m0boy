@@ -32,16 +32,18 @@
 #define META_LCD_SPI_MHZ 48
 #endif
 
-/* META_SD_SPI_HZ: the card's clock outside identification, 12 MHz.  The
- * SAMD21's SPI master does not sample MISO reliably above about 12 MHz: at
- * 24 MHz every sector read failed on device (2026-10-16; identification at
- * 250 kHz was fine).  The display only writes and is not affected.  The
- * Arduino core capped every rate at 12 MHz, so the Gamebuino library read
- * its card at that rate.  The rate is derived from the SERCOM's actual clock
- * (meta_spi_rate).  A 512-byte sector takes 341 us to shift at 12 MHz (card
- * latency on top). */
+/* META_SD_SPI_HZ: the card's clock outside identification, 18 MHz asked:
+ * 17.5 with the SERCOM on the PLL at 70 MHz (CPU at 70, the default), 12
+ * from the DFLL48M, 16 from the PLL at 96.  The SAMD21's SPI master does not
+ * sample MISO at its fastest rates: 24 MHz (DFLL48M, 2026-10-16) and 35 MHz
+ * (PLL at 70, 2026-10-17) found no data token; 17.5 read without error on
+ * Super Mario Land 2 (2026-10-17).  Every block's CRC16 is checked
+ * (meta_sd_bus.cpp): a failed read halves the rate, down to 12 MHz, and is
+ * tried again.  The display only writes and is not affected.  A 512-byte
+ * sector takes 341 us to shift at 12 MHz, 234 at 17.5 (card latency on
+ * top: about 0.5 ms measured on the META). */
 #ifndef META_SD_SPI_HZ
-#define META_SD_SPI_HZ 12000000
+#define META_SD_SPI_HZ 18000000
 #endif
 
 /* META_BUTTONS_SPI_HZ: the pad's 74HC165 shift register (CS PB03), 12 MHz,

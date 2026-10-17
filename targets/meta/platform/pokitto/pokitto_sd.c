@@ -75,6 +75,13 @@ void meta_sd_bus_end(int init, int ok) {
     }
 }
 
+int meta_sd_block_ok(uint16_t crc) {
+    (void)crc;
+    return 1;
+}
+
+int meta_sd_slower(void) { return 0; }
+
 void meta_sd_recv(uint8_t *dst, unsigned n) {
     for (unsigned i = 0; i < n; i++) dst[i] = meta_sd_xfer(0xFF);
 }

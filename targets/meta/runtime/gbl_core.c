@@ -223,6 +223,32 @@ static int32_t eram_tag[ERAM_WAYS];
 static uint8_t eram_older[ERAM_WAYS], eram_newer[ERAM_WAYS];
 static uint8_t eram_dirty[ERAM_WAYS], eram_mru;
 
+/* Window on the newest sector for gbl_rd / gbl_wr (C and assembly), so
+ * that most accesses skip gbl_rd_slow and eram_sector: the Game Boy address
+ * of its first byte with the current bank and RAM enable, and a pointer
+ * indexed by that address.  GBL_ERAM_WIN_NONE (outside 16 bits) never
+ * matches.  The write window opens only when that sector is already dirty,
+ * so a write through it only has to note the change (gbl_save_last_change).
+ * eram_window recomputes both after anything that moves them. */
+uint32_t gbl_eram_rwin = GBL_ERAM_WIN_NONE, gbl_eram_wwin = GBL_ERAM_WIN_NONE;
+uint8_t *gbl_eram_rptr, *gbl_eram_wptr;
+
+static void eram_window(void) {
+    gbl_eram_rwin = gbl_eram_wwin = GBL_ERAM_WIN_NONE;
+#if GBL_ERAM_SIZE % 0x2000 == 0
+    int32_t sec = eram_tag[eram_mru];
+    uint32_t base = eram_bank() * 0x2000u, off = (uint32_t)sec * 512u;
+    if (!mbc.ram_enable || sec < 0 || off < base || off >= base + 0x2000u) return;
+    uint32_t a = 0xA000u + off - base;
+    gbl_eram_rwin = a;
+    gbl_eram_rptr = BIAS(eram_buf[eram_mru], a);
+    if (eram_dirty[eram_mru]) {
+        gbl_eram_wwin = a;
+        gbl_eram_wptr = gbl_eram_rptr;
+    }
+#endif
+}
+
 static void eram_touch(unsigned i) {
     unsigned older = eram_older[i], newer = eram_newer[i];
     eram_older[newer] = (uint8_t)older;
@@ -255,6 +281,7 @@ static uint8_t *eram_sector(uint32_t off) {
         i = eram_older[eram_mru];
         if (eram_tag[i] == sec) {
             eram_touch(i);
+            eram_window();
             return eram_buf[i];
         }
         for (i = 0; i < ERAM_WAYS && eram_tag[i] != sec; i++) {}
@@ -266,6 +293,7 @@ static uint8_t *eram_sector(uint32_t off) {
             eram_tag[i] = sec;
         }
         if (i != eram_mru) eram_touch(i);
+        eram_window();
     }
     return eram_buf[i];
 }
@@ -276,14 +304,18 @@ static void eram_store(uint32_t off, uint8_t v) {
     uint8_t *p = eram_sector(off);
     if (p[off & 511u] == v) return;
     p[off & 511u] = v;
-    eram_dirty[eram_mru] = 1;
     save_pending = 1;
     gbl_save_last_change = gbl_frame;
+    if (!eram_dirty[eram_mru]) {
+        eram_dirty[eram_mru] = 1;
+        eram_window(); /* the write window opens */
+    }
 }
 
 void gbl_save_flush(void) {
     for (unsigned i = 0; i < ERAM_WAYS; i++) eram_writeback(i);
     save_pending = 0;
+    eram_window(); /* clean again: the write window closes */
 }
 
 uint8_t *gbl_save_scratch(void) { return eram_buf[0]; }
@@ -297,6 +329,7 @@ static void eram_reset(void) {
     }
     eram_mru = 0;
     save_pending = 0;
+    eram_window();
 }
 #else
 static uint32_t eram_dirty_mask; /* bit per 512-byte sector */
@@ -357,6 +390,9 @@ static __attribute__((unused)) void set_ram_enable(uint8_t v) { mbc.ram_enable =
 #endif
 
 static void map_eram(void) {
+#if GBL_ERAM_ON_SD
+    eram_window(); /* bank or RAM enable */
+#endif
 #if GBL_ERAM_SIZE >= 0x2000 && GBL_MBC != 2 && !GBL_ERAM_ON_SD
     /* Whole 8 KiB banks map directly (reads always; writes only without a
      * battery, whose saves need the dirty tracking of the slow path).
@@ -747,6 +783,9 @@ uint8_t gbl_rd_slow(uint16_t a) {
 uint8_t gbl_rd(uint16_t a) {
     const uint8_t *p = gbl_rmap[a >> 12];
     if (p) return p[a];
+#if GBL_ERAM_ON_SD
+    if (a - gbl_eram_rwin < 512u) return gbl_eram_rptr[a];
+#endif
     return gbl_rd_slow(a);
 }
 #endif
@@ -763,6 +802,15 @@ void gbl_vram_wr(uint16_t off, uint8_t v) {
 void gbl_wr(uint16_t a, uint8_t v) {
     uint8_t *p = gbl_wmap[a >> 12];
     if (p) { p[a] = v; return; }
+#if GBL_ERAM_ON_SD
+    if (a - gbl_eram_wwin < 512u) {
+        if (gbl_eram_wptr[a] != v) {
+            gbl_eram_wptr[a] = v;
+            gbl_save_last_change = gbl_frame;
+        }
+        return;
+    }
+#endif
     gbl_wr_slow(a, v);
 }
 #endif

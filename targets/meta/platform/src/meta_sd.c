@@ -68,26 +68,42 @@ done:
     return ok;
 }
 
-/* One 512-byte sector (CMD17). */
+/* One 512-byte sector (CMD17).  The card sends the block's CRC16 even with
+ * CRC checking off; the bus may check it (meta_sd_block_ok).  A failed read
+ * is tried again as long as the bus can slow down (meta_sd_slower). */
+uint8_t meta_sd_read_fail; /* last failure: 1 no R1, 2 R1 error, 3 no token, 4 CRC (debug) */
+
 int meta_sd_read(uint32_t lba, uint8_t *dst) {
-    meta_sd_bus_begin(0);
-    meta_sd_cs(1);
-    int ok = 0;
-    if (command(17, block_addressing ? lba : lba << 9, 0x01) == 0x00) {
-        uint32_t start = meta_sd_ms();
-        uint8_t token;
-        while ((token = meta_sd_xfer(0xFF)) == 0xFF && meta_sd_ms() - start < 100) {}
-        if (token == 0xFE) {
-            meta_sd_recv(dst, 512);
-            meta_sd_xfer(0xFF); /* CRC */
-            meta_sd_xfer(0xFF);
-            ok = 1;
+    for (;;) {
+        meta_sd_bus_begin(0);
+        meta_sd_cs(1);
+        int ok = 0;
+        uint8_t r1 = command(17, block_addressing ? lba : lba << 9, 0x01);
+        if (r1 == 0x00) {
+            uint32_t start = meta_sd_ms();
+            uint8_t token;
+            while ((token = meta_sd_xfer(0xFF)) == 0xFF && meta_sd_ms() - start < 100) {}
+            if (token == 0xFE) {
+                meta_sd_recv(dst, 512);
+                unsigned crc = (unsigned)meta_sd_xfer(0xFF) << 8;
+                crc |= meta_sd_xfer(0xFF);
+                ok = meta_sd_block_ok((uint16_t)crc);
+                if (!ok) meta_sd_read_fail = 4;
+            } else {
+                meta_sd_read_fail = 3;
+            }
+        } else {
+            meta_sd_read_fail = r1 == 0xFF ? 1 : 2;
         }
+        /* A misread token or response leaves the card sending its block:
+         * let it finish before the next command. */
+        if (!ok)
+            for (int i = 0; i < 520; i++) meta_sd_xfer(0xFF);
+        meta_sd_cs(0);
+        meta_sd_xfer(0xFF);
+        meta_sd_bus_end(0, ok);
+        if (ok || !meta_sd_slower()) return ok;
     }
-    meta_sd_cs(0);
-    meta_sd_xfer(0xFF);
-    meta_sd_bus_end(0, ok);
-    return ok;
 }
 
 /* Write one 512-byte sector (CMD24), waiting until the card has programmed

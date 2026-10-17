@@ -47,6 +47,20 @@ gbl_rd:
     ldrb    r0, [r3, r0]
     bx      lr
 1:
+#if GBL_ERAM_ON_SD
+    /* Newest cartridge RAM sector (gbl_eram_rwin, GBL_ERAM_WIN_NONE never
+     * matches): one load through gbl_eram_rptr, like the C gbl_rd. */
+    ldr     r2, 13f
+    ldr     r2, [r2]
+    subs    r3, r0, r2
+    lsrs    r3, r3, #9
+    bne     1f
+    ldr     r2, 14f
+    ldr     r2, [r2]
+    ldrb    r0, [r2, r0]
+    bx      lr
+1:
+#endif
 #if GBL_ROM_STREAM
     /* Streamed ROM chunk (4000-7FFF): the byte of the last sector used,
      * like stream_read's first test, without the C call. */
@@ -111,6 +125,10 @@ gbl_rd:
 6:  .word   gbl_stream_tag
 10: .word   gbl_stream_buf
 #endif
+#if GBL_ERAM_ON_SD
+13: .word   gbl_eram_rwin
+14: .word   gbl_eram_rptr
+#endif
     .size gbl_rd, . - gbl_rd
 
     .section .text.gbl_wr, "ax", %progbits
@@ -134,6 +152,28 @@ gbl_wr:
     lsrs    r2, r0, #13
     cmp     r2, #4
     beq     4f                     /* 8000-9FFF */
+#if GBL_ERAM_ON_SD
+    /* Newest cartridge RAM sector, already dirty (gbl_eram_wwin): store a
+     * changed byte and note the frame, like the C gbl_wr. */
+    ldr     r2, 12f
+    ldr     r2, [r2]
+    subs    r3, r0, r2
+    lsrs    r3, r3, #9
+    bne     1f
+    ldr     r2, 13f
+    ldr     r2, [r2]
+    ldrb    r3, [r2, r0]
+    cmp     r3, r1
+    beq     14f
+    strb    r1, [r2, r0]
+    ldr     r2, 15f
+    ldr     r2, [r2]
+    ldr     r3, 16f
+    str     r2, [r3]
+14:
+    bx      lr
+1:
+#endif
     /* HRAM (FF80-FFFE) without the C slow path, IO (FF00-FF7F) straight
      * to gbl_io_wr. */
     movs    r3, #0x80
@@ -171,6 +211,12 @@ gbl_wr:
 7:  .word   gbl_hram
 8:  .word   gbl_wr_slow
 9:  .word   gbl_wmap
+#if GBL_ERAM_ON_SD
+12: .word   gbl_eram_wwin
+13: .word   gbl_eram_wptr
+15: .word   gbl_frame
+16: .word   gbl_save_last_change
+#endif
     .size gbl_wr, . - gbl_wr
 
 /*

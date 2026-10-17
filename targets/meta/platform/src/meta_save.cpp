@@ -17,7 +17,7 @@ extern "C" {
 #include "gbl_options.h"
 }
 
-uint32_t meta_save_writes, meta_save_errors;
+uint32_t meta_save_reads, meta_save_writes, meta_save_errors; /* sectors (meta-usb.py read) */
 
 #if GBL_ERAM_SIZE > 0 && (GBL_BATTERY || GBL_ERAM_ON_SD)
 
@@ -47,7 +47,10 @@ extern "C" int gbl_platform_save_read(uint32_t sector, uint8_t *dst) {
     if (!have_file) return 0;
     uint32_t lba = meta_fat_lba(extents, n_extents, sector);
     for (int attempt = 0; lba && attempt < 3; attempt++)
-        if (meta_sd_read(lba, dst)) return 1;
+        if (meta_sd_read(lba, dst)) {
+            meta_save_reads++;
+            return 1;
+        }
     meta_save_errors++;
     return 0;
 }
