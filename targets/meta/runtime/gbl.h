@@ -132,6 +132,10 @@ extern uint32_t gbl_stream_unpacked; /* ... decoded from compressed flash */
 int gbl_platform_save_read(uint32_t sector, uint8_t *dst);
 int gbl_platform_save_write(uint32_t sector, const uint8_t *src);
 void gbl_save_flush(void);           /* write back what changed */
+/* Write back the first changed sector (cache way, or 512-byte sector of
+ * in-RAM cartridge RAM) at index i or after; returns the index after it,
+ * or -1 when none is left.  Spreads a periodic save over several frames. */
+int gbl_save_flush_next(int i);
 int gbl_save_pending(void);          /* changes not written yet */
 extern uint32_t gbl_save_last_change; /* gbl_frame of the last change */
 /* With GBL_ERAM_ON_SD: the cached sectors of A000-BFFF, 512 bytes each,
