@@ -219,10 +219,11 @@ static uint8_t save_pending;
 #endif
 static uint8_t eram_buf[ERAM_WAYS][512] __attribute__((aligned(4)));
 static int32_t eram_tag[ERAM_WAYS];
-/* Circular LRU list, newest at eram_mru, oldest at eram_newer[eram_mru].
- * Two bytes per way, as with the old timestamps, without clock wraparound.
- * Repeated accesses to the newest way do not touch the list. */
-static uint8_t eram_older[ERAM_WAYS], eram_newer[ERAM_WAYS];
+/* CLOCK replacement: a way's referenced byte is set when it becomes the
+ * newest (eram_mru, behind the window), the hand evicts the first way not
+ * referenced since it last passed, never the newest (its accesses go
+ * through the window without marking it). */
+static uint8_t eram_ref[ERAM_WAYS], eram_hand;
 static uint8_t eram_dirty[ERAM_WAYS], eram_mru;
 
 /* Window on the newest sector for gbl_rd / gbl_wr (C and assembly), so
@@ -252,14 +253,7 @@ static void eram_window(void) {
 }
 
 static void eram_touch(unsigned i) {
-    unsigned older = eram_older[i], newer = eram_newer[i];
-    eram_older[newer] = (uint8_t)older;
-    eram_newer[older] = (uint8_t)newer;
-    unsigned tail = eram_newer[eram_mru];
-    eram_older[tail] = (uint8_t)i;
-    eram_newer[i] = (uint8_t)tail;
-    eram_older[i] = eram_mru;
-    eram_newer[eram_mru] = (uint8_t)i;
+    eram_ref[i] = 1;
     eram_mru = (uint8_t)i;
 }
 
@@ -278,17 +272,15 @@ static uint8_t *eram_sector(uint32_t off) {
     int32_t sec = (int32_t)(off >> 9);
     unsigned i = eram_mru;
     if (eram_tag[i] != sec) {
-        /* Games alternate between two sectors (a pointer table and the
-         * data): the previous one before the scan. */
-        i = eram_older[eram_mru];
-        if (eram_tag[i] == sec) {
-            eram_touch(i);
-            eram_window();
-            return eram_buf[i];
-        }
         for (i = 0; i < ERAM_WAYS && eram_tag[i] != sec; i++) {}
         if (i == ERAM_WAYS) {
-            i = eram_newer[eram_mru];
+            for (;;) {
+                i = eram_hand;
+                eram_hand = (uint8_t)(i + 1u == ERAM_WAYS ? 0 : i + 1u);
+                if (ERAM_WAYS > 1 && i == eram_mru) continue;
+                if (!eram_ref[i]) break;
+                eram_ref[i] = 0;
+            }
             eram_writeback(i);
             if (!gbl_platform_save_read((uint32_t)sec, eram_buf[i]))
                 for (int k = 0; k < 512; k++) eram_buf[i][k] = 0xFF;
@@ -339,10 +331,10 @@ static void eram_reset(void) {
     for (unsigned i = 0; i < ERAM_WAYS; i++) {
         eram_tag[i] = -1;
         eram_dirty[i] = 0;
-        eram_older[i] = (uint8_t)((i + 1u) % ERAM_WAYS);
-        eram_newer[i] = (uint8_t)((i + ERAM_WAYS - 1u) % ERAM_WAYS);
+        eram_ref[i] = 0;
     }
     eram_mru = 0;
+    eram_hand = 0;
     save_pending = 0;
     eram_window();
 }

@@ -1,5 +1,6 @@
-/* Public bus accesses against a separate LRU model, including the former
- * previous-way regression, dirty eviction, >65536 changes and bank 0. */
+/* Public bus accesses against a separate model of the replacement (CLOCK,
+ * newest way kept), dirty eviction, periodic write-back, MBC5 RAM banks
+ * (GBL_ERAM_SIZE 32 KiB) and ROM bank 0. */
 #include "gbl.h"
 #include "gbl_options.h"
 #include <assert.h>
@@ -29,19 +30,32 @@ void gbl_platform_line_end(uint8_t ly) { (void)ly; }
 void gbl_platform_vblank(void) {}
 int gbl_platform_line_check(uint8_t ly, uint32_t sig) { (void)ly; (void)sig; return 0; }
 
-static int order[GBL_ERAM_CACHE_SECTORS];
-static unsigned count;
+#define W GBL_ERAM_CACHE_SECTORS
+static int tag[W];
+static uint8_t ref[W];
+static unsigned hand, mru;
 static uint8_t values[NSEC];
 static unsigned bank = ~0u;
 static void access_sector(unsigned s, unsigned step) {
-    unsigned i = 0;
-    while (i < count && order[i] != (int)s) ++i;
-    unsigned before = reads;
-    unsigned miss = i == count;
-    if (miss && count < GBL_ERAM_CACHE_SECTORS) ++count;
-    if (i >= count) i = count - 1;
-    memmove(order + 1, order, i * sizeof(order[0]));
-    order[0] = (int)s;
+    /* Model: CLOCK, the newest way (behind the window) never evicted and
+     * marked when it becomes the newest. */
+    unsigned before = reads, miss = 0;
+    if (tag[mru] != (int)s) {
+        unsigned i = 0;
+        while (i < W && tag[i] != (int)s) ++i;
+        if (i == W) {
+            miss = 1;
+            for (;;) {
+                i = hand;
+                hand = (hand + 1) % W;
+                if (W > 1 && i == mru) continue;
+                if (!ref[i]) break;
+                ref[i] = 0;
+            }
+            tag[i] = (int)s;
+        }
+        if (i != mru) { ref[i] = 1; mru = i; }
+    }
     if (s / 16 != bank) {
         bank = s / 16;
         gbl_wr(0x4000, (uint8_t)bank); /* MBC5 RAM bank */
@@ -55,6 +69,7 @@ static void access_sector(unsigned s, unsigned step) {
     }
 }
 int main(void) {
+    for (unsigned i = 0; i < W; ++i) tag[i] = -1;
     for (unsigned i = 0; i < NSEC; ++i) {
         values[i] = (uint8_t)i;
         memset(disk[i], i, 512);
@@ -95,6 +110,6 @@ int main(void) {
     gbl_save_flush();
     for (unsigned i = 0; i < NSEC; ++i) assert(disk[i][0] == values[i]);
     assert(writes > 0);
-    puts("LRU matches model; dirty data kept; bank 0 bypasses ROM cache");
+    puts("CLOCK matches model; dirty data kept; bank 0 bypasses ROM cache");
     return 0;
 }
