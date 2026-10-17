@@ -22,7 +22,9 @@
  * TILE's rows but merges line 8k+7 into the next line: both are rendered
  * packed, the held one kept across frames (600 bytes, sharing RAM with the
  * BLEND/DARK buffers) so it is rendered only when it changes, and the pair
- * is blended by SMOOTH's loop with a 1/2 table.  With META_LINE_SKIP a row whose
+ * is blended by SMOOTH's loop with a 1/2 table.  META_TBLEND 2 keeps one held
+ * line only, in SMOOTH's buffers: it is rendered on every drawn frame, and
+ * the picture is the same.  With META_LINE_SKIP a row whose
  * inputs did not change since it was drawn is neither rendered nor sent;
  * strips therefore hold runs of consecutive rows, each sent to its own
  * window.
@@ -48,9 +50,11 @@
  *                        moving finds its upper line rendered
  * META_MERGE_MODES       BLEND and DARK (1 KiB table, a spare line); TBLEND
  *                        blends two pixels per lookup in a 1 KiB table
- * META_TBLEND            TBLEND (672 bytes: the held lines and, without
- *                        META_MERGE_MODES, a 16-colour table looked up
- *                        once per pixel instead of the 1 KiB one)
+ * META_TBLEND            TBLEND: 1 keeps the 15 held lines (672 bytes: the
+ *                        held lines and, without META_MERGE_MODES, a
+ *                        16-colour table looked up once per pixel instead of
+ *                        the 1 KiB one); 2 one held line in SMOOTH's buffers
+ *                        (32 bytes), rendered again on every drawn frame
  * META_DISPLAY_COMPACT   flash layouts and bitmap line-valid flags (0 restores RAM arrays)
  * META_LINE_SKIP         rows whose inputs did not change since they were
  *                        drawn are neither rendered nor sent (exact: see
@@ -66,6 +70,9 @@
     !defined(META_SMOOTH_SPECULATE) || !defined(META_MERGE_MODES) || !defined(META_LINE_SKIP) || \
     !defined(META_TBLEND) || !defined(META_DISPLAY_COMPACT)
 #error "gbl_profile.h: a META display switch is missing"
+#endif
+#if META_TBLEND < 0 || META_TBLEND > 2
+#error "META_TBLEND must be 0, 1 or 2"
 #endif
 #if META_STRIP_LINES < 1 || META_STRIP_LINES > 128 || META_LCD_BUFFERS < 1
 #error "META_STRIP_LINES must be 1..128 and META_LCD_BUFFERS must be positive"
@@ -103,10 +110,13 @@ static union {
 #endif
 #if META_TBLEND
     struct {
+#if META_TBLEND == 1
         /* Line 8k+7 of each merged pair, packed, kept across frames so that
-         * it is rendered only when it changes; the line merged into it. */
+         * it is rendered only when it changes; the line merged into it.
+         * META_TBLEND 2 uses smooth_lines for both. */
         uint16_t hold[15][20];
         uint16_t lower[20];
+#endif
 #if META_MERGE_MODES
         /* Two merged pixels per entry, in the layout of meta_smooth_pairs
          * (built from the palette by meta_display_set_mode). */
@@ -120,8 +130,13 @@ static union {
 } mode_ram __attribute__((aligned(4)));
 #define spare_line mode_ram.m.spare_line
 #define merge2 mode_ram.m.merge2
-#define tb_hold mode_ram.t.hold
+#if META_TBLEND == 1
 #define tb_lower mode_ram.t.lower
+#define TB_HOLD(ly) mode_ram.t.hold[TB_PAIR(ly)]
+#else
+#define tb_lower smooth_lines[1]
+#define TB_HOLD(ly) smooth_lines[0]
+#endif
 #define tb_half mode_ram.t.half
 #define tb_half1 mode_ram.t.half1
 #endif
@@ -397,7 +412,12 @@ int gbl_platform_line_check(uint8_t ly, uint32_t sig) {
         unsigned changed = !LINE_VALID(ly) || line_sig[ly] != sig;
         line_sig[ly] = sig;
         LINE_MARK(ly);
+#if META_TBLEND == 1
         if (line_kind[ly] == L_HOLD) return (int)(tb_hold_fresh = (uint8_t)changed);
+#else
+        /* One held line for all pairs: render it, its pair may change. */
+        if (line_kind[ly] == L_HOLD) { tb_hold_fresh = (uint8_t)changed; return 1; }
+#endif
         if (changed || tb_hold_fresh) return 1;
         meta_display_rows_skipped++;
         return 0;
@@ -433,7 +453,7 @@ uint16_t *gbl_platform_line_begin(uint8_t ly) {
     if (display_mode == META_MODE_TBLEND) {
         /* The merged pair is rendered packed, every other line as colours. */
         gbl_ppu_packed = kind != L_ROW;
-        if (kind == L_HOLD) return tb_hold[TB_PAIR(ly)];
+        if (kind == L_HOLD) return TB_HOLD(ly);
         if (kind == L_MERGE) return tb_lower;
         return strip_slot(line_row[ly]);
     }
@@ -490,7 +510,7 @@ void gbl_platform_line_end(uint8_t ly) {
     if (kind == L_HOLD) return; /* completed by the merged line */
 #if META_TBLEND
     if (display_mode == META_MODE_TBLEND && kind == L_MERGE) {
-        const uint16_t *upper = tb_hold[TB_PAIR(ly - 1u)];
+        const uint16_t *upper = TB_HOLD(ly - 1u);
 #if META_MERGE_MODES
         uint32_t *row = (uint32_t *)strip_slot(line_row[ly]);
 #if META_SMOOTH_ASM

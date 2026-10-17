@@ -378,6 +378,24 @@ static char slot_text[GBL_STATE_SLOTS_OR_1][8];
 static const char *slot_names[GBL_STATE_SLOTS_OR_1];
 static const char *const volume_names[9] = {"0", "1", "2", "3", "4", "5", "6", "7", "8"};
 
+#if META_TARGET_POKITTO
+extern "C" char __bss_end__;
+#define DATA_END __bss_end__
+#else
+extern "C" char end; /* after .bss and .noinit (gamebuino_meta.ld) */
+#define DATA_END end
+#endif
+
+/* Stack high-water mark: main paints the free RAM below its frame with
+ * STACK_PAINT; the menu shows how much of it was never written since. */
+#define STACK_PAINT 0xC5AC5AC5u
+static unsigned stack_never_used(void) {
+    const uint32_t *p = (const uint32_t *)(((uintptr_t)&DATA_END + 3u) & ~(uintptr_t)3u);
+    unsigned n = 0;
+    while (p[n] == STACK_PAINT) n++;
+    return n * 4u;
+}
+
 static void name_slots(void) {
     uint16_t used = meta_state_used();
     for (unsigned i = 0; i < GBL_STATE_SLOTS_OR_1; i++) {
@@ -425,17 +443,20 @@ static void option_menu(void) {
 #endif
     ADD(M_QUIT, "Quitter", META_MENU_ACTION, 0, 0, 0);
 #undef ADD
-    /* "59 ips, 41 vues": emulated and drawn frames of the last second, or
-     * the result of the last save state operation. */
+    /* "59/41 ips, pile 812": emulated and drawn frames of the last second
+     * and the stack never used so far (bytes above the end of .bss), or the
+     * result of the last save state operation. */
     char info[32];
     if (state_msg) {
         strcpy(info, state_msg);
         state_msg = 0;
     } else {
         char *p = put_uint(info, last_frames);
-        memcpy(p, " ips, ", 6);
-        p = put_uint(p + 6, last_shown);
-        memcpy(p, " vues", 6);
+        *p++ = '/';
+        p = put_uint(p, last_shown);
+        memcpy(p, " ips, pile ", 11);
+        p = put_uint(p + 11, stack_never_used());
+        *p = 0;
     }
 #if META_TARGET_POKITTO
     meta_lcd_fill(0); /* the menu covers the 160x144 area only */
@@ -543,13 +564,6 @@ extern "C" void gbl_platform_vblank(void) {
     }
 }
 
-#if META_TARGET_POKITTO
-extern "C" char __bss_end__;
-#define DATA_END __bss_end__
-#else
-extern "C" char end; /* after .bss and .noinit (gamebuino_meta.ld) */
-#define DATA_END end
-#endif
 
 /* A file the game needs is missing or unusable: a coloured screen tells
  * which, HOME (Pokitto: C) held 3 s returns to the loader.  Red: ROM not
@@ -589,6 +603,12 @@ static void stream_error_screen(int err) {
 #endif
 
 int main(void) {
+    { /* stack_never_used: paint the free RAM, 128 bytes below this frame */
+        char here;
+        uint32_t *p = (uint32_t *)(((uintptr_t)&DATA_END + 3u) & ~(uintptr_t)3u);
+        uint32_t *top = (uint32_t *)((uintptr_t)&here - 128u);
+        while (p < top) *p++ = STACK_PAINT;
+    }
 #if !META_TARGET_POKITTO
     meta_sd_deselect(); /* the card off the shared SPI bus from the start */
 #if META_USB
@@ -653,7 +673,7 @@ int main(void) {
      * unwinds to the nearest dispatcher loop. */
     char probe;
     uintptr_t limit = (uintptr_t)&probe - 3072u;
-    uintptr_t floor_addr = (uintptr_t)&DATA_END + 768u; /* interrupt headroom */
+    uintptr_t floor_addr = (uintptr_t)&DATA_END + META_STACK_RESERVE; /* gbl_profile.h */
     gbl_stack_limit = limit > floor_addr ? limit : floor_addr;
 
     /* The menu's "Redemarrer" comes back here (from inside the emulation:

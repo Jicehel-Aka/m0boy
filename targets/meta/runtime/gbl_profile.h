@@ -171,6 +171,11 @@
 #ifndef POKITTO_AUDIO_ASM
 #define POKITTO_AUDIO_ASM 1
 #endif
+/* C stack kept below gbl_stack_limit (meta_main.cpp); the META's 1024 is
+ * from its own frames, not measured here. */
+#ifndef META_STACK_RESERVE
+#define META_STACK_RESERVE 768
+#endif
 
 #else
 /* ============================================== Gamebuino META (SAMD21) */
@@ -273,6 +278,14 @@
 #ifndef META_AUDIO_DMA
 #define META_AUDIO_DMA 1
 #endif
+/* C stack kept below gbl_stack_limit (meta_main.cpp): generated code checks
+ * the limit on entry only, and what it calls below it is unguarded.  Static
+ * worst case from -fstack-usage frames and the call graph (2026-10-17):
+ * the option menu opened from a VBlank at the limit, about 720 bytes, plus
+ * the USB and DMA interrupts, about 190: 768 bytes were short. */
+#ifndef META_STACK_RESERVE
+#define META_STACK_RESERVE 1024
+#endif
 /* Number of rows per DMA strip (not a boolean). Default 2 saves 1280
  * bytes with two buffers; 4 reduces transfer/IRQ count.
  * Both sizes work with the menu (it slices glyphs to the scratch size). */
@@ -292,13 +305,17 @@
 /* Builds with a ROM sector cache (SD or packed) or cartridge RAM on the
  * card use two strips in flight instead of three, no BLEND/DARK (their
  * 1.3 KiB of tables). Check the linked RAM/stack budget per game. TBLEND
- * (META_TBLEND, the default mode) stays everywhere: 672 bytes, with a
- * 16-colour table instead of the 1 KiB one when the merge modes are out. */
-#ifndef META_TBLEND
-#define META_TBLEND 1
-#endif
+ * (META_TBLEND, the default mode) is in every build, the same picture:
+ * 1 keeps its 15 held lines (672 bytes), 2 one held line in SMOOTH's
+ * buffers (32 bytes; 704 bytes saved on Super Mario Land 2) at the cost of
+ * rendering those 15 lines on every drawn frame, also when they did not
+ * change (frames that did not change at all are still skipped); 0 leaves
+ * it out (TILE instead). */
 #if (defined(GBL_ROM_STREAM) && GBL_ROM_STREAM) || GBL_ERAM_ON_SD
 #define META_STREAM_RAM 1
+#ifndef META_TBLEND
+#define META_TBLEND 2
+#endif
 #ifndef META_LCD_BUFFERS
 #define META_LCD_BUFFERS 2
 #endif
@@ -307,6 +324,9 @@
 #endif
 #else
 #define META_STREAM_RAM 0
+#ifndef META_TBLEND
+#define META_TBLEND 1
+#endif
 #ifndef META_LCD_BUFFERS
 #define META_LCD_BUFFERS 3
 #endif

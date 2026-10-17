@@ -160,8 +160,9 @@ if(BUILD_TESTS)
     add_test(NAME meta_display_12bpp_matches_reference COMMAND test_meta_display_sim_12bpp)
 
     # Exercise both compact data structures and the original layout, including
-    # short DMA strips, TBLEND fallback and the 12-bit panel path.
-    foreach(variant legacy short short_tile short_12bpp)
+    # short DMA strips, TBLEND fallback, TBLEND with one held line (with and
+    # without the merge modes' table) and the 12-bit panel path.
+    foreach(variant legacy merge_tblend2 short short_tile short_tblend2 short_12bpp)
         set(test_name test_meta_display_${variant})
         add_executable(${test_name} "${GBL_META_DIR}/tests/display_sim.c"
             "${GBL_META_DIR}/platform/meta/meta_display.c"
@@ -171,11 +172,15 @@ if(BUILD_TESTS)
             "${GBL_META_DIR}/platform/meta" "${GBL_META_DIR}/tests")
         if(variant STREQUAL "legacy")
             target_compile_definitions(${test_name} PRIVATE META_DISPLAY_COMPACT=0 META_STRIP_LINES=4)
+        elseif(variant STREQUAL "merge_tblend2")
+            target_compile_definitions(${test_name} PRIVATE META_TBLEND=2)
         else()
             target_compile_definitions(${test_name} PRIVATE META_DISPLAY_COMPACT=1
                 META_STRIP_LINES=2 META_LCD_BUFFERS=2 META_MERGE_MODES=0)
             if(variant STREQUAL "short_tile")
                 target_compile_definitions(${test_name} PRIVATE META_TBLEND=0)
+            elseif(variant STREQUAL "short_tblend2")
+                target_compile_definitions(${test_name} PRIVATE META_TBLEND=2)
             elseif(variant STREQUAL "short_12bpp")
                 target_compile_definitions(${test_name} PRIVATE META_LCD_12BPP=1)
             endif()

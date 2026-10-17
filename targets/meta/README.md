@@ -301,7 +301,7 @@ touches the FAT.
   Awakening, 32 KiB for Pokémon) lives only in the file, behind a two-sector
   write-back cache. Without that, those games did not fit in RAM (8 KiB on
   top of 29 KiB). Such builds, like streaming ones, keep two display strips
-  and drop the BLEND and DARK modes (TBLEND stays, `META_TBLEND`). Zerd no Densetsu (8 KiB) builds at
+  and drop the BLEND and DARK modes (TBLEND stays with one held line, `META_TBLEND` 2). Zerd no Densetsu (8 KiB) builds at
   27.5 KiB of RAM.
 - Changed sectors are written back in three cases:
   - when the game disables cartridge RAM, which games do right after
@@ -369,7 +369,7 @@ default; `on` / `off` force it):
   fragmented) or magenta (a different ROM). Holding HOME for 3 s returns
   to the loader.
 - To make room for the 2 KiB cache, streaming builds use two display strips
-  instead of three and drop the BLEND and DARK modes; TBLEND stays (672 bytes, `META_TBLEND`). RAM then stays at the
+  instead of three and drop the BLEND and DARK modes; TBLEND stays with one held line (32 bytes, `META_TBLEND` 2). RAM then stays at the
   usual level: 28.9 KiB.
 
 `compile.sh` records the profiles, regenerates with them, and copies the
@@ -732,7 +732,8 @@ run (same picture in Link's Awakening).
 | `GBL_ERAM_CACHE_SECTORS` | 8 with the ROM and the cartridge RAM on the card (the ROM cache then gets 2), else 2 | Write-back cache of cartridge RAM kept in the save file (`GBL_ERAM_ON_SD`): Super Mario Land 2 uses its RAM as work RAM (about seven sectors); 2 sectors gave 157 card writes a second, 8 reduced them to about 4/s in the measured run. Exact LRU with no timestamp wrap; deferred flush occurs 120 frames after the last change |
 | `META_USB` | 1 | USB serial port (`meta_usb.c`; about 600 bytes of RAM and 2.6 KiB of flash on Super Mario Land): the 1200-baud touch of upload tools (`pio run -t upload`, bossac, `tools/meta-usb.py flash`) resets into sam-ba without touching the console (the META's bootloader starts sam-ba when 0x20007FFC holds 0x3aecfd88 after a software reset; read from its code). For debugging, `tools/meta-usb.py`: `read`/`write` memory by ELF symbol while the game runs (sam-ba's `R`, `W`, `O`), `prof` (SysTick samples the interrupted PC into a ring of 32, the host drains it: about 1000 samples a second, under 1% of the CPU), `press` (buttons ORed into `meta_pad_read`, for scripted tests), `fault` (below). 0 removes all of it |
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND and DARK display modes (1 KiB table, a spare line); TBLEND then blends two pixels per lookup |
-| `META_TBLEND` | 1 | TBLEND, the default mode, in every build: 600 bytes of held lines and, without `META_MERGE_MODES`, a 16-colour table (one lookup per pixel) instead of the 1 KiB one |
+| `META_TBLEND` | 2 with a ROM cache or cartridge RAM on SD, otherwise 1 | TBLEND, the default mode, same picture in 1 and 2. 1 keeps the 15 held lines (600 bytes) so each is rendered only when it changes; 2 keeps one, in SMOOTH's buffers, and renders the 15 held lines on every drawn frame (frames that did not change at all are still skipped): 640 bytes less on Super Mario Land 2 (2,576 → 3,216 bytes free above `.bss`), CPU cost not measured on the device. Without `META_MERGE_MODES`, a 16-colour table (one lookup per pixel) instead of the 1 KiB one. 0 leaves TBLEND out (TILE instead), 64 bytes less than 2 |
+| `META_STACK_RESERVE` | 1024 (Pokitto 768) | C stack kept below `gbl_stack_limit`, for what generated code calls there unguarded. Static worst case on the META (`-fstack-usage` frames and the call graph of the SML2 firmware): option menu opened from a VBlank at the limit, about 720 bytes, plus the USB and DMA interrupts, about 190. The option menu shows the stack never used since boot ("pile", bytes above `.bss`) |
 | `META_LCD_12BPP` | 0 | ST7735 in RGB444 (COLMOD 03h): `META_COLOR` gives 0x0RGB, each row is packed in Thumb-1 as it goes out (`meta_lcd_pack_asm.S`), 240 bytes per row instead of 320. meta-emu-sdl estimate on Super Mario Land: display waits 8.5% → 1.3% of the CPU, audio restarts 7 → 1 per minute |
 | `META_AUDIO_DMA` | 1 | Audio samples go to the DAC by DMA (TC4-triggered DMAC channel 1, chained descriptors) instead of a 22 kHz TC4 interrupt (about 3% of the CPU); 0 restores the interrupt |
 | `META_LCD_SPI_MHZ` | 48 | Display SPI clock at boot: 12, 24, 36 or 48 (menu "SPI ecran"). 48 is the maximum the clock tree gives (shown fine on a META), 35 with the CPU at 70 MHz, the default (the menu's "36", reduced by `meta_clock.cpp`), 24 when the PLL does not lock. A panel that does not take it: rebuild with `-DMETA_LCD_SPI_MHZ=24` (or 36) in build_flags. A full frame 40,960 bytes: 13.7 ms at 24, 9.1 at 36, 6.8 at 48. The Arduino core capped every rate at 12 MHz, so firmwares built before 2026-10-03 sent the picture at 12. |
@@ -763,6 +764,17 @@ Short strips trade RAM for more transfers/interrupts. On the synthetic streamed
 GB fixture, all three options save 2,384 bytes at the ARM GCC link; setting
 `GBL_STREAM_SECTORS=4` then leaves 2,232 bytes for the stack with eight ERAM
 sectors. This is a per-build RAM budget, not a device performance measurement.
+
+Since 0.10.17 streamed and SD-RAM builds default to `META_TBLEND=2`
+(TBLEND with one held line), which gives back most of `META_TBLEND=0`'s
+gain while keeping the picture. Super Mario Land 2 (2 ROM + 8 RAM
+sectors), ARM GCC link, free RAM above `.bss`: 2,576 bytes with
+`META_TBLEND=1`, 3,216 with 2, 3,280 with 0; with 2 and
+`GBL_STREAM_SECTORS=3`, 2,684; with 4, 2,168. On the host harness
+(four recorded sessions, 539,000 frames) the ROM cache reads per frame:
+2.38 with 2 sectors, 1.95 with 3, 1.72 with 4, 0.63 with 8; frames reading
+more than 10 sectors: 5,803 / 4,362 / 3,333 / 1,798 out of 144,870 in one
+session. The ERAM writes are unchanged with 8 ways (7 ways: ×11).
 These display options apply to the GB META frontend, not the Pokitto renderer
 or the Sega frontends.
 
