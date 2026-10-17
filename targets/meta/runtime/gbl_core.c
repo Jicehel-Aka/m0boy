@@ -174,7 +174,8 @@ static void map_rom_bank(void) {
  * to mark 512-byte sectors dirty, and gbl_save_flush writes those back (when
  * the game disables cartridge RAM, as games do after saving, and whenever
  * the frontend decides).  RAM too large for the target (GBL_ERAM_ON_SD)
- * exists only in that file, behind a two-sector write-back cache. */
+ * exists only in that file, behind a write-back cache of
+ * GBL_ERAM_CACHE_SECTORS sectors (gbl_profile.h). */
 #if GBL_ERAM_SIZE > 0 && GBL_MBC != 2
 static uint32_t eram_bank(void) {
     uint32_t bank = 0;
@@ -200,9 +201,15 @@ uint32_t gbl_save_last_change; /* gbl_frame of the last change not yet saved */
 static uint8_t save_pending;
 
 #if GBL_ERAM_ON_SD
-static uint8_t eram_buf[2][512] __attribute__((aligned(4)));
-static int32_t eram_tag[2];
-static uint8_t eram_dirty[2], eram_mru;
+#ifndef GBL_ERAM_CACHE_SECTORS
+#define GBL_ERAM_CACHE_SECTORS 2
+#endif
+#define ERAM_WAYS GBL_ERAM_CACHE_SECTORS
+static uint8_t eram_buf[ERAM_WAYS][512] __attribute__((aligned(4)));
+static int32_t eram_tag[ERAM_WAYS];
+static uint16_t eram_used[ERAM_WAYS]; /* eram_clock when last switched to: the oldest is evicted */
+static uint8_t eram_dirty[ERAM_WAYS], eram_mru, eram_prev;
+static uint16_t eram_clock;
 
 static void eram_writeback(unsigned i) {
     if (eram_dirty[i]) {
@@ -211,17 +218,34 @@ static void eram_writeback(unsigned i) {
     }
 }
 
+/* The most recent sector is checked first (most accesses); the others when
+ * the game moves to another sector.  A game using its cartridge RAM as work
+ * RAM cycles through several sectors (Super Mario Land 2: about seven), and
+ * every eviction of a dirty one is a card write. */
 static uint8_t *eram_sector(uint32_t off) {
     int32_t sec = (int32_t)(off >> 9);
     unsigned i = eram_mru;
     if (eram_tag[i] != sec) {
-        i ^= 1u;
-        if (eram_tag[i] != sec) {
+        /* Games alternate between two sectors (a pointer table and the
+         * data): the previous one before the scan. */
+        if (eram_tag[eram_prev] == sec) {
+            i = eram_prev;
+            eram_prev = eram_mru;
+            eram_mru = (uint8_t)i;
+            return eram_buf[i];
+        }
+        unsigned victim = 0;
+        for (i = 0; i < ERAM_WAYS && eram_tag[i] != sec; i++)
+            if ((uint16_t)(eram_clock - eram_used[i]) > (uint16_t)(eram_clock - eram_used[victim])) victim = i;
+        if (i == ERAM_WAYS) {
+            i = victim;
             eram_writeback(i);
             if (!gbl_platform_save_read((uint32_t)sec, eram_buf[i]))
                 for (int k = 0; k < 512; k++) eram_buf[i][k] = 0xFF;
             eram_tag[i] = sec;
         }
+        eram_used[i] = ++eram_clock;
+        eram_prev = eram_mru;
         eram_mru = (uint8_t)i;
     }
     return eram_buf[i];
@@ -239,16 +263,20 @@ static void eram_store(uint32_t off, uint8_t v) {
 }
 
 void gbl_save_flush(void) {
-    eram_writeback(0);
-    eram_writeback(1);
+    for (unsigned i = 0; i < ERAM_WAYS; i++) eram_writeback(i);
     save_pending = 0;
 }
 
 uint8_t *gbl_save_scratch(void) { return eram_buf[0]; }
 
 static void eram_reset(void) {
-    eram_tag[0] = eram_tag[1] = -1;
-    eram_dirty[0] = eram_dirty[1] = 0;
+    for (unsigned i = 0; i < ERAM_WAYS; i++) {
+        eram_tag[i] = -1;
+        eram_dirty[i] = 0;
+        eram_used[i] = 0;
+    }
+    eram_clock = 0;
+    eram_mru = eram_prev = 0;
     save_pending = 0;
 }
 #else

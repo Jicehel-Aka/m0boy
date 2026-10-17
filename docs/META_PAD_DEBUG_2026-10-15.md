@@ -239,3 +239,31 @@ Retenu : `OC_MHZ` 70, `GBL_PPU_RAMFUNC` 0 sur la META (en SRAM : 3,9 % du
 CPU à 48 MHz, en flash : 4,8 %, profileur USB). Les boutons gardent
 ~12 MHz : le SERCOM n'est sur le PLL qu'avec l'écran au-delà de 24 MHz
 (70/6 = 11,7 MHz).
+
+### Défauts, jeux streamés de bout en bout (version 0.10.15)
+
+- **Par défaut** : processeur à 70 MHz (`META_OVERCLOCK` 1 sur la META ;
+  compile.sh `OVERCLOCK=0` pour 48), écran au maximum : `META_LCD_SPI_MHZ`
+  48, soit 35 MHz avec le processeur à 70 (une seule PLL, SPI = horloge du
+  SERCOM / 2 au plus : impossible de dépasser 35 à 70 MHz). Mesuré sur
+  Ristar (écran titre) : 70 + 35 laisse 12,7 % du processeur en attente
+  d'image, 48 + 48 : 6,1 %.
+- **Couleurs** : rouge et bleu permutés sur cette console (écrans d'erreur
+  GB et GG, jeux GG) ; `META_LCD_BGR` 0 par défaut (bit BGR de MADCTL
+  retiré), couleurs confirmées sur Ristar.
+- **Rendus SG-1000 / Game Gear** : boucles en flash sur la META
+  (`SG_CODE_IN_SRAM` 0, écrit par le générateur), comme le PPU GB.
+- **Game Gear streamé** : HardFault au démarrage de Ristar construit par
+  compile.sh : la détection Codemasters lisait `rom[0x7fe6]` alors que la
+  flash ne garde que la page 0 (16 Kio, placée en fin de flash pleine :
+  lecture au-delà de 0x40000). Les projets générés fixent `GG_MAPPER` : la
+  lecture n'a plus lieu. Ristar et Sonic tournent depuis la carte à 70 MHz
+  (dossier trouvé, ROM trouvée, aucune faute, 2 min de jeu injecté).
+- **Super Mario Land 2** (GB, ROM et RAM de cartouche sur la carte) : la
+  RAM de 8 Kio sert de mémoire de travail (environ sept secteurs) ; avec
+  un cache de 2 secteurs : 157 écritures/s et la moitié du processeur.
+  Cache de RAM paramétrable (`GBL_ERAM_CACHE_SECTORS`, LRU, le secteur
+  précédent vérifié avant le balayage) ; 2 secteurs de ROM + 8 de RAM
+  dans ces builds (même mémoire) : écritures ramenées au vidage de 2 s,
+  39 à 42 images/s (24 avec 4 + 6). Le chemin d'accès à cette RAM reste
+  coûteux (`eram_sector`, `gbl_rd_slow` : environ 30 % du processeur).

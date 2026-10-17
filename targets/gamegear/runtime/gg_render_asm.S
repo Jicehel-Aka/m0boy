@@ -19,7 +19,16 @@
 
     .syntax unified
     .thumb
-    .section .data.gg_ramfunc.gg_bg_tiles, "ax", %progbits
+
+/* SRAM (no flash wait states) unless the target asks for flash
+ * (SG_CODE_IN_SRAM 0: the META, where SRAM code faulted overclocked). */
+#if !defined(SG_CODE_IN_SRAM) || SG_CODE_IN_SRAM
+#define GG_RAMFUNC(name) .section .data.gg_ramfunc.name, "ax", %progbits
+#else
+#define GG_RAMFUNC(name) .section .text.gg_ramfunc.name, "ax", %progbits
+#endif
+
+    GG_RAMFUNC(gg_bg_tiles)
     .align 2
     .global gg_bg_tiles
     .type gg_bg_tiles, %function
@@ -193,7 +202,7 @@ gg_bg_tiles:
  * [sp, #8] name entry | tr << 16 of the previous tile.  A tile repeating the
  * previous one reuses its fields; a group equal to the last one copies its
  * five pixels. */
-    .section .data.gg_ramfunc.gg_sms_bg, "ax", %progbits
+    GG_RAMFUNC(gg_sms_bg)
     .align 2
     .global gg_sms_bg
     .type gg_sms_bg, %function

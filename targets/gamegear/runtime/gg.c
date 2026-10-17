@@ -270,11 +270,19 @@ void gg_init_system(const uint8_t *rom, size_t size, uint8_t *cart_ram, int sms)
     m->rom = rom; /* rom_pages * 16 KiB readable bytes (callers pad) */
     m->rom_size = (uint32_t)size;
     m->rom_pages = (uint16_t)((size + 0x3fff) / 0x4000);
-    /* Codemasters boards: checksum and its complement at 7FE6/7FE8 */
+    /* Codemasters boards: checksum and its complement at 7FE6/7FE8.  Only
+     * the generic host detects it: generated projects fix GG_MAPPER, and a
+     * streamed one may hold page 0 alone in flash, so 7FE6 may lie past the
+     * array -- past the end of flash when it is full (device, 2026-10-17:
+     * HardFault at boot). */
+#ifndef GG_MAPPER
     if (size >= 0x8000) {
         const unsigned sum = rom[0x7fe6] | rom[0x7fe7] << 8, inverse = rom[0x7fe8] | rom[0x7fe9] << 8;
         m->mapper = sum && !((sum + inverse) & 0xffff);
     }
+#else
+    m->mapper = GG_MAPPER;
+#endif
     m->cart_ram = cart_ram;
 #if GG_STREAM || GG_CART_ON_CARD
     card_reset();

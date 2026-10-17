@@ -26,9 +26,9 @@ exécute le reste.
 - META : TBLEND aussi dans les jeux lus sur la carte, option
   `-DMETA_LCD_12BPP=1` (écran en 12 bits, 25 % d'octets en moins par
   rangée). Les trois périphériques du bus SPI ont leur débit dans
-  `gbl_board.h` : 24 MHz pour l'écran (le débit de meta-lapinou sur ce
-  panneau, et le seul essayé sur une vraie META ; 36 et 48 s'essaient au menu
-  « SPI ecran »), 12 MHz pour la carte SD et pour les boutons : le SPI
+  `gbl_board.h` : le maximum pour l'écran (48 MHz, 35 avec le processeur
+  à 70 MHz : la PLL n'a qu'une fréquence ; 12 et 24 au menu « SPI ecran »),
+  12 MHz pour la carte SD et pour les boutons : le SPI
   maître du SAMD21 ne lit pas MISO de façon fiable au-delà (à 24 MHz,
   toutes les lectures de secteur échouaient sur une META).
 
@@ -348,7 +348,7 @@ gauche/droite (ou A) change la valeur, B ou HOME referme.
 | Palette | Vert, Gris, Pocket, Ambre, Bleu (SMOOTH reste en vert) |
 | Images | saut d'images : Auto (n'affiche pas les images en retard), Aucun, 1 sur 2, 1 sur 3, 1 sur 4 |
 | Vitesse | Normale, ou Rapide (sans limite d'images par seconde) |
-| Processeur | 48 MHz ou 72 MHz (surcadencé, hors spécification du SAMD21 : à essayer, retour à 48 MHz si instable) |
+| Processeur | 70 MHz (par défaut sur la META, surcadencé : hors spécification du SAMD21, mesuré stable sur une console) ou 48 MHz ; la Pokitto : 72 |
 | SPI ecran | vitesse d'envoi de l'image à l'écran : 12, 24, 36 ou 48 MHz (24 par défaut, le débit connu de ce panneau ; 36 au plus avec le processeur à 72 MHz ; 36 et 48 viennent de la PLL et n'ont pas été essayés sur une META). Si l'écran devient illisible, le menu l'est aussi : éteindre la console remet le défaut de 24 MHz |
 | Quitter | retour au loader Gamebuino |
 
@@ -409,7 +409,8 @@ Ajoute-les dans `build_flags` du `platformio.ini` généré, par exemple
 | `GBL_PPU_ASM` | 1 sur M0+ | Chargement des tuiles et conversion des couleurs en assembleur Thumb-1 (`gbl_ppu_asm.S`) |
 | `GBL_PPU_RAMFUNC` | 0 (META), 1 (Pokitto) | Ces boucles tournent depuis la SRAM, sans état d'attente de la flash ; coupé sur la META, où le code en SRAM plantait processeur à 70/72 MHz (≈1 % de processeur en plus à 48 MHz) |
 | `META_LCD_DMA` | 1 | Écran en DMA avec file de transferts ; 0 = envoi par le CPU |
-| `META_LCD_SPI_MHZ` | 24 | Débit SPI de l'écran au démarrage : 12, 24, 36 ou 48 (24 par défaut, le débit connu de ce panneau ; 36/48 viennent de la PLL et ne sont pas validés sur une META ; ramené à 36 quand le processeur est à 72 MHz, à 24 si la PLL ne s'accroche pas) ; le menu « SPI ecran » le change |
+| `META_LCD_SPI_MHZ` | 48 | Débit SPI de l'écran au démarrage : 12, 24, 36 ou 48 (48 par défaut, le maximum, vu correct sur une META ; ramené à 35 quand le processeur est à 70 MHz, à 24 si la PLL ne s'accroche pas) ; le menu « SPI ecran » le change |
+| `META_OVERCLOCK` | 1 (META) | Démarrage à 70 MHz (META) ; 0 : 48 MHz.  compile.sh : `OVERCLOCK=0` |
 | `META_SD_SPI_HZ` | 12000000 | Débit SPI de la carte SD hors identification (24 MHz : lectures en échec sur une META) |
 | `META_USB` | 1 | Port série USB : le « 1200 bauds » des outils de téléversement (`pio run -t upload`, `tools/meta-usb.py flash`) relance la console en sam-ba sans toucher aux boutons ; `tools/meta-usb.py` lit et écrit la mémoire par symbole pendant le jeu, profile (échantillons du PC, moins de 1 % du processeur), appuie sur les touches (tests) et lit le journal des fautes ; 0 retire tout |
 | `META_LCD_BUFFERS` / `META_STRIP_LINES` | 3 / 4 | Buffers d'écran et lignes par buffer |

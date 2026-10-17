@@ -18,7 +18,13 @@
     .syntax unified
     .thumb
 
+/* SRAM (no flash wait states) unless the target asks for flash
+ * (SG_CODE_IN_SRAM 0: the META, where SRAM code faulted overclocked). */
+#if !defined(SG_CODE_IN_SRAM) || SG_CODE_IN_SRAM
 #define SG_RAMFUNC(name) .section .data.sg_ramfunc.name, "ax", %progbits
+#else
+#define SG_RAMFUNC(name) .section .text.sg_ramfunc.name, "ax", %progbits
+#endif
 
 /* one device pixel: field at bits [shift_up .. ] of w, blend row in row */
 .macro OUT2W w, row, tmp, up, slot

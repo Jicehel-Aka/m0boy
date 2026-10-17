@@ -16,26 +16,20 @@
 #ifndef GBL_BOARD_H
 #define GBL_BOARD_H
 
-/* META_LCD_SPI_MHZ: the display's clock at boot: 12, 24, 36 or 48.  The
+/* META_LCD_SPI_MHZ: the display's clock at boot: 12, 24, 36 or 48 (the
  * option menu's "SPI ecran" changes it in the Game Boy firmware; the SG-1000
- * and Game Gear frontends have no menu and keep the boot value.
- *
- * 24 is the boot default: the rate meta-lapinou drives this panel at, and
- * the only panel rate with runs on a real META.  12 comes from the DFLL48M,
- * 24 from the DFLL48M too (half its SERCOM clock), and 36 and 48 only from
- * the FDPLL96M at 72 or 96 MHz -- past the SERCOM's 48 MHz clock rating and
- * past the ST7735's 15 MHz write cycle.  gm0's overclocked META port ran 36;
- * nothing has been seen at 48 on a panel, so the default stays at 24 and
- * 36/48 are opt-in: "SPI ecran" in the Game Boy firmware's menu (SG-1000 and
- * Game Gear frontends have no menu and keep the boot value), or a game's own
- * `-DMETA_LCD_SPI_MHZ=36|48` in its build_flags.  The PLL has one frequency,
- * so the CPU at 72 MHz caps the display at 36 (meta_clock.cpp reduces it),
- * and when the PLL does not lock apply() falls back to 24.
- * A full frame is 40,960 bytes: 13.7 ms at 24 MHz, 9.1 at 36, 6.8 at 48
- * (30,720 / 10.2 / 6.8 / 5.1 in 12-bit colour, META_LCD_12BPP).  A rate the
- * panel does not take scrambles the screen, menu included. */
+ * and Game Gear frontends keep the boot value).  Default 48, the most the
+ * clock tree gives: 12 and 24 come from the DFLL48M, 36 and 48 from the
+ * FDPLL96M (past the SERCOM's 48 MHz clock rating and the ST7735's
+ * datasheet; 48 shown fine on a META, 2026-10-17).  The PLL has one
+ * frequency: with the CPU overclocked (70 MHz, META_OVERCLOCK) the display
+ * gets 35 (the menu's "36"), at 48 MHz CPU it gets 48; when the PLL does
+ * not lock apply() falls back to 24 (meta_clock.cpp).  A full frame is
+ * 40,960 bytes: 13.7 ms at 24 MHz, 9.4 at 35, 6.8 at 48.  A rate the panel
+ * does not take scrambles the screen, menu included: rebuild with
+ * -DMETA_LCD_SPI_MHZ=24 in build_flags. */
 #ifndef META_LCD_SPI_MHZ
-#define META_LCD_SPI_MHZ 24
+#define META_LCD_SPI_MHZ 48
 #endif
 
 /* META_SD_SPI_HZ: the card's clock outside identification, 12 MHz.  The
@@ -63,6 +57,14 @@
 #endif
 #ifndef META_BUTTONS_PL_US
 #define META_BUTTONS_PL_US 1
+#endif
+
+/* META_LCD_BGR: 1 sets the ST7735's BGR order (MADCTL).  0 on the META
+ * tested (2026-10-17): with it, red and blue came out swapped (error
+ * screens of both frontends, Game Gear games).  It was set in 0.10.1 from
+ * an emulator; a panel that shows swapped colours: rebuild with 1. */
+#ifndef META_LCD_BGR
+#define META_LCD_BGR 0
 #endif
 
 /* META_USB: 1 makes the firmware a USB serial port (meta_usb.c): the

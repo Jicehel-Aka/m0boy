@@ -120,11 +120,12 @@
 #                 normal si la ROM compressée ne tient pas)
 #   STATIC=0      ne pas ajouter le code trouvé par analyse statique
 #                 (par défaut il complète les parties, dans la limite de la flash)
-#   OVERCLOCK=1   firmwares des deux consoles démarrant à 72 MHz au lieu de 48
-#                 (hors spécification : 50 MHz pour le LPC11U68 de la Pokitto,
-#                 48 MHz pour le SAMD21 de la META ; SPI carte redivisé à
-#                 18 MHz sur la Pokitto ; le menu « Processeur » bascule
-#                 48 <-> 72 à l'exécution ; POKITTO_HC est l'ancien nom)
+#   OVERCLOCK=0   firmwares démarrant à 48 MHz ; par défaut (1) ils démarrent
+#                 overclockés : 70 MHz sur la META (mesuré stable sur une
+#                 console), 72 sur la Pokitto (hors spécification : 48 MHz
+#                 pour le SAMD21, 50 pour le LPC11U68 ; SPI carte redivisé à
+#                 18 MHz sur la Pokitto ; le menu « Processeur » bascule à
+#                 l'exécution ; POKITTO_HC est l'ancien nom)
 #
 # Sans aucune partie à la main, la partie automatique et l'analyse statique
 # suffisent à compiler l'essentiel ; le code est gardé du plus exécuté au
@@ -161,19 +162,18 @@ if [ -z "$SRC_SYSTEM" ] && [ -t 0 ]; then
 fi
 export SRC_SYSTEM
 
-# Horloge des consoles, demandée une fois : 48 MHz (nominal) ou 72 MHz
-# (overclock : la Pokitto le supporte, la META n'a pas encore été essayée à
-# 72 MHz sur une console).  OVERCLOCK (ou POKITTO_HC, son ancien nom)
-# court-circuite la question (scripts).
+# Horloge des consoles, demandée une fois : overclock (par défaut : 70 MHz
+# sur la META, 72 sur la Pokitto) ou 48 MHz (nominal).  OVERCLOCK (ou
+# POKITTO_HC, son ancien nom) court-circuite la question (scripts).
 OVERCLOCK="${OVERCLOCK:-${POKITTO_HC:-}}"
 if [ -z "$OVERCLOCK" ] && [ -t 0 ]; then
-  printf 'Horloge des consoles : 48 (entrée) ou 72 : '
+  printf 'Horloge des consoles : overclock 70/72 (entrée) ou 48 : '
   read -r h
-  case "$h" in 72|hc|HC) OVERCLOCK=1 ;; *) OVERCLOCK=0 ;; esac
+  case "$h" in 48) OVERCLOCK=0 ;; *) OVERCLOCK=1 ;; esac
 fi
-OVERCLOCK="${OVERCLOCK:-0}"
+OVERCLOCK="${OVERCLOCK:-1}"
 export OVERCLOCK POKITTO_HC="$OVERCLOCK"
-[ "$OVERCLOCK" = 1 ] && export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=1"
+export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=$OVERCLOCK"
 if [ "$TARGET" = both ] || [ "$TARGET" = all ]; then
   # Une exécution par console.  La sélection des jeux et la confirmation des
   # mises à jour sont demandées une seule fois (pass de capture ci-dessous,
@@ -241,12 +241,12 @@ ALL="${ALL:-0}"
 UPDATE="${UPDATE:-0}"
 FORCE="${FORCE:-0}"
 NO_ICONS="${NO_ICONS:-0}"
-# OVERCLOCK=1 : firmwares démarrant à 72 MHz (hors spécification : voir
-# gbl_profile.h, META_OVERCLOCK).  Le menu « Processeur » garde la bascule
-# 48 <-> 72 à l'exécution.
-OVERCLOCK="${OVERCLOCK:-${POKITTO_HC:-0}}"
+# OVERCLOCK (1 par défaut) : firmwares démarrant overclockés, 70 MHz sur la
+# META, 72 sur la Pokitto (hors spécification : voir gbl_profile.h,
+# META_OVERCLOCK) ; 0 : 48 MHz.  Le menu « Processeur » garde la bascule.
+OVERCLOCK="${OVERCLOCK:-${POKITTO_HC:-1}}"
 export OVERCLOCK POKITTO_HC="$OVERCLOCK"
-[ "$OVERCLOCK" = 1 ] && export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=1"
+export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=$OVERCLOCK"
 # m0recomp is the console-neutral CLI; keep the historical binary as fallback.
 GBRECOMP="./build/bin/gbrecomp"
 [ -x ./build/bin/m0recomp ] && GBRECOMP="./build/bin/m0recomp"
@@ -703,7 +703,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
       --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} -o "$out_dir") || return 2
     if [ "$TARGET" = pokitto ]; then
       local hc_flags=""
-      [ "$OVERCLOCK" = 1 ] && hc_flags="-DEXTRA_DEFS=-DMETA_OVERCLOCK=1"
+      hc_flags="-DEXTRA_DEFS=-DMETA_OVERCLOCK=$OVERCLOCK"
       cmake -G Ninja -S "$out_dir" -B "$sg_build" -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake \
         -DSG_COMPILER="$FIRMWARE_COMPILER" ${hc_flags} > /dev/null || return 2
       build_log=$(ninja -C "$sg_build" -j"$NPROC" 2>&1) && return 0
@@ -1013,7 +1013,7 @@ PY
       fi
     fi
     if [ "$TARGET" = pokitto ]; then
-      [ "$OVERCLOCK" = 1 ] && extra_flags="${extra_flags:+$extra_flags }-DMETA_OVERCLOCK=1"
+      extra_flags="${extra_flags:+$extra_flags }-DMETA_OVERCLOCK=$OVERCLOCK"
       build_log=$(make -C "$out_dir" -j"$NPROC" COMPILER="$FIRMWARE_COMPILER" EXTRA_CFLAGS="${extra_flags:-}" 2>&1) && return 0
     else
       build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0

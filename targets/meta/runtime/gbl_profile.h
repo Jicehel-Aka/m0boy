@@ -30,17 +30,23 @@
 #include "gbl_config.h"
 #include "gbl_board.h"
 
-/* META_OVERCLOCK: both consoles start at 72 MHz instead of the nominal
- * 48 MHz (the converter's choice, compile.sh).  The SAMD21 is rated 48 MHz:
- * the FDPLL96M runs the core at 72 MHz with two flash wait states
- * (meta_clock.cpp), past its specification, and the LPC11U68 is rated
- * 50 MHz.  The menu's "Processeur" entry still switches 48 <-> 72, and the
- * loader is always entered at 48 MHz.  POKITTO_HC is the old name. */
+/* META_OVERCLOCK: start overclocked instead of at the nominal 48 MHz: 70
+ * MHz on the META (the FDPLL96M, two flash wait states, no code in SRAM:
+ * meta_clock.cpp; measured stable on one console), 72 on the Pokitto.  Both
+ * are past the chips' ratings (SAMD21 48 MHz, LPC11U68 50).  Default: on
+ * for the META, off for the Pokitto (POKITTO_HC, its old switch, turns it
+ * on); compile.sh passes its OVERCLOCK choice (1 by default) to both.  The
+ * menu's "Processeur" entry still switches, and the loader is always
+ * entered at 48 MHz. */
 #ifndef META_OVERCLOCK
+#if defined(GBL_TARGET_POKITTO) && GBL_TARGET_POKITTO
 #if defined(POKITTO_HC) && POKITTO_HC
 #define META_OVERCLOCK 1
 #else
 #define META_OVERCLOCK 0
+#endif
+#else
+#define META_OVERCLOCK 1
 #endif
 #endif
 
@@ -200,12 +206,29 @@
  * RAM instead of on the card (MBC2's 512 bytes leave room for 8).  More sectors read the card much less
  * (Donkey Kong Land: 764 reads with 4 over 3,000 frames, 400 with 6, 217
  * with 8; Link's Awakening: frames with 8 reads or more 26 -> 1 with 6),
- * not measured on the device. */
+ * not measured on the device.
+ * With the cartridge RAM on the card too, its write-back cache
+ * (GBL_ERAM_CACHE_SECTORS) gets 6 of those 8: a game that uses that RAM as
+ * work RAM cycles through several sectors, and each eviction of a dirty one
+ * is a synchronous card write, when a ROM miss is a read (or an unpack from
+ * flash).  Measured on device (2026-10-17, Super Mario Land 2, about seven
+ * sectors, CPU at 70 MHz): ROM 8 + RAM 2: 157 writes a second, half the
+ * CPU in them; 4 + 6: 47 writes a second, 24 frames a second; 2 + 8: 4 a
+ * second (the 2 s flush), 42 frames a second. */
 #ifndef GBL_STREAM_SECTORS
 #if GBL_ERAM_SIZE > 512 && !GBL_ERAM_ON_SD
 #define GBL_STREAM_SECTORS 4
+#elif GBL_ERAM_ON_SD && GBL_ROM_SD
+#define GBL_STREAM_SECTORS 2
 #else
 #define GBL_STREAM_SECTORS 8
+#endif
+#endif
+#ifndef GBL_ERAM_CACHE_SECTORS
+#if GBL_ERAM_ON_SD && GBL_ROM_SD
+#define GBL_ERAM_CACHE_SECTORS 8
+#else
+#define GBL_ERAM_CACHE_SECTORS 2
 #endif
 #endif
 #ifndef GBL_PPU_ASM
