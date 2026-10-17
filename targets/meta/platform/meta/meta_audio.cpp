@@ -5,7 +5,7 @@
  * and wraps at 48 MHz / 2177 (about 22049 Hz).  The ring is refilled once
  * per emulated frame.
  *
- * META_AUDIO_DMA=1 (gbl_profile.h): each wrap triggers one DMAC beat (channel 1)
+ * META_AUDIO_DMA=1 (gbl_profile.h): each wrap triggers one DMAC beat (channel 0, meta_dma.h)
  * that copies the next ring entry, already a DAC value, to the DAC, with no
  * CPU work.  The interrupt it replaces cost about 65 cycles per sample,
  * some 3% of the CPU.  Each frame's samples get a descriptor (two at the

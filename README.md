@@ -26,7 +26,7 @@ recompiler and adds everything needed to run on chips with 32 KiB of RAM,
 | Memory | 32 KiB RAM, 240 KiB flash for the firmware | 32 + 2 + 2 KiB RAM, 228 KiB flash below the loader |
 | Screen | 160×128: the 144 Game Boy lines blended into 128 | 220×176: picture 1:1, or enlarged to 200×176 |
 | Firmware build | PlatformIO | `make` with arm-none-eabi-gcc |
-| Version | 0.10.21 | 0.10.17 |
+| Version | 0.10.22 | 0.10.18 |
 | Status | Games run on the console | Tested in an emulator only. A first tester on a real Pokitto reports a picture flipped vertically (rows reversed, columns in order), consistent with the panel's SS bit (R01) being lost at init; 0.10.1 lengthens the post-reset wait and the register write strobe and writes R01 again, still to be checked on the device |
 
 ## SG-1000
@@ -167,25 +167,15 @@ Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
   cycles per frame (estimate).
 - **ROMs of 256 KiB and more** stream from the SD card. Bank 0 and the hot
   chunks stay in flash, chosen from data-read profiles recorded during the
-  play sessions (the generator also LZSS-packs more of them when flash is
-  left); the rest is read 512 bytes at a time into a sector cache (8 by
-  default), at 17.5 MHz on the META. When the cartridge RAM is on the card
-  too, ROM and RAM sectors share one pool, weighted by what each costs to
-  bring back. The firmware finds the ROM file through FAT16/FAT32 at boot. There
+  play sessions; the rest is read 512 bytes at a time into an 8-sector LRU
+  cache. The firmware finds the ROM file through FAT16/FAT32 at boot. There
   is no ROM size limit: Link's Awakening, Pokémon Yellow and Donkey Kong
   Land are converted this way.
 - **Cartridge RAM** larger than 2 KiB (8 KiB for Link's Awakening, 32 KiB
-  for Pokémon) lives in a `.SAV` file on the card behind a write-back cache
-  of 512-byte sectors (8 by default in streamed builds), so these games fit
-  in 32 KiB of RAM. The cached sectors are mapped directly for the CPU's
-  reads and writes, with CLOCK replacement. A dirty sector is written back
-  when it is evicted, when the game disables its RAM, 120 frames after the
-  last change, at the latest 30 s after it changed (one sector a frame), and
-  before returning to the loader. Super Mario Land 2 keeps
-  most of its variables there (about 5 KiB of work RAM): with a pool of 12
-  sectors (`GBL_CACHE_SECTORS`, per-game build flags) the card saw about
-  2–4 RAM reads and 2 writes a second in play on a META, instead of up to
-  100 and 49 with 8 RAM sectors.
+  for Pokémon) lives in a `.SAV` file on the card behind a two-sector
+  write-back cache, so these games fit in 32 KiB of RAM. Battery saves are
+  written back when the game disables its RAM, two seconds after the last
+  change, and before returning to the loader.
 
 ### Speed on a 48 MHz Cortex-M0+
 
@@ -194,9 +184,7 @@ Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
   the dispatch cache of compiled code, OAM DMA, the pixel pushes of the
   Pokitto and the LZSS decoder. On 15 games this cut the emulation time
   per frame by 15% to 53% (median 19%), with frames identical to the C
-  runtime. Cartridge RAM on the card has the same direct path: on Super
-  Mario Land 2, 593k → 393k cycles a frame (estimate), the slow path having
-  taken about 46% of the CPU on the META (USB profiler).
+  runtime.
 - Devices are lazy: one cycle counter drives everything, the PPU renders a
   whole line at the end of mode 3, and timers, STAT, LYC and VBlank only
   raise events when they become observable.
@@ -315,10 +303,6 @@ ctest --test-dir build --output-on-failure
   `compile.sh`.
 - Disabled cartridge RAM reads as `$FF`. Tokyo Disneyland reads a pointer
   there and writes through it, which then lands on IE (`$FFFF`); not tested.
-- The Cortex-M0+ estimator (`m0bench`) stops with an unmapped write on
-  streamed projects that keep part of the ROM in flash (resident or
-  LZSS-packed), which is what `compile.sh` builds; projects that read the
-  whole ROM from the card run.
 - SG-1000: unbanked cartridges up to 48 KiB, NTSC only, no SC-3000
   keyboard; code never seen while profiling runs in the interpreter.
 

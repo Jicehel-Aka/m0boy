@@ -8,10 +8,6 @@
  * never modified.  The runtime writes back when the game disables cartridge
  * RAM (games do after saving); meta_save_tick also writes back two seconds
  * after the last change, and the frontend before returning to the loader.
- * Games that keep their variables in cartridge RAM (Super Mario Land 2,
- * Wario Land) change it every frame and never reach those two seconds: a
- * change also never waits more than META_SAVE_PERIOD frames, written back
- * one sector a frame so that the game does not stall.
  */
 #include "meta_save.h"
 
@@ -71,26 +67,8 @@ extern "C" int gbl_platform_save_write(uint32_t sector, const uint8_t *src) {
     return 0;
 }
 
-static uint32_t pending_since; /* gbl_frame when the oldest unsaved change was seen */
-static int round_next = -1;    /* periodic round in progress: next way or sector */
-
 void meta_save_tick(void) {
-    if (!gbl_save_pending()) {
-        pending_since = gbl_frame;
-        round_next = -1;
-        return;
-    }
-    if (gbl_frame - gbl_save_last_change >= 120) {
-        gbl_save_flush();
-        round_next = -1;
-        return;
-    }
-    if (round_next < 0) {
-        if (gbl_frame - pending_since < META_SAVE_PERIOD) return;
-        round_next = 0;
-        pending_since = gbl_frame; /* changes from now on wait for the next round */
-    }
-    round_next = gbl_save_flush_next(round_next);
+    if (gbl_save_pending() && gbl_frame - gbl_save_last_change >= 120) gbl_save_flush();
 }
 
 #else

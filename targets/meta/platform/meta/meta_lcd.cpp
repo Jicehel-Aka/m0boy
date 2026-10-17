@@ -132,7 +132,7 @@ static void command_list(const uint8_t *p) {
 }
 
 #if META_LCD_DMA
-/* ---- DMA (SERCOM4 TX, channel 0) ---------------------------------------- */
+/* ---- DMA (SERCOM4 TX, channel 1, meta_dma.h) ---------------------------- */
 
 extern "C" void DMAC_Handler(void) {
     uint8_t chid = DMAC->CHID.reg; /* the interrupted code may be using another channel */

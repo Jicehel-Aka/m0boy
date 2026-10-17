@@ -176,11 +176,6 @@
 #ifndef META_STACK_RESERVE
 #define META_STACK_RESERVE 768
 #endif
-/* Longest wait of a cartridge RAM change for the card, in frames (30 s):
- * meta_save.cpp. */
-#ifndef META_SAVE_PERIOD
-#define META_SAVE_PERIOD 1800
-#endif
 
 #else
 /* ============================================== Gamebuino META (SAMD21) */
@@ -289,17 +284,9 @@
  * firmware (2026-10-17): a slow-path read that renders a line, about 390
  * bytes with the region's frame, plus the USB and DMA interrupts nested,
  * about 220.  The option menu (about 590 more) runs on the ROM cache's
- * buffers in streamed builds (meta_main.cpp).  Measured on the META (stack
- * painted at boot, SML2, 2026-10-17): 568 and 624 bytes used below the
- * limit in two sessions, so 640 was too close. */
+ * buffers in streamed builds (meta_main.cpp). */
 #ifndef META_STACK_RESERVE
-#define META_STACK_RESERVE 768
-#endif
-/* Longest wait of a cartridge RAM change for the card, in frames (30 s):
- * Super Mario Land 2 changes its RAM every frame, so the write-back two
- * seconds after the last change never comes (meta_save.cpp). */
-#ifndef META_SAVE_PERIOD
-#define META_SAVE_PERIOD 1800
+#define META_STACK_RESERVE 640
 #endif
 /* Number of rows per DMA strip (not a boolean). Default 2 saves 1280
  * bytes with two buffers; 4 reduces transfer/IRQ count.
@@ -350,32 +337,6 @@
 #endif
 #endif
 
-#endif
-
-/* ============================================== both consoles */
-#ifndef GBL_ERAM_CACHE_SECTORS
-#define GBL_ERAM_CACHE_SECTORS 2
-#endif
-/* ROM and cartridge RAM both on the card: one pool of GBL_CACHE_SECTORS
- * 512-byte buffers for both (gbl_core.c), so that the split follows the
- * game (title screens read ROM, levels use their work RAM).  The default
- * keeps the RAM of the two separate caches; GBL_STREAM_SECTORS and
- * GBL_ERAM_CACHE_SECTORS then only size it.  GBL_STREAM_WAYS: buffers
- * behind gbl_stream_scratch(). */
-#ifndef GBL_CACHE_SHARED /* -D GBL_CACHE_SHARED=0: two separate caches */
-#if defined(GBL_ROM_STREAM) && GBL_ROM_STREAM && GBL_ERAM_ON_SD
-#define GBL_CACHE_SHARED 1
-#else
-#define GBL_CACHE_SHARED 0
-#endif
-#endif
-#if GBL_CACHE_SHARED
-#ifndef GBL_CACHE_SECTORS
-#define GBL_CACHE_SECTORS (GBL_STREAM_SECTORS + GBL_ERAM_CACHE_SECTORS)
-#endif
-#define GBL_STREAM_WAYS GBL_CACHE_SECTORS
-#else
-#define GBL_STREAM_WAYS GBL_STREAM_SECTORS
 #endif
 
 #endif

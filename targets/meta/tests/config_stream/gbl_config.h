@@ -3,9 +3,7 @@
 #define GBL_CONFIG_H
 #define GBL_MBC 5
 #define GBL_ROM_BANKS 2
-#ifndef GBL_ERAM_SIZE
 #define GBL_ERAM_SIZE 8192
-#endif
 #define GBL_BATTERY 1
 #define GBL_ROM_STREAM 1
 #define GBL_ROM_PACKED 0

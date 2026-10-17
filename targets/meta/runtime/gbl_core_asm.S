@@ -48,23 +48,15 @@ gbl_rd:
     bx      lr
 1:
 #if GBL_ERAM_ON_SD
-    /* Cached cartridge RAM sector (A000-BFFF): one load through
-     * gbl_eram_rmap, its CLOCK byte set, like the C gbl_rd. */
-    movs    r2, #0xA0
-    lsls    r2, r2, #8
-    subs    r3, r0, r2             /* a - A000, negative below */
-    lsrs    r3, r3, #9             /* slot, 16 or more outside */
-    cmp     r3, #16
-    bhs     1f
-    lsls    r2, r3, #2
-    ldr     r1, 13f
-    ldr     r2, [r1, r2]
-    cmp     r2, #0
-    beq     1f
-    ldr     r1, 14f
-    adds    r1, r1, r3
-    movs    r3, #1
-    strb    r3, [r1]               /* gbl_eram_ref[slot] = 1 */
+    /* Newest cartridge RAM sector (gbl_eram_rwin, GBL_ERAM_WIN_NONE never
+     * matches): one load through gbl_eram_rptr, like the C gbl_rd. */
+    ldr     r2, 13f
+    ldr     r2, [r2]
+    subs    r3, r0, r2
+    lsrs    r3, r3, #9
+    bne     1f
+    ldr     r2, 14f
+    ldr     r2, [r2]
     ldrb    r0, [r2, r0]
     bx      lr
 1:
@@ -134,8 +126,8 @@ gbl_rd:
 10: .word   gbl_stream_buf
 #endif
 #if GBL_ERAM_ON_SD
-13: .word   gbl_eram_rmap
-14: .word   gbl_eram_ref
+13: .word   gbl_eram_rwin
+14: .word   gbl_eram_rptr
 #endif
     .size gbl_rd, . - gbl_rd
 
@@ -161,24 +153,15 @@ gbl_wr:
     cmp     r2, #4
     beq     4f                     /* 8000-9FFF */
 #if GBL_ERAM_ON_SD
-    /* Cached and dirty cartridge RAM sector (gbl_eram_wmap): set its CLOCK
-     * byte, store a changed byte and note the frame, like the C gbl_wr. */
-    movs    r2, #0xA0
-    lsls    r2, r2, #8
+    /* Newest cartridge RAM sector, already dirty (gbl_eram_wwin): store a
+     * changed byte and note the frame, like the C gbl_wr. */
+    ldr     r2, 12f
+    ldr     r2, [r2]
     subs    r3, r0, r2
     lsrs    r3, r3, #9
-    cmp     r3, #16
-    bhs     1f
-    lsls    r2, r3, #2
-    push    {r4}
-    ldr     r4, 12f
-    ldr     r2, [r4, r2]
-    cmp     r2, #0
-    beq     17f
-    ldr     r4, 13f
-    adds    r4, r4, r3
-    movs    r3, #1
-    strb    r3, [r4]               /* gbl_eram_ref[slot] = 1 */
+    bne     1f
+    ldr     r2, 13f
+    ldr     r2, [r2]
     ldrb    r3, [r2, r0]
     cmp     r3, r1
     beq     14f
@@ -188,10 +171,7 @@ gbl_wr:
     ldr     r3, 16f
     str     r2, [r3]
 14:
-    pop     {r4}
     bx      lr
-17:
-    pop     {r4}
 1:
 #endif
     /* HRAM (FF80-FFFE) without the C slow path, IO (FF00-FF7F) straight
@@ -232,8 +212,8 @@ gbl_wr:
 8:  .word   gbl_wr_slow
 9:  .word   gbl_wmap
 #if GBL_ERAM_ON_SD
-12: .word   gbl_eram_wmap
-13: .word   gbl_eram_ref
+12: .word   gbl_eram_wwin
+13: .word   gbl_eram_wptr
 15: .word   gbl_frame
 16: .word   gbl_save_last_change
 #endif
