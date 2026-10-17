@@ -81,6 +81,17 @@ int main(void) {
         rng = rng * 1664525u + 1013904223u;
         access_sector((rng >> 16) % NSEC, i);
     }
+    /* Periodic save (meta_save_tick): one sector per call, then nothing. */
+    unsigned before = writes, steps = 0;
+    for (int i = 0; (i = gbl_save_flush_next(i)) >= 0;) ++steps;
+    assert(writes == before + steps && steps <= GBL_ERAM_CACHE_SECTORS && !gbl_save_pending());
+    assert(gbl_save_flush_next(0) < 0 && writes == before + steps);
+    for (unsigned i = 0; i < NSEC; ++i) assert(disk[i][0] == values[i]);
+    /* Sectors written back stay cached and take new writes. */
+    for (unsigned i = 0; i < 4000; ++i) {
+        rng = rng * 1664525u + 1013904223u;
+        access_sector((rng >> 16) % 6, i);
+    }
     gbl_save_flush();
     for (unsigned i = 0; i < NSEC; ++i) assert(disk[i][0] == values[i]);
     assert(writes > 0);

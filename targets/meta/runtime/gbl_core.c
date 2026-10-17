@@ -320,6 +320,19 @@ void gbl_save_flush(void) {
     eram_window(); /* clean again: the write window closes */
 }
 
+int gbl_save_flush_next(int i) {
+    for (; i >= 0 && i < ERAM_WAYS; i++)
+        if (eram_dirty[i]) {
+            eram_writeback(i);
+            if ((unsigned)i == eram_mru) eram_window(); /* clean again: the write window closes */
+            return i + 1;
+        }
+    unsigned dirty = 0;
+    for (unsigned w = 0; w < ERAM_WAYS; w++) dirty |= eram_dirty[w];
+    save_pending = (uint8_t)(dirty != 0);
+    return -1;
+}
+
 uint8_t *gbl_save_scratch(void) { return eram_buf[0]; }
 
 static void eram_reset(void) {
@@ -360,6 +373,21 @@ void gbl_save_flush(void) {
     save_pending = 0;
 }
 
+int gbl_save_flush_next(int i) {
+#if GBL_BATTERY
+    for (; i >= 0 && i < 32; i++)
+        if (eram_dirty_mask & (1u << i)) {
+            gbl_platform_save_write((uint32_t)i, gbl_eram + (uint32_t)i * 512u);
+            eram_dirty_mask &= ~(1u << i);
+            return i + 1;
+        }
+    save_pending = (uint8_t)(eram_dirty_mask != 0);
+#else
+    (void)i;
+#endif
+    return -1;
+}
+
 uint8_t *gbl_save_scratch(void) { return gbl_eram; }
 
 static void eram_reset(void) {
@@ -385,6 +413,7 @@ static __attribute__((unused)) void set_ram_enable(uint8_t v) {
 }
 #else
 void gbl_save_flush(void) {}
+int gbl_save_flush_next(int i) { (void)i; return -1; }
 int gbl_save_pending(void) { return 0; }
 uint8_t *gbl_save_scratch(void) { return 0; }
 uint32_t gbl_save_last_change;

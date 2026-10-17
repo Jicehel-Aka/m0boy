@@ -176,6 +176,11 @@
 #ifndef META_STACK_RESERVE
 #define META_STACK_RESERVE 768
 #endif
+/* Longest wait of a cartridge RAM change for the card, in frames (30 s):
+ * meta_save.cpp. */
+#ifndef META_SAVE_PERIOD
+#define META_SAVE_PERIOD 1800
+#endif
 
 #else
 /* ============================================== Gamebuino META (SAMD21) */
@@ -287,6 +292,12 @@
  * buffers in streamed builds (meta_main.cpp). */
 #ifndef META_STACK_RESERVE
 #define META_STACK_RESERVE 640
+#endif
+/* Longest wait of a cartridge RAM change for the card, in frames (30 s):
+ * Super Mario Land 2 changes its RAM every frame, so the write-back two
+ * seconds after the last change never comes (meta_save.cpp). */
+#ifndef META_SAVE_PERIOD
+#define META_SAVE_PERIOD 1800
 #endif
 /* Number of rows per DMA strip (not a boolean). Default 2 saves 1280
  * bytes with two buffers; 4 reduces transfer/IRQ count.
