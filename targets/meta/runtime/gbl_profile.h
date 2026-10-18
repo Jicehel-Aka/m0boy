@@ -346,9 +346,6 @@
  * it out (TILE instead). */
 #if (defined(GBL_ROM_STREAM) && GBL_ROM_STREAM) || GBL_ERAM_ON_SD
 #define META_STREAM_RAM 1
-#ifndef META_AUDIO_RING
-#define META_AUDIO_RING 576 /* samples (meta_audio.cpp): a frame and a half */
-#endif
 #ifndef META_TBLEND
 #define META_TBLEND 2
 #endif

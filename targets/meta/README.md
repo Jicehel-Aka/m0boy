@@ -350,8 +350,8 @@ touches the FAT.
   into them. A build that leaves the generated code less than
   `META_STACK_NEST_MIN` (256) bytes above `META_STACK_RESERVE` stops on a
   cyan screen.
-- The audio ring holds `META_AUDIO_RING` samples: 576 (a frame and a half)
-  in streamed or card-RAM builds, 768 otherwise.
+- The audio ring holds `META_AUDIO_RING` samples, 768 (about two frames)
+  by default.
 - If the file is missing, a game whose RAM must live on the card shows a
   yellow screen. A game whose RAM stays in RAM runs normally, but its
   progress is not kept.
