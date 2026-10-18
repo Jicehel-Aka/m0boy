@@ -100,8 +100,13 @@ static uint8_t bench_keys(uint32_t frame) {
 }
 static void bench_frame() {
     static uint32_t t0, last, misses;
-    const uint32_t f = machine.frames, now = meta_micros(), d = gg_stream_misses - misses;
-    misses = gg_stream_misses;
+#if GG_STREAM || GG_CART_ON_CARD
+    const uint32_t loaded = gg_stream_misses; /* ROM blocks loaded */
+#else
+    const uint32_t loaded = 0; /* the whole ROM in flash */
+#endif
+    const uint32_t f = machine.frames, now = meta_micros(), d = loaded - misses;
+    misses = loaded;
     if (f == GG_BENCH_FROM) t0 = now;
     else if (f > GG_BENCH_FROM && f <= GG_BENCH_TO) {
         const uint32_t us = now - last, part = (f - GG_BENCH_FROM - 1) * 16 / (GG_BENCH_TO - GG_BENCH_FROM);

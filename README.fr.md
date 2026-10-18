@@ -27,7 +27,7 @@ puces à 32 Kio de RAM, 256 Kio de flash et sans division matérielle.
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le firmware | 32 + 2 + 2 Kio de RAM, 228 Kio de flash sous le loader |
 | Écran | 160×128 : les 144 lignes du Game Boy fusionnées en 128 | 220×176 : image 1:1, ou agrandie en 200×176 |
 | Build du firmware | PlatformIO | `make` avec arm-none-eabi-gcc |
-| Version | 0.10.26 | 0.10.21 |
+| Version | 0.10.27 | 0.10.21 |
 | État | Jeux lancés sur la console | Testée en émulateur seulement. Un premier testeur sur vraie Pokitto signale une image retournée verticalement (lignes inversées, colonnes dans l'ordre), compatible avec la perte du bit SS (R01) du panneau à l'init ; la 0.10.1 allonge l'attente après reset et l'impulsion d'écriture des registres et réécrit R01, à vérifier sur la console |
 
 ## SG-1000

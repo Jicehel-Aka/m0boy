@@ -6,6 +6,15 @@ console : ce n'est ni un JIT ni un émulateur classique. Le code déjà vu
 pendant une partie de profilage est traduit, et un petit interpréteur
 exécute le reste.
 
+## Nouveautés de la version 0.10.27
+
+- Game Gear / Master System sur la META : le décodeur des secteurs ROM
+  compressés tourne en flash, plus en SRAM. Depuis la SRAM, processeur à
+  70 MHz, il décodait certains secteurs de travers : écrans noirs, images
+  cassées, plantages selon les parties (Gunstar Heroes divergeait de
+  l'hôte avant la trame 600, différemment à chaque partie ; identique
+  ensuite). Refaire les jeux GG / SMS.
+
 ## Nouveautés de la version 0.10.26
 
 - Game Gear / Master System : le cache carte est celui de la Game Boy
