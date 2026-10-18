@@ -241,6 +241,25 @@
 #define GBL_ERAM_CACHE_SECTORS 2
 #endif
 #endif
+/* A streamed ROM and cartridge RAM on the card share one pool of 128-byte
+ * blocks (gbl_options.h), 1 KiB smaller than the two caches it replaces:
+ * its tables and sector buffer take about that, and the C stack keeps its
+ * room (taking 1 KiB from it cost 5 frames a second, more unwinds).
+ * Measured on device (2026-10-18, Super Mario Land 2's demo to frame
+ * 6000, ROM 3 + RAM 10 sectors before): 3963 card reads, 1567 writes,
+ * 14200 sectors unpacked; 128-byte blocks: 226, 69, 96, the same speed
+ * (the demo runs at 60 frames a second). */
+#ifndef GBL_CACHE_UNIFIED
+#if defined(GBL_ROM_STREAM) && GBL_ROM_STREAM && GBL_ERAM_ON_SD && GBL_ERAM_SIZE > 0 && \
+    GBL_STREAM_SECTORS + GBL_ERAM_CACHE_SECTORS >= 6 /* room for the menu's stack */
+#define GBL_CACHE_UNIFIED 1
+#else
+#define GBL_CACHE_UNIFIED 0
+#endif
+#endif
+#ifndef GBL_CACHE_BLOCK
+#define GBL_CACHE_BLOCK 128
+#endif
 #ifndef GBL_PPU_ASM
 #define GBL_PPU_ASM 1
 #endif
@@ -327,6 +346,9 @@
  * it out (TILE instead). */
 #if (defined(GBL_ROM_STREAM) && GBL_ROM_STREAM) || GBL_ERAM_ON_SD
 #define META_STREAM_RAM 1
+#ifndef META_AUDIO_RING
+#define META_AUDIO_RING 576 /* samples (meta_audio.cpp): a frame and a half */
+#endif
 #ifndef META_TBLEND
 #define META_TBLEND 2
 #endif

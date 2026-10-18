@@ -91,6 +91,9 @@ uint8_t meta_pad_read(void) {
     /* The display's DMA completes on its write to DATA, before the wire is
      * idle: wait until the last byte has left the shifter, then drop what
      * display writes left in the receive buffer. */
+#if META_DEBUG_BUS
+    meta_lcd_bus_check();
+#endif
     for (int t = 0; t < 1000 && !(SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_TXC); t++) {}
     for (int i = 0; i < 4 && (SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)
         (void)SPI.DATA.reg;

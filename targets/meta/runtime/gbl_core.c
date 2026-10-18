@@ -48,6 +48,10 @@ static struct {
 extern const uint8_t gbl_rom_resident[][4096];
 extern const uint8_t gbl_rom_chunk_map[];
 
+#if GBL_CACHE_UNIFIED
+/* The cache is the cartridge RAM's (below): gbl_reset empties both. */
+#define stream_reset() ((void)0)
+#else
 /* Buffers, tags and the last slot are global: the assembly gbl_rd reads a
  * byte of the last sector used without calling gbl_rd_slow. */
 uint8_t gbl_stream_buf[GBL_STREAM_SECTORS][512] __attribute__((aligned(4)));
@@ -67,6 +71,7 @@ static void stream_reset(void) {
 }
 
 void gbl_stream_invalidate(void) { stream_reset(); }
+#endif
 
 #if GBL_ROM_PACKED
 #include "m0_rom_codec.h"
@@ -103,6 +108,20 @@ static int rom_unpack(uint32_t sector, uint8_t *dst) {
 uint32_t gbl_stream_unpacked;
 #endif
 
+#if GBL_CACHE_UNIFIED
+/* ROM sector sec into dst: unpacked from flash, else read from the card. */
+static int rom_sector(uint32_t sec, uint8_t *dst) {
+#if GBL_ROM_PACKED
+    if (rom_unpack(sec, dst)) return 1;
+#endif
+#if GBL_ROM_SD
+    return gbl_platform_rom_read(sec, dst);
+#else
+    (void)dst;
+    return 0;
+#endif
+}
+#else
 static uint8_t stream_read(uint32_t off) {
     int32_t sec = (int32_t)(off >> 9);
     if (stream_tag[stream_last] == sec) return stream_buf[stream_last][off & 511u];
@@ -127,6 +146,7 @@ hit:
     stream_last = (uint8_t)slot;
     return stream_buf[slot][off & 511u];
 }
+#endif
 #endif
 
 /* Bank whose pages gbl_rmap[4..7] hold; the pages are only rebuilt when
@@ -213,61 +233,481 @@ static uint8_t save_pending;
 #ifndef GBL_ERAM_CACHE_SECTORS
 #define GBL_ERAM_CACHE_SECTORS 2
 #endif
+#define CBLK GBL_CACHE_BLOCK
+#define CSHIFT GBL_CACHE_SHIFT
+#define ESLOTS (0x2000u / CBLK) /* table entries for A000-BFFF */
+#if GBL_CACHE_UNIFIED
+/* One pool for both (GBL_CACHE_UNIFIED): blocks of the streamed ROM
+ * (tag: the block's index in the ROM) and of the cartridge RAM (tag:
+ * ETAG(index in the save file)); -1 free, -2 lent to the option menu.
+ * Global for the assembly gbl_rd (the ROM's last block). */
+#define ERAM_WAYS (GBL_CACHE_BYTES / CBLK)
+uint8_t gbl_cache_buf[ERAM_WAYS][CBLK] __attribute__((aligned(4)));
+int32_t gbl_cache_tag[ERAM_WAYS];
+uint8_t gbl_cache_rom_last; /* way of the ROM block read last, never evicted */
+#define eram_buf gbl_cache_buf
+#define eram_tag gbl_cache_tag
+#define ETAG(b) ((int32_t)(0x40000000u | (uint32_t)(b)))
+#define IS_ETAG(t) ((t) >= 0x40000000)
+#define ETAG_BLK(t) ((uint32_t)(t) & 0x3FFFFFFFu)
+#define TAG_LENT (-2)
+#else
 #define ERAM_WAYS GBL_ERAM_CACHE_SECTORS
 #if ERAM_WAYS < 1 || ERAM_WAYS > 256
 #error "GBL_ERAM_CACHE_SECTORS must be between 1 and 256"
 #endif
 static uint8_t eram_buf[ERAM_WAYS][512] __attribute__((aligned(4)));
 static int32_t eram_tag[ERAM_WAYS];
-/* CLOCK replacement: a way's referenced byte is set when it becomes the
- * newest (eram_mru, behind the window), the hand evicts the first way not
- * referenced since it last passed, never the newest (its accesses go
- * through the window without marking it). */
+#define ETAG(b) ((int32_t)(b))
+#define IS_ETAG(t) ((t) >= 0)
+#define ETAG_BLK(t) ((uint32_t)(t))
+#endif
+/* CLOCK replacement: the hand evicts the first way not referenced since it
+ * last passed, never the newest (eram_mru).  Only referenced ways are in
+ * the tables below, so clearing a way's referenced byte takes it out of
+ * them: its next access goes through eram_sector, which marks it again. */
 static uint8_t eram_ref[ERAM_WAYS], eram_hand;
 static uint8_t eram_dirty[ERAM_WAYS], eram_mru;
 
-/* Window on the newest sector for gbl_rd / gbl_wr (C and assembly), so
- * that most accesses skip gbl_rd_slow and eram_sector: the Game Boy address
- * of its first byte with the current bank and RAM enable, and a pointer
- * indexed by that address.  GBL_ERAM_WIN_NONE (outside 16 bits) never
- * matches.  The write window opens only when that sector is already dirty,
- * so a write through it only has to note the change (gbl_save_last_change).
- * eram_window recomputes both after anything that moves them. */
-uint32_t gbl_eram_rwin = GBL_ERAM_WIN_NONE, gbl_eram_wwin = GBL_ERAM_WIN_NONE;
-uint8_t *gbl_eram_rptr, *gbl_eram_wptr;
+/* Tables for gbl_rd / gbl_wr (C and assembly), so that most accesses skip
+ * the slow path and eram_sector: for each 512-byte slot of A000-BFFF, the
+ * buffer of the sector it shows with the current bank and RAM enable,
+ * indexed by the Game Boy address, or 0 (slow path).  Reads: every
+ * referenced way.  Writes: those already dirty, so that a write through the
+ * table only has to note the change (gbl_save_last_change).  eram_window
+ * rebuilds both after anything that moves a sector, the bank, the RAM
+ * enable, a referenced byte or a dirty bit. */
+uint8_t *gbl_eram_rmap[ESLOTS], *gbl_eram_wmap[ESLOTS];
 
-static void eram_window(void) {
-    gbl_eram_rwin = gbl_eram_wwin = GBL_ERAM_WIN_NONE;
-#if GBL_ERAM_SIZE % 0x2000 == 0
-    int32_t sec = eram_tag[eram_mru];
-    uint32_t base = eram_bank() * 0x2000u, off = (uint32_t)sec * 512u;
-    if (!mbc.ram_enable || sec < 0 || off < base || off >= base + 0x2000u) return;
-    uint32_t a = 0xA000u + off - base;
-    gbl_eram_rwin = a;
-    gbl_eram_rptr = BIAS(eram_buf[eram_mru], a);
-    if (eram_dirty[eram_mru]) {
-        gbl_eram_wwin = a;
-        gbl_eram_wptr = gbl_eram_rptr;
+static void eram_tables(uint8_t **rmap, uint8_t **wmap) {
+    for (unsigned s = 0; s < ESLOTS; s++) rmap[s] = wmap[s] = 0;
+#if GBL_ERAM_SIZE % 0x2000 == 0 && GBL_ERAM_TABLES
+    if (!mbc.ram_enable) return;
+    uint32_t base = (eram_bank() * 0x2000u) % GBL_ERAM_SIZE; /* as eram_offset */
+    for (unsigned i = 0; i < ERAM_WAYS; i++) {
+        uint32_t off = ETAG_BLK(eram_tag[i]) * CBLK - base;
+        if (!IS_ETAG(eram_tag[i]) || off >= 0x2000u || !eram_ref[i]) continue;
+        uint8_t *p = BIAS(eram_buf[i], 0xA000u + off);
+        rmap[off >> CSHIFT] = p;
+        if (eram_dirty[i]) wmap[off >> CSHIFT] = p;
     }
 #endif
 }
 
-static void eram_touch(unsigned i) {
-    eram_ref[i] = 1;
-    eram_mru = (uint8_t)i;
+static void eram_window(void) {
+#if GBL_DEBUG_ERAM_MAPS
+    gbl_dbg_eram.rebuilds++;
+#endif
+    eram_tables(gbl_eram_rmap, gbl_eram_wmap);
 }
 
+#if GBL_DEBUG_RESTART
+/* Kept across the restart that follows a fault (.noinit on the META). */
+#if defined(__arm__)
+__attribute__((section(".noinit")))
+#endif
+gbl_dbg_tables_t gbl_dbg_tables;
+
+void gbl_dbg_tables_check(uint32_t where) {
+    if (gbl_dbg_tables.magic != 0x54424c31u) {
+        memset(&gbl_dbg_tables, 0, sizeof gbl_dbg_tables);
+        gbl_dbg_tables.magic = 0x54424c31u;
+    }
+    uint8_t *r[ESLOTS], *w[ESLOTS];
+    eram_tables(r, w);
+    gbl_dbg_tables.checks++;
+    for (unsigned k = 0; k < 2 * ESLOTS; k++) {
+        uint8_t **slot = k < ESLOTS ? &gbl_eram_rmap[k] : &gbl_eram_wmap[k - ESLOTS];
+        uint8_t *want = k < ESLOTS ? r[k] : w[k - ESLOTS];
+        if (*slot == want) continue;
+        gbl_dbg_tables_rec_t *n = &gbl_dbg_tables.rec[gbl_dbg_tables.bad++ ? 1 : 0];
+        n->frame = gbl_frame;
+        n->where = where;
+        n->slot = k;
+        n->addr = (uint32_t)(uintptr_t)slot;
+        n->bad = (uint32_t)(uintptr_t)*slot;
+        n->want = (uint32_t)(uintptr_t)want;
+        for (int j = 0; j < 17; j++) n->around[j] = ((uint32_t *)slot)[j - 8];
+        *slot = want;
+    }
+}
+#endif
+
+static uint8_t eram_load(uint32_t off);
+static void eram_store(uint32_t off, uint8_t v);
+
+#if GBL_DEBUG_ERAM_MAPS
+/* Every access through gbl_eram_rmap / gbl_eram_wmap (C or assembly) is
+ * checked against the sector search, without its side effects: the table's
+ * buffer must be the way eram_sector would find, referenced (and dirty for
+ * a write, or the change would never reach the card), and the byte read
+ * the one gbl_rd_slow would return.  The first and the last divergences
+ * are kept for meta-usb.py eram; the tables are rebuilt after one and the
+ * access goes through the slow path, so the game goes on and the next
+ * ones are found too. */
+gbl_dbg_eram_t gbl_dbg_eram;
+_Static_assert(sizeof(gbl_dbg_eram_rec_t) == 96, "meta-usb.py eram reads this layout");
+
+static int8_t dbg_way_of(uintptr_t first) { /* buffer starting at first */
+    for (unsigned w = 0; w < ERAM_WAYS; w++)
+        if (first == (uintptr_t)eram_buf[w]) return (int8_t)w;
+    return -2;
+}
+
+static void dbg_eram_note(gbl_dbg_eram_rec_t *r, uint8_t kind, uint16_t a, uint8_t v, int got_way,
+                          int want_way, uint8_t want_v) {
+    uint8_t *const *map = kind ? gbl_eram_wmap : gbl_eram_rmap;
+    r->frame = gbl_frame;
+    r->addr = a;
+    r->pc = gbr.pc;
+    r->got_v = v;
+    r->want_v = want_v;
+    r->bank = (uint8_t)eram_bank();
+    r->ram_enable = mbc.ram_enable;
+    r->got_way = (int8_t)got_way;
+    r->want_way = (int8_t)want_way;
+    r->mru = eram_mru;
+    r->ways = (uint8_t)ERAM_WAYS;
+    r->got_ptr = (uint32_t)(uintptr_t)(map[(a - 0xA000u) >> 9] + a);
+    r->want_ptr = want_way >= 0 ? (uint32_t)(uintptr_t)&eram_buf[want_way][eram_offset(a) & 511u] : 0;
+    for (unsigned i = 0; i < 16; i++) {
+        r->tag[i] = i < ERAM_WAYS ? (int16_t)eram_tag[i] : -2;
+        uintptr_t first = 0xA000u + i * 512u; /* the slot's first byte */
+        r->rmap_way[i] = gbl_eram_rmap[i] ? dbg_way_of((uintptr_t)gbl_eram_rmap[i] + first) : -1;
+        r->wmap_way[i] = gbl_eram_wmap[i] ? dbg_way_of((uintptr_t)gbl_eram_wmap[i] + first) : -1;
+    }
+    r->kind = kind;
+    r->flags = 0;
+    for (unsigned w = 0; w < ERAM_WAYS && w < 16; w++)
+        r->flags |= (uint32_t)(eram_ref[w] | eram_dirty[w] << 1) << (2 * w);
+}
+
+/* 0 when the table entry for a is the one the search gives. */
+static int dbg_eram_check(uint8_t kind, uint16_t a, uint8_t v) {
+    const uint8_t *got = (kind ? gbl_eram_wmap : gbl_eram_rmap)[(a - 0xA000u) >> 9] + a;
+    uint32_t off = eram_offset(a);
+    int got_way = -1, want_way = -1;
+    for (unsigned w = 0; w < ERAM_WAYS; w++) {
+        if (eram_tag[w] == (int32_t)(off >> 9)) want_way = (int)w;
+        if (got >= eram_buf[w] && got < eram_buf[w] + 512) got_way = (int)w;
+    }
+    const uint8_t *want = mbc.ram_enable && want_way >= 0 && eram_ref[want_way] &&
+                                  (!kind || eram_dirty[want_way])
+                              ? &eram_buf[want_way][off & 511u]
+                              : 0;
+    uint8_t want_v = want ? *want : 0xFF;
+    if (got == want && (kind || v == want_v)) return 0;
+    if (!gbl_dbg_eram.errors++) dbg_eram_note(&gbl_dbg_eram.first, kind, a, v, got_way, want_way, want_v);
+    dbg_eram_note(&gbl_dbg_eram.last, kind, a, v, got_way, want_way, want_v);
+    eram_window();
+    return 1;
+}
+
+uint8_t gbl_dbg_eram_rd(uint16_t a, uint8_t v) {
+    gbl_dbg_eram.reads++;
+    if (!dbg_eram_check(0, a, v)) return v;
+    return mbc.ram_enable ? eram_load(eram_offset(a)) : 0xFF;
+}
+
+void gbl_dbg_eram_wr(uint16_t a, uint8_t v) {
+    gbl_dbg_eram.writes++;
+    if (dbg_eram_check(1, a, v)) {
+        if (mbc.ram_enable) eram_store(eram_offset(a), v);
+        return;
+    }
+    uint8_t *p = gbl_eram_wmap[(a - 0xA000u) >> 9];
+    if (p[a] != v) {
+        p[a] = v;
+        gbl_save_last_change = gbl_frame;
+    }
+}
+#endif
+
+#if GBL_DEBUG_ERAM_SUM
+/* SD round trip of the cache: the checksum of each sector as last written
+ * to the card, checked when it is read back; an evicted sector is also read
+ * back at once and compared (write or read at fault).  Read with
+ * meta-usb.py read gbl_dbg_eram_sum. */
+gbl_dbg_eram_sum_t gbl_dbg_eram_sum;
+static uint16_t eram_sum_of[GBL_ERAM_SIZE / 512u];
+static uint8_t eram_sum_known[GBL_ERAM_SIZE / 512u];
+
+static uint16_t eram_sum(const uint8_t *p) { /* Fletcher-16 */
+    unsigned a = 0, b = 0;
+    for (unsigned k = 0; k < 512; k++) {
+        a = (a + p[k]) % 255u;
+        b = (b + a) % 255u;
+    }
+    return (uint16_t)(b << 8 | a);
+}
+
+static void eram_sum_note(uint32_t kind, int32_t sec, uint16_t want, uint16_t got) {
+    gbl_dbg_eram_sum.errors++;
+    gbl_dbg_eram_sum.kind = kind;
+    gbl_dbg_eram_sum.sec = (uint32_t)sec;
+    gbl_dbg_eram_sum.want = want;
+    gbl_dbg_eram_sum.got = got;
+    gbl_dbg_eram_sum.frame = gbl_frame;
+}
+#endif
+
+#if GBL_DEBUG_STACK
+static int dbg_stack_sector(int32_t tag) { return tag == ETAG(eram_offset(GBL_DBG_STACK_BASE) >> CSHIFT); }
+#endif
+
+#if GBL_CACHE_UNIFIED
+/* ---- the pool shared with the streamed ROM (GBL_CACHE_UNIFIED) --------------
+ * CLOCK over every block: the hand passes the newest cartridge RAM block
+ * (eram_mru), the ROM block read last (gbl_cache_rom_last, which the
+ * assembly gbl_rd reads without the slow path) and the blocks lent to the
+ * option menu; it clears referenced bytes, and evicts the first block not
+ * referenced since its last pass, writing it back first when it is dirty
+ * cartridge RAM.  Cartridge RAM blocks only appear in the tables while
+ * referenced, so the tables are rebuilt when the hand clears one. */
+#define rom_last gbl_cache_rom_last
+uint32_t gbl_stream_misses; /* ROM blocks loaded */
+static uint8_t eram_changed; /* a cartridge RAM block left the tables */
+
+#if CBLK < 512
+/* One sector of the card or of the packed ROM: what blocks are copied from,
+ * and where a dirty block meets the rest of its sector before the write.
+ * Tag: the ROM sector, ETAG(save sector), or -1. */
+static uint8_t sector_buf[512] __attribute__((aligned(4)));
+static int32_t sector_tag = -1;
+#endif
+
+static int rom_sector(uint32_t sec, uint8_t *dst);
+
 static void eram_writeback(unsigned i) {
-    if (eram_dirty[i]) {
-        gbl_platform_save_write((uint32_t)eram_tag[i], eram_buf[i]);
-        eram_dirty[i] = 0;
+    if (!IS_ETAG(eram_tag[i]) || !eram_dirty[i]) return;
+#if GBL_DEBUG_STACK
+    if (dbg_stack_sector(eram_tag[i]) && !gbl_dbg_stack.frozen) {
+        gbl_dbg_stack.writebacks++;
+        gbl_dbg_stack.writeback_frame = gbl_frame;
+    }
+#endif
+#if CBLK == 512
+    /* Still dirty when the card refused it: a later flush tries again. */
+    if (!gbl_platform_save_write(ETAG_BLK(eram_tag[i]), eram_buf[i])) return;
+    eram_dirty[i] = 0;
+#else
+    /* The sector as on the card, then every dirty block of it from the pool:
+     * all of them are clean once it is written. */
+    uint32_t sec = ETAG_BLK(eram_tag[i]) >> (9 - CSHIFT);
+    if (sector_tag != ETAG(sec)) {
+        sector_tag = -1;
+        if (!gbl_platform_save_read(sec, sector_buf)) return;
+        sector_tag = ETAG(sec);
+    }
+    for (unsigned j = 0; j < ERAM_WAYS; j++)
+        if (IS_ETAG(eram_tag[j]) && eram_dirty[j] && ETAG_BLK(eram_tag[j]) >> (9 - CSHIFT) == sec)
+            memcpy(sector_buf + (ETAG_BLK(eram_tag[j]) * CBLK & 511u), eram_buf[j], CBLK);
+    if (!gbl_platform_save_write(sec, sector_buf)) {
+        sector_tag = -1; /* the card may hold either */
+        return;
+    }
+    for (unsigned j = 0; j < ERAM_WAYS; j++)
+        if (IS_ETAG(eram_tag[j]) && ETAG_BLK(eram_tag[j]) >> (9 - CSHIFT) == sec) eram_dirty[j] = 0;
+#endif
+}
+
+/* A block for a miss: by the hand, written back if needed, its tag void. */
+static unsigned cache_victim(void) {
+    unsigned i;
+    for (;;) {
+        i = eram_hand;
+        eram_hand = (uint8_t)(i + 1u == ERAM_WAYS ? 0 : i + 1u);
+        if (i == eram_mru || i == rom_last || eram_tag[i] == TAG_LENT) continue;
+        if (!eram_ref[i]) break;
+        eram_ref[i] = 0;
+        if (IS_ETAG(eram_tag[i])) eram_changed = 1;
+    }
+    if (IS_ETAG(eram_tag[i])) {
+        eram_writeback(i);
+        eram_changed = 1;
+    }
+    eram_tag[i] = -1;
+    eram_dirty[i] = 0; /* even if the card refused the write-back */
+    eram_ref[i] = 0;
+    return i;
+}
+
+
+/* Fill way i with block b of the ROM (rom) or of the save file. */
+static void cache_load(unsigned i, uint32_t b, int rom) {
+#if CBLK == 512
+    int ok = rom ? rom_sector(b, eram_buf[i]) : gbl_platform_save_read(b, eram_buf[i]);
+    if (!ok) memset(eram_buf[i], 0xFF, 512);
+#else
+    uint32_t sec = b >> (9 - CSHIFT);
+    int32_t want = rom ? (int32_t)sec : ETAG(sec);
+    if (sector_tag != want) {
+        sector_tag = -1;
+        if (rom ? rom_sector(sec, sector_buf) : gbl_platform_save_read(sec, sector_buf)) sector_tag = want;
+    }
+    if (sector_tag == want) memcpy(eram_buf[i], sector_buf + (b * CBLK & 511u), CBLK);
+    else memset(eram_buf[i], 0xFF, CBLK);
+#endif
+}
+
+/* Through the slow path: a cartridge RAM block missing from the tables
+ * (not in the pool, or not referenced since the hand passed), or a first
+ * write to a clean one.  It becomes the newest and referenced. */
+static uint8_t *eram_sector(uint32_t off) {
+    int32_t tag = ETAG(off >> CSHIFT);
+    unsigned i = eram_mru;
+    if (eram_tag[i] != tag) {
+        for (i = 0; i < ERAM_WAYS && eram_tag[i] != tag; i++) {}
+        if (i == ERAM_WAYS) {
+            i = cache_victim();
+            cache_load(i, off >> CSHIFT, 0);
+            eram_tag[i] = tag;
+#if GBL_DEBUG_STACK
+            if (dbg_stack_sector(tag) && !gbl_dbg_stack.frozen) {
+                gbl_dbg_stack.loads++;
+                gbl_dbg_stack.load_frame = gbl_frame;
+            }
+#endif
+        }
+    }
+    if (i != eram_mru || !eram_ref[i] || eram_changed) {
+        eram_ref[i] = 1;
+        eram_mru = (uint8_t)i;
+        eram_changed = 0;
+        eram_window();
+    }
+    return eram_buf[i];
+}
+
+static uint8_t eram_load(uint32_t off) { return eram_sector(off)[off & (CBLK - 1u)]; }
+
+static void eram_store(uint32_t off, uint8_t v) {
+    uint8_t *p = eram_sector(off);
+    if (p[off & (CBLK - 1u)] == v) return;
+    p[off & (CBLK - 1u)] = v;
+    save_pending = 1;
+    gbl_save_last_change = gbl_frame;
+    if (!eram_dirty[eram_mru]) {
+        eram_dirty[eram_mru] = 1;
+        eram_window(); /* its write slot opens */
     }
 }
 
-/* The most recent sector is checked first (most accesses); the others when
- * the game moves to another sector.  A game using its cartridge RAM as work
- * RAM cycles through several sectors (Super Mario Land 2: about seven), and
- * every eviction of a dirty one is a card write. */
+/* A streamed ROM byte (off: in the ROM). */
+static uint8_t stream_read(uint32_t off) {
+    int32_t b = (int32_t)(off >> CSHIFT);
+    if (eram_tag[rom_last] == b) return eram_buf[rom_last][off & (CBLK - 1u)];
+    unsigned i = 0;
+    while (i < ERAM_WAYS && eram_tag[i] != b) i++;
+    if (i == ERAM_WAYS) {
+        i = cache_victim();
+        cache_load(i, (uint32_t)b, 1);
+        eram_tag[i] = b;
+        gbl_stream_misses++;
+        if (eram_changed) {
+            eram_changed = 0;
+            eram_window();
+        }
+    }
+    eram_ref[i] = 1;
+    rom_last = (uint8_t)i;
+    return eram_buf[i][off & (CBLK - 1u)];
+}
+
+static int any_dirty(void) {
+    unsigned dirty = 0;
+    for (unsigned w = 0; w < ERAM_WAYS; w++) dirty |= eram_dirty[w];
+    return dirty != 0;
+}
+
+void gbl_save_flush(void) {
+    for (unsigned i = 0; i < ERAM_WAYS; i++) eram_writeback(i);
+    save_pending = (uint8_t)any_dirty();
+    eram_window(); /* clean again: the write slots close */
+}
+
+int gbl_save_flush_next(int i) {
+    for (; i >= 0 && i < ERAM_WAYS; i++)
+        if (IS_ETAG(eram_tag[i]) && eram_dirty[i]) {
+            eram_writeback(i);
+            eram_window();
+            return i + 1;
+        }
+    save_pending = (uint8_t)any_dirty();
+    return -1;
+}
+
+/* 512 bytes for the platform before gbl_reset, and for gbl_state_io: the
+ * pool's start (below the menu's stack when the menu saves a state). */
+uint8_t *gbl_save_scratch(void) { return &eram_buf[0][0]; }
+uint8_t *gbl_stream_scratch(void) { return &eram_buf[0][0]; }
+
+/* Every block void (none dirty: flushed first, or a reset); lent ones stay
+ * lent. */
+static void cache_drop(void) {
+    for (unsigned i = 0; i < ERAM_WAYS; i++) {
+        if (eram_tag[i] != TAG_LENT) eram_tag[i] = -1;
+        eram_dirty[i] = 0;
+        eram_ref[i] = 0;
+    }
+#if CBLK < 512
+    sector_tag = -1;
+#endif
+    eram_mru = rom_last = 0;
+    while (eram_tag[eram_mru] == TAG_LENT) eram_mru = rom_last = (uint8_t)(eram_mru + 1u);
+    eram_hand = 0;
+    eram_changed = 0;
+    eram_window();
+}
+
+static void eram_reset(void) {
+    cache_drop();
+    save_pending = 0;
+}
+
+/* The option menu's stack: the whole pool but its last MENU_KEEP blocks
+ * (what the hand needs if something reads the ROM meanwhile), written back
+ * first and kept out of the cache until gbl_stream_invalidate.  A state
+ * save uses gbl_save_scratch at its bottom. */
+#define MENU_KEEP 3u
+uintptr_t gbl_cache_lend(void) {
+    gbl_save_flush();
+    unsigned n = ERAM_WAYS - MENU_KEEP;
+    for (unsigned i = 0; i < n; i++) eram_tag[i] = TAG_LENT;
+    cache_drop();
+    return ((uintptr_t)eram_buf[0] + n * CBLK) & ~(uintptr_t)7;
+}
+
+void gbl_stream_invalidate(void) {
+    for (unsigned i = 0; i < ERAM_WAYS; i++)
+        if (eram_tag[i] == TAG_LENT) eram_tag[i] = -1;
+}
+#else
+static void eram_writeback(unsigned i) {
+    if (eram_dirty[i]) {
+#if GBL_DEBUG_STACK
+        if (dbg_stack_sector(eram_tag[i]) && !gbl_dbg_stack.frozen) {
+            gbl_dbg_stack.writebacks++;
+            gbl_dbg_stack.writeback_frame = gbl_frame;
+        }
+#endif
+        /* Still dirty when the card refused it: a later flush tries again. */
+        if (!gbl_platform_save_write((uint32_t)eram_tag[i], eram_buf[i])) return;
+        eram_dirty[i] = 0;
+#if GBL_DEBUG_ERAM_SUM
+        eram_sum_of[eram_tag[i]] = eram_sum(eram_buf[i]);
+        eram_sum_known[eram_tag[i]] = 1;
+        gbl_dbg_eram_sum.writes++;
+#endif
+    }
+}
+
+/* Through the slow path: a sector missing from the tables (not cached, or
+ * not referenced since the hand passed), or a first write to a clean one.
+ * The sector becomes the newest and referenced.  A game using its
+ * cartridge RAM as work RAM cycles through several sectors (Super Mario
+ * Land 2: about seven), and every eviction of a dirty one is a card
+ * write. */
 static uint8_t *eram_sector(uint32_t off) {
     int32_t sec = (int32_t)(off >> 9);
     unsigned i = eram_mru;
@@ -282,11 +722,41 @@ static uint8_t *eram_sector(uint32_t off) {
                 eram_ref[i] = 0;
             }
             eram_writeback(i);
+#if GBL_DEBUG_ERAM_SUM
+            if (eram_tag[i] >= 0 && eram_sum_known[eram_tag[i]]) { /* read the evicted one back */
+                gbl_dbg_eram_sum.verifies++;
+                gbl_platform_save_read((uint32_t)eram_tag[i], eram_buf[i]);
+                uint16_t got = eram_sum(eram_buf[i]);
+                if (got != eram_sum_of[eram_tag[i]]) eram_sum_note(1, eram_tag[i], eram_sum_of[eram_tag[i]], got);
+            }
+#endif
             if (!gbl_platform_save_read((uint32_t)sec, eram_buf[i]))
                 for (int k = 0; k < 512; k++) eram_buf[i][k] = 0xFF;
+#if GBL_DEBUG_ERAM_SUM
+            gbl_dbg_eram_sum.loads++;
+            if (eram_sum_known[sec]) {
+                uint16_t got = eram_sum(eram_buf[i]);
+                if (got != eram_sum_of[sec]) {
+                    eram_sum_note(2, sec, eram_sum_of[sec], got);
+                    gbl_platform_save_read((uint32_t)sec, eram_buf[i]); /* once more */
+                    if (eram_sum(eram_buf[i]) == eram_sum_of[sec]) gbl_dbg_eram_sum.reread_ok++;
+                }
+            }
+#endif
             eram_tag[i] = sec;
+            eram_ref[i] = 0;
+            eram_dirty[i] = 0; /* even if the evicted one could not be written */
+#if GBL_DEBUG_STACK
+            if (dbg_stack_sector(sec) && !gbl_dbg_stack.frozen) {
+                gbl_dbg_stack.loads++;
+                gbl_dbg_stack.load_frame = gbl_frame;
+            }
+#endif
         }
-        if (i != eram_mru) eram_touch(i);
+    }
+    if (i != eram_mru || !eram_ref[i]) {
+        eram_ref[i] = 1;
+        eram_mru = (uint8_t)i;
         eram_window();
     }
     return eram_buf[i];
@@ -302,21 +772,25 @@ static void eram_store(uint32_t off, uint8_t v) {
     gbl_save_last_change = gbl_frame;
     if (!eram_dirty[eram_mru]) {
         eram_dirty[eram_mru] = 1;
-        eram_window(); /* the write window opens */
+        eram_window(); /* its write slot opens */
     }
 }
 
 void gbl_save_flush(void) {
-    for (unsigned i = 0; i < ERAM_WAYS; i++) eram_writeback(i);
-    save_pending = 0;
-    eram_window(); /* clean again: the write window closes */
+    unsigned dirty = 0;
+    for (unsigned i = 0; i < ERAM_WAYS; i++) {
+        eram_writeback(i);
+        dirty |= eram_dirty[i];
+    }
+    save_pending = (uint8_t)(dirty != 0);
+    eram_window(); /* clean again: the write slots close */
 }
 
 int gbl_save_flush_next(int i) {
     for (; i >= 0 && i < ERAM_WAYS; i++)
         if (eram_dirty[i]) {
             eram_writeback(i);
-            if ((unsigned)i == eram_mru) eram_window(); /* clean again: the write window closes */
+            eram_window(); /* clean again: its write slot closes */
             return i + 1;
         }
     unsigned dirty = 0;
@@ -338,6 +812,7 @@ static void eram_reset(void) {
     save_pending = 0;
     eram_window();
 }
+#endif
 #else
 static uint32_t eram_dirty_mask; /* bit per 512-byte sector */
 
@@ -427,6 +902,128 @@ static void map_eram(void) {
 #endif
 }
 
+#if GBL_DEBUG_RESTART
+/* The buttons of the last 16 frames, and a copy of them at each write to
+ * the RAM enable register (0000-1FFF): a game that enables its RAM once,
+ * when it starts (Super Mario Land 2), writes it again only when it
+ * restarts.  meta-usb.py restart reads them. */
+gbl_dbg_restart_t gbl_dbg_restart;
+
+static void dbg_restart_note(uint16_t a, uint8_t v) {
+    gbl_dbg_restart_snap_t *n = &gbl_dbg_restart.snap[gbl_dbg_restart.writes++ & 1u];
+    n->frame = gbl_frame;
+    n->addr = a;
+    n->value = v;
+    n->ram_enable = mbc.ram_enable;
+    n->sp = gbr.sp;
+    n->bank = (uint8_t)gbr.rom_bank;
+    n->combo_frames = gbl_dbg_restart.combo_frames;
+    for (unsigned i = 0; i < 16; i++) {
+        unsigned k = (gbl_dbg_restart.pos + i) & 15u; /* oldest first */
+        n->buttons[i] = gbl_dbg_restart.buttons[k];
+        n->button_frame[i] = gbl_dbg_restart.button_frame[k];
+    }
+}
+#endif
+
+#if GBL_DEBUG_RESTART
+gbl_dbg_off_t gbl_dbg_off;
+
+static __attribute__((noinline)) void dbg_off_note(uint16_t a, uint8_t v, uint32_t lr) {
+    uint32_t *sp;
+#if defined(__arm__)
+    __asm__ volatile("mov %0, sp" : "=r"(sp));
+#else
+    sp = (uint32_t *)__builtin_frame_address(0);
+#endif
+    gbl_dbg_off.frame = gbl_frame | 1u;
+    gbl_dbg_off.lr = lr;
+    gbl_dbg_off.sp = (uint32_t)(uintptr_t)sp;
+    gbl_dbg_off.addr = a;
+    gbl_dbg_off.value = v;
+    memcpy(gbl_dbg_off.gbr, &gbr, sizeof gbl_dbg_off.gbr);
+    for (unsigned i = 0; i < 16; i++) gbl_dbg_off.gb_stack[i] = gbl_rd((uint16_t)(gbr.sp - 4u + i));
+    for (unsigned i = 0; i < 32; i++)
+        gbl_dbg_off.c_stack[i] = (uint32_t)((uintptr_t)(sp + i) < 0x20008000u ? sp[i] : 0);
+    if (!gbl_dbg_restart.lock_frame) gbl_dbg_restart.lock_frame = gbl_frame | 1u;
+}
+#endif
+
+#if GBL_DEBUG_STACK
+gbl_dbg_stack_t gbl_dbg_stack = {.magic = 0x4B415453u, .len = GBL_DBG_STACK_LEN};
+
+static void dbg_stack_freeze(uint32_t why) {
+    if (gbl_dbg_stack.frozen) return;
+    gbl_dbg_stack.frozen = why;
+    gbl_dbg_stack.frozen_frame = gbl_frame;
+}
+
+void gbl_dbg_stack_note(uint16_t a, uint8_t v, uint32_t lr) {
+    gbl_dbg_stack_t *s = &gbl_dbg_stack;
+    unsigned i = (unsigned)(uint16_t)(a - GBL_DBG_STACK_BASE);
+    if (i >= GBL_DBG_STACK_LEN || s->frozen) return;
+    s->value[i] = v;
+    s->valid[i >> 3] |= (uint8_t)(1u << (i & 7u));
+    s->pc[i] = gbr.pc;
+    s->sp[i] = gbr.sp;
+    s->frame[i] = (uint16_t)gbl_frame;
+    s->lr[i] = (uint16_t)(lr >> 2);
+    s->at_write_loads[i] = (uint8_t)s->loads;
+}
+
+/* The assembly gbl_wr's tail for a dirty sector's slot (e from gbl_eram_wmap). */
+void gbl_dbg_stack_wr(uint16_t a, uint8_t v, uint8_t *e) {
+    if (e[a] != v) {
+        e[a] = v;
+        gbl_save_last_change = gbl_frame;
+    }
+    gbl_dbg_stack_note(a, v, (uint32_t)(uintptr_t)__builtin_return_address(0));
+}
+
+uint16_t gbl_dbg_pop(uint16_t sp, uint16_t v) {
+    gbl_dbg_stack_t *s = &gbl_dbg_stack;
+    s->pops++;
+    if (s->frozen || !mbc.ram_enable) return v;
+    for (unsigned k = 0; k < 2; k++) {
+        unsigned i = (unsigned)(uint16_t)(sp + k - GBL_DBG_STACK_BASE);
+        if (i >= GBL_DBG_STACK_LEN || !(s->valid[i >> 3] >> (i & 7u) & 1u)) continue;
+        s->checked++;
+        uint8_t got = (uint8_t)(v >> (8 * k));
+        if (got == s->value[i]) continue;
+        s->bad++;
+        s->bad_frame = gbl_frame;
+        s->bad_sp = sp;
+        s->bad_addr = (uint16_t)(sp + k);
+        s->bad_pc = gbr.pc;
+        s->bad_bank = (uint16_t)gbr.rom_bank;
+        s->bad_got = got;
+        s->bad_want = s->value[i];
+#if GBL_ERAM_ON_SD
+        uint32_t off = eram_offset(GBL_DBG_STACK_BASE);
+        unsigned slot = (GBL_DBG_STACK_BASE - 0xA000u) >> CSHIFT;
+        s->rmap_way = s->wmap_way = s->tag_way = -1;
+        s->flags = 0;
+        for (unsigned w = 0; w < 16; w++) s->tag[w] = w < ERAM_WAYS ? (int16_t)(IS_ETAG(eram_tag[w]) ? ETAG_BLK(eram_tag[w]) : eram_tag[w] | 0x4000) : -2;
+        for (unsigned w = 0; w < ERAM_WAYS; w++) {
+            const uint8_t *b = eram_buf[w];
+            if (gbl_eram_rmap[slot] && gbl_eram_rmap[slot] + GBL_DBG_STACK_BASE == b + (off & (CBLK - 1u))) s->rmap_way = (int8_t)w;
+            if (gbl_eram_wmap[slot] && gbl_eram_wmap[slot] + GBL_DBG_STACK_BASE == b + (off & (CBLK - 1u))) s->wmap_way = (int8_t)w;
+            if (eram_tag[w] == ETAG(off >> CSHIFT)) {
+                s->tag_way = (int8_t)w;
+                memcpy(s->actual, b + (off & (CBLK - 1u)), GBL_DBG_STACK_LEN);
+            }
+            if (w < 16) s->flags |= (uint32_t)(eram_ref[w] | eram_dirty[w] << 1) << (2 * w);
+        }
+        s->mru = (int8_t)eram_mru;
+        s->hand = (int8_t)eram_hand;
+#endif
+        dbg_stack_freeze(2);
+        break;
+    }
+    return v;
+}
+#endif
+
 /* The assembly gbl_wr calls it directly for 0000-7FFF. */
 #if GBL_CORE_ASM && defined(__ARM_ARCH_6M__)
 void gbl_mbc_write(uint16_t a, uint8_t v);
@@ -435,6 +1032,23 @@ void gbl_mbc_write(uint16_t a, uint8_t v);
 static
 #endif
 void mbc_write(uint16_t a, uint8_t v) {
+#if GBL_DEBUG_STACK
+    if (a < 0x2000 && mbc.ram_enable && (v & 0x0F) != 0x0A) dbg_stack_freeze(1);
+#endif
+#if GBL_DEBUG_RESTART
+    if (a < 0x2000 && mbc.ram_enable && (v & 0x0F) != 0x0A && !gbl_dbg_off.frame)
+        dbg_off_note(a, v, (uint32_t)(uintptr_t)__builtin_return_address(0));
+    if (a < 0x2000) dbg_restart_note(a, v);
+    if (a >= 0x2000 && a < 0x4000 && !gbl_dbg_restart.lock_frame) {
+        unsigned k = gbl_dbg_restart.bank_pos++ & 15u;
+        gbl_dbg_restart.bank_val[k] = v;
+        gbl_dbg_restart.bank_frame[k] = (uint16_t)gbl_frame;
+#if GBL_ERAM_ON_SD
+        const uint8_t *sh = gbl_eram_rmap[(0xA24Eu - 0xA000u) >> CSHIFT];
+        gbl_dbg_restart.bank_shadow[k] = sh ? sh[0xA24Eu] : 0xEE;
+#endif
+    }
+#endif
 #if GBL_MBC == 1
     switch (a >> 13) {
     case 0: set_ram_enable(v); map_eram(); break;
@@ -670,6 +1284,14 @@ static void joypad_update(void) {
 }
 
 void gbl_set_buttons(uint8_t pressed) {
+#if GBL_DEBUG_RESTART
+    if (pressed != gbl_dbg_restart.buttons[(gbl_dbg_restart.pos - 1u) & 15u]) {
+        gbl_dbg_restart.buttons[gbl_dbg_restart.pos & 15u] = pressed;
+        gbl_dbg_restart.button_frame[gbl_dbg_restart.pos & 15u] = (uint16_t)gbl_frame;
+        gbl_dbg_restart.pos++;
+    }
+    if ((pressed & 0x0F) == 0x0F) gbl_dbg_restart.combo_frames++; /* A+B+Select+Start */
+#endif
     if (pressed & ~buttons) IF |= 0x10;
     buttons = pressed;
     joypad_update();
@@ -809,7 +1431,14 @@ uint8_t gbl_rd(uint16_t a) {
     const uint8_t *p = gbl_rmap[a >> 12];
     if (p) return p[a];
 #if GBL_ERAM_ON_SD
-    if (a - gbl_eram_rwin < 512u) return gbl_eram_rptr[a];
+    if (a - 0xA000u < 0x2000u) {
+        const uint8_t *e = gbl_eram_rmap[(a - 0xA000u) >> CSHIFT];
+#if GBL_DEBUG_ERAM_MAPS
+        if (e) return gbl_dbg_eram_rd(a, e[a]);
+#else
+        if (e) return e[a];
+#endif
+    }
 #endif
     return gbl_rd_slow(a);
 }
@@ -828,12 +1457,21 @@ void gbl_wr(uint16_t a, uint8_t v) {
     uint8_t *p = gbl_wmap[a >> 12];
     if (p) { p[a] = v; return; }
 #if GBL_ERAM_ON_SD
-    if (a - gbl_eram_wwin < 512u) {
-        if (gbl_eram_wptr[a] != v) {
-            gbl_eram_wptr[a] = v;
-            gbl_save_last_change = gbl_frame;
+    if (a - 0xA000u < 0x2000u) {
+        uint8_t *e = gbl_eram_wmap[(a - 0xA000u) >> CSHIFT];
+#if GBL_DEBUG_ERAM_MAPS
+        if (e) { gbl_dbg_eram_wr(a, v); return; }
+#elif GBL_DEBUG_STACK
+        if (e) { gbl_dbg_stack_wr(a, v, e); return; }
+#else
+        if (e) {
+            if (e[a] != v) {
+                e[a] = v;
+                gbl_save_last_change = gbl_frame;
+            }
+            return;
         }
-        return;
+#endif
     }
 #endif
     gbl_wr_slow(a, v);
@@ -858,12 +1496,25 @@ void gbl_wr_slow(uint16_t a, uint8_t v) {
         return;
     }
     if (a >= 0x8000 && a < 0xA000) { gbl_vram_wr((uint16_t)(a - 0x8000), v); return; }
-    if (a >= 0xE000) { gbl_wram[a - 0xE000] = v; return; }
+    if (a >= 0xE000) {
+#if GBL_DEBUG_RESTART && GBL_ERAM_ON_SD
+        gbl_dbg_tables.echo_writes++;
+        gbl_dbg_tables.echo_last = (uint32_t)a << 16 | (uint32_t)v << 8;
+        gbl_dbg_tables.echo_frame = gbl_frame;
+#endif
+        gbl_wram[a - 0xE000] = v;
+        return;
+    }
     if (a < 0x8000) { mbc_write(a, v); return; }
 #if GBL_MBC == 2
     if (a >= 0xA000 && a < 0xC000 && mbc.ram_enable) eram_store(eram_offset(a), v & 0x0F);
 #elif GBL_ERAM_SIZE > 0
-    if (a >= 0xA000 && a < 0xC000 && mbc.ram_enable) eram_store(eram_offset(a), v);
+    if (a >= 0xA000 && a < 0xC000 && mbc.ram_enable) {
+#if GBL_DEBUG_STACK
+        gbl_dbg_stack_note(a, v, (uint32_t)(uintptr_t)__builtin_return_address(0));
+#endif
+        eram_store(eram_offset(a), v);
+    }
 #endif
 }
 
@@ -886,7 +1537,11 @@ uint16_t gbl_pop(void) {
     if (s >= 0xC000 && s < 0xDFFF)
         return (uint16_t)(gbl_wram[s - 0xC000] | (gbl_wram[s - 0xC000 + 1] << 8));
     uint8_t lo = gbl_rd(s);
+#if GBL_DEBUG_STACK
+    return gbl_dbg_pop(s, (uint16_t)(lo | (gbl_rd((uint16_t)(s + 1)) << 8)));
+#else
     return (uint16_t)(lo | (gbl_rd((uint16_t)(s + 1)) << 8));
+#endif
 }
 #endif
 
@@ -894,6 +1549,87 @@ uint16_t gbl_pop(void) {
 
 uint8_t gbl_safe_request;
 __attribute__((weak)) void gbl_platform_safe_point(void) {}
+
+#if GBL_DEBUG_RESTART
+#if defined(__arm__)
+__attribute__((section(".noinit")))
+#endif
+gbl_dbg_irq_t gbl_dbg_irq;
+#define IRQ_DEPTH 4
+static gbl_dbg_irq_regs_t irq_stack[IRQ_DEPTH];
+static unsigned irq_depth;
+
+static void dbg_irq_regs(gbl_dbg_irq_regs_t *r, unsigned vector) {
+    r->frame = gbl_frame;
+    r->sp = gbr.sp;
+    r->pc = gbr.pc;
+    r->bc = gbr.bc;
+    r->de = gbr.de;
+    r->hl = gbr.hl;
+    r->bank = gbr.rom_bank;
+    r->a = gbr.a;
+    r->f = gbl_getf();
+    r->vector = (uint8_t)vector;
+}
+
+gbl_dbg_badirq_t gbl_dbg_badirq;
+
+static __attribute__((noinline)) void dbg_badirq(uint32_t lr) {
+    gbl_dbg_badirq_t *b = &gbl_dbg_badirq;
+    uint32_t *sp;
+#if defined(__arm__)
+    __asm__ volatile("mov %0, sp" : "=r"(sp));
+#else
+    sp = (uint32_t *)__builtin_frame_address(0);
+#endif
+    b->magic = 0x51524942u;
+    b->frame = gbl_frame | 1u;
+    b->lr = lr;
+    b->csp = (uint32_t)(uintptr_t)sp;
+    b->pc = gbr.pc;
+    b->sp = gbr.sp;
+    b->bc = gbr.bc;
+    b->de = gbr.de;
+    b->hl = gbr.hl;
+    b->bank = gbr.rom_bank;
+    b->a = gbr.a;
+    b->ime = gbr.ime;
+    for (unsigned i = 0; i < 14; i++) b->gb_stack[i] = gbl_rd((uint16_t)(gbr.sp - 4u + i));
+    for (unsigned i = 0; i < 40; i++)
+        b->c_stack[i] = (uint32_t)((uintptr_t)(sp + i) < 0x20008000u ? sp[i] : 0);
+}
+
+static void dbg_irq_push(int bit) { /* before the PC is pushed */
+    if (gbl_dbg_irq.magic != 0x49525131u) {
+        memset(&gbl_dbg_irq, 0, sizeof gbl_dbg_irq);
+        gbl_dbg_irq.magic = 0x49525131u;
+    }
+    gbl_dbg_irq.entries++;
+    if (irq_depth == IRQ_DEPTH) { /* never returned: forget the oldest */
+        memmove(irq_stack, irq_stack + 1, sizeof irq_stack[0] * (IRQ_DEPTH - 1));
+        irq_depth--;
+    }
+    dbg_irq_regs(&irq_stack[irq_depth++], (unsigned)(0x40 + bit * 8));
+}
+
+void gbl_dbg_reti(void) { /* after the PC is popped */
+    /* Frames left without their RETI (the game reset its stack). */
+    while (irq_depth && (int16_t)(gbr.sp - irq_stack[irq_depth - 1].sp) > 0) {
+        irq_depth--;
+        gbl_dbg_irq.unmatched++;
+    }
+    if (!irq_depth || gbr.sp != irq_stack[irq_depth - 1].sp) return; /* RETI used as RET + EI */
+    gbl_dbg_irq_regs_t *e = &irq_stack[--irq_depth];
+    gbl_dbg_irq.checked++;
+    if (gbr.pc == e->pc && gbr.bc == e->bc && gbr.de == e->de && gbr.hl == e->hl && gbr.a == e->a &&
+        gbl_getf() == e->f)
+        return;
+    if (gbl_dbg_irq.bad++) return; /* the first one only */
+    gbl_dbg_irq.at_entry = *e;
+    dbg_irq_regs(&gbl_dbg_irq.at_reti, e->vector);
+    for (unsigned i = 0; i < 24; i++) gbl_dbg_irq.stack[i] = gbl_rd((uint16_t)(gbr.sp - 16u + i));
+}
+#endif
 
 int gbl_irq_enter(void) {
     /* Every caller is between two instructions, gbr.pc exact. */
@@ -908,6 +1644,11 @@ int gbl_irq_enter(void) {
     IF &= (uint8_t)~(1u << bit);
     gbr.ime = 0;
     gbr.cyc += 20;
+#if GBL_DEBUG_RESTART
+    if (gbr.pc - 0x68u < 0x150u - 0x68u && !gbl_dbg_badirq.frame)
+        dbg_badirq((uint32_t)(uintptr_t)__builtin_return_address(0));
+    dbg_irq_push(bit);
+#endif
     gbl_push(gbr.pc);
     gbr.pc = (uint16_t)(0x40 + bit * 8);
     gbl_update_evt();
@@ -1143,15 +1884,16 @@ static void state_mem(gbl_state_fn io, void *ctx, int load) {
     /* The cartridge RAM is the save file: copied through the sector cache's
      * first buffer, whose contents were written back first. */
     if (!io_counting) gbl_save_flush();
+    uint8_t *buf = gbl_save_scratch(); /* the cache is emptied after */
     for (uint32_t sec = 0; sec * 512u < GBL_ERAM_SIZE; sec++) {
         if (io_counting) {
-            io(eram_buf[0], 512, ctx);
+            io(buf, 512, ctx);
         } else if (load) {
-            io(eram_buf[0], 512, ctx);
-            gbl_platform_save_write(sec, eram_buf[0]);
+            io(buf, 512, ctx);
+            gbl_platform_save_write(sec, buf);
         } else {
-            if (!gbl_platform_save_read(sec, eram_buf[0])) memset(eram_buf[0], 0xFF, 512);
-            io(eram_buf[0], 512, ctx);
+            if (!gbl_platform_save_read(sec, buf)) memset(buf, 0xFF, 512);
+            io(buf, 512, ctx);
         }
     }
     if (!io_counting) eram_reset();

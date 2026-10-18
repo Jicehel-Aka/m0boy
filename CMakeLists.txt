@@ -196,17 +196,34 @@ if(BUILD_TESTS)
     add_test(NAME meta_menu_short_scratch_matches_full_band COMMAND test_meta_menu_slices)
 
     # Cartridge RAM cache on the card: 8 KiB, and 32 KiB in four MBC5 banks.
-    foreach(variant 1 2 8 8_32k)
-        string(REPLACE "_32k" "" ways ${variant})
+    foreach(variant 1 2 8 8_32k 8_32k_dbg 8_stk)
+        string(REGEX REPLACE "_.*" "" ways ${variant})
         add_executable(test_meta_cache_${variant} "${GBL_META_DIR}/tests/cache_lru.c" ${GBL_META_RUNTIME_SOURCES})
         target_include_directories(test_meta_cache_${variant} PRIVATE "${GBL_META_DIR}/tests/config_stream"
             "${GBL_META_DIR}/runtime")
-        target_compile_definitions(test_meta_cache_${variant} PRIVATE GBL_ERAM_CACHE_SECTORS=${ways})
+        target_compile_definitions(test_meta_cache_${variant} PRIVATE GBL_ERAM_CACHE_SECTORS=${ways} GBL_CACHE_UNIFIED=0)
         if(variant MATCHES "_32k")
             target_compile_definitions(test_meta_cache_${variant} PRIVATE GBL_ERAM_SIZE=32768)
         endif()
+        if(variant MATCHES "_dbg")
+            target_compile_definitions(test_meta_cache_${variant} PRIVATE GBL_DEBUG_ERAM_MAPS=1 GBL_DEBUG_ERAM_SUM=1)
+        endif()
+        if(variant MATCHES "_stk")
+            target_compile_definitions(test_meta_cache_${variant} PRIVATE GBL_DEBUG_STACK=1)
+        endif()
         target_compile_options(test_meta_cache_${variant} PRIVATE -UNDEBUG)
         add_test(NAME meta_cache_lru_${variant}_ways_and_resident_bank0 COMMAND test_meta_cache_${variant})
+    endforeach()
+
+    # One pool for the streamed ROM and the cartridge RAM, per block size.
+    foreach(block 128 256 512)
+        add_executable(test_meta_cache_unified_${block} "${GBL_META_DIR}/tests/cache_unified.c" ${GBL_META_RUNTIME_SOURCES})
+        target_include_directories(test_meta_cache_unified_${block} PRIVATE "${GBL_META_DIR}/tests/config_stream"
+            "${GBL_META_DIR}/runtime")
+        target_compile_definitions(test_meta_cache_unified_${block} PRIVATE GBL_CACHE_UNIFIED=1
+            GBL_CACHE_BLOCK=${block} GBL_CACHE_BYTES=3072 GBL_CACHE_MENU_STACK=1024)
+        target_compile_options(test_meta_cache_unified_${block} PRIVATE -UNDEBUG)
+        add_test(NAME meta_cache_unified_${block}_rom_and_ram_one_pool COMMAND test_meta_cache_unified_${block})
     endforeach()
 
     add_executable(test_meta_lcd_pack "${GBL_META_DIR}/tests/lcd_pack.c")

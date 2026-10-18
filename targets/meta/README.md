@@ -316,6 +316,42 @@ touches the FAT.
 
   Switching the console off during the two seconds that follow a save
   without RAM disable can lose it.
+- With a streamed ROM too, both share one pool of 128-byte blocks
+  (`GBL_CACHE_UNIFIED`, `GBL_CACHE_BLOCK` 128/256/512, `GBL_CACHE_BYTES`,
+  by default 1 KiB less than the two caches it replaces), CLOCK
+  replacement, the last ROM block and the newest RAM block never evicted.
+  The card and the unpacker still work on 512-byte sectors through one
+  sector buffer, which also serves the next block of the same sector; a
+  dirty block is written back with the rest of its sector read first. The
+  option menu runs on the pool (all but 3 blocks, written back first and
+  kept out meanwhile); `GBL_CACHE_MENU_STACK` is what it needs there. Super Mario Land 2's demo to frame 6000 (device):
+  3963 card reads, 1567 writes and 14200 ROM sectors unpacked with ROM 3 +
+  RAM 10 sectors; 226, 69 and 96 with 128-byte blocks. Taking 1 KiB from
+  the C stack for the pool cost 5 frames/s (more unwinds).
+- Cached blocks are read and written through two tables (one pointer per
+  block of A000-BFFF, `gbl_eram_rmap` / `gbl_eram_wmap`), rebuilt whenever
+  a block, its reference bit, its dirty bit, the bank or RAM enable
+  changes; only blocks not in them go through the search
+  (`GBL_ERAM_TABLES` 0 sends every access there). Super Mario Land 2, whose
+  stack and variables live there: about 38 frames/s through the search,
+  47-50 with the tables (device, demo, separate caches).
+- A card read or write that fails identifies the card again, as at boot,
+  and is tried once more (`meta_sd_reinits`, `meta_sd_reinit_fails`); a
+  sector whose write fails stays dirty. With a flat battery the card stopped
+  answering after a few thousand frames: the cache then gave the game
+  sectors of 0xFF or stale ones (Super Mario Land 2 jumped to its ending or
+  restarted). Debug builds: `GBL_DEBUG_STACK` (`meta-usb.py stack`),
+  `GBL_DEBUG_RESTART` (`meta-usb.py restart`: RAM switch-off, RETI
+  registers, the first interrupt taken at a pc in 0068-014F), `META_DEBUG_TRACE`
+  (each frame's pc, sp, hl, stack top in a ring that `meta-usb.py trace`
+  appends to a file), `META_DEBUG_RESET`, `META_DEBUG_BUS`;
+  `GBL_DEBUG_ERAM_MAPS` and `GBL_DEBUG_ERAM_SUM` need `GBL_CACHE_UNIFIED=0`.
+  These records take RAM from the C stack: at 98.6% of RAM the stack ran
+  into them. A build that leaves the generated code less than
+  `META_STACK_NEST_MIN` (256) bytes above `META_STACK_RESERVE` stops on a
+  cyan screen.
+- The audio ring holds `META_AUDIO_RING` samples: 576 (a frame and a half)
+  in streamed or card-RAM builds, 768 otherwise.
 - If the file is missing, a game whose RAM must live on the card shows a
   yellow screen. A game whose RAM stays in RAM runs normally, but its
   progress is not kept.

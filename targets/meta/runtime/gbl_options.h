@@ -57,6 +57,37 @@
  *                         (gbl_core_asm.S); default on for Cortex-M0+.
  * GBL_STREAM_SECTORS      512-byte sectors cached for a streamed ROM
  *                         (GBL_ROM_STREAM projects only).
+ * GBL_DEBUG_ERAM_MAPS     Check every read through the cartridge RAM read
+ *                         table against the sector search (gbl_dbg_eram,
+ *                         meta-usb.py eram); off by default.
+ * GBL_ERAM_TABLES         gbl_rd / gbl_wr reach cached cartridge RAM sectors
+ *                         through gbl_eram_rmap / gbl_eram_wmap; 0 sends
+ *                         every access through eram_sector (comparisons).
+ * GBL_CACHE_UNIFIED       One pool of blocks for the streamed ROM and the
+ *                         cartridge RAM on the card (both needed), instead
+ *                         of GBL_STREAM_SECTORS + GBL_ERAM_CACHE_SECTORS
+ *                         sectors of each; off by default.
+ * GBL_CACHE_BLOCK         Its block size: 128, 256 or 512 bytes.  Below
+ *                         512, the card and the unpacker still work on
+ *                         512-byte sectors, through one more sector buffer
+ *                         that also serves the next block of the same
+ *                         sector; a dirty block is written back with the
+ *                         rest of its sector read first.
+ * GBL_CACHE_BYTES         The pool's size (the sector buffer apart).
+ * GBL_CACHE_MENU_STACK    What the option menu needs of the pool, which it
+ *                         runs on (all but 3 blocks, written back and kept
+ *                         out meanwhile): its stack, and a state's sector
+ *                         buffer below it.
+ * GBL_DEBUG_ERAM_SUM      Checksum the cartridge RAM cache's sectors across
+ *                         their SD round trips (gbl_dbg_eram_sum); off by
+ *                         default.
+ * GBL_DEBUG_RESTART       Keep the buttons of the frames before each write
+ *                         to the RAM enable register (gbl_dbg_restart,
+ *                         meta-usb.py restart); off by default.
+ * GBL_DEBUG_STACK         Shadow the GBL_DBG_STACK_LEN bytes of cartridge
+ *                         RAM below A900 (Super Mario Land 2's stack): the last writer of each byte,
+ *                         and every pop checked against the shadow
+ *                         (gbl_dbg_stack, meta-usb.py stack); off by default.
  */
 #ifndef GBL_OPTIONS_H
 #define GBL_OPTIONS_H
@@ -85,8 +116,60 @@
 #ifndef GBL_ROM_PACKED
 #define GBL_ROM_PACKED 0
 #endif
+#ifndef GBL_ERAM_TABLES
+#define GBL_ERAM_TABLES 1
+#endif
+#ifndef GBL_DEBUG_ERAM_SUM
+#define GBL_DEBUG_ERAM_SUM 0
+#endif
+#ifndef GBL_DEBUG_RESTART
+#define GBL_DEBUG_RESTART 0
+#endif
+#ifndef GBL_DEBUG_ERAM_MAPS
+#define GBL_DEBUG_ERAM_MAPS 0
+#endif
+#ifndef GBL_DEBUG_STACK
+#define GBL_DEBUG_STACK 0
+#endif
 #ifndef GBL_ROM_SD
 #define GBL_ROM_SD (GBL_ROM_STREAM && !GBL_ROM_PACKED)
+#endif
+#ifndef GBL_CACHE_UNIFIED
+#define GBL_CACHE_UNIFIED 0
+#endif
+#if GBL_CACHE_UNIFIED
+#if !GBL_ROM_STREAM || !GBL_ERAM_ON_SD || GBL_ERAM_SIZE == 0
+#error "GBL_CACHE_UNIFIED: needs a streamed ROM and cartridge RAM on the card"
+#endif
+#if GBL_DEBUG_ERAM_MAPS || GBL_DEBUG_ERAM_SUM
+#error "GBL_DEBUG_ERAM_MAPS / GBL_DEBUG_ERAM_SUM: not with GBL_CACHE_UNIFIED"
+#endif
+#ifndef GBL_CACHE_BLOCK
+#define GBL_CACHE_BLOCK 512
+#endif
+#ifndef GBL_CACHE_BYTES /* the two caches' RAM, less the tables and sector buffer below 512 */
+#define GBL_CACHE_BYTES ((GBL_STREAM_SECTORS + GBL_ERAM_CACHE_SECTORS) * 512 - (GBL_CACHE_BLOCK < 512 ? 1024 : 0))
+#endif
+#ifndef GBL_CACHE_MENU_STACK
+#define GBL_CACHE_MENU_STACK 768
+#endif
+#else
+#undef GBL_CACHE_BLOCK
+#define GBL_CACHE_BLOCK 512 /* the separate caches' sectors */
+#endif
+#if GBL_CACHE_BLOCK == 128
+#define GBL_CACHE_SHIFT 7
+#elif GBL_CACHE_BLOCK == 256
+#define GBL_CACHE_SHIFT 8
+#elif GBL_CACHE_BLOCK == 512
+#define GBL_CACHE_SHIFT 9
+#else
+#error "GBL_CACHE_BLOCK: 128, 256 or 512"
+#endif
+#if GBL_CACHE_UNIFIED && (GBL_CACHE_BYTES % GBL_CACHE_BLOCK || GBL_CACHE_BYTES / GBL_CACHE_BLOCK < 4 || \
+                          GBL_CACHE_BYTES / GBL_CACHE_BLOCK > 255 ||                                   \
+                          GBL_CACHE_MENU_STACK + 512 + 3 * GBL_CACHE_BLOCK > GBL_CACHE_BYTES)
+#error "GBL_CACHE_BYTES: 4 to 255 blocks, room for the menu's stack and a sector"
 #endif
 
 /* ---- what the build can do: Thumb-1 paths need an ARMv6-M compiler (not

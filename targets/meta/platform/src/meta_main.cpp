@@ -395,7 +395,11 @@ __attribute__((naked, noinline)) static void call_on_stack(void (*fn)(void), uin
 
 static void option_menu(void);
 static void run_menu(void) {
+#if GBL_CACHE_UNIFIED
+    uintptr_t top = gbl_cache_lend(); /* written back, kept out until gbl_stream_invalidate */
+#else
     uintptr_t top = ((uintptr_t)gbl_stream_scratch() + GBL_STREAM_SECTORS * 512u) & ~(uintptr_t)7;
+#endif
     call_on_stack(option_menu, top);
     gbl_stream_invalidate();
 }
@@ -539,9 +543,63 @@ extern "C" void gbl_platform_safe_point(void) {
     longjmp(restart_point, 2); /* the machine as loaded: start over from gbr.pc */
 }
 
+#ifndef META_DEBUG_TRACE
+#define META_DEBUG_TRACE 0
+#endif
+#if META_DEBUG_TRACE
+/* Debug: the machine at every VBlank in a ring that meta-usb.py trace reads
+ * several times a second into a file.  top is the word at sp, read without
+ * touching the cartridge RAM cache (0xEEEE when its sector is not mapped).
+ * flags: ime, then the low 7 bits of the card's re-identifications. */
+struct meta_trace_rec {
+    uint32_t frame;
+    uint16_t pc, sp, hl, top;
+    uint8_t bank, a, flags, save_errors;
+};
+#define META_TRACE_LEN 16
+extern "C" {
+volatile uint32_t meta_trace_pos; /* records written */
+meta_trace_rec meta_trace[META_TRACE_LEN];
+extern uint32_t meta_sd_reinits;
+}
+
+static int trace_peek(uint16_t a) {
+    if (a >= 0xC000 && a < 0xFE00) return gbl_wram[(a - 0xC000) & 0x1FFF];
+    if (a >= 0xFF80 && a < 0xFFFF) return gbl_hram[a - 0xFF80];
+#if GBL_ERAM_ON_SD
+    if (a - 0xA000u < 0x2000u) {
+        const uint8_t *e = gbl_eram_rmap[(a - 0xA000u) >> 9];
+        return e ? e[a] : -1;
+    }
+#endif
+    return -1;
+}
+
+static void trace_frame(void) {
+    meta_trace_rec *r = &meta_trace[meta_trace_pos % META_TRACE_LEN];
+    int lo = trace_peek(gbr.sp), hi = trace_peek((uint16_t)(gbr.sp + 1));
+    r->frame = gbl_frame;
+    r->pc = gbr.pc;
+    r->sp = gbr.sp;
+    r->hl = gbr.hl;
+    r->top = lo < 0 || hi < 0 ? 0xEEEE : (uint16_t)(lo | hi << 8);
+    r->bank = (uint8_t)gbr.rom_bank;
+    r->a = gbr.a;
+    r->flags = (uint8_t)((gbr.ime & 1u) | (meta_sd_reinits & 0x7Fu) << 1);
+    r->save_errors = (uint8_t)meta_save_errors;
+    meta_trace_pos++;
+}
+#endif
+
 extern "C" void gbl_platform_vblank(void) {
 #if !META_TARGET_POKITTO
     meta_watchdog_feed(); /* once per frame (meta_startup.c) */
+#endif
+#if META_DEBUG_TRACE
+    trace_frame();
+#endif
+#if GBL_DEBUG_RESTART && GBL_ERAM_ON_SD
+    gbl_dbg_tables_check(0);
 #endif
     usb_poll(1);
     int bus_free = close_frame();
@@ -700,10 +758,20 @@ int main(void) {
     uintptr_t limit = (uintptr_t)&probe - 3072u;
     uintptr_t floor_addr = (uintptr_t)&DATA_END + META_STACK_RESERVE; /* gbl_profile.h */
     gbl_stack_limit = limit > floor_addr ? limit : floor_addr;
+    /* Too little RAM left (caches, debug records): the unguarded calls
+     * below the limit would run into .bss.  Cyan screen instead. */
+#ifndef META_STACK_NEST_MIN
+#define META_STACK_NEST_MIN 256
+#endif
+    if ((uintptr_t)&probe < floor_addr + META_STACK_NEST_MIN) boot_error(META_COLOR(0x00FFFF));
 
     /* The menu's "Redemarrer" comes back here (from inside the emulation:
      * longjmp drops its C frames). */
-    if (setjmp(restart_point) != 2) gbl_reset(); /* 2: a state was loaded */
+    int resumed = setjmp(restart_point);
+#if GBL_CACHE_UNIFIED
+    gbl_stream_invalidate(); /* the menu's blocks, when it left by longjmp */
+#endif
+    if (resumed != 2) gbl_reset(); /* 2: a state was loaded */
     gbl_skip_render = 0;
     pace_reset();
     stat_start_ms = millis();

@@ -100,10 +100,19 @@ static void timer_stop(void) {
 
 #if META_AUDIO_DMA
 
-#define RING 768u    /* samples (1.5 KiB), about two frames */
-#define LATENCY 256u /* samples queued before the first one after a restart */
+/* Samples in the ring (META_AUDIO_RING, 2 bytes each): 768 (1.5 KiB, about
+ * two frames) by default.  The latency after a restart and the shortest
+ * chunk queued are a third of it each. */
+#ifndef META_AUDIO_RING
+#define META_AUDIO_RING 768u
+#endif
+#define RING ((unsigned)(META_AUDIO_RING))
+#define LATENCY ((RING / 3u) & ~1u) /* samples queued before the first one after a restart */
 #define GUARD 8u     /* margin around the estimated DMA position */
-#define MIN_CHUNK 256u /* fewer samples than this are dropped, not queued */
+#define MIN_CHUNK ((RING / 3u) & ~1u) /* fewer samples than this are dropped, not queued */
+#if META_AUDIO_RING < 192
+#error "META_AUDIO_RING: at least 192 samples"
+#endif
 #define SLOTS 8u     /* linked descriptors: at most three chunks of MIN_CHUNK
                       * are queued, two descriptors each, plus the end */
 

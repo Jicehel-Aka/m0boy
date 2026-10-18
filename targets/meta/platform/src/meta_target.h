@@ -53,6 +53,15 @@
 /* Where the loader copies the game's .BIN (gamebuino_meta.ld): its first
  * sector identifies the game's folder on the card (meta_fat_game_dir). */
 #define META_APP_START ((const uint8_t *)0x4000u)
+/* Debug: count what is still busy on the shared SPI bus when the pad or
+ * the card takes it (meta_bus_violations, meta_lcd.cpp); off by default. */
+#ifndef META_DEBUG_BUS
+#define META_DEBUG_BUS 0
+#endif
+#ifdef __cplusplus
+extern "C"
+#endif
+void meta_lcd_bus_check(void);
 /* The SAMD21 starts at 48 MHz; META_OVERCLOCK asks for 72 once the clocks are
  * set up (meta_clock.cpp), past its rating. */
 #define META_CLOCK_DEFAULT (META_OVERCLOCK ? 72 : 48)

@@ -262,6 +262,33 @@ uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
 #endif
 }
 
+#if META_DEBUG_BUS
+/* Debug (meta-usb.py read meta_bus_violations): what should be idle when
+ * the pad or the card takes the bus, counted per kind: 0 the display DMA
+ * channel still enabled, 1 the display's CS low, 2 a byte waiting in DATA,
+ * 3 the strip queue busy.  Index 4 counts the checks. */
+extern "C" {
+volatile uint32_t meta_bus_violations[5];
+}
+extern "C" void meta_lcd_bus_check(void) {
+    unsigned bad = 0;
+#if META_LCD_DMA
+    __disable_irq();
+    uint8_t chid = DMAC->CHID.reg;
+    DMAC->CHID.reg = DMAC_CHID_ID(META_DMA_LCD);
+    if (DMAC->CHCTRLA.reg & DMAC_CHCTRLA_ENABLE) bad |= 1;
+    DMAC->CHID.reg = chid;
+    __enable_irq();
+    if (lcdq_busy()) bad |= 8;
+#endif
+    if (!(TFT_PORT.OUT.reg & TFT_CS_MASK)) bad |= 2;
+    if (!(SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_DRE)) bad |= 4;
+    for (unsigned k = 0; k < 4; k++)
+        if (bad & (1u << k)) meta_bus_violations[k]++;
+    meta_bus_violations[4]++;
+}
+#endif
+
 int meta_lcd_release(void) {
     if (meta_lcd_busy()) return 0;
     if (in_transaction) {

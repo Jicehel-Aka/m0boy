@@ -38,8 +38,11 @@ void meta_watchdog_feed(void);
 void meta_reset_to_bootloader(void) __attribute__((weak));
 extern volatile uint8_t meta_usb_bootloader_request __attribute__((weak));
 
+void gbl_dbg_tables_check(uint32_t where) __attribute__((weak));
+
 void meta_fault_c(uint32_t *frame) {
     for (int i = 0; i < 8; i++) meta_fault.frame[i] = frame[i];
+    if (gbl_dbg_tables_check) gbl_dbg_tables_check(1); /* debug builds only */
     uint32_t ipsr;
     __asm__ volatile("mrs %0, ipsr" : "=r"(ipsr));
     meta_fault.exception = ipsr;
@@ -222,7 +225,48 @@ void SystemInit(void) {
     NVMCTRL->CTRLB.bit.MANW = 1; /* no automatic flash writes (errata 13134) */
 }
 
+#ifndef META_DEBUG_RESET
+#define META_DEBUG_RESET 0
+#endif
+#if META_DEBUG_RESET
+/* What the previous run left in RAM, copied before .bss is cleared, for a
+ * restart that logs no fault (a jump to the loader or to this handler):
+ * lr, sp and ipsr at entry, its uptime, the SysTick PC samples of its last
+ * 32 ms (meta_usb_prof), the Game Boy registers and frame.  meta-usb.py
+ * reset reads it. */
+#define META_RESET_MAGIC 0x52535431u
+__attribute__((section(".noinit"))) volatile struct {
+    uint32_t magic, boots, lr, sp, ipsr, ticks, prof[33], gbr[6], frame;
+} meta_reset_trace;
+extern const uint32_t gbr[] __attribute__((weak));
+extern const uint32_t gbl_frame __attribute__((weak));
+static void reset_body(void);
+
+__attribute__((naked)) void Reset_Handler(void) {
+    __asm__ volatile("mov r0, lr\n mov r1, sp\n mrs r2, ipsr\n ldr r3, =__StackTop\n mov sp, r3\n"
+                     "b reset_trace\n .ltorg\n");
+}
+
+__attribute__((used)) static void reset_trace(uint32_t lr, uint32_t sp, uint32_t ipsr) {
+    if (meta_reset_trace.magic != META_RESET_MAGIC) {
+        meta_reset_trace.magic = META_RESET_MAGIC;
+        meta_reset_trace.boots = 0;
+    }
+    meta_reset_trace.boots++;
+    meta_reset_trace.lr = lr;
+    meta_reset_trace.sp = sp;
+    meta_reset_trace.ipsr = ipsr;
+    meta_reset_trace.ticks = ticks;
+    for (unsigned i = 0; i < 33; i++) meta_reset_trace.prof[i] = meta_usb_prof ? meta_usb_prof[i] : 0;
+    for (unsigned i = 0; i < 6; i++) meta_reset_trace.gbr[i] = gbr ? gbr[i] : 0;
+    meta_reset_trace.frame = &gbl_frame ? gbl_frame : 0;
+    reset_body();
+}
+
+static void reset_body(void) {
+#else
 void Reset_Handler(void) {
+#endif
     SCB->VTOR = (uint32_t)meta_vectors & SCB_VTOR_TBLOFF_Msk;
 
     /* The loader leaves its launch watchdog armed and nothing here feeds

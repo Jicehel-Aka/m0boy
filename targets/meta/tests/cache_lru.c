@@ -32,29 +32,42 @@ int gbl_platform_line_check(uint8_t ly, uint32_t sig) { (void)ly; (void)sig; ret
 
 #define W GBL_ERAM_CACHE_SECTORS
 static int tag[W];
-static uint8_t ref[W];
+static uint8_t ref[W], dirty[W];
 static unsigned hand, mru;
 static uint8_t values[NSEC];
 static unsigned bank = ~0u;
+static unsigned find(unsigned s) {
+    unsigned i = 0;
+    while (i < W && tag[i] != (int)s) ++i;
+    return i;
+}
+static void make_newest(unsigned i) { ref[i] = 1; mru = i; }
+#if GBL_DEBUG_ERAM_SUM
+#define VERIFIES gbl_dbg_eram_sum.verifies /* read-backs of evicted sectors */
+#else
+#define VERIFIES 0u
+#endif
 static void access_sector(unsigned s, unsigned step) {
-    /* Model: CLOCK, the newest way (behind the window) never evicted and
-     * marked when it becomes the newest. */
-    unsigned before = reads, miss = 0;
-    if (tag[mru] != (int)s) {
-        unsigned i = 0;
-        while (i < W && tag[i] != (int)s) ++i;
-        if (i == W) {
-            miss = 1;
-            for (;;) {
-                i = hand;
-                hand = (hand + 1) % W;
-                if (W > 1 && i == mru) continue;
-                if (!ref[i]) break;
-                ref[i] = 0;
-            }
-            tag[i] = (int)s;
+    /* Model: CLOCK, the newest way never evicted.  Reads and writes of a
+     * referenced way go through the tables (writes only once it is dirty)
+     * and change nothing; any other access goes through the search, which
+     * makes the way the newest and referenced. */
+    unsigned before = reads - VERIFIES, miss = 0;
+    unsigned i = find(s);
+    if (i == W) {
+        miss = 1;
+        for (;;) {
+            i = hand;
+            hand = (hand + 1) % W;
+            if (W > 1 && i == mru) continue;
+            if (!ref[i]) break;
+            ref[i] = 0;
         }
-        if (i != mru) { ref[i] = 1; mru = i; }
+        tag[i] = (int)s;
+        dirty[i] = 0;
+        make_newest(i);
+    } else if (!ref[i]) {
+        make_newest(i);
     }
     if (s / 16 != bank) {
         bank = s / 16;
@@ -62,11 +75,16 @@ static void access_sector(unsigned s, unsigned step) {
     }
     uint16_t a = (uint16_t)(0xA000 + (s % 16) * 512);
     assert(gbl_rd(a) == values[s]);
-    assert(reads == before + miss);
+    assert(reads - VERIFIES == before + miss);
     if ((step & 3u) == 0) {
         values[s] = (uint8_t)(values[s] + 1);
         gbl_wr(a, values[s]);
+        if (!dirty[i]) make_newest(i);
+        dirty[i] = 1;
     }
+}
+static void model_clean(void) {
+    for (unsigned i = 0; i < W; ++i) dirty[i] = 0;
 }
 int main(void) {
     for (unsigned i = 0; i < W; ++i) tag[i] = -1;
@@ -101,6 +119,7 @@ int main(void) {
     for (int i = 0; (i = gbl_save_flush_next(i)) >= 0;) ++steps;
     assert(writes == before + steps && steps <= GBL_ERAM_CACHE_SECTORS && !gbl_save_pending());
     assert(gbl_save_flush_next(0) < 0 && writes == before + steps);
+    model_clean();
     for (unsigned i = 0; i < NSEC; ++i) assert(disk[i][0] == values[i]);
     /* Sectors written back stay cached and take new writes. */
     for (unsigned i = 0; i < 4000; ++i) {
@@ -108,8 +127,30 @@ int main(void) {
         access_sector((rng >> 16) % 6, i);
     }
     gbl_save_flush();
+    model_clean();
     for (unsigned i = 0; i < NSEC; ++i) assert(disk[i][0] == values[i]);
     assert(writes > 0);
+#if GBL_DEBUG_ERAM_MAPS
+    assert(gbl_dbg_eram.reads > 0 && gbl_dbg_eram.writes > 0 && gbl_dbg_eram.errors == 0);
+    printf("%u reads, %u writes through the tables checked\n", (unsigned)gbl_dbg_eram.reads,
+           (unsigned)gbl_dbg_eram.writes);
+#endif
+#if GBL_DEBUG_STACK
+    /* A stack in cartridge RAM, its sector evicted between push and pop. */
+    gbl_wr(0x4000, 0);
+    gbr.sp = 0xA900;
+    for (unsigned i = 0; i < 2000; ++i) {
+        gbl_push((uint16_t)(0xAD00 + i));
+        gbl_rd((uint16_t)(0xA000 + (i % 16) * 512));
+        assert(gbl_pop() == (uint16_t)(0xAD00 + i));
+    }
+    assert(gbl_dbg_stack.checked >= 4000 && gbl_dbg_stack.bad == 0 && !gbl_dbg_stack.frozen);
+    printf("%u stack bytes popped and checked\n", (unsigned)gbl_dbg_stack.checked);
+#endif
+#if GBL_DEBUG_ERAM_SUM
+    assert(gbl_dbg_eram_sum.verifies > 0 && gbl_dbg_eram_sum.errors == 0);
+    printf("%u SD round trips checked\n", (unsigned)(gbl_dbg_eram_sum.verifies + gbl_dbg_eram_sum.loads));
+#endif
     puts("CLOCK matches model; dirty data kept; bank 0 bypasses ROM cache");
     return 0;
 }

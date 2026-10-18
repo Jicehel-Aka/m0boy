@@ -8,6 +8,12 @@
   meta-usb.py press --elf E KEYS [--ms 150] hold buttons: down,left,right,up,a,b,menu,home
   meta-usb.py fault --elf E                 the last fault (kept across the automatic
                                             restart that follows it), with addr2line
+  meta-usb.py eram  --elf E [--watch]       cartridge RAM read-table divergences
+                                            (firmware built with -DGBL_DEBUG_ERAM_MAPS=1)
+  meta-usb.py reset --elf E                 what the run before the last restart left
+                                            (firmware built with -DMETA_DEBUG_RESET=1)
+  meta-usb.py restart --elf E               buttons before each RAM enable write (game
+                                            restart; firmware built with -DGBL_DEBUG_RESTART=1)
   meta-usb.py boot                          1200-baud touch: the console goes to sam-ba
   meta-usb.py flash FIRMWARE.bin            boot, then bossac at 0x4000, then reset
 
@@ -173,6 +179,265 @@ def cmd_fault(c: Console, elf: str) -> None:
     print("lr in %s (%s)" % (out[2], out[3]))
 
 
+ERAM_REC = struct.Struct("<3I2H4B2b2B16h16b16b4BI")  # gbl_dbg_eram_rec_t (gbl.h)
+
+
+def eram_rec(name: str, r: tuple) -> None:
+    frame, got_ptr, want_ptr, addr, pc, got_v, want_v, bank, ram_enable, got_way, want_way, mru, ways = r[:13]
+    tags, rslots, wslots, kind, flags = r[13:29][:ways], r[29:45], r[45:61], r[61], r[65]
+    print("%s: frame %d, %s %04X (bank %d, RAM %s), GB pc %04X" %
+          (name, frame, "write" if kind else "read", addr, bank, "on" if ram_enable else "OFF", pc))
+    print("  table: way %d @0x%08x byte %02X ; search: way %d @0x%08x byte %02X" %
+          (got_way, got_ptr, got_v, want_way, want_ptr, want_v))
+    print("  ways (sector, r=referenced d=dirty; newest %d): %s" % (mru, " ".join(
+        "%d:%d%s%s" % (i, t, "r" if flags >> (2 * i) & 1 else "", "d" if flags >> (2 * i) & 2 else "")
+        for i, t in enumerate(tags))))
+    for label, slots in (("read ", rslots), ("write", wslots)):
+        print("  %s slots A000+n*200 -> way: %s" %
+              (label, " ".join("%X:%s" % (i, {-1: "-", -2: "??"}.get(w, str(w))) for i, w in enumerate(slots))))
+
+
+def cmd_eram(c: Console, elf: str, watch: bool) -> None:
+    addr = address("gbl_dbg_eram", elf)[0]
+    seen = -1
+    while True:
+        data = c.read(addr, 16 + 2 * ERAM_REC.size)
+        reads, writes, errors, rebuilds = struct.unpack_from("<4I", data)
+        if errors != seen or not watch:
+            print("%s  %d reads, %d writes checked, %d table rebuilds, %d divergences" %
+                  (time.strftime("%H:%M:%S"), reads, writes, rebuilds, errors))
+            if errors:
+                eram_rec("first", ERAM_REC.unpack_from(data, 16))
+                if errors > 1:
+                    eram_rec("last", ERAM_REC.unpack_from(data, 16 + ERAM_REC.size))
+            sys.stdout.flush()
+            seen = errors
+        if not watch:
+            return
+        time.sleep(1)
+
+
+def cmd_reset(c: Console, elf: str) -> None:
+    w = struct.unpack("<46I", c.read(address("meta_reset_trace", elf)[0], 184))
+    magic, boots, lr, sp, ipsr, ticks = w[:6]
+    prof, regs, frame = w[6:39], struct.pack("<6I", *w[39:45]), w[45]
+    if magic != 0x52535431:
+        print("no trace")
+        return
+    starts, names = functions(elf)
+
+    def where(pc: int) -> str:
+        i = bisect.bisect_right(starts, pc & ~1) - 1
+        return "%s+0x%x" % (names[i], (pc & ~1) - starts[i]) if i >= 0 and pc >= 0x4000 else "0x%08x" % pc
+
+    print("boots since the trace began: %d; this boot: entry lr 0x%08x (%s), sp 0x%08x, ipsr %d" %
+          (boots, lr, where(lr), sp, ipsr))
+    print("previous run: %.1f s, Game Boy frame %d" % (ticks / 1000.0, frame))
+    bc, de, hl, gsp, gpc = struct.unpack_from("<5H", regs)
+    a = regs[10]
+    print("Game Boy: pc %04X sp %04X a %02X bc %04X de %04X hl %04X bank %d" %
+          (gpc, gsp, a, bc, de, hl, struct.unpack_from("<H", regs, 16)[0]))
+    count = prof[0]
+    print("last PC samples (1 ms apart, oldest first):")
+    for k in range(max(0, count - 32), count):
+        pc = prof[1 + (k & 31)]
+        print("  0x%08x  %s" % (pc, where(pc)))
+
+
+RESTART_SNAP = struct.Struct("<2I2H4B16B16H")  # gbl_dbg_restart_snap_t (gbl.h)
+GB_KEYS = ["A", "B", "Sel", "Start", "R", "L", "U", "D"]
+
+
+def gb_keys(b: int) -> str:
+    return "+".join(k for i, k in enumerate(GB_KEYS) if b >> i & 1) or "-"
+
+
+def cmd_stack(c: Console, elf: str) -> None:
+    """gbl_dbg_stack (GBL_DEBUG_STACK): the pop check and the last writer of
+    each shadowed byte."""
+    base = address("gbl_dbg_stack", elf)[0]
+    head = c.read(base, 32) + c.read(base + 32, 8)
+    magic, pops, checked, bad, frozen, frozen_frame, bad_frame = struct.unpack_from("<7I", head)
+    if magic != 0x4B415453:
+        sys.exit("gbl_dbg_stack: no magic (firmware without GBL_DEBUG_STACK?)")
+    bad_sp, bad_addr, bad_pc, bad_bank, got, want, n = struct.unpack_from("<4H2BH", head, 28)
+    base_addr = 0xA900 - n
+    tail = 40 + n + n // 8 + 8 * n
+    data = b"".join(c.read(base + o, 32) for o in range(0, tail + 60 + 2 * n, 32))
+    now = struct.unpack("<I", c.read(address("gbl_frame", elf)[0], 4))[0]
+    print("pops %d, bytes checked %d, wrong %d; now frame %d" % (pops, checked, bad, now))
+    print("frozen: %s" % {0: "no", 1: "RAM switched off at frame %d" % frozen_frame,
+                          2: "wrong pop at frame %d" % frozen_frame}.get(frozen, str(frozen)))
+    if bad:
+        print("first wrong pop: frame %d, sp %04X, [%04X] read %02X, shadow %02X, pc %02X:%04X" %
+              (bad_frame, bad_sp, bad_addr, got, want, bad_bank, bad_pc))
+    value, valid = data[40:40 + n], data[40 + n:40 + n + n // 8]
+    o = 40 + n + n // 8
+    pcs, sps, frames, lrs = (struct.unpack_from("<%dH" % n, data, o + k * 2 * n) for k in range(4))
+    starts, names = functions(elf)
+
+    def where(pc: int) -> str:
+        i = bisect.bisect_right(starts, pc & ~1) - 1
+        return "%s+0x%x" % (names[i], (pc & ~1) - starts[i]) if i >= 0 else "0x%08x" % pc
+
+    loads, wbs, load_frame, wb_frame, flags = struct.unpack_from("<5I", data, tail)
+    tags = struct.unpack_from("<16h", data, tail + 20)
+    rway, wway, tway, mru, hand = struct.unpack_from("<5b", data, tail + 52)
+    at_loads, actual = data[tail + 60:tail + 60 + n], data[tail + 60 + n:tail + 60 + 2 * n]
+    print("stack sector: %d loads into the cache (last frame %d), %d write-backs (last frame %d)" %
+          (loads, load_frame, wbs, wb_frame))
+    if bad:
+        ways = [i for i, t in enumerate(tags) if t != -2]
+        print("at the wrong pop: read table way %d, write table way %d, search way %d; mru %d, hand %d" %
+              (rway, wway, tway, mru, hand))
+        print("  ways (tag ref dirty): " + "  ".join(
+            "%d:%d%s%s" % (w, tags[w], "R" if flags >> (2 * w) & 1 else "-", "D" if flags >> (2 * w + 1) & 1 else "-")
+            for w in ways))
+    print("addr  val  cache  loads@w  frame(lo16)  GB pc  GB sp  native caller (lr/4*4)")
+    for i in range(n):
+        if valid[i >> 3] >> (i & 7) & 1:
+            mark = "  " if not bad or actual[i] == value[i] else " *"
+            print("%04X  %02X   %02X%s   %3d      %6d       %04X   %04X   %s" %
+                  (base_addr + i, value[i], actual[i], mark, at_loads[i], frames[i], pcs[i], sps[i],
+                   where(lrs[i] << 2 | 1)))
+
+
+TRACE_REC = struct.Struct("<I4H4B")  # meta_main.cpp meta_trace_rec
+TRACE_LEN = 16
+
+
+def cmd_trace(port: str | None, elf: str, out: str, seconds: float) -> None:
+    """META_DEBUG_TRACE: append every frame's record (meta_trace ring) to out,
+    reconnecting when the console goes away; a line per missed run."""
+    ring, pos_addr = address("meta_trace", elf)[0], address("meta_trace_pos", elf)[0]
+    end = time.time() + seconds if seconds else None
+    last, c, f = None, None, open(out, "a", buffering=1)
+    f.write("# %s start; frame pc sp hl [sp] bank a ime reinits save_errors\n" % time.strftime("%F %T"))
+    same_pc, shown = 0, time.time()
+    while end is None or time.time() < end:
+        try:
+            if c is None:
+                c = Console(port)
+                f.write("# %s connected\n" % time.strftime("%T"))
+            pos = struct.unpack("<I", c.read(pos_addr, 4))[0]
+            if last is None or pos < last:
+                last = max(0, pos - TRACE_LEN)
+            if pos - last > TRACE_LEN:
+                f.write("# %d records missed\n" % (pos - last - TRACE_LEN))
+                last = pos - TRACE_LEN
+            if pos > last:
+                data = b"".join(c.read(ring + o, 32) for o in range(0, TRACE_REC.size * TRACE_LEN, 32))
+                for k in range(last, pos):
+                    frame, pc, sp, hl, top, bank, a, flags, errs = TRACE_REC.unpack_from(
+                        data, (k % TRACE_LEN) * TRACE_REC.size)
+                    f.write("%d %04X %04X %04X %04X %02X %02X %d %d %d\n" %
+                            (frame, pc, sp, hl, top, bank, a, flags & 1, flags >> 1, errs))
+                    same_pc = same_pc + 1 if pc == getattr(cmd_trace, "pc", -1) else 0
+                    cmd_trace.pc = pc
+                last = pos
+            if time.time() - shown > 10:
+                shown = time.time()
+                print("%s records %d%s" % (time.strftime("%T"), pos,
+                                          ", pc %04X unchanged for %d frames" % (cmd_trace.pc, same_pc)
+                                          if same_pc > 120 else ""), flush=True)
+        except (IOError, OSError, serial.SerialException, SystemExit) as e:
+            if c is not None:
+                f.write("# %s lost the console: %s\n" % (time.strftime("%T"), e))
+            c = None
+            time.sleep(1)
+            continue
+        time.sleep(0.15)
+
+
+def cmd_restart(c: Console, elf: str) -> None:
+    base = address("gbl_dbg_restart", elf)[0]
+    data = b"".join(c.read(base + o, 32) for o in range(0, 60 + 2 * RESTART_SNAP.size + 76, 32))
+    writes, combo, pos = struct.unpack_from("<3I", data)
+    print("RAM enable writes: %d; frames with A+B+Select+Start held: %d; now frame %d" %
+          (writes, combo, struct.unpack("<I", c.read(address("gbl_frame", elf)[0], 4))[0]))
+    for k in range(max(0, writes - 2), writes):
+        r = RESTART_SNAP.unpack_from(data, 60 + (k & 1) * RESTART_SNAP.size)
+        frame, combo_then, addr, sp, value, ram_enable, bank = r[:7]
+        keys, kframes = r[8:24], r[24:40]
+        print("write %d: frame %d, [%04X] = %02X (RAM was %s), GB sp %04X, bank %d, combo frames so far %d" %
+              (k + 1, frame, addr, value, "on" if ram_enable else "off", sp, bank, combo_then))
+        print("  button changes before it (frame: keys):")
+        print("   " + "  ".join("%d:%s" % (f, gb_keys(b)) for b, f in zip(keys, kframes) if f or b))
+    o = 60 + 2 * RESTART_SNAP.size
+    bank_pos, lock_frame, lock_pc, lock_bank = struct.unpack_from("<2I2H", data, o)
+    vals, shadows = data[o + 12:o + 28], data[o + 28:o + 44]
+    frames = struct.unpack_from("<16H", data, o + 44)
+    if lock_frame:
+        print("undefined opcode first hit: frame %d, pc %02X:%04X (ROM bank writes frozen there)" %
+              (lock_frame, lock_bank, lock_pc))
+    off = address("gbl_dbg_off", elf)[0]
+    od = b"".join(c.read(off + k, 32) for k in range(0, 192, 32))
+    frame, lr, sp, a_, v_ = struct.unpack_from("<3I2H", od)
+    if frame:
+        starts, names = functions(elf)
+
+        def where(pc: int) -> str:
+            i = bisect.bisect_right(starts, pc & ~1) - 1
+            return "%s+0x%x" % (names[i], (pc & ~1) - starts[i]) if i >= 0 else "0x%08x" % pc
+
+        regs = od[16:40]
+        bc, de, hl, gsp, gpc = struct.unpack_from("<5H", regs)
+        print("first RAM switch-off: frame %d, [%04X] = %02X, from %s (C sp 0x%08x)" % (frame, a_, v_, where(lr), sp))
+        print("  Game Boy: pc %04X (last stored) sp %04X a %02X bc %04X de %04X hl %04X bank %d" %
+              (gpc, gsp, regs[10], bc, de, hl, struct.unpack_from("<H", regs, 16)[0]))
+        print("  Game Boy stack from sp-4: " + od[40:56].hex(" "))
+        words = struct.unpack_from("<32I", od, 56)
+        print("  code addresses on the C stack: " + "  ".join(
+            where(w) for w in words if w & 1 and 0x4000 <= w < 0x40000))
+    bi = address("gbl_dbg_badirq", elf)[0]
+    bd = b"".join(c.read(bi + k, 32) for k in range(0, 224, 32))
+    magic, frame, lr, csp = struct.unpack_from("<4I", bd)
+    if magic == 0x51524942 and frame:
+        starts, names = functions(elf)
+
+        def where2(pc: int) -> str:
+            i = bisect.bisect_right(starts, pc & ~1) - 1
+            return "%s+0x%x" % (names[i], (pc & ~1) - starts[i]) if i >= 0 else "0x%08x" % pc
+
+        pc, sp, bc, de, hl, bank = struct.unpack_from("<6H", bd, 16)
+        a, ime = bd[28], bd[29]
+        print("interrupt taken at pc %02X:%04X (frame %d), from %s (C sp 0x%08x)" % (bank, pc, frame, where2(lr), csp))
+        print("  Game Boy: sp %04X a %02X bc %04X de %04X hl %04X; stack from sp-4: %s" %
+              (sp, a, bc, de, hl, bd[30:44].hex(" ")))
+        words = struct.unpack_from("<40I", bd, 44)
+        print("  code addresses on the C stack: " + "  ".join(
+            where2(w) for w in words if w & 1 and 0x4000 <= w < 0x40000))
+    tb = address("gbl_dbg_tables", elf)[0]
+    td = b"".join(c.read(tb + k, 32) for k in range(0, 224, 32))
+    magic, checks, bad, echo_n, echo_last, echo_frame = struct.unpack_from("<6I", td)
+    if magic == 0x54424C31:
+        print("table checks: %d, wrong entries: %d; echo RAM writes: %d (last [%04X]=%02X at frame %d)" %
+              (checks, bad, echo_n, echo_last >> 16, echo_last >> 8 & 255, echo_frame))
+        syms = {v[0]: k for k, v in symbols(elf).items()}
+        for k in range(min(bad, 2)):
+            r = struct.unpack_from("<6I17I", td, 24 + k * 92)
+            frame, where_, slot, addr, badv, want = r[:6]
+            print("  %s: frame %d (%s), %s[%d] @0x%08x = 0x%08x, should be 0x%08x" %
+                  ("first" if k == 0 else "last", frame, "VBlank" if where_ == 0 else "fault",
+                   "gbl_eram_rmap" if slot < 16 else "gbl_eram_wmap", slot % 16, addr, badv, want))
+            print("    words around (-8..+8): " + " ".join("%08x" % w for w in r[6:]))
+    ib = address("gbl_dbg_irq", elf)[0]
+    idt = b"".join(c.read(ib + k, 32) for k in range(0, 96, 32))
+    magic, entries, checked, ibad, unmatched = struct.unpack_from("<5I", idt)
+    if magic == 0x49525131:
+        print("interrupts: %d entries, %d RETI checked, %d with registers not restored, %d left without RETI" %
+              (entries, checked, ibad, unmatched))
+        if ibad:
+            for label, o in (("entry", 20), ("RETI ", 40)):
+                fr, isp, ipc, ibc, ide, ihl, ibank, ia, iff, vec = struct.unpack_from("<I6H3B", idt, o)
+                print("  %s: frame %d vector %02X  pc %04X sp %04X a %02X f %02X bc %04X de %04X hl %04X bank %d" %
+                      (label, fr, vec, ipc, isp, ia, iff, ibc, ide, ihl, ibank))
+            print("  Game Boy stack from sp-16 at the RETI: " + idt[60:84].hex(" "))
+    print("last ROM bank writes (frame: bank, $A24E then):")
+    print("   " + "  ".join("%d:%d,%s" % (frames[k & 15], vals[k & 15], "%d" % shadows[k & 15] if shadows[k & 15] != 0xEE else "?")
+                            for k in range(max(0, bank_pos - 16), bank_pos)))
+
+
 def cmd_boot(port: str | None) -> None:
     port = port or find_port(APP_PID)
     if not port:
@@ -220,6 +485,19 @@ def main() -> int:
     k.add_argument("keys", help="comma-separated: " + ",".join(BUTTONS))
     q = sub.add_parser("fault")
     q.add_argument("--elf", required=True)
+    e = sub.add_parser("eram")
+    e.add_argument("--elf", required=True)
+    e.add_argument("--watch", action="store_true", help="poll every second, print each change")
+    u = sub.add_parser("restart")
+    u.add_argument("--elf", required=True)
+    tr = sub.add_parser("trace")
+    tr.add_argument("--elf", required=True)
+    tr.add_argument("--out", required=True)
+    tr.add_argument("--seconds", type=float, default=0, help="0: until interrupted")
+    g = sub.add_parser("stack")
+    g.add_argument("--elf", required=True)
+    t = sub.add_parser("reset")
+    t.add_argument("--elf", required=True)
     sub.add_parser("boot")
     f = sub.add_parser("flash")
     f.add_argument("firmware")
@@ -230,6 +508,9 @@ def main() -> int:
         return 0
     if a.cmd == "flash":
         cmd_flash(a.port, a.firmware)
+        return 0
+    if a.cmd == "trace":
+        cmd_trace(a.port, a.elf, a.out, a.seconds)
         return 0
     c = Console(a.port)
     if a.cmd == "info":
@@ -250,6 +531,14 @@ def main() -> int:
         cmd_prof(c, a.elf, a.seconds, a.top)
     elif a.cmd == "fault":
         cmd_fault(c, a.elf)
+    elif a.cmd == "restart":
+        cmd_restart(c, a.elf)
+    elif a.cmd == "reset":
+        cmd_reset(c, a.elf)
+    elif a.cmd == "stack":
+        cmd_stack(c, a.elf)
+    elif a.cmd == "eram":
+        cmd_eram(c, a.elf, a.watch)
     elif a.cmd == "press":
         bits = 0
         for key in a.keys.lower().split(","):

@@ -31,6 +31,14 @@
 #define ENTER() do { } while (0)
 #endif
 
+/* RETI: with GBL_DEBUG_RESTART, the registers are checked against those at
+ * the interrupt's entry (gbl_dbg_reti). */
+#if GBL_DEBUG_RESTART
+#define RETI() do { gbr.pc = gbl_pop(); gbl_dbg_reti(); gbr.ime = 1; gbl_update_evt(); } while (0)
+#else
+#define RETI() do { gbr.pc = gbl_pop(); gbr.ime = 1; gbl_update_evt(); } while (0)
+#endif
+
 #define CY(n) (gbr.cyc += (uint32_t)(n))
 #define EVT() ((int32_t)(gbr.cyc - gbr.next_evt) >= 0)
 /* Poll devices/interrupts; leave the region if an interrupt did not return

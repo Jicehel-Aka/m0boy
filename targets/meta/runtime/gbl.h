@@ -123,6 +123,10 @@ uint8_t *gbl_stream_scratch(void);
 /* Empties the stream cache, after the platform used all its buffers
  * (GBL_STREAM_SECTORS x 512 bytes from gbl_stream_scratch()). */
 void gbl_stream_invalidate(void);
+/* GBL_CACHE_UNIFIED: a stack for the option menu on the cache's pool (all
+ * but 3 blocks, written back first), out of the cache until
+ * gbl_stream_invalidate. */
+uintptr_t gbl_cache_lend(void);
 extern uint32_t gbl_stream_misses;  /* sectors read so far */
 extern uint32_t gbl_stream_unpacked; /* ... decoded from compressed flash */
 
@@ -138,11 +142,146 @@ void gbl_save_flush(void);           /* write back what changed */
 int gbl_save_flush_next(int i);
 int gbl_save_pending(void);          /* changes not written yet */
 extern uint32_t gbl_save_last_change; /* gbl_frame of the last change */
-/* With GBL_ERAM_ON_SD: newest cartridge RAM sector, read and written by
- * gbl_rd / gbl_wr without the slow path (gbl_core.c). */
-#define GBL_ERAM_WIN_NONE 0x10000u
-extern uint32_t gbl_eram_rwin, gbl_eram_wwin;
-extern uint8_t *gbl_eram_rptr, *gbl_eram_wptr;
+/* With GBL_ERAM_ON_SD: cached cartridge RAM sectors read and written by
+ * gbl_rd / gbl_wr without the slow path, per 512-byte slot of A000-BFFF
+ * (gbl_core.c). */
+extern uint8_t *gbl_eram_rmap[], *gbl_eram_wmap[]; /* 0x2000 / GBL_CACHE_BLOCK entries */
+/* With GBL_DEBUG_ERAM_MAPS: an access through those tables that the sector
+ * search contradicts (meta-usb.py eram decodes it; keep the layout in
+ * step). */
+typedef struct {
+    uint32_t frame, got_ptr, want_ptr;
+    uint16_t addr, pc;
+    uint8_t got_v, want_v, bank, ram_enable;
+    int8_t got_way, want_way;
+    uint8_t mru, ways;
+    int16_t tag[16];     /* sector of each way (-1 empty, -2 no such way) */
+    int8_t rmap_way[16]; /* way each read slot points to (-1 none, -2 no buffer) */
+    int8_t wmap_way[16]; /* the same for writes */
+    uint8_t kind, pad[3]; /* 0 read, 1 write */
+    uint32_t flags;      /* 2 bits per way: referenced, dirty */
+} gbl_dbg_eram_rec_t;
+typedef struct {
+    uint32_t reads, writes, errors, rebuilds;
+    gbl_dbg_eram_rec_t first, last;
+} gbl_dbg_eram_t;
+extern gbl_dbg_eram_t gbl_dbg_eram;
+uint8_t gbl_dbg_eram_rd(uint16_t a, uint8_t v);
+/* With GBL_DEBUG_RESTART (gbl_core.c): button changes (Game Boy bits,
+ * gbl_set_buttons), and a copy of the last 16 at each RAM enable write.
+ * meta-usb.py restart decodes it; keep the layout in step. */
+typedef struct {
+    uint32_t frame, combo_frames;
+    uint16_t addr, sp;
+    uint8_t value, ram_enable, bank, pad;
+    uint8_t buttons[16];
+    uint16_t button_frame[16];
+} gbl_dbg_restart_snap_t;
+typedef struct {
+    uint32_t writes, combo_frames, pos;
+    uint8_t buttons[16];
+    uint16_t button_frame[16];
+    gbl_dbg_restart_snap_t snap[2];
+    /* ROM bank writes (2000-3FFF), with $A24E (Super Mario Land 2's copy
+     * of the bank; EE when not cached), frozen at the first undefined
+     * opcode (lock_frame, lock_pc, lock_bank). */
+    uint32_t bank_pos, lock_frame;
+    uint16_t lock_pc, lock_bank;
+    uint8_t bank_val[16], bank_shadow[16];
+    uint16_t bank_frame[16];
+} gbl_dbg_restart_t;
+extern gbl_dbg_restart_t gbl_dbg_restart;
+/* The first write that switches cartridge RAM off (GBL_DEBUG_RESTART):
+ * the native return address and C stack (the generated region that made
+ * it), the Game Boy registers and the top of its stack. */
+typedef struct {
+    uint32_t frame, lr, sp;
+    uint16_t addr, value;
+    uint32_t gbr[6];
+    uint8_t gb_stack[16];
+    uint32_t c_stack[32];
+} gbl_dbg_off_t;
+extern gbl_dbg_off_t gbl_dbg_off;
+/* gbl_eram_rmap / gbl_eram_wmap against what they should hold
+ * (GBL_DEBUG_RESTART): checked at each VBlank (where 0) and on a fault
+ * (where 1); the first and the last wrong entries with the 17 words around
+ * them, then the entry is repaired.  Also writes to echo RAM. */
+typedef struct {
+    uint32_t frame, where, slot, addr, bad, want;
+    uint32_t around[17];
+} gbl_dbg_tables_rec_t;
+typedef struct {
+    uint32_t magic, checks, bad, echo_writes, echo_last, echo_frame;
+    gbl_dbg_tables_rec_t rec[2];
+} gbl_dbg_tables_t;
+extern gbl_dbg_tables_t gbl_dbg_tables;
+void gbl_dbg_tables_check(uint32_t where);
+/* Interrupts against their RETI (GBL_DEBUG_RESTART): the registers at the
+ * entry (gbl_irq_enter) must be back, and the return address the one
+ * pushed, when the RETI pops the entry's frame.  The first difference is
+ * kept (.noinit) with the Game Boy stack around sp. */
+typedef struct {
+    uint32_t frame;
+    uint16_t sp, pc, bc, de, hl, bank;
+    uint8_t a, f, vector, pad;
+} gbl_dbg_irq_regs_t;
+typedef struct {
+    uint32_t magic, entries, checked, bad, unmatched;
+    gbl_dbg_irq_regs_t at_entry, at_reti;
+    uint8_t stack[24]; /* Game Boy stack from sp - 16 at the RETI */
+} gbl_dbg_irq_t;
+extern gbl_dbg_irq_t gbl_dbg_irq;
+void gbl_dbg_reti(void);
+/* The first interrupt taken at a pc in 0068-014F (GBL_DEBUG_RESTART): data
+ * and the cartridge header in most games, so a pc gone wrong before the
+ * entry.  The native return address of gbl_irq_enter (interpreter or
+ * gbl_event) and the C stack above it name the path that left it. */
+typedef struct {
+    uint32_t magic, frame, lr, csp;
+    uint16_t pc, sp, bc, de, hl, bank;
+    uint8_t a, ime, gb_stack[14];
+    uint32_t c_stack[40];
+} gbl_dbg_badirq_t;
+extern gbl_dbg_badirq_t gbl_dbg_badirq;
+/* With GBL_DEBUG_ERAM_SUM (gbl_core.c): the cache's SD round trips. kind
+ * of the last error: 1 an evicted sector read back at once differs, 2 a
+ * sector read back later differs from what was last written. */
+typedef struct {
+    uint32_t writes, verifies, loads, errors, reread_ok, kind, sec, want, got, frame;
+} gbl_dbg_eram_sum_t;
+extern gbl_dbg_eram_sum_t gbl_dbg_eram_sum;
+void gbl_dbg_eram_wr(uint16_t a, uint8_t v);
+/* With GBL_DEBUG_STACK (gbl_core.c): a shadow of GBL_DBG_STACK_LEN bytes of
+ * cartridge RAM from GBL_DBG_STACK_BASE, written with every store there
+ * (with the writer's gbr.pc, gbr.sp, frame and native return address / 4),
+ * and each pop's bytes compared with it.  Frozen at the first difference
+ * (frozen 2) or the first write switching cartridge RAM off (frozen 1). */
+#ifndef GBL_DBG_STACK_LEN
+#define GBL_DBG_STACK_LEN 64u
+#endif
+#define GBL_DBG_STACK_BASE (0xA900u - GBL_DBG_STACK_LEN)
+typedef struct {
+    uint32_t magic, pops, checked, bad, frozen, frozen_frame;
+    uint32_t bad_frame;
+    uint16_t bad_sp, bad_addr, bad_pc, bad_bank;
+    uint8_t bad_got, bad_want;
+    uint16_t len; /* GBL_DBG_STACK_LEN: the shadow ends at A8FF */
+    uint8_t value[GBL_DBG_STACK_LEN], valid[GBL_DBG_STACK_LEN / 8];
+    uint16_t pc[GBL_DBG_STACK_LEN], sp[GBL_DBG_STACK_LEN], frame[GBL_DBG_STACK_LEN], lr[GBL_DBG_STACK_LEN];
+    /* Cartridge RAM on the card: the shadowed sector's loads into the cache
+     * and write-backs (count, last frame); the load count when each byte
+     * was written; at the wrong pop, the cache (flags: ref | dirty << 1 per
+     * way), the ways the read and write tables and the search give for
+     * the sector, and the sector's bytes as the cache held them. */
+    uint32_t loads, writebacks, load_frame, writeback_frame, flags;
+    int16_t tag[16];
+    int8_t rmap_way, wmap_way, tag_way, mru, hand, pad[3];
+    uint8_t at_write_loads[GBL_DBG_STACK_LEN], actual[GBL_DBG_STACK_LEN];
+} gbl_dbg_stack_t;
+extern gbl_dbg_stack_t gbl_dbg_stack;
+void gbl_dbg_stack_note(uint16_t a, uint8_t v, uint32_t lr);
+void gbl_dbg_stack_wr(uint16_t a, uint8_t v, uint8_t *e);
+uint16_t gbl_dbg_pop(uint16_t sp, uint16_t v);
 /* 512 bytes free for the platform before gbl_reset() (NULL without
  * cartridge RAM). */
 uint8_t *gbl_save_scratch(void);

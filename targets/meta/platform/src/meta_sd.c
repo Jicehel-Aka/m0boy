@@ -68,12 +68,28 @@ done:
     return ok;
 }
 
+/* A card can stop answering in the middle of a game (seen on the META:
+ * every command then gets no R1, and never recovers by itself).  A failed
+ * read or write identifies the card again, as at boot, and is tried once
+ * more.  The bus is taken first for a transfer, which drains the
+ * display's queue, before init lowers the rate. */
+uint32_t meta_sd_reinits, meta_sd_reinit_fails; /* meta-usb.py read */
+
+static int reinit(void) {
+    meta_sd_reinits++;
+    meta_sd_bus_begin(0);
+    meta_sd_bus_end(0, 0);
+    if (meta_sd_init()) return 1;
+    meta_sd_reinit_fails++;
+    return 0;
+}
+
 /* One 512-byte sector (CMD17).  The card sends the block's CRC16 even with
  * CRC checking off; the bus may check it (meta_sd_block_ok).  A failed read
  * is tried again as long as the bus can slow down (meta_sd_slower). */
 uint8_t meta_sd_read_fail; /* last failure: 1 no R1, 2 R1 error, 3 no token, 4 CRC (debug) */
 
-int meta_sd_read(uint32_t lba, uint8_t *dst) {
+static int read_once(uint32_t lba, uint8_t *dst) {
     for (;;) {
         meta_sd_bus_begin(0);
         meta_sd_cs(1);
@@ -106,9 +122,13 @@ int meta_sd_read(uint32_t lba, uint8_t *dst) {
     }
 }
 
+int meta_sd_read(uint32_t lba, uint8_t *dst) {
+    return read_once(lba, dst) || (reinit() && read_once(lba, dst));
+}
+
 /* Write one 512-byte sector (CMD24), waiting until the card has programmed
  * it; returns 1 on success. */
-int meta_sd_write(uint32_t lba, const uint8_t *src) {
+static int write_once(uint32_t lba, const uint8_t *src) {
     meta_sd_bus_begin(0);
     meta_sd_cs(1);
     int ok = 0;
@@ -132,4 +152,8 @@ int meta_sd_write(uint32_t lba, const uint8_t *src) {
     meta_sd_xfer(0xFF);
     meta_sd_bus_end(0, ok);
     return ok;
+}
+
+int meta_sd_write(uint32_t lba, const uint8_t *src) {
+    return write_once(lba, src) || (reinit() && write_once(lba, src));
 }

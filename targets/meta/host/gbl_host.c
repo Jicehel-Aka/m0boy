@@ -406,6 +406,11 @@ int gbl_platform_rom_read(uint32_t sector, uint8_t *dst) {
 
 static void finish(void) {
     uint32_t f = gbl_frame;
+#if GBL_DEBUG_RESTART
+    fprintf(stderr, "irq check: %u entries, %u RETI checked, %u wrong, %u unmatched\n",
+            (unsigned)gbl_dbg_irq.entries, (unsigned)gbl_dbg_irq.checked, (unsigned)gbl_dbg_irq.bad,
+            (unsigned)gbl_dbg_irq.unmatched);
+#endif
 #ifdef GBL_COVERAGE
     if (explore_on) {
         f = explorer.frames;

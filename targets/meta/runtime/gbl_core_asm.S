@@ -48,22 +48,32 @@ gbl_rd:
     bx      lr
 1:
 #if GBL_ERAM_ON_SD
-    /* Newest cartridge RAM sector (gbl_eram_rwin, GBL_ERAM_WIN_NONE never
-     * matches): one load through gbl_eram_rptr, like the C gbl_rd. */
-    ldr     r2, 13f
-    ldr     r2, [r2]
-    subs    r3, r0, r2
-    lsrs    r3, r3, #9
+    /* Cartridge RAM (A000-BFFF): one load through the block's entry of
+     * gbl_eram_rmap, like the C gbl_rd. */
+    lsrs    r3, r0, #13
+    cmp     r3, #5                 /* A000-BFFF */
     bne     1f
-    ldr     r2, 14f
-    ldr     r2, [r2]
-    ldrb    r0, [r2, r0]
+    lsls    r3, r0, #19
+    lsrs    r3, r3, #(19 + GBL_CACHE_SHIFT)
+    lsls    r3, r3, #2
+    ldr     r2, 13f
+    ldr     r3, [r2, r3]
+    cmp     r3, #0
+    beq     1f
+#if GBL_DEBUG_ERAM_MAPS
+    ldrb    r1, [r3, r0]
+    ldr     r3, 14f
+    bx      r3                     /* gbl_dbg_eram_rd(a, byte) */
+#else
+    ldrb    r0, [r3, r0]
     bx      lr
+#endif
 1:
 #endif
 #if GBL_ROM_STREAM
-    /* Streamed ROM chunk (4000-7FFF): the byte of the last sector used,
-     * like stream_read's first test, without the C call. */
+    /* Streamed ROM chunk (4000-7FFF): the byte of the last block used
+     * (512-byte sector without GBL_CACHE_UNIFIED), like stream_read's
+     * first test, without the C call. */
     lsrs    r2, r0, #14
     cmp     r2, #1
     bne     1f
@@ -77,15 +87,15 @@ gbl_rd:
     ldrb    r3, [r3]               /* last slot */
     ldr     r1, 6f
     lsls    r0, r3, #2
-    ldr     r1, [r1, r0]           /* its sector */
-    lsrs    r0, r2, #9
+    ldr     r1, [r1, r0]           /* its block */
+    lsrs    r0, r2, #GBL_CACHE_SHIFT
     cmp     r0, r1
     bne     3f
-    lsls    r3, r3, #9
+    lsls    r3, r3, #GBL_CACHE_SHIFT
     ldr     r1, 10f
     adds    r1, r1, r3
-    lsls    r2, r2, #23
-    lsrs    r2, r2, #23
+    lsls    r2, r2, #(32 - GBL_CACHE_SHIFT)
+    lsrs    r2, r2, #(32 - GBL_CACHE_SHIFT)
     ldrb    r0, [r1, r2]
     bx      lr
 3:
@@ -119,15 +129,22 @@ gbl_rd:
 8:  .word   gbl_rd_slow
 9:  .word   gbl_rmap
 12: .word   gbl_io_rd
-#if GBL_ROM_STREAM
+#if GBL_ROM_STREAM && GBL_CACHE_UNIFIED
+4:  .word   gbr
+5:  .word   gbl_cache_rom_last
+6:  .word   gbl_cache_tag
+10: .word   gbl_cache_buf
+#elif GBL_ROM_STREAM
 4:  .word   gbr
 5:  .word   gbl_stream_last
 6:  .word   gbl_stream_tag
 10: .word   gbl_stream_buf
 #endif
 #if GBL_ERAM_ON_SD
-13: .word   gbl_eram_rwin
-14: .word   gbl_eram_rptr
+13: .word   gbl_eram_rmap
+#if GBL_DEBUG_ERAM_MAPS
+14: .word   gbl_dbg_eram_rd
+#endif
 #endif
     .size gbl_rd, . - gbl_rd
 
@@ -153,15 +170,25 @@ gbl_wr:
     cmp     r2, #4
     beq     4f                     /* 8000-9FFF */
 #if GBL_ERAM_ON_SD
-    /* Newest cartridge RAM sector, already dirty (gbl_eram_wwin): store a
-     * changed byte and note the frame, like the C gbl_wr. */
-    ldr     r2, 12f
-    ldr     r2, [r2]
-    subs    r3, r0, r2
-    lsrs    r3, r3, #9
+    /* Cartridge RAM block already dirty (its entry of gbl_eram_wmap):
+     * store a changed byte and note the frame, like the C gbl_wr. */
+    lsrs    r3, r0, #13
+    cmp     r3, #5
     bne     1f
-    ldr     r2, 13f
-    ldr     r2, [r2]
+    lsls    r3, r0, #19
+    lsrs    r3, r3, #(19 + GBL_CACHE_SHIFT)
+    lsls    r3, r3, #2
+    ldr     r2, 12f
+    ldr     r2, [r2, r3]
+    cmp     r2, #0
+    beq     1f
+#if GBL_DEBUG_ERAM_MAPS
+    ldr     r3, 13f
+    bx      r3                     /* gbl_dbg_eram_wr(a, v) */
+#elif GBL_DEBUG_STACK
+    ldr     r3, 13f
+    bx      r3                     /* gbl_dbg_stack_wr(a, v, e) */
+#else
     ldrb    r3, [r2, r0]
     cmp     r3, r1
     beq     14f
@@ -172,6 +199,7 @@ gbl_wr:
     str     r2, [r3]
 14:
     bx      lr
+#endif
 1:
 #endif
     /* HRAM (FF80-FFFE) without the C slow path, IO (FF00-FF7F) straight
@@ -212,10 +240,15 @@ gbl_wr:
 8:  .word   gbl_wr_slow
 9:  .word   gbl_wmap
 #if GBL_ERAM_ON_SD
-12: .word   gbl_eram_wwin
-13: .word   gbl_eram_wptr
+12: .word   gbl_eram_wmap
+#if GBL_DEBUG_ERAM_MAPS
+13: .word   gbl_dbg_eram_wr
+#elif GBL_DEBUG_STACK
+13: .word   gbl_dbg_stack_wr
+#else
 15: .word   gbl_frame
 16: .word   gbl_save_last_change
+#endif
 #endif
     .size gbl_wr, . - gbl_wr
 
@@ -305,6 +338,11 @@ gbl_pop:
     bl      gbl_rd
     lsls    r0, r0, #8
     orrs    r0, r5
+#if GBL_DEBUG_STACK
+    movs    r1, r0
+    movs    r0, r4
+    bl      gbl_dbg_pop            /* returns the value */
+#endif
     pop     {r4, r5, r6, pc}
     .align 2
 8:  .word   gbl_wram

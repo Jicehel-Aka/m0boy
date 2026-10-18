@@ -304,7 +304,15 @@ static inline __attribute__((always_inline)) uint32_t exec_op(uint32_t op, uint8
         }
         break;
     case 0x27: gbl_daa(); break;
-    case 0xD9: gbr.pc = gbl_pop(); gbr.ime = 1; gbl_update_evt(); jump = 1; break;
+    case 0xD9:
+        gbr.pc = gbl_pop();
+#if GBL_DEBUG_RESTART
+        gbl_dbg_reti();
+#endif
+        gbr.ime = 1;
+        gbl_update_evt();
+        jump = 1;
+        break;
     case 0xF1: { uint16_t v = gbl_pop(); gbr.a = (uint8_t)(v >> 8); gbl_setf((uint8_t)v); break; }
     case 0xF5: gbl_push((uint16_t)((gbr.a << 8) | gbl_getf())); break;
     case 0xE8: gbr.sp = gbl_spofs(n8); gbr.pc++; break;
@@ -314,6 +322,13 @@ static inline __attribute__((always_inline)) uint32_t exec_op(uint32_t op, uint8
         /* Undefined opcode: the DMG locks up.  Spin in place so the
          * frontend keeps running. */
         gbr.pc = pc;
+#if GBL_DEBUG_RESTART
+        if (!gbl_dbg_restart.lock_frame) {
+            gbl_dbg_restart.lock_frame = gbl_frame | 1u;
+            gbl_dbg_restart.lock_pc = pc;
+            gbl_dbg_restart.lock_bank = gbr.rom_bank;
+        }
+#endif
         gbl_halt_wait();
         jump = 1;
         break;

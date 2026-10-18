@@ -60,6 +60,9 @@ void meta_sd_bus_begin(int init) {
         return;
     }
     meta_lcd_end_frame();
+#if META_DEBUG_BUS
+    meta_lcd_bus_check();
+#endif
     meta_spi_rate(meta_sd_spi_hz);
     /* Drop bytes left in the receive FIFO by display writes. */
     for (int i = 0; i < 4 && (SERCOM4->SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); i++)

@@ -1544,7 +1544,7 @@ void Generator::emit_ins(std::ostringstream& o, Ins& in, const Ins* following,
             return;
         case 0xD9:
             flush(o);
-            o << "    gbr.pc = gbl_pop(); gbr.ime = 1; gbl_update_evt(); return;\n";
+            o << "    RETI(); return;\n";
             return;
         case 0xC0: case 0xC8: case 0xD0: case 0xD8:
             flush(o);
