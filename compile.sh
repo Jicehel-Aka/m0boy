@@ -95,6 +95,11 @@
 #   JOBS=n        ROMs traitées en parallèle (défaut : cœurs / 4 ; 1 avec PLAY=1)
 #   AUTO_REDO=1   refaire la partie automatique même si elle est déjà enregistrée
 #                 (sinon seules les graines manquantes sont jouées)
+#   DEMO=1        (GB, défaut) une partie de plus sans aucune touche, pendant
+#                 DEMO_SECONDS secondes (défaut AUTO_SECONDS x 3) à pleine
+#                 vitesse : titre, puis les démos que beaucoup de jeux jouent
+#                 seuls dans plusieurs niveaux (coverage-demo) ; les parties
+#                 au hasard appuient sur Start et ne les voient jamais.
 #   REPLAY=1      rejouer les parties à la main enregistrées (profils à jour)
 #   EXPLORERS=n   (toutes plateformes, défaut 4) explorations guidées par la
 #                 couverture (--explore des harnais, targets/common/host/
@@ -223,6 +228,9 @@ AUTO_SECONDS="${AUTO_SECONDS:-20}"
 # out/<jeu>/compile.log.
 JOBS="${JOBS:-$(( NPROC / 4 > 0 ? NPROC / 4 : 1 ))}"
 AUTO_REDO="${AUTO_REDO:-0}"
+DEMO="${DEMO:-1}"
+DEMO_SECONDS="${DEMO_SECONDS:-$((AUTO_SECONDS * 3))}"
+case "$DEMO_SECONDS" in ''|*[!0-9]*) echo "[x] DEMO_SECONDS doit être un entier."; exit 1 ;; esac
 REPLAY="${REPLAY:-0}"
 EXPLORERS="${EXPLORERS:-${SG_EXPLORERS:-4}}"
 EXPLORE_FRAMES="${EXPLORE_FRAMES:-${SG_EXPLORE_FRAMES:-}}" # vide : selon la plateforme
@@ -891,6 +899,23 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
             mv "$dir/coverage-auto$seed.tmp" "$dir/coverage-auto$seed.input" ) &
       done
       wait' _ "$out_dir/host/build/${prefix}_profile" "$out_dir" "$AUTO_SECONDS" "$frames" $(seq 1 "$AUTO_SEEDS")
+    save_sessions
+  fi
+
+  # b2a) DEMO=1 : une partie sans aucune touche (titre, démos dans
+  #     plusieurs niveaux), à pleine vitesse pendant DEMO_SECONDS secondes,
+  #     images comptées sans limite.  Pas de fichier d'entrées : couverture
+  #     et profil de lectures enregistrés directement.
+  [ "$AUTO_REDO" = "1" ] && rm -f "$store"/coverage-demo.cov "$store"/romdata-demo.prof "$out_dir"/coverage-demo.cov "$out_dir"/romdata-demo.prof
+  if [ "$AUTO" = "1" ] && [ "$DEMO" = "1" ] && [ "$DEMO_SECONDS" -gt 0 ] &&
+     [ ! -f "$store/coverage-demo.cov" ] && [ ! -f "$PROFILES_DIR/$rom_sha/coverage-demo.cov" ]; then
+    echo "[i] Démo : ${DEMO_SECONDS} s sans touche"
+    local guard=()
+    command -v timeout > /dev/null && guard=(timeout $((DEMO_SECONDS + 30)))
+    "${guard[@]}" "$out_dir/host/build/${prefix}_profile" --interp --frames 0 --max-seconds "$DEMO_SECONDS" \
+      --coverage "$out_dir/coverage-demo.tmp" --rom-profile-out "$out_dir/romdata-demo.prof" > /dev/null 2>&1 &&
+      mv "$out_dir/coverage-demo.tmp" "$out_dir/coverage-demo.cov"
+    rm -f "$out_dir/coverage-demo.tmp"
     save_sessions
   fi
 
