@@ -22,6 +22,10 @@ struct HotLoc {
 
 struct EmitOptions {
     bool precise = false;       ///< sync before every instruction (differential tests)
+    /// Without precise: also sync before an instruction once this many
+    /// T-states have run since the last sync on the straight path (0: loop
+    /// heads only), which bounds how late an interrupt is taken.
+    unsigned sync_cycles = 40;
     bool cart_ram = false;      ///< 8 KiB of cartridge RAM at 8000-BFFF
     /// Sega mapper (Game Gear): 0000-03FF fixed, three 16 KiB slots paged
     /// by FFFD-FFFF, 8 KiB of RAM at C000-FFFF.

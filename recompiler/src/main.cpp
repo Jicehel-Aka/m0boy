@@ -160,6 +160,7 @@ void print_usage(const char* program) {
     std::cout << "  --meta-compiler <gcc|clang>  Firmware compiler (default gcc)\n";
     std::cout << "  --meta-thumb          Experimental register-IR / Thumb-1 code generation\n";
     std::cout << "  --meta-precise        Poll interrupts before every instruction (differential tests)\n";
+    std::cout << "  --meta-sync-cycles <n>  SG-1000/GG/SMS: also poll once n T-states ran since the last poll (default 40, 0: loop heads only)\n";
     std::cout << "  --meta-static         Add the code found by static analysis (no play session needed)\n";
     std::cout << "  --meta-bytes-per-instruction <n>  Flash estimate per compiled instruction (default 20)\n";
     std::cout << "  --meta-code-budget <bytes>        Flash for generated code (default: 240 KiB - runtime - ROM)\n";
@@ -1783,6 +1784,7 @@ static fs::path resolve_meta_dir(const char* argv0, const fs::path& explicit_dir
 /* --meta-code-budget: flash bytes for generated code (0 = derived from the
  * ROM size, see MetaTargetOptions::code_budget_bytes). */
 static size_t g_meta_code_budget = 0;
+static long g_meta_sync_cycles = -1; /* SG/GG fast mode; -1: the emitter's default */
 static int g_meta_stream = -1;                  /* --meta-stream auto|on|off */
 static std::vector<fs::path> g_rom_profiles;    /* --rom-profile FILE */
 static size_t g_meta_resident = 0;              /* --meta-rom-resident-kib */
@@ -2163,6 +2165,8 @@ int main(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 g_meta_code_budget = std::stoul(argv[++i]);
             }
+        } else if (arg == "--meta-sync-cycles") {
+            if (i + 1 < argc) g_meta_sync_cycles = std::stol(argv[++i]);
         } else if (arg == "--meta-dir") {
             if (i + 1 < argc) {
                 meta_dir = argv[++i];
@@ -2292,6 +2296,7 @@ int main(int argc, char* argv[]) {
         options.code_budget_bytes = g_meta_code_budget;
         if (meta_bpi_set) options.bytes_per_instruction = meta_bpi;
         options.precise = meta_precise;
+        if (g_meta_sync_cycles >= 0) options.sync_cycles = static_cast<unsigned>(g_meta_sync_cycles);
         options.compiler = meta_compiler;
         std::string error;
         m0boy::sg1000::GenerateStats stats;

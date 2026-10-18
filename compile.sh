@@ -131,6 +131,14 @@
 #                 pour le SAMD21, 50 pour le LPC11U68 ; SPI carte redivisé à
 #                 18 MHz sur la Pokitto ; le menu « Processeur » bascule à
 #                 l'exécution ; POKITTO_HC est l'ancien nom)
+#   SG_SYNC_CYCLES=N  (SG-1000/GG/SMS) le code natif regarde aussi les
+#                 interruptions dès que N cycles Z80 ont passé depuis la
+#                 dernière fois (défaut 40 ; 0 : en tête de boucle seulement,
+#                 comme avant la 0.10.26)
+#   AUDIO_DMA=0|1 son de la META par interruption (0, défaut pour toutes les
+#                 consoles : moins de RAM, laissée au cache carte) ou par DMA
+#                 (1).  Un jeu déjà à jour n'est pas refait : FORCE=1 après
+#                 avoir changé AUDIO_DMA.
 #
 # Sans aucune partie à la main, la partie automatique et l'analyse statique
 # suffisent à compiler l'essentiel ; le code est gardé du plus exécuté au
@@ -178,7 +186,7 @@ if [ -z "$OVERCLOCK" ] && [ -t 0 ]; then
 fi
 OVERCLOCK="${OVERCLOCK:-1}"
 export OVERCLOCK POKITTO_HC="$OVERCLOCK"
-export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=$OVERCLOCK"
+export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=$OVERCLOCK${AUDIO_DMA:+ -DMETA_AUDIO_DMA=$AUDIO_DMA}"
 if [ "$TARGET" = both ] || [ "$TARGET" = all ]; then
   # Une exécution par console.  La sélection des jeux et la confirmation des
   # mises à jour sont demandées une seule fois (pass de capture ci-dessous,
@@ -254,7 +262,7 @@ NO_ICONS="${NO_ICONS:-0}"
 # META_OVERCLOCK) ; 0 : 48 MHz.  Le menu « Processeur » garde la bascule.
 OVERCLOCK="${OVERCLOCK:-${POKITTO_HC:-1}}"
 export OVERCLOCK POKITTO_HC="$OVERCLOCK"
-export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=$OVERCLOCK"
+export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=$OVERCLOCK${AUDIO_DMA:+ -DMETA_AUDIO_DMA=$AUDIO_DMA}"
 # m0recomp is the console-neutral CLI; keep the historical binary as fallback.
 GBRECOMP="./build/bin/gbrecomp"
 [ -x ./build/bin/m0recomp ] && GBRECOMP="./build/bin/m0recomp"
@@ -708,7 +716,8 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   size_bin=$(command -v arm-none-eabi-size || echo "$HOME/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size")
   sg_build_once() { # 0 ok, 1 flash full, 2 error
     gen_log=$("$GBRECOMP" "$rom_path" --system "$sys" --target "$TARGET" --output-prefix "$prefix" --sd-name "$sd_name" \
-      --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} -o "$out_dir") || return 2
+      --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} \
+      ${SG_SYNC_CYCLES:+--meta-sync-cycles "$SG_SYNC_CYCLES"} -o "$out_dir") || return 2
     if [ "$TARGET" = pokitto ]; then
       local hc_flags=""
       hc_flags="-DEXTRA_DEFS=-DMETA_OVERCLOCK=$OVERCLOCK"

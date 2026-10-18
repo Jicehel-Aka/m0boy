@@ -4,12 +4,17 @@
 
 #include <stdint.h>
 
+#include "meta_card.h"
+
+/* meta_card.h's codes: GBL_STREAM_NAME missing, in more than 16 pieces, or
+ * only with another size or header than the ROM this firmware was built
+ * for. */
 enum {
-    META_STREAM_OK = 0,
-    META_STREAM_NO_CARD,     /* card or FAT volume unreadable */
-    META_STREAM_NOT_FOUND,   /* GBL_STREAM_NAME not in the root or a first-level folder */
-    META_STREAM_FRAGMENTED,  /* file in more than 16 pieces: copy it again */
-    META_STREAM_WRONG_ROM,   /* size or header differs from the ROM this firmware was built for */
+    META_STREAM_OK = META_CARD_OK,
+    META_STREAM_NO_CARD = META_CARD_NO_CARD,
+    META_STREAM_NOT_FOUND = META_CARD_NOT_FOUND,
+    META_STREAM_FRAGMENTED = META_CARD_FRAGMENTED,
+    META_STREAM_WRONG_ROM = META_CARD_WRONG_ROM,
 };
 
 /* Locate and check the ROM file; card_ok is meta_sd_init's result.  Uses

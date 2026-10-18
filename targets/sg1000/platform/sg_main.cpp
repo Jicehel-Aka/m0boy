@@ -102,6 +102,7 @@ static void frame(void *) {
     SG_PACE_FRAME(deadline, skip_video, skipped_run, SG_MAX_SKIP);
 }
 int main() {
+    SG_STACK_PAINT();
     SG_PLATFORM_INIT();
 #if SG_CART_RAM
     sg1000_init(sg_rom, sg_rom_size, cart_ram);

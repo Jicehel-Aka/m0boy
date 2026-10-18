@@ -81,6 +81,17 @@ extern char __StackTop;
         if ((int32_t)(meta_micros() - (deadline)) > SG_STALL_US) (deadline) = meta_micros(); \
     } while (0)
 
+/* Free RAM painted at boot, from the end of .bss to 128 bytes below main's
+ * frame, as the Game Boy frontend does: the words never written since show
+ * the deepest stack reached (read over USB, tools/meta-usb.py). */
+#define SG_STACK_PAINT_WORD 0xC5AC5AC5u
+#define SG_STACK_PAINT() do { \
+        char here_; \
+        uint32_t *p_ = (uint32_t *)(((uintptr_t)&end + 3u) & ~(uintptr_t)3u); \
+        uint32_t *top_ = (uint32_t *)((uintptr_t)&here_ - 128u); \
+        while (p_ < top_) *p_++ = SG_STACK_PAINT_WORD; \
+    } while (0)
+
 /* Calls the runtime makes from a region need stack below the guard (sync,
  * line rendering, audio catch-up, LCD/audio drivers and interrupts: about
  * 2 KiB, -fstack-usage); at least 1 KiB is left for nesting when RAM is

@@ -35,6 +35,9 @@ void pokitto_lcd_row_zoom(unsigned y, const uint16_t *px);
 int gg_stream_open(const uint8_t *rom, uint32_t rom_size);
 #endif
 }
+#if GG_STREAM || GG_CART_ON_CARD
+#include "meta_card.h"
+#endif
 #if SG_CART_RAM && !GG_CART_ON_CARD
 static uint8_t cart_ram[GG_CART_RAM_SIZE];
 #endif
@@ -109,7 +112,9 @@ static void bench_frame() {
         gg_bench[13] += (uint32_t)skip_video; /* the frame just ended was not drawn (paced build) */
     }
     last = now;
-    if (f == GG_BENCH_TO) { gg_bench[1] = now - t0; gg_bench[0] = 1; for (;;) {} }
+    /* the console's watchdog is fed and the USB served while measuring and
+     * after (meta-usb.py reads gg_bench) */
+    if (f == GG_BENCH_TO) { gg_bench[1] = now - t0; gg_bench[0] = 1; for (;;) SG_PAD_WDT(); }
     gg_buttons(bench_keys(f));
 }
 #endif
@@ -184,6 +189,7 @@ static void frame(void *) {
     meta_audio_frame();
     meta_lcd_end_frame();
 #if defined(GG_BENCH) && !defined(GG_BENCH_PACED)
+    SG_PAD_WDT();
     bench_frame();
     return;
 #endif
@@ -210,18 +216,15 @@ static void frame(void *) {
 }
 
 int main() {
+    SG_STACK_PAINT();
     SG_PLATFORM_INIT();
 #if GG_STREAM || GG_CART_ON_CARD
-    /* ROM pages on the card: no card, file missing, fragmented, another ROM
-     * fill the screen red, magenta, yellow, blue */
+    /* The game's files on the card (meta_card.h, the Game Boy's colours):
+     * no card blue, ROM file missing red, fragmented orange, another ROM
+     * magenta, save file missing yellow */
     if (int err = gg_stream_open(sg_rom, (uint32_t)sg_rom_size)) {
-        static const uint16_t colours[5] = { 0, 0xf800, 0xf81f, 0xffe0, 0x001f };
-        const uint16_t c = colours[err];
-#if META_TARGET_POKITTO
-        meta_lcd_fill(c);
-#else
-        meta_lcd_fill((uint16_t)(c << 8 | c >> 8));
-#endif
+        static const uint16_t colours[] = META_CARD_COLOURS(META_COLOR);
+        meta_lcd_fill(err == META_CARD_NO_SAVE ? META_COLOR(META_CARD_RGB_NO_SAVE) : colours[err]);
         for (;;) SG_PAD_WDT(); /* watchdog fed, USB touch served */
     }
 #endif

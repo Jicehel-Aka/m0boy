@@ -143,6 +143,18 @@ SG_HELPER unsigned sg_op(const z80_decoded_t *d) { return z80_execute(&Z, d); }
 #define CY(cy) (machine.cyc += (uint32_t)(cy))
 #define EVT() ((int32_t)(machine.cyc - machine.next_evt) >= 0)
 #define SYNC(pc) do { if (EVT() && sg_event(pc)) return; } while (0)
+/* Bounded syncs (m0recomp --meta-sync-cycles, default 40 T-states): the
+ * fast mode's polls between loop heads, which keep an interrupt from
+ * waiting a whole loop body.  SG_BOUNDED_SYNC=0 drops them (the code still
+ * has the cycle flushes that precede them). */
+#ifndef SG_BOUNDED_SYNC
+#define SG_BOUNDED_SYNC 1
+#endif
+#if SG_BOUNDED_SYNC
+#define BSYNC(pc) SYNC(pc)
+#else
+#define BSYNC(pc) ((void)0)
+#endif
 /* The host harness stops between frames (machine.stop); firmwares never do. */
 #ifdef SG_GENERATED
 #define SG_STOPPED() (machine.stop)

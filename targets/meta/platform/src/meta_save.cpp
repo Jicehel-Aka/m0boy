@@ -25,8 +25,7 @@ uint32_t meta_save_reads, meta_save_writes, meta_save_errors; /* sectors (meta-u
 
 #if GBL_ERAM_SIZE > 0 && (GBL_BATTERY || GBL_ERAM_ON_SD)
 
-#include "meta_fat.h"
-#include "meta_sd.h"
+#include "meta_card.h"
 
 #define MAX_EXTENTS 8
 
@@ -34,12 +33,10 @@ static meta_extent extents[MAX_EXTENTS];
 static int n_extents;
 static uint8_t have_file;
 
-static int read_sector(uint32_t lba, uint8_t *buf) { return meta_sd_read(lba, buf); }
-
 int meta_save_init(int card_ok) {
     have_file = 0;
     uint32_t size = 0;
-    if (card_ok && meta_fat_find(read_sector, gbl_save_scratch(), GBL_SAVE_NAME83, extents,
+    if (card_ok && meta_fat_find(meta_card_sector, gbl_save_scratch(), GBL_SAVE_NAME83, extents,
                                  MAX_EXTENTS, &n_extents, &size) == META_FAT_OK &&
         size >= GBL_ERAM_SIZE)
         have_file = 1;
@@ -49,24 +46,20 @@ int meta_save_init(int card_ok) {
 
 extern "C" int gbl_platform_save_read(uint32_t sector, uint8_t *dst) {
     if (!have_file) return 0;
-    uint32_t lba = meta_fat_lba(extents, n_extents, sector);
-    for (int attempt = 0; lba && attempt < 3; attempt++)
-        if (meta_sd_read(lba, dst)) {
-            meta_save_reads++;
-            return 1;
-        }
+    if (meta_card_read(extents, n_extents, sector, dst)) {
+        meta_save_reads++;
+        return 1;
+    }
     meta_save_errors++;
     return 0;
 }
 
 extern "C" int gbl_platform_save_write(uint32_t sector, const uint8_t *src) {
     if (!have_file) return 0;
-    uint32_t lba = meta_fat_lba(extents, n_extents, sector);
-    for (int attempt = 0; lba && attempt < 3; attempt++)
-        if (meta_sd_write(lba, src)) {
-            meta_save_writes++;
-            return 1;
-        }
+    if (meta_card_write(extents, n_extents, sector, src)) {
+        meta_save_writes++;
+        return 1;
+    }
     meta_save_errors++;
     return 0;
 }

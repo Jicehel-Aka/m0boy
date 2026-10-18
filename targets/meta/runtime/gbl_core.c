@@ -237,20 +237,34 @@ static uint8_t save_pending;
 #define CSHIFT GBL_CACHE_SHIFT
 #define ESLOTS (0x2000u / CBLK) /* table entries for A000-BFFF */
 #if GBL_CACHE_UNIFIED
-/* One pool for both (GBL_CACHE_UNIFIED): blocks of the streamed ROM
- * (tag: the block's index in the ROM) and of the cartridge RAM (tag:
- * ETAG(index in the save file)); -1 free, -2 lent to the option menu.
- * Global for the assembly gbl_rd (the ROM's last block). */
-#define ERAM_WAYS (GBL_CACHE_BYTES / CBLK)
-uint8_t gbl_cache_buf[ERAM_WAYS][CBLK] __attribute__((aligned(4)));
-int32_t gbl_cache_tag[ERAM_WAYS];
-uint8_t gbl_cache_rom_last; /* way of the ROM block read last, never evicted */
-#define eram_buf gbl_cache_buf
-#define eram_tag gbl_cache_tag
-#define ETAG(b) ((int32_t)(0x40000000u | (uint32_t)(b)))
-#define IS_ETAG(t) ((t) >= 0x40000000)
-#define ETAG_BLK(t) ((uint32_t)(t) & 0x3FFFFFFFu)
-#define TAG_LENT (-2)
+/* One pool for both (GBL_CACHE_UNIFIED): the card cache the consoles share
+ * (m0_cache.h), blocks of the streamed ROM and of the cartridge RAM; -2
+ * lent to the option menu.  Global for the assembly gbl_rd (the ROM's last
+ * block). */
+#define M0C_BLOCK CBLK
+#define M0C_SHIFT CSHIFT
+#define M0C_WAYS (GBL_CACHE_BYTES / CBLK)
+#define M0C_BUF gbl_cache_buf
+#define M0C_TAG gbl_cache_tag
+#define M0C_ROM_LAST gbl_cache_rom_last
+#define M0C_MISSES gbl_stream_misses
+#define M0C_SAVE 1
+#define M0C_LEND 1
+#include "m0_cache.h"
+#define ERAM_WAYS M0C_WAYS
+#define eram_buf cache_buf
+#define eram_tag cache_tag
+#define eram_ref cache_ref
+#define eram_hand cache_hand
+#define eram_dirty cache_dirty
+#define eram_mru cache_mru
+#define eram_load cache_ram_load
+#define eram_store cache_ram_store
+#define eram_reset cache_reset
+#define stream_read cache_rom_byte
+#define ETAG CACHE_ETAG
+#define IS_ETAG CACHE_IS_ETAG
+#define ETAG_BLK CACHE_ETAG_BLK
 #else
 #define ERAM_WAYS GBL_ERAM_CACHE_SECTORS
 #if ERAM_WAYS < 1 || ERAM_WAYS > 256
@@ -261,13 +275,13 @@ static int32_t eram_tag[ERAM_WAYS];
 #define ETAG(b) ((int32_t)(b))
 #define IS_ETAG(t) ((t) >= 0)
 #define ETAG_BLK(t) ((uint32_t)(t))
-#endif
 /* CLOCK replacement: the hand evicts the first way not referenced since it
  * last passed, never the newest (eram_mru).  Only referenced ways are in
  * the tables below, so clearing a way's referenced byte takes it out of
  * them: its next access goes through eram_sector, which marks it again. */
 static uint8_t eram_ref[ERAM_WAYS], eram_hand;
 static uint8_t eram_dirty[ERAM_WAYS], eram_mru;
+#endif
 
 /* Tables for gbl_rd / gbl_wr (C and assembly), so that most accesses skip
  * the slow path and eram_sector: for each 512-byte slot of A000-BFFF, the
@@ -457,231 +471,43 @@ static int dbg_stack_sector(int32_t tag) { return tag == ETAG(eram_offset(GBL_DB
 
 #if GBL_CACHE_UNIFIED
 /* ---- the pool shared with the streamed ROM (GBL_CACHE_UNIFIED) --------------
- * CLOCK over every block: the hand passes the newest cartridge RAM block
- * (eram_mru), the ROM block read last (gbl_cache_rom_last, which the
- * assembly gbl_rd reads without the slow path) and the blocks lent to the
- * option menu; it clears referenced bytes, and evicts the first block not
- * referenced since its last pass, writing it back first when it is dirty
- * cartridge RAM.  Cartridge RAM blocks only appear in the tables while
+ * m0_cache.inc; cartridge RAM blocks only appear in the tables while
  * referenced, so the tables are rebuilt when the hand clears one. */
-#define rom_last gbl_cache_rom_last
-uint32_t gbl_stream_misses; /* ROM blocks loaded */
-static uint8_t eram_changed; /* a cartridge RAM block left the tables */
-
-#if CBLK < 512
-/* One sector of the card or of the packed ROM: what blocks are copied from,
- * and where a dirty block meets the rest of its sector before the write.
- * Tag: the ROM sector, ETAG(save sector), or -1. */
-static uint8_t sector_buf[512] __attribute__((aligned(4)));
-static int32_t sector_tag = -1;
-#endif
-
 static int rom_sector(uint32_t sec, uint8_t *dst);
-
-static void eram_writeback(unsigned i) {
-    if (!IS_ETAG(eram_tag[i]) || !eram_dirty[i]) return;
+#define M0C_ROM_SECTOR(sec, dst) rom_sector((sec), (dst))
+#define M0C_SAVE_READ(sec, dst) gbl_platform_save_read((sec), (dst))
+#define M0C_SAVE_WRITE(sec, src) gbl_platform_save_write((sec), (src))
+#define M0C_PENDING save_pending
+#define M0C_NOTE_CHANGE() (gbl_save_last_change = gbl_frame)
+#define M0C_SHOWN() eram_window()
 #if GBL_DEBUG_STACK
-    if (dbg_stack_sector(eram_tag[i]) && !gbl_dbg_stack.frozen) {
-        gbl_dbg_stack.writebacks++;
-        gbl_dbg_stack.writeback_frame = gbl_frame;
-    }
+#define M0C_HOOK_WRITEBACK(i) do { \
+        if (dbg_stack_sector(eram_tag[i]) && !gbl_dbg_stack.frozen) { \
+            gbl_dbg_stack.writebacks++; \
+            gbl_dbg_stack.writeback_frame = gbl_frame; \
+        } \
+    } while (0)
+#define M0C_HOOK_LOAD(tag) do { \
+        if (dbg_stack_sector(tag) && !gbl_dbg_stack.frozen) { \
+            gbl_dbg_stack.loads++; \
+            gbl_dbg_stack.load_frame = gbl_frame; \
+        } \
+    } while (0)
 #endif
-#if CBLK == 512
-    /* Still dirty when the card refused it: a later flush tries again. */
-    if (!gbl_platform_save_write(ETAG_BLK(eram_tag[i]), eram_buf[i])) return;
-    eram_dirty[i] = 0;
-#else
-    /* The sector as on the card, then every dirty block of it from the pool:
-     * all of them are clean once it is written. */
-    uint32_t sec = ETAG_BLK(eram_tag[i]) >> (9 - CSHIFT);
-    if (sector_tag != ETAG(sec)) {
-        sector_tag = -1;
-        if (!gbl_platform_save_read(sec, sector_buf)) return;
-        sector_tag = ETAG(sec);
-    }
-    for (unsigned j = 0; j < ERAM_WAYS; j++)
-        if (IS_ETAG(eram_tag[j]) && eram_dirty[j] && ETAG_BLK(eram_tag[j]) >> (9 - CSHIFT) == sec)
-            memcpy(sector_buf + (ETAG_BLK(eram_tag[j]) * CBLK & 511u), eram_buf[j], CBLK);
-    if (!gbl_platform_save_write(sec, sector_buf)) {
-        sector_tag = -1; /* the card may hold either */
-        return;
-    }
-    for (unsigned j = 0; j < ERAM_WAYS; j++)
-        if (IS_ETAG(eram_tag[j]) && ETAG_BLK(eram_tag[j]) >> (9 - CSHIFT) == sec) eram_dirty[j] = 0;
-#endif
-}
-
-/* A block for a miss: by the hand, written back if needed, its tag void. */
-static unsigned cache_victim(void) {
-    unsigned i;
-    for (;;) {
-        i = eram_hand;
-        eram_hand = (uint8_t)(i + 1u == ERAM_WAYS ? 0 : i + 1u);
-        if (i == eram_mru || i == rom_last || eram_tag[i] == TAG_LENT) continue;
-        if (!eram_ref[i]) break;
-        eram_ref[i] = 0;
-        if (IS_ETAG(eram_tag[i])) eram_changed = 1;
-    }
-    if (IS_ETAG(eram_tag[i])) {
-        eram_writeback(i);
-        eram_changed = 1;
-    }
-    eram_tag[i] = -1;
-    eram_dirty[i] = 0; /* even if the card refused the write-back */
-    eram_ref[i] = 0;
-    return i;
-}
-
-
-/* Fill way i with block b of the ROM (rom) or of the save file. */
-static void cache_load(unsigned i, uint32_t b, int rom) {
-#if CBLK == 512
-    int ok = rom ? rom_sector(b, eram_buf[i]) : gbl_platform_save_read(b, eram_buf[i]);
-    if (!ok) memset(eram_buf[i], 0xFF, 512);
-#else
-    uint32_t sec = b >> (9 - CSHIFT);
-    int32_t want = rom ? (int32_t)sec : ETAG(sec);
-    if (sector_tag != want) {
-        sector_tag = -1;
-        if (rom ? rom_sector(sec, sector_buf) : gbl_platform_save_read(sec, sector_buf)) sector_tag = want;
-    }
-    if (sector_tag == want) memcpy(eram_buf[i], sector_buf + (b * CBLK & 511u), CBLK);
-    else memset(eram_buf[i], 0xFF, CBLK);
-#endif
-}
-
-/* Through the slow path: a cartridge RAM block missing from the tables
- * (not in the pool, or not referenced since the hand passed), or a first
- * write to a clean one.  It becomes the newest and referenced. */
-static uint8_t *eram_sector(uint32_t off) {
-    int32_t tag = ETAG(off >> CSHIFT);
-    unsigned i = eram_mru;
-    if (eram_tag[i] != tag) {
-        for (i = 0; i < ERAM_WAYS && eram_tag[i] != tag; i++) {}
-        if (i == ERAM_WAYS) {
-            i = cache_victim();
-            cache_load(i, off >> CSHIFT, 0);
-            eram_tag[i] = tag;
-#if GBL_DEBUG_STACK
-            if (dbg_stack_sector(tag) && !gbl_dbg_stack.frozen) {
-                gbl_dbg_stack.loads++;
-                gbl_dbg_stack.load_frame = gbl_frame;
-            }
-#endif
-        }
-    }
-    if (i != eram_mru || !eram_ref[i] || eram_changed) {
-        eram_ref[i] = 1;
-        eram_mru = (uint8_t)i;
-        eram_changed = 0;
-        eram_window();
-    }
-    return eram_buf[i];
-}
-
-static uint8_t eram_load(uint32_t off) { return eram_sector(off)[off & (CBLK - 1u)]; }
-
-static void eram_store(uint32_t off, uint8_t v) {
-    uint8_t *p = eram_sector(off);
-    if (p[off & (CBLK - 1u)] == v) return;
-    p[off & (CBLK - 1u)] = v;
-    save_pending = 1;
-    gbl_save_last_change = gbl_frame;
-    if (!eram_dirty[eram_mru]) {
-        eram_dirty[eram_mru] = 1;
-        eram_window(); /* its write slot opens */
-    }
-}
-
-/* A streamed ROM byte (off: in the ROM). */
-static uint8_t stream_read(uint32_t off) {
-    int32_t b = (int32_t)(off >> CSHIFT);
-    if (eram_tag[rom_last] == b) return eram_buf[rom_last][off & (CBLK - 1u)];
-    unsigned i = 0;
-    while (i < ERAM_WAYS && eram_tag[i] != b) i++;
-    if (i == ERAM_WAYS) {
-        i = cache_victim();
-        cache_load(i, (uint32_t)b, 1);
-        eram_tag[i] = b;
-        gbl_stream_misses++;
-        if (eram_changed) {
-            eram_changed = 0;
-            eram_window();
-        }
-    }
-    eram_ref[i] = 1;
-    rom_last = (uint8_t)i;
-    return eram_buf[i][off & (CBLK - 1u)];
-}
-
-static int any_dirty(void) {
-    unsigned dirty = 0;
-    for (unsigned w = 0; w < ERAM_WAYS; w++) dirty |= eram_dirty[w];
-    return dirty != 0;
-}
-
-void gbl_save_flush(void) {
-    for (unsigned i = 0; i < ERAM_WAYS; i++) eram_writeback(i);
-    save_pending = (uint8_t)any_dirty();
-    eram_window(); /* clean again: the write slots close */
-}
-
-int gbl_save_flush_next(int i) {
-    for (; i >= 0 && i < ERAM_WAYS; i++)
-        if (IS_ETAG(eram_tag[i]) && eram_dirty[i]) {
-            eram_writeback(i);
-            eram_window();
-            return i + 1;
-        }
-    save_pending = (uint8_t)any_dirty();
-    return -1;
-}
+/* The option menu's stack: the whole pool but 3 blocks.  A state save uses
+ * gbl_save_scratch at its bottom. */
+#define M0C_LEND_KEEP 3u
+#define M0C_FLUSH gbl_save_flush
+#define M0C_FLUSH_NEXT gbl_save_flush_next
+#include "m0_cache.inc"
 
 /* 512 bytes for the platform before gbl_reset, and for gbl_state_io: the
  * pool's start (below the menu's stack when the menu saves a state). */
 uint8_t *gbl_save_scratch(void) { return &eram_buf[0][0]; }
 uint8_t *gbl_stream_scratch(void) { return &eram_buf[0][0]; }
 
-/* Every block void (none dirty: flushed first, or a reset); lent ones stay
- * lent. */
-static void cache_drop(void) {
-    for (unsigned i = 0; i < ERAM_WAYS; i++) {
-        if (eram_tag[i] != TAG_LENT) eram_tag[i] = -1;
-        eram_dirty[i] = 0;
-        eram_ref[i] = 0;
-    }
-#if CBLK < 512
-    sector_tag = -1;
-#endif
-    eram_mru = rom_last = 0;
-    while (eram_tag[eram_mru] == TAG_LENT) eram_mru = rom_last = (uint8_t)(eram_mru + 1u);
-    eram_hand = 0;
-    eram_changed = 0;
-    eram_window();
-}
-
-static void eram_reset(void) {
-    cache_drop();
-    save_pending = 0;
-}
-
-/* The option menu's stack: the whole pool but its last MENU_KEEP blocks
- * (what the hand needs if something reads the ROM meanwhile), written back
- * first and kept out of the cache until gbl_stream_invalidate.  A state
- * save uses gbl_save_scratch at its bottom. */
-#define MENU_KEEP 3u
-uintptr_t gbl_cache_lend(void) {
-    gbl_save_flush();
-    unsigned n = ERAM_WAYS - MENU_KEEP;
-    for (unsigned i = 0; i < n; i++) eram_tag[i] = TAG_LENT;
-    cache_drop();
-    return ((uintptr_t)eram_buf[0] + n * CBLK) & ~(uintptr_t)7;
-}
-
-void gbl_stream_invalidate(void) {
-    for (unsigned i = 0; i < ERAM_WAYS; i++)
-        if (eram_tag[i] == TAG_LENT) eram_tag[i] = -1;
-}
+uintptr_t gbl_cache_lend(void) { return cache_lend(); }
+void gbl_stream_invalidate(void) { cache_unlend(); }
 #else
 static void eram_writeback(unsigned i) {
     if (eram_dirty[i]) {

@@ -350,8 +350,26 @@ touches the FAT.
   into them. A build that leaves the generated code less than
   `META_STACK_NEST_MIN` (256) bytes above `META_STACK_RESERVE` stops on a
   cyan screen.
-- The audio ring holds `META_AUDIO_RING` samples, 768 (about two frames)
-  by default.
+- The pool, its CLOCK replacement, the sector buffer and the write-back
+  are one module shared with the Game Gear / Master System runtime
+  (`targets/common/runtime/m0_cache.h` and `m0_cache.inc`, included with
+  each console's hooks): Super Mario Land 2 and Pokémon firmwares built
+  from it are byte-identical to 0.10.25's but for the version string. The
+  card files (`meta_card.h`: three attempts per sector, the ROM lookup) and
+  the boot error colours are shared too: blue no card, red ROM file
+  missing, orange fragmented, magenta another game's ROM, yellow save file
+  missing (the Game Gear used other colours before 0.10.26).
+- Audio goes out by the TC4 interrupt by default (`META_AUDIO_DMA` 0): its
+  ring (`META_AUDIO_IRQ_RING`, 1024 one-byte samples) takes about 540
+  bytes less than the DMA ring, which the cache gets (one more ROM sector,
+  or 512 bytes more in the shared pool). Device, 2026-10-19, fast mode,
+  frames 600-4800 of Pokémon Yellow's intro, two runs each, identical:
+  DMA 202.0 frames/s, interrupt 200.9 (0.5%); Super Mario Land 180.7 /
+  180.9. With `META_AUDIO_DMA=1` the DMA ring holds `META_AUDIO_RING`
+  samples (768).
+- The first-level folders of the card are searched 32 at a time: before
+  0.10.26 only the first 32 were, and a game in a later folder found
+  neither its own folder nor its ROM (red screen).
 - If the file is missing, a game whose RAM must live on the card shows a
   yellow screen. A game whose RAM stays in RAM runs normally, but its
   progress is not kept.
@@ -778,7 +796,9 @@ run (same picture in Link's Awakening).
 | `META_TBLEND` | 2 with a ROM cache or cartridge RAM on SD, otherwise 1 | TBLEND, the default mode, same picture in 1 and 2. 1 keeps the 15 held lines (600 bytes) so each is rendered only when it changes; 2 keeps one, in SMOOTH's buffers, and renders the 15 held lines on every drawn frame (frames that did not change at all are still skipped): 640 bytes less on Super Mario Land 2 (2,576 → 3,216 bytes free above `.bss`), CPU cost not measured on the device. Without `META_MERGE_MODES`, a 16-colour table (one lookup per pixel) instead of the 1 KiB one. 0 leaves TBLEND out (TILE instead), 64 bytes less than 2 |
 | `META_STACK_RESERVE` | 640 (Pokitto 768) | C stack kept below `gbl_stack_limit`, for what generated code calls there unguarded. Static worst case on the META (frames and call graph of the SML2 firmware): a slow-path read that renders a line, about 390 bytes with the region's frame, plus the USB and DMA interrupts nested, about 220. In streamed builds the option menu (about 590 bytes) runs on the ROM cache's buffers, emptied afterwards: in Super Mario Land 2 every VBlank comes deep in the game's calls. The menu shows the stack never used since boot ("pile", bytes above `.bss`) |
 | `META_LCD_12BPP` | 0 | ST7735 in RGB444 (COLMOD 03h): `META_COLOR` gives 0x0RGB, each row is packed in Thumb-1 as it goes out (`meta_lcd_pack_asm.S`), 240 bytes per row instead of 320. meta-emu-sdl estimate on Super Mario Land: display waits 8.5% → 1.3% of the CPU, audio restarts 7 → 1 per minute |
-| `META_AUDIO_DMA` | 1 | Audio samples go to the DAC by DMA (TC4-triggered DMAC channel 0, chained descriptors; the display has channel 1: SAMD21 erratum, see `meta_dma.h` — with the numbers the other way round, the display's DMA stopped mid-strip until the watchdog restarted the game) instead of a 22 kHz TC4 interrupt (about 3% of the CPU); 0 restores the interrupt |
+| `META_AUDIO_DMA` | 0 | 1: audio samples go to the DAC by DMA (TC4-triggered DMAC channel 0, one descriptor per block, the next started by the channel's transfer-complete interrupt) instead of the 22 kHz TC4 interrupt (0.5% of the CPU measured on Pokémon Yellow, the README's earlier 3% was an estimate). No linked descriptors: SAM D21 erratum 1.7.2 (silicon A to F; the META tested is D) — while a channel with linked descriptors runs, enabling another may fetch a wrong descriptor. With the audio chain linked and the display enabled at every Game Gear line, the DMAC wrote audio descriptors over unrelated RAM (HardFaults in Ristar, 4 in 3 minutes); with the channel numbers swapped the display's DMA also stopped mid-strip until the watchdog. The DMA ring takes about 540 bytes more |
+| `META_AUDIO_IRQ_RING` | 1024 (Game Gear 512) | Samples of the interrupt's ring, one byte each, a power of two |
+| `META_LCD_RUNS` | 1 | The display window reaches the last row: strips that follow the previous one go on as data of the same RAMWR, and the window is set again only for a strip that does not follow and after the bus was released (each frame's end, a card or pad access). Ristar (Game Gear, one window per line before), device, 2400 frames unpaced: 55.69 s → 53.15 s (-4.6%), frames over 25 ms 355 → 157. 0: a window per strip |
 | `META_LCD_SPI_MHZ` | 48 | Display SPI clock at boot: 12, 24, 36 or 48 (menu "SPI ecran"). 48 is the maximum the clock tree gives (shown fine on a META), 35 with the CPU at 70 MHz, the default (the menu's "36", reduced by `meta_clock.cpp`), 24 when the PLL does not lock. A panel that does not take it: rebuild with `-DMETA_LCD_SPI_MHZ=24` (or 36) in build_flags. A full frame 40,960 bytes: 13.7 ms at 24, 9.1 at 36, 6.8 at 48. The Arduino core capped every rate at 12 MHz, so firmwares built before 2026-10-03 sent the picture at 12. |
 | `META_LCD_DMA` | 1 | Strips are sent by DMA through a queue: the DMA-complete interrupt programs the next window and starts the next strip, so rendering waits only when every buffer is in flight. At VBlank, if the bus is still busy, the button read is postponed by one frame (never two in a row). 0 writes pixels from the CPU. |
 | `META_LCD_BUFFERS` | 2 with a ROM cache or cartridge RAM on SD, otherwise 3 | DMA strip buffers |
@@ -1126,23 +1146,19 @@ The OAM DMA copy (`gbl_oam_dma_asm`, once a frame, about 400 cycles) has
 nothing to gain from the SAMD21 DMAC. The audio interrupt had: TC4
 interrupted 22,049 times a second, and its handler, entry and exit cost
 about 65 cycles, some 3% of the CPU (the estimator does not model
-interrupts). With `META_AUDIO_DMA` (default), each TC4 wrap triggers a
-DMAC beat on channel 0 that copies the next ring entry, already a 10-bit
-DAC value, to the DAC. Each frame's samples get a descriptor (two at the
-ring's wrap) linked from the previous frame's, and the chain ends on an
-invalid descriptor: when emulation falls behind, the DMAC stops there and
-the DAC holds the last sample as the interrupt did, and the next frame
-restarts the channel after 256 samples of it. The samples played while the
+interrupts). With `META_AUDIO_DMA=1` (the default until 0.10.25), each
+TC4 wrap triggers a DMAC beat on channel 0 that copies the next ring
+entry, already a 10-bit DAC value, to the DAC. Each frame's samples are
+one block (two at the ring's wrap), queued; the channel's
+transfer-complete interrupt starts the next, and when the queue runs dry
+the DAC holds the last sample as the interrupt did; the next frame
+restarts the channel after a third of the ring of it. Until 0.10.25 the
+blocks were linked descriptors, which met SAM D21 erratum 1.7.2 on the
+device (`META_AUDIO_DMA` in the table above). The samples played while the
 channel runs are derived from `micros()` (same 48 MHz clock as TC4) and
-only bound what can be queued. The two channels share the descriptor table
-(`meta_dma.cpp`). RAM +688 bytes (a 768-entry ring of 16-bit values, eight
-descriptors); the frame refill runs before the save flush, which can
-block on the card. The ring and chaining logic were simulated with
-frame-time jitter, heavy frames and 40 ms to 300 ms stalls (no sample
-replayed out of order, no queued descriptor reused); the DMAC itself has
-only been exercised on hardware by the display so far: if the sound is
-wrong on a META, build with `-DMETA_AUDIO_DMA=0` (in `build_flags`) to get
-the interrupt back.
+only bound what can be queued. Measured against the interrupt, the
+default since 0.10.26: 0.5% of the CPU on Pokémon Yellow, for about 540
+bytes of RAM.
 
 Divisions and ALU helpers (25 games, same hashes, −0.2% to −5.6% per
 frame, Kid Icarus −5.6%, Adventure Island −3.5%, Tetris −3.3%):

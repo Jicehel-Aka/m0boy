@@ -187,10 +187,11 @@ function is a livelock, not slowness.
   that frame's instruction count): Double Dragon 6 → 0 frames over budget
   but +1% to +2.4% per frame on Double Dragon, Altered Space and R.C.
   Pro-Am, held-out and in-sample.
-- Audio by DMA (`META_AUDIO_DMA`, default since 2026-10-01: TC4-triggered
-  DMAC channel 1, chained descriptors) replaces the 22 kHz TC4 interrupt
-  (~3% of the CPU). Simulated and built, not yet heard on a META: test it
-  first on hardware; `-DMETA_AUDIO_DMA=0` restores the interrupt.
+- Audio by DMA (`META_AUDIO_DMA`, default from 2026-10-01 to 0.10.25)
+  replaced the 22 kHz TC4 interrupt. 0.10.26 makes the interrupt the
+  default again: the chained descriptors met SAM D21 erratum 1.7.2 on the
+  device (DMAC writes over RAM, Ristar), and the interrupt costs 0.5% of
+  the CPU (Pokémon Yellow, measured), not the ~3% estimated.
 - Remaining M0 profile after the fifth pass: `render_line` and the tile
   fetch/convert loops on games that redraw (SML ~35% together), the
   interpreter on R.C. Pro-Am (~14%, a coverage question), the next-event

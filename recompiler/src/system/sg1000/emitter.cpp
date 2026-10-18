@@ -50,6 +50,9 @@ struct Ins {
     int region = -1;
     size_t order = 0;
     bool label = false, sw_case = false, loop_head = false;
+    bool sync_before = false;        ///< fast mode: a bounded sync (BSYNC) here
+    bool sync_forced = false;        ///< ... where flags are live: they are kept
+    unsigned sync_run = 0;           ///< T-states since a sync on the forward jumps here
     uint8_t live_in = 0, live_out = 0;
     uint16_t next() const { return static_cast<uint16_t>(addr + d.length); }
     bool falls() const {
@@ -409,32 +412,72 @@ void Emitter::plan() {
         }
     }
     /* Flag liveness per region, least fixed point; exits keep all live. */
-    for (auto& [a, in] : ins_) in.live_in = in.live_out = 0;
-    for (auto& reg : regions_) {
-        for (bool changed = true; changed;) {
-            changed = false;
-            for (size_t k = reg.size(); k-- > 0;) {
-                Ins& in = ins_[reg[k]];
-                uint8_t out = 0;
-                if (opt_.precise || in.calls() || in.remap || in.flow == Flow::Ei || in.flow == Flow::Bad) out = FALL;
-                if (in.falls()) {
-                    Ins* n = find(in.next_dest.loc);
-                    out |= (n && n->region == in.region) ? n->live_in : FALL;
-                }
-                if (in.jumps()) {
-                    Ins* t = find(in.target_dest.loc);
-                    out |= (t && t->region == in.region) ? t->live_in : FALL;
-                }
-                if (in.flow == Flow::Ret || in.flow == Flow::RetCond || in.flow == Flow::Reti || in.flow == Flow::JumpDyn)
-                    out = FALL;
-                const uint8_t live_in = static_cast<uint8_t>(in.use | (out & ~in.def));
-                if (out != in.live_out || live_in != in.live_in) {
-                    in.live_out = out;
-                    in.live_in = live_in;
-                    changed = true;
+    auto liveness = [&]() {
+        for (auto& [a, in] : ins_) in.live_in = in.live_out = 0;
+        for (auto& reg : regions_) {
+            for (bool changed = true; changed;) {
+                changed = false;
+                for (size_t k = reg.size(); k-- > 0;) {
+                    Ins& in = ins_[reg[k]];
+                    uint8_t out = 0;
+                    if (opt_.precise || in.calls() || in.remap || in.flow == Flow::Ei || in.flow == Flow::Bad) out = FALL;
+                    if (in.falls()) {
+                        Ins* n = find(in.next_dest.loc);
+                        out |= (n && n->region == in.region) ? n->live_in : FALL;
+                    }
+                    if (in.jumps()) {
+                        Ins* t = find(in.target_dest.loc);
+                        out |= (t && t->region == in.region) ? t->live_in : FALL;
+                    }
+                    if (in.flow == Flow::Ret || in.flow == Flow::RetCond || in.flow == Flow::Reti || in.flow == Flow::JumpDyn)
+                        out = FALL;
+                    /* a forced sync may take an interrupt that pushes AF */
+                    const uint8_t live_in = in.sync_forced ? FALL : static_cast<uint8_t>(in.use | (out & ~in.def));
+                    if (out != in.live_out || live_in != in.live_in) {
+                        in.live_out = out;
+                        in.live_in = live_in;
+                        changed = true;
+                    }
                 }
             }
         }
+    };
+    liveness();
+    /* Fast mode: an interrupt waits for the next sync, at loop heads (Ristar's
+     * water: a line interrupt taken 185 T-states late, after a loop body,
+     * reprogrammed the line counter after its reload; the next frame's
+     * display-off came 21 lines early, 12 black lines).  Bounded syncs
+     * (BSYNC, SG_BOUNDED_SYNC) keep that delay near sync_cycles: once that
+     * many T-states have run since the last sync on the straight path, the
+     * next instruction that needs no flag gets one, so that no dead flag has
+     * to be computed for it (the interrupt pushes whatever Z.f holds there,
+     * a value the code overwrites anyway); past twice the budget the sync is
+     * forced and the flags are kept.  Counted along each region in order: a
+     * label takes the longest of the path falling into it and the forward
+     * jumps to it (backward jumps go to loop heads, which sync). */
+    if (!opt_.precise && opt_.sync_cycles) {
+        bool forced = false;
+        for (auto& reg : regions_) {
+            unsigned run = 0;
+            for (Loc a : reg) {
+                Ins& in = ins_[a];
+                if (in.loop_head) run = 0;
+                else run = std::max(run, in.sync_run);
+                const unsigned cost = std::max(in.cycles, in.taken);
+                if (run && run + cost > opt_.sync_cycles &&
+                    (in.live_in == 0 || run + cost > 2 * opt_.sync_cycles)) {
+                    in.sync_before = true;
+                    if (in.live_in) in.sync_forced = forced = true;
+                    run = 0;
+                }
+                run += cost;
+                if (in.jumps())
+                    if (Ins* t = find(in.target_dest.loc))
+                        if (t->region == in.region && t->order > in.order) t->sync_run = std::max(t->sync_run, run);
+                if (!in.falls() || in.calls() || in.flow == Flow::Ei || in.flow == Flow::Halt) run = 0;
+            }
+        }
+        if (forced) liveness();
     }
 }
 
@@ -744,6 +787,7 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
         o << lab(in.loc) << ":\n";
         if (in.loop_head && !opt_.precise) o << "    SYNC(" << hex(in.addr) << ");\n";
     }
+    if (in.sync_before && !(in.label && in.loop_head)) { flush(o); o << "    BSYNC(" << hex(in.addr) << ");\n"; }
     if (opt_.precise) { flush(o); o << "    SYNC(" << hex(in.addr) << ");\n"; }
     const bool flags = (in.def & in.live_out) != 0;
     if (in.timed) flush(o);

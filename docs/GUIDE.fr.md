@@ -6,6 +6,27 @@ console : ce n'est ni un JIT ni un émulateur classique. Le code déjà vu
 pendant une partie de profilage est traduit, et un petit interpréteur
 exécute le reste.
 
+## Nouveautés de la version 0.10.26
+
+- Game Gear / Master System : le cache carte est celui de la Game Boy
+  (blocs de 128 octets, 8 blocs sur la META, remplacement CLOCK) ; Ristar
+  lit la carte bien moins souvent (trames sans lecture : 1 867 → 2 303 sur
+  2 400). Une écriture de sauvegarde refusée par la carte n'est plus perdue.
+- Game Gear / Master System : le code natif prend les interruptions au
+  plus tard 40 cycles Z80 après leur échéance (auparavant : au prochain
+  tour de boucle). Corrige la bande noire de 12 lignes dans l'intro de
+  Ristar (scène de la bulle), pour moins de 1 % de temps.
+- Son par interruption sur toutes les consoles (`AUDIO_DMA=1` pour le
+  DMA) : le DMA chaîné tombait sur l'erratum 1.7.2 du SAMD21 et écrasait de
+  la RAM (redémarrages de Ristar). La RAM gagnée va au cache.
+- Écran : une fenêtre par suite de lignes au lieu d'une par bande (−4,6 %
+  de temps par image sur Ristar).
+- Mêmes couleurs d'erreur au démarrage sur toutes les consoles : bleu pas
+  de carte, rouge ROM absente, orange fichier fragmenté, magenta autre
+  ROM, jaune `.SAV` absent.
+- Carte : tous les dossiers de premier niveau sont cherchés (avant : les
+  32 premiers seulement, écran rouge au-delà).
+
 ## Nouveautés des versions 0.6.0 à 0.7.0
 
 - Palettes du boot ROM Game Boy Color : comme sur une GBC, maintenir une
@@ -64,9 +85,8 @@ exécute le reste.
   convertisseur crée à côté du `.bin` ; copie-le sur la carte avec le jeu.
 - Plus rapide : de 1 % à 10 % environ de temps en moins par image selon les jeux
   (interpréteur, dispatch du code compilé, divisions, drapeaux du code
-  recompilé, joypad ; estimations), émulation identique. Le son passe par
-  DMA (environ 3 % du processeur libérés ; `-DMETA_AUDIO_DMA=0` rend
-  l'ancienne méthode si le son est faux sur ta console).
+  recompilé, joypad ; estimations), émulation identique. Le son passait par
+  DMA (revenu à l'interruption par défaut en 0.10.26).
 - 1,1 Ko de RAM rendus au firmware (objets série Arduino inutilisés).
 
 ## Nouveautés de la version 0.3.0
@@ -404,7 +424,9 @@ Ajoute-les dans `build_flags` du `platformio.ini` généré, par exemple
 | `GBL_PPU_PAL32` | 0 | Table de 4 pixels (2 Ko de RAM), sans gain mesuré |
 | `GBL_GEN_OPTIMIZE_SIZE` | 1 | Code généré en `-Os` |
 | `GBL_SPIN` | 1 | Avance d'un coup le temps des boucles d'attente (LY/STAT, drapeau en RAM, temporisations) ; résultat identique, 0 pour vérifier |
-| `META_AUDIO_DMA` | 1 | Son envoyé au DAC par DMA au lieu d'une interruption à 22 kHz (environ 3 % du processeur) ; 0 si le son est faux sur ta console |
+| `META_AUDIO_DMA` | 0 | 1 : son envoyé au DAC par DMA au lieu de l'interruption à 22 kHz (0,5 % du processeur mesuré sur Pokémon Jaune) ; l'anneau DMA prend environ 540 octets de RAM de plus, laissés sinon au cache carte. `compile.sh` : `AUDIO_DMA=1` |
+| `META_LCD_RUNS` | 1 | Fenêtre de l'écran posée une fois par suite de lignes (au lieu d'une par bande) : Ristar −4,6 % de temps par image ; 0 pour l'ancien comportement |
+| `SG_BOUNDED_SYNC` | 1 | SG-1000 / Game Gear / Master System : le code natif regarde les interruptions au plus tous les 40 cycles Z80 (`SG_SYNC_CYCLES` dans `compile.sh`, `--meta-sync-cycles`) ; 0 retire ces points (moins de 1 % de temps sur Ristar) |
 | `GBL_INTERP_DELAY_LOOP` | 1 | Raccourci de l'interpréteur pour l'attente DMA `DEC A / JR NZ` en HRAM |
 | `GBL_PPU_ASM` | 1 sur M0+ | Chargement des tuiles et conversion des couleurs en assembleur Thumb-1 (`gbl_ppu_asm.S`) |
 | `GBL_PPU_RAMFUNC` | 0 (META), 1 (Pokitto) | Ces boucles tournent depuis la SRAM, sans état d'attente de la flash ; coupé sur la META, où le code en SRAM plantait processeur à 70/72 MHz (≈1 % de processeur en plus à 48 MHz) |

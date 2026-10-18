@@ -81,6 +81,20 @@ static inline uint32_t gg_cart_offset(uint16_t a, uint8_t ram_ctl) { return (ram
 #else
 #define GG_CART_ON_CARD 0
 #endif
+/* The card cache (m0_cache.h, the Game Boy's): GG_CACHE_BYTES in blocks of
+ * GG_CACHE_BLOCK bytes (128, 256 or 512), plus one 512-byte sector buffer
+ * under 512.  By default GG_STREAM_SECTORS sectors of RAM in all. */
+#if GG_STREAM || GG_CART_ON_CARD
+#ifndef GG_CACHE_BLOCK
+#define GG_CACHE_BLOCK 512
+#endif
+#ifndef GG_CACHE_BYTES
+#define GG_CACHE_BYTES (GG_STREAM_SECTORS * 512 - (GG_CACHE_BLOCK < 512 ? 512 : 0))
+#endif
+#if GG_CACHE_BYTES < 512 || GG_CACHE_BYTES % GG_CACHE_BLOCK
+#error "GG_CACHE_BYTES: whole blocks, at least 512 bytes (gg_stream_scratch)"
+#endif
+#endif
 
 /* Buttons (gg_buttons): active high */
 enum { GG_UP = 1, GG_DOWN = 2, GG_LEFT_KEY = 4, GG_RIGHT_KEY = 8, GG_B1 = 16, GG_B2 = 32, GG_START = 64,

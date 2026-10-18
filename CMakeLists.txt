@@ -120,6 +120,7 @@ if(BUILD_TESTS)
                 --cmake "${CMAKE_COMMAND}" --selector "${PROJECT_SOURCE_DIR}/targets/meta/host/prefer_compiler.cmake")
     set(GBL_META_DIR "${PROJECT_SOURCE_DIR}/targets/meta")
     file(GLOB GBL_META_RUNTIME_SOURCES "${GBL_META_DIR}/runtime/gbl_*.c")
+    include_directories("${PROJECT_SOURCE_DIR}/targets/common/runtime") # m0_cache.h, shared with the Game Gear
 
     add_executable(test_meta_ppu_reference "${GBL_META_DIR}/tests/ppu_reference.c" ${GBL_META_RUNTIME_SOURCES})
     target_include_directories(test_meta_ppu_reference PRIVATE "${GBL_META_DIR}/runtime" "${GBL_META_DIR}/tests/config")

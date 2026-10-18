@@ -223,6 +223,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
 
         EmitOptions eo;
         eo.precise = o.precise;
+        eo.sync_cycles = o.sync_cycles;
         eo.cart_ram = cart_ram;
         eo.entries.assign(entries.begin(), entries.end());
         /* Codemasters boards: checksum and its complement at 7FE6/7FE8 */
@@ -436,6 +437,11 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
          * the Master System shares with its pair tables. */
         if (gg && (streamed || cart_on_card) && o.target == TargetId::pokitto && !o.mastersystem)
             config << "#define GG_STREAM_SECTORS 4 /* the whole USB RAM bank */\n";
+        /* META: the RAM the DMA audio ring would take (audio by interrupt)
+         * goes to the card cache, in 128-byte blocks: 8 blocks and the
+         * sector buffer. */
+        if (gg && (streamed || cart_on_card) && o.target == TargetId::meta)
+            config << "#ifndef GG_STREAM_SECTORS\n#define GG_STREAM_SECTORS 3\n#endif\n#ifndef GG_CACHE_BLOCK\n#define GG_CACHE_BLOCK 128\n#endif\n";
         if (gg) {
             if (streamed && !pool.empty()) config << "#define GG_POOL_SECTORS " << pool.size() << " /* raw/LZSS ROM sectors in flash */\n";
             if (pool_packed) config << "#define GG_POOL_PACKED 1\n";
@@ -515,6 +521,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         copy_template(common_dir / "runtime/m0_rom_codec.h", src / "m0_rom_codec.h");
         copy_template(common_dir / "runtime/m0_rom_lzss.inc", src / "m0_rom_lzss.inc");
         if (gg) copy_template(common_dir / "runtime/m0_rom_lzss.S", src / "m0_rom_lzss.S");
+        if (gg) { /* the card cache shared with the Game Boy */
+            copy_template(common_dir / "runtime/m0_cache.h", src / "m0_cache.h");
+            copy_template(common_dir / "runtime/m0_cache.inc", src / "m0_cache.inc");
+        }
         if (gg) /* the Z80 core is the SG-1000 runtime's */
             for (const char* name : { "z80.c", "z80.h", "z80_ops.h", "z80_fast.h" }) copy_template(shared / "runtime" / name, src / name);
         const std::string host_c = gg ? "gg_host.c" : "sg_host.c", main_cpp = gg ? "gg_main.cpp" : "sg_main.cpp";
@@ -569,11 +579,11 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
              * guard) */
             copy_template(common_dir / "platform" / "sg_frontend.h", src / "sg_frontend.h");
             /* files of an earlier generation that this one does not use */
-            for (const char* name : { "gg_stream.c", "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_sd_bus.cpp", "pokitto_sd.c" })
+            for (const char* name : { "gg_stream.c", "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h", "meta_sd_bus.cpp", "pokitto_sd.c" })
                 fs::remove(src / name);
             if (gg && (streamed || cart_on_card)) {
                 copy_template(tpl / "platform" / "gg_stream.c", src / "gg_stream.c");
-                for (const char* name : { "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h" })
+                for (const char* name : { "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h" })
                     copy_template(o.meta_templates / "platform" / "src" / name, src / name);
                 const auto bus = o.target == TargetId::pokitto ? fs::path("pokitto/pokitto_sd.c") : fs::path("meta/meta_sd_bus.cpp");
                 copy_template(o.meta_templates / "platform" / bus, src / bus.filename());
@@ -592,7 +602,6 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             auto audio = read(platform / audio_name);
             audio = replace(audio, "#include \"gbl.h\"", "#include \"sg_audio.h\"");
             audio = replace(replace(audio, "gbl_apu_render", "sg_platform_audio_render"), "gbl_apu_set_rate", "sg_platform_audio_rate");
-            if (gg && o.target == TargetId::meta) audio = replace(audio, "#define RING 1024u", "#define RING 512u"); /* RAM: about 1.4 frames */
             write(src / audio_name, audio);
             /* One version stamp for all three frontends: the target console
              * runtime's version, compiled into gbrecomp from the VERSION
@@ -610,8 +619,17 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             const std::string overclock = o.target == TargetId::pokitto
                 ? "#ifndef META_OVERCLOCK\n#if defined(POKITTO_HC) && POKITTO_HC\n#define META_OVERCLOCK 1\n#else\n#define META_OVERCLOCK 0\n#endif\n#endif\n"
                 : "#ifndef META_OVERCLOCK\n#define META_OVERCLOCK 1\n#endif\n";
+            /* META: the TC4 interrupt by default, a ring of one-byte samples
+             * (the Game Gear's 512, about 1.4 frames, leaves its RAM to the
+             * card cache); META_AUDIO_DMA=1 (compile.sh AUDIO_DMA=1): the
+             * Game Boy's DMA audio, META_AUDIO_RING samples of 2 bytes.  The
+             * Pokitto has its own driver. */
+            const std::string audio_dma = o.target == TargetId::meta
+                ? std::string("#ifndef META_AUDIO_DMA\n#define META_AUDIO_DMA 0\n#endif\n#ifndef META_AUDIO_RING\n#define META_AUDIO_RING 768u\n#endif\n") +
+                      (gg ? "#ifndef META_AUDIO_IRQ_RING\n#define META_AUDIO_IRQ_RING 512u\n#endif\n" : "")
+                : "#define META_AUDIO_DMA 0\n";
             write(src / "gbl_profile.h", "#pragma once\n#include \"gbl_board.h\"\n" + overclock +
-                                         "#define POKITTO_LCD_ASM " + std::string(gg ? "1" : "0") + "\n#define POKITTO_RAM_BANKS " + std::string(gg ? "1" : "0") + "\n#define POKITTO_AUDIO_ASM " + std::string(gg ? "1" : "0") + "\n#define META_AUDIO_DMA 0\n");
+                                         "#define POKITTO_LCD_ASM " + std::string(gg ? "1" : "0") + "\n#define POKITTO_RAM_BANKS " + std::string(gg ? "1" : "0") + "\n#define POKITTO_AUDIO_ASM " + std::string(gg ? "1" : "0") + "\n" + audio_dma);
             if (o.target == TargetId::pokitto) {
                 for (const char* name : { "pokitto_startup.c", "pokitto_clock.c", "pokitto_buttons.c", "pokitto_lcd.c", "pokitto_hw.h", "lpc11u6x.h" })
                     copy_template(platform / name, src / name);

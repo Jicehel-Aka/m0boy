@@ -8,16 +8,18 @@
  * META_AUDIO_DMA=1 (gbl_profile.h): each wrap triggers one DMAC beat (channel 0, meta_dma.h)
  * that copies the next ring entry, already a DAC value, to the DAC, with no
  * CPU work.  The interrupt it replaces cost about 65 cycles per sample,
- * some 3% of the CPU.  Each frame's samples get a descriptor (two at the
- * ring's wrap) linked from the previous frame's, and the last one links to
- * an invalid descriptor: when emulation falls behind, the DMAC stops there
+ * some 3% of the CPU.  Each frame's samples are one block (two at the
+ * ring's wrap), queued; the channel's transfer-complete interrupt starts
+ * the next one, about once a frame: no linked descriptors (SAM D21 erratum
+ * 1.7.2, meta_dma.cpp).  When emulation falls behind, the queue runs dry
  * and the DAC holds the last sample, as the interrupt did; the next frame
- * sees the channel stopped and restarts it after LATENCY samples.  The
- * DMAC position is not readable reliably, so the samples played while the
+ * sees the channel idle and restarts it after LATENCY samples.  The DMAC
+ * position is not readable reliably, so the samples played while the
  * channel runs are derived from meta_micros() and only bound how much can
  * be queued.
  *
- * META_AUDIO_DMA=0: the TC4 interrupt writes the next sample to the DAC.
+ * META_AUDIO_DMA=0: the TC4 interrupt writes the next sample to the DAC
+ * (META_AUDIO_IRQ_RING samples of one byte: less RAM than the DMA ring).
  * On underrun the last sample is held; on overrun the newest samples are
  * dropped.
  */
@@ -113,57 +115,74 @@ static void timer_stop(void) {
 #if META_AUDIO_RING < 192
 #error "META_AUDIO_RING: at least 192 samples"
 #endif
-#define SLOTS 8u     /* linked descriptors: at most three chunks of MIN_CHUNK
-                      * are queued, two descriptors each, plus the end */
+#define QUEUE 8u      /* blocks waiting: at most three chunks of MIN_CHUNK
+                       * are queued, two blocks each (the ring's wrap) */
 
 static uint16_t ring[RING] __attribute__((aligned(4)));
-static meta_dma_descriptor slot[SLOTS] __attribute__((aligned(16)));
-static unsigned next_slot;       /* invalid descriptor the queued chain ends on */
 static uint32_t written, played; /* samples, counted from the start */
 static unsigned head;            /* written % RING, kept without dividing */
 static uint32_t last_us, cycles;
 
-/* CHID selects the channel the CHxxx registers address; the display's DMAC
- * interrupt changes it. */
-static bool channel_running(void) {
-    __disable_irq();
+/* Blocks of the ring still to play, after the one the channel plays: the
+ * transfer-complete interrupt starts the next (a software link, no linked
+ * descriptor: meta_dma.cpp, erratum 1.7.2).  busy: the channel has a
+ * block; between two blocks it holds one sample at most. */
+static struct { uint16_t start, count; } queue[QUEUE];
+static volatile uint8_t q_head, q_tail, busy;
+
+/* With interrupts off, or from DMAC_Handler (which restores CHID).
+ * VALID is written last. */
+static void block_start(unsigned start, unsigned count) {
+    meta_dma_descriptor *d = &meta_dma_desc[META_DMA_AUDIO];
+    d->btcnt = (uint16_t)count;
+    d->srcaddr = (uint32_t)&ring[start] + 2u * count;
+    d->dstaddr = (uint32_t)&DAC->DATA.reg;
+    d->descaddr = 0;
+    *(volatile uint16_t *)&d->btctrl = DMAC_BTCTRL_VALID | DMAC_BTCTRL_BEATSIZE_HWORD | DMAC_BTCTRL_SRCINC;
     DMAC->CHID.reg = DMAC_CHID_ID(META_DMA_AUDIO);
-    /* Stopped at an invalid descriptor: disabled, or suspended with a fetch
-     * error, depending on the DMAC's reading of it. */
-    bool on = (DMAC->CHCTRLA.reg & DMAC_CHCTRLA_ENABLE) && !(DMAC->CHSTATUS.reg & DMAC_CHSTATUS_FERR) &&
-              !(DMAC->CHINTFLAG.reg & (DMAC_CHINTFLAG_SUSP | DMAC_CHINTFLAG_TERR));
-    __enable_irq();
-    return on;
+    DMAC->CHCTRLA.reg = DMAC_CHCTRLA_ENABLE;
+    busy = 1;
 }
 
-static void channel_start(const meta_dma_descriptor *first) {
-    meta_dma_desc[META_DMA_AUDIO] = *first;
+extern "C" void meta_dma_audio_irq(void) {
+    DMAC->CHID.reg = DMAC_CHID_ID(META_DMA_AUDIO);
+    DMAC->CHINTFLAG.reg = DMAC_CHINTFLAG_TCMPL | DMAC_CHINTFLAG_TERR | DMAC_CHINTFLAG_SUSP;
+    unsigned h = q_head;
+    if (h == q_tail) {
+        busy = 0; /* ran dry: the DAC holds the last sample */
+        return;
+    }
+    q_head = (uint8_t)((h + 1u) % QUEUE);
+    block_start(queue[h].start, queue[h].count);
+}
+
+/* The channel off and nothing queued; trigger and interrupt set up again. */
+static void channel_reset(void) {
     __disable_irq();
     DMAC->CHID.reg = DMAC_CHID_ID(META_DMA_AUDIO);
-    /* A chain that ran into its invalid descriptor may leave the channel
-     * enabled (suspended with a fetch error): disable it before the reset.
-     * SWRST written to an enabled channel faulted on device (2026-10-16:
-     * HardFault on this write, 400 ms into every game). */
     DMAC->CHCTRLA.reg = 0;
     while (DMAC->CHCTRLA.reg & DMAC_CHCTRLA_ENABLE) {}
     DMAC->CHCTRLA.reg = DMAC_CHCTRLA_SWRST;
     while (DMAC->CHCTRLA.reg & DMAC_CHCTRLA_SWRST) {}
     DMAC->CHCTRLB.reg = DMAC_CHCTRLB_LVL(1) | DMAC_CHCTRLB_TRIGSRC(TC4_DMAC_ID_OVF) |
                         DMAC_CHCTRLB_TRIGACT_BEAT;
-    DMAC->CHCTRLA.reg = DMAC_CHCTRLA_ENABLE;
+    DMAC->CHINTENSET.reg = DMAC_CHINTENSET_TCMPL | DMAC_CHINTENSET_TERR;
+    q_head = q_tail = 0;
+    busy = 0;
     __enable_irq();
 }
 
-/* Descriptor for ring[start .. start + count) linked to next.  VALID is
- * written last: the DMAC may fetch it while it is being filled, and then
- * stops on the invalid descriptor instead of reading a partial one. */
-static void describe(meta_dma_descriptor *d, unsigned start, unsigned count,
-                     const meta_dma_descriptor *next) {
-    d->btcnt = (uint16_t)count;
-    d->srcaddr = (uint32_t)&ring[start] + 2u * count;
-    d->dstaddr = (uint32_t)&DAC->DATA.reg;
-    d->descaddr = (uint32_t)next;
-    *(volatile uint16_t *)&d->btctrl = DMAC_BTCTRL_VALID | DMAC_BTCTRL_BEATSIZE_HWORD | DMAC_BTCTRL_SRCINC;
+/* ring[start .. start + count) after what is queued (interrupts off). */
+static void enqueue(unsigned start, unsigned count) {
+    if (!busy) {
+        block_start(start, count);
+        return;
+    }
+    unsigned t = q_tail, next = (t + 1u) % QUEUE;
+    if (next == q_head) return; /* full: cannot happen with the room check */
+    queue[t].start = (uint16_t)start;
+    queue[t].count = (uint16_t)count;
+    q_tail = (uint8_t)next;
 }
 
 void meta_audio_init(void) {
@@ -171,6 +190,8 @@ void meta_audio_init(void) {
     for (unsigned i = 0; i < RING; i++) ring[i] = DAC_MID;
     gbl_apu_set_rate(AUDIO_RATE);
     meta_dma_init();
+    channel_reset();
+    NVIC_EnableIRQ(DMAC_IRQn);
     timer_start(false); /* the channel starts with the first frame */
     last_us = meta_micros();
 }
@@ -180,9 +201,9 @@ void meta_audio_frame(void) {
     uint32_t now = meta_micros(), dt = now - last_us;
     last_us = now;
     unsigned prefix = 0;
-    if (!channel_running()) {
-        /* Not started, or the DMA reached the end of what was queued (the
-         * DAC holds the last sample): restart after LATENCY samples of it. */
+    if (!busy) {
+        /* Not started, or everything queued was played (the DAC holds the
+         * last sample): restart after LATENCY samples of it. */
         played = written;
         cycles = 0;
         prefix = LATENCY;
@@ -224,32 +245,22 @@ void meta_audio_frame(void) {
     }
     written += total;
 
-    /* Chain: first (the slot the previous chain ends on) [-> second, at the
-     * ring's wrap] -> a new invalid slot. */
-    meta_dma_descriptor *first = &slot[next_slot];
+    /* One block, two at the ring's wrap. */
     unsigned part = RING - start;
-    unsigned extra = total > part ? 1u : 0u;
-    meta_dma_descriptor *second = &slot[(next_slot + 1u) % SLOTS];
-    meta_dma_descriptor *end = &slot[(next_slot + 1u + extra) % SLOTS];
-    end->btctrl = 0;
-    if (extra) {
-        describe(second, 0, total - part, end);
-        describe(first, start, part, second);
+    __disable_irq();
+    if (total > part) {
+        enqueue(start, part);
+        enqueue(0, total - part);
     } else {
-        describe(first, start, total, end);
+        enqueue(start, total);
     }
-    if (!channel_running()) channel_start(first);
-    next_slot = (next_slot + 1u + extra) % SLOTS;
+    __enable_irq();
 }
 
 void meta_audio_idle(void) {}
 
 void meta_audio_stop(void) {
-    __disable_irq();
-    DMAC->CHID.reg = DMAC_CHID_ID(META_DMA_AUDIO);
-    DMAC->CHCTRLA.reg = 0;
-    while (DMAC->CHCTRLA.reg & DMAC_CHCTRLA_ENABLE) {}
-    __enable_irq();
+    channel_reset();
     timer_stop();
     DAC->DATA.reg = DAC_MID; /* mid-scale: no click */
 }
@@ -267,7 +278,15 @@ void meta_audio_pause(int on) {
 
 #else /* META_AUDIO_DMA */
 
-#define RING 1024u
+/* Samples in the ring (META_AUDIO_IRQ_RING, 1 byte each, a power of two):
+ * 1024 by default, about 2.8 frames; the Game Gear's profile takes 512. */
+#ifndef META_AUDIO_IRQ_RING
+#define META_AUDIO_IRQ_RING 1024u
+#endif
+#define RING ((unsigned)(META_AUDIO_IRQ_RING))
+#if META_AUDIO_IRQ_RING < 256 || (META_AUDIO_IRQ_RING & (META_AUDIO_IRQ_RING - 1))
+#error "META_AUDIO_IRQ_RING: a power of two, at least 256 samples"
+#endif
 
 static uint8_t ring[RING];
 static volatile uint16_t ring_tail;

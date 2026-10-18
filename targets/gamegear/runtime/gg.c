@@ -56,73 +56,63 @@ static void map_slot(unsigned s, uint8_t value) {
 }
 
 #if GG_STREAM || GG_CART_ON_CARD
-/* Sector cache for the card: ROM pages left there and the cartridge RAM's
- * save file (tags with GG_SAVE_TAG), least recently used, written back
- * when dirty. */
-#define GG_SAVE_TAG 0x40000000
-static uint8_t card_buf[GG_STREAM_SECTORS][512] __attribute__((aligned(4)));
-static int32_t card_tag[GG_STREAM_SECTORS];
-static uint32_t card_age[GG_STREAM_SECTORS], card_clock;
-static uint8_t card_dirty[GG_STREAM_SECTORS], card_last;
-uint32_t gg_stream_misses;
+/* The card cache shared with the Game Boy (m0_cache.h): ROM sectors that
+ * are not mapped directly (on the card, or LZSS-coded in the pool) and the
+ * cartridge RAM's save file, written back when dirty. */
+#define M0C_BLOCK GG_CACHE_BLOCK
+#define M0C_SHIFT (GG_CACHE_BLOCK == 128 ? 7 : GG_CACHE_BLOCK == 256 ? 8 : 9)
+#define M0C_WAYS (GG_CACHE_BYTES / GG_CACHE_BLOCK)
+#define M0C_BUF card_buf     /* Pokitto: in the USB RAM bank (pokitto.ld) */
+#define M0C_TAG card_tag
+#define M0C_ROM_LAST card_rom_last
+#define M0C_MISSES gg_stream_misses
+#define M0C_SAVE GG_CART_ON_CARD
+#define M0C_LEND 0
+#include "m0_cache.h"
 
 uint8_t *gg_stream_scratch(void) { return card_buf[0]; }
 
-static void card_reset(void) {
-    for (unsigned i = 0; i < GG_STREAM_SECTORS; i++) { card_tag[i] = -1; card_age[i] = 0; card_dirty[i] = 0; }
-    card_last = 0;
+#if GG_STREAM
+/* ROM sector sec into dst: from the pool when it is coded there, else from
+ * the card.  Counted for meta-usb.py: sectors decoded, sectors read. */
+uint32_t gg_stream_unpacked, gg_stream_reads;
+static int rom_sector(uint32_t sec, uint8_t *dst) {
+#ifdef GG_POOL_PACKED
+    if (gg_pool_index[sec] != GG_POOL_NONE) {
+        const uint32_t record = gg_pool_records[gg_pool_index[sec]];
+        const uint8_t *src = gg_pool + (record & 0x3fffffffu);
+        if (record >> 30) m0_rom_unpack512(src, dst);
+        else memcpy(dst, src, 512);
+        gg_stream_unpacked++;
+        return 1;
+    }
+#endif
+    gg_stream_reads++;
+    return gg_platform_rom_read(sec, dst);
 }
+#define M0C_ROM_SECTOR(sec, dst) rom_sector((sec), (dst))
+#else
+#define M0C_ROM_SECTOR(sec, dst) 0
+#endif
 
 #if GG_CART_ON_CARD
 static uint8_t save_pending;
 static uint32_t save_change;
-static void card_writeback(unsigned i) {
-    if (!card_dirty[i]) return;
-    gg_platform_save_write((uint32_t)card_tag[i] & ~GG_SAVE_TAG, card_buf[i]);
-    card_dirty[i] = 0;
-}
-void gg_save_flush(void) {
-    for (unsigned i = 0; i < GG_STREAM_SECTORS; i++) card_writeback(i);
-    save_pending = 0;
-}
+#define M0C_SAVE_READ(sec, dst) gg_platform_save_read((sec), (dst))
+#define M0C_SAVE_WRITE(sec, src) gg_platform_save_write((sec), (src))
+#define M0C_PENDING save_pending
+#define M0C_NOTE_CHANGE() (save_change = machine.frames)
+#define M0C_FLUSH gg_save_flush
+#endif
+#include "m0_cache.inc"
+
+#define card_reset cache_reset
+
+#if GG_CART_ON_CARD
 void gg_save_tick(void) {
     if (save_pending && machine.frames - save_change >= 120) gg_save_flush();
 }
 #endif
-
-static uint8_t *card_sector(int32_t tag) {
-    if (card_tag[card_last] == tag) return card_buf[card_last];
-    unsigned slot = 0;
-    for (unsigned i = 0; i < GG_STREAM_SECTORS; i++) {
-        if (card_tag[i] == tag) { slot = i; goto hit; }
-        if (card_age[i] < card_age[slot]) slot = i;
-    }
-#if GG_CART_ON_CARD
-    card_writeback(slot);
-    if (tag & GG_SAVE_TAG) {
-        if (!gg_platform_save_read((uint32_t)tag & ~GG_SAVE_TAG, card_buf[slot]))
-            for (unsigned i = 0; i < 512; i++) card_buf[slot][i] = 0xff;
-    } else
-#endif
-#if GG_STREAM
-#ifdef GG_POOL_PACKED
-    if (gg_pool_index[(uint32_t)tag] != GG_POOL_NONE) {
-        const uint32_t record = gg_pool_records[gg_pool_index[(uint32_t)tag]];
-        const uint8_t *src = gg_pool + (record & 0x3fffffffu);
-        if (record >> 30) m0_rom_unpack512(src, card_buf[slot]);
-        else memcpy(card_buf[slot], src, 512);
-    } else
-#endif
-    if (!gg_platform_rom_read((uint32_t)tag, card_buf[slot]))
-#endif
-        for (unsigned i = 0; i < 512; i++) card_buf[slot][i] = 0xff;
-    card_tag[slot] = tag;
-    gg_stream_misses++;
-hit:
-    card_age[slot] = ++card_clock;
-    card_last = (uint8_t)slot;
-    return card_buf[slot];
-}
 
 #if GG_STREAM
 uint8_t gg_stream_read(uint32_t offset) {
@@ -137,19 +127,12 @@ uint8_t gg_stream_read(uint32_t offset) {
 #endif
     }
 #endif
-    return card_sector((int32_t)(offset >> 9))[offset & 511];
+    return cache_rom_byte(offset);
 }
 #endif
 #if GG_CART_ON_CARD
-uint8_t gg_cart_read(uint32_t offset) { return card_sector(GG_SAVE_TAG | (int32_t)(offset >> 9))[offset & 511]; }
-void gg_cart_store(uint32_t offset, uint8_t v) {
-    uint8_t *p = card_sector(GG_SAVE_TAG | (int32_t)(offset >> 9));
-    if (p[offset & 511] == v) return;
-    p[offset & 511] = v;
-    card_dirty[card_last] = 1;
-    save_pending = 1;
-    save_change = machine.frames;
-}
+uint8_t gg_cart_read(uint32_t offset) { return cache_ram_load(offset); }
+void gg_cart_store(uint32_t offset, uint8_t v) { cache_ram_store(offset, v); }
 #endif
 #endif
 

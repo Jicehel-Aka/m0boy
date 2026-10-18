@@ -1,0 +1,53 @@
+/* Card cache shared by the consoles' runtimes (Game Boy GBL_CACHE_UNIFIED,
+ * Game Gear, Master System): one pool of M0C_BLOCK-byte blocks for the ROM
+ * sectors that are not mapped directly (on the SD card, or LZSS-coded in
+ * flash) and for the cartridge RAM kept in its save file on the card.
+ *
+ * This file declares the pool and its state; m0_cache.inc, included once
+ * the console's hooks are defined, the functions (static: each console
+ * exports its own names).  The including file defines first:
+ *   M0C_BLOCK, M0C_SHIFT  block size (128, 256 or 512 bytes) and its log2
+ *   M0C_WAYS              blocks in the pool (2 to 255)
+ *   M0C_BUF, M0C_TAG, M0C_ROM_LAST, M0C_MISSES
+ *                         global names of the pool, its tags, the way of
+ *                         the ROM block read last and the count of ROM
+ *                         blocks loaded (an assembly fast path reads the
+ *                         first three)
+ *   M0C_SAVE              1: cartridge RAM blocks (save file)
+ *   M0C_LEND              1: blocks lent to a menu (cache_lend)
+ * Tags: the ROM block's index; CACHE_ETAG(index in the save file); -1 free;
+ * CACHE_LENT lent. */
+#ifndef M0_CACHE_H
+#define M0_CACHE_H
+
+#include <stdint.h>
+#include <string.h>
+
+#if M0C_BLOCK != (1 << M0C_SHIFT) || (M0C_BLOCK != 128 && M0C_BLOCK != 256 && M0C_BLOCK != 512)
+#error "M0C_BLOCK: 128, 256 or 512, M0C_SHIFT its log2"
+#endif
+#if M0C_WAYS < 2 || M0C_WAYS > 255
+#error "M0C_WAYS: 2 to 255 blocks"
+#endif
+
+#define cache_buf M0C_BUF
+#define cache_tag M0C_TAG
+#define cache_rom_last M0C_ROM_LAST
+#define CACHE_ETAG(b) ((int32_t)(0x40000000u | (uint32_t)(b)))
+#define CACHE_IS_ETAG(t) ((t) >= 0x40000000)
+#define CACHE_ETAG_BLK(t) ((uint32_t)(t) & 0x3FFFFFFFu)
+#define CACHE_LENT (-2)
+
+uint8_t cache_buf[M0C_WAYS][M0C_BLOCK] __attribute__((aligned(4)));
+int32_t cache_tag[M0C_WAYS];
+uint8_t cache_rom_last; /* way of the ROM block read last, never evicted */
+/* CLOCK replacement: the hand evicts the first way not referenced since it
+ * last passed, never the newest cartridge RAM block (cache_mru) nor the
+ * ROM block read last.  A console that shows referenced cartridge RAM
+ * blocks elsewhere (the Game Boy's tables) only shows those: clearing a
+ * way's referenced byte takes it out, and its next access goes through
+ * cache_ram_block, which marks it again. */
+static uint8_t cache_ref[M0C_WAYS], cache_hand;
+static uint8_t cache_dirty[M0C_WAYS], cache_mru;
+
+#endif

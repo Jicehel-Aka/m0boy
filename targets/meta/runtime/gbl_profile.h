@@ -225,13 +225,24 @@
  * sectors, CPU at 70 MHz): ROM 8 + RAM 2: 157 writes a second, half the
  * CPU in them; 4 + 6: 47 writes a second, 24 frames a second; 2 + 8: 4 a
  * second (the 2 s flush), 42 frames a second. */
+/* Audio by the TC4 interrupt by default: its ring of 1024 one-byte samples
+ * takes about 540 bytes less than the DMA ring, and the ROM cache gets one
+ * more sector, or the shared pool 512 bytes more.  META_AUDIO_DMA=1
+ * (compile.sh AUDIO_DMA=1): the DMA ring, no interrupt per sample.  Device,
+ * 2026-10-18: the DMA path's chained descriptors met SAM D21 erratum 1.7.2
+ * (meta_dma.cpp; now chained from its interrupt), and Super Mario Land ran
+ * as fast either way (180.7 / 180.9 frames a second, fast mode). */
+#ifndef META_AUDIO_DMA
+#define META_AUDIO_DMA 0
+#endif
+#define GBL_AUDIO_SPARE (META_AUDIO_DMA ? 0 : 512)
 #ifndef GBL_STREAM_SECTORS
 #if GBL_ERAM_SIZE > 512 && !GBL_ERAM_ON_SD
-#define GBL_STREAM_SECTORS 4
+#define GBL_STREAM_SECTORS (4 + GBL_AUDIO_SPARE / 512)
 #elif GBL_ERAM_ON_SD && GBL_ROM_SD
-#define GBL_STREAM_SECTORS 2
+#define GBL_STREAM_SECTORS 2 /* the shared pool takes the spare (below) */
 #else
-#define GBL_STREAM_SECTORS 8
+#define GBL_STREAM_SECTORS (8 + GBL_AUDIO_SPARE / 512)
 #endif
 #endif
 #ifndef GBL_ERAM_CACHE_SECTORS
@@ -259,6 +270,10 @@
 #endif
 #ifndef GBL_CACHE_BLOCK
 #define GBL_CACHE_BLOCK 128
+#endif
+#if GBL_CACHE_UNIFIED && !defined(GBL_CACHE_BYTES)
+#define GBL_CACHE_BYTES \
+    ((GBL_STREAM_SECTORS + GBL_ERAM_CACHE_SECTORS) * 512 - (GBL_CACHE_BLOCK < 512 ? 1024 : 0) + GBL_AUDIO_SPARE)
 #endif
 #ifndef GBL_PPU_ASM
 #define GBL_PPU_ASM 1
@@ -299,9 +314,6 @@
 /* META_LCD_DMA, META_LCD_12BPP, META_LCD_SPI_MHZ, META_SD_SPI_HZ and
  * META_BUTTONS_SPI_HZ are the board settings the SG-1000/Game Gear profile
  * needs too: gbl_board.h, included above. */
-#ifndef META_AUDIO_DMA
-#define META_AUDIO_DMA 1
-#endif
 /* C stack kept below gbl_stack_limit (meta_main.cpp): generated code checks
  * the limit on entry only, and what it calls below it is unguarded.  Static
  * worst case from the frames and call graph of the Super Mario Land 2

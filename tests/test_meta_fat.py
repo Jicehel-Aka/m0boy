@@ -133,6 +133,15 @@ def main() -> int:
         if out.returncode != 0:
             raise SystemExit("per-game folders: " + out.stdout.strip())
         results.append("folders " + out.stdout.strip())
+
+        # More game folders than one batch of the lookup (MAX_SUBDIRS, 32):
+        # the ROM in the 70th folder is still found.
+        vm = tmp / "many.img"
+        make_volume(vm, 32, 64)
+        for n in range(70):
+            sh("mmd", "-i", str(vm), "::/game%02d" % n)
+        sh("mcopy", "-i", str(vm), str(small), "::/game69/LAST.GB")
+        results.append("70 folders " + check(args.fat_check, vm, "LAST    GB ", small))
         print("meta FAT lookup:", "; ".join(results))
         return 0
     finally:

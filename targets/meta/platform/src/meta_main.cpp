@@ -679,8 +679,7 @@ static void __attribute__((unused)) boot_error(uint16_t colour) {
  * GBL_STREAM_NAME not found (root or one folder), 3 the file is too
  * fragmented (copy it again), 4 it is not this firmware's ROM. */
 static void stream_error_screen(int err) {
-    static const uint16_t colour[] = {0, META_COLOR(0x0000FF), META_COLOR(0xFF0000), META_COLOR(0xFFA000),
-                                      META_COLOR(0xFF00FF)};
+    static const uint16_t colour[] = META_CARD_COLOURS(META_COLOR);
     boot_error(colour[err]);
 }
 #endif
@@ -728,7 +727,7 @@ int main(void) {
     }
 #if GBL_ERAM_SIZE > 0 && GBL_ERAM_ON_SD
     if (save_state == META_SAVE_MISSING) /* GBL_SAVE_NAME not next to the ROM (compile.sh makes it) */
-        boot_error(META_COLOR(0xFFFF00));
+        boot_error(META_COLOR(META_CARD_RGB_NO_SAVE));
 #endif
 #if META_TARGET_POKITTO
     meta_lcd_fill(0); /* black around the picture */

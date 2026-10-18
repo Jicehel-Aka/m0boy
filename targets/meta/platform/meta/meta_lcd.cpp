@@ -134,12 +134,11 @@ static void command_list(const uint8_t *p) {
 #if META_LCD_DMA
 /* ---- DMA (SERCOM4 TX, channel 1, meta_dma.h) ---------------------------- */
 
-extern "C" void DMAC_Handler(void) {
-    uint8_t chid = DMAC->CHID.reg; /* the interrupted code may be using another channel */
-    DMAC->CHID.reg = DMAC_CHID_ID(META_DMA_LCD); /* the only channel with interrupts */
+/* From DMAC_Handler (meta_dma.cpp), which restores CHID. */
+extern "C" void meta_dma_lcd_irq(void) {
+    DMAC->CHID.reg = DMAC_CHID_ID(META_DMA_LCD);
     DMAC->CHINTFLAG.reg = DMAC_CHINTFLAG_TCMPL | DMAC_CHINTFLAG_TERR | DMAC_CHINTFLAG_SUSP;
     lcdq_on_complete(); /* starts the next queued strip, if any */
-    DMAC->CHID.reg = chid;
 }
 
 #endif
@@ -152,6 +151,7 @@ static void dma_init(void) {
 #endif
 
 static void set_window(uint8_t row0, uint8_t row1);
+static void place_rows(uint8_t row0, uint8_t rows);
 
 #if META_LCD_DMA
 static void start_dma(const void *buf, uint32_t bytes) {
@@ -172,7 +172,7 @@ static void start_dma(const void *buf, uint32_t bytes) {
 /* Main loop or DMA interrupt: nothing else is using the bus. */
 static void lcdq_start(const lcdq_entry *e) {
     meta_spi_rate(TFT_SPI_HZ); /* a pad or SD read may have changed it */
-    set_window(e->row0, (uint8_t)(e->row0 + e->rows - 1));
+    place_rows(e->row0, e->rows);
     start_dma(e->buf, (uint32_t)e->rows * LCD_ROW_BYTES);
 }
 #endif
@@ -228,6 +228,26 @@ static void set_window(uint8_t row0, uint8_t row1) {
     data_mode();
 }
 
+/* The window reaches the panel's last row: rows that follow the previous
+ * strip go on as data of the same RAMWR, which moves to the next row by
+ * itself.  The window is set again for a strip that does not follow (the
+ * frame's first, after rows not drawn) and after the bus was released (the
+ * end of every frame, a card or pad access): a command must not be relied
+ * on across the panel's CS going high.  Game Gear: one window a frame
+ * instead of one per line (11 command bytes and the waits around them).
+ * META_LCD_RUNS=0: a window for every strip, as before. */
+#ifndef META_LCD_RUNS
+#define META_LCD_RUNS 1
+#endif
+#define LAST_ROW 127u
+static uint16_t win_next = 0xFFFFu; /* row the open RAMWR writes next */
+
+static void place_rows(uint8_t row0, uint8_t rows) {
+    if (!META_LCD_RUNS) set_window(row0, (uint8_t)(row0 + rows - 1));
+    else if (row0 != win_next || !in_transaction) set_window(row0, (uint8_t)LAST_ROW);
+    win_next = (uint16_t)(row0 + rows);
+}
+
 static void open_bus(void) {
     if (in_transaction) return;
     meta_spi_rate(TFT_SPI_HZ);
@@ -255,7 +275,7 @@ uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
     }
 #else
     open_bus();
-    set_window(row0, (uint8_t)(row0 + rows - 1));
+    place_rows(row0, rows);
     const uint8_t *p = (const uint8_t *)buf;
     for (uint32_t i = 0; i < (uint32_t)rows * LCD_ROW_BYTES; i++) spi_send(p[i]);
     return 0;
@@ -295,6 +315,7 @@ int meta_lcd_release(void) {
         idle_mode();
         in_transaction = 0;
     }
+    win_next = 0xFFFFu;
     return 1;
 }
 
@@ -306,6 +327,7 @@ void meta_lcd_end_frame(void) {
 void meta_lcd_fill(uint16_t color_be) {
     open_bus();
     set_window(0, 127);
+    win_next = 0xFFFFu;
 #if META_LCD_12BPP
     uint8_t px[4] = {(uint8_t)color_be, (uint8_t)(color_be >> 8), (uint8_t)color_be, (uint8_t)(color_be >> 8)};
     meta_lcd_pack444(px, 2);

@@ -76,10 +76,11 @@ static uint32_t next_cluster(volume *v, uint32_t c) {
 }
 
 /* Scan one directory (cluster 0 = FAT16 root).  Returns 1 when name83 was
- * found (cluster and size filled), 0 otherwise, <0 on error; subdirectories
- * are collected into subdirs when it is not NULL. */
+ * found (cluster and size filled), 0 otherwise, <0 on error; when subdirs
+ * is not NULL, the subdirectories from the skip-th on (at most MAX_SUBDIRS)
+ * are collected into it, and *seen counts them all. */
 static int scan_dir(volume *v, uint32_t cluster, const char *name83, uint32_t *file_cluster,
-                    uint32_t *file_size, uint32_t *subdirs, int *n_subdirs) {
+                    uint32_t *file_size, uint32_t *subdirs, int *n_subdirs, int skip, int *seen) {
     uint32_t sector = 0;
     for (;;) {
         uint32_t lba;
@@ -102,7 +103,7 @@ static int scan_dir(volume *v, uint32_t cluster, const char *name83, uint32_t *f
             if (e[0] == 0xE5 || e[11] == 0x0F || (e[11] & 0x08)) continue;
             uint32_t first = (uint32_t)u16(e + 20) << 16 | u16(e + 26);
             if (e[11] & 0x10) {
-                if (subdirs && e[0] != '.' && *n_subdirs < MAX_SUBDIRS && first >= 2)
+                if (subdirs && e[0] != '.' && first >= 2 && (*seen)++ >= skip && *n_subdirs < MAX_SUBDIRS)
                     subdirs[(*n_subdirs)++] = first;
                 continue;
             }
@@ -145,16 +146,25 @@ int meta_fat_find_in(meta_fat_read_fn rd, uint8_t *buf, const char *name83, meta
     uint32_t first = 0, where;
     if (dir && *dir != META_FAT_ANY_DIR) {
         where = *dir;
-        r = scan_dir(&v, where, name83, &first, size, 0, 0);
+        r = scan_dir(&v, where, name83, &first, size, 0, 0, 0, 0);
     } else {
+        /* The root, then its folders MAX_SUBDIRS at a time (the root is read
+         * again for each batch): a card holds more game folders than that
+         * (2026-10-19: a game past the 32nd folder found neither its own
+         * folder nor its ROM, red screen). */
         uint32_t subdirs[MAX_SUBDIRS];
-        int n_sub = 0;
-        where = v.root_cluster;
-        r = scan_dir(&v, where, name83, &first, size, subdirs, &n_sub);
-        for (int i = 0; r == 0 && i < n_sub; i++) {
-            where = subdirs[i];
-            r = scan_dir(&v, where, name83, &first, size, 0, 0);
-        }
+        int skip = 0, seen;
+        do {
+            int n_sub = 0;
+            seen = 0;
+            where = v.root_cluster;
+            r = scan_dir(&v, where, name83, &first, size, subdirs, &n_sub, skip, &seen);
+            for (int i = 0; r == 0 && i < n_sub; i++) {
+                where = subdirs[i];
+                r = scan_dir(&v, where, name83, &first, size, 0, 0, 0, 0);
+            }
+            skip += MAX_SUBDIRS;
+        } while (r == 0 && seen > skip);
     }
     if (r < 0) return r;
     if (r == 0) return META_FAT_NOT_FOUND;
