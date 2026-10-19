@@ -73,16 +73,18 @@ extern const uint16_t gbl_table_count;
 static inline uint8_t gbl_load_u8(const uint8_t *p) {
     return (uintptr_t)p >= 0x40200000u ? pgm_read_byte(p) : *p;
 }
+/* The generated dispatch tables stay in flash (DRAM is 80 KiB): 16-bit
+ * entries are read with aligned word loads. */
+#define GBL_TABLE PROGMEM __attribute__((aligned(4)))
+#define GBL_TBL16(p) pgm_read_word(p)
 #else
 static inline uint8_t gbl_load_u8(const uint8_t *p) { return *p; }
+#define GBL_TABLE
+#define GBL_TBL16(p) (*(p))
 #endif
-#if defined(ESP8266)
-/* Cartridge image (rom.bin) uploaded separately; see gbl_espboy.h. */
-#include "gbl_espboy.h"
-#define gbl_rom ((const uint8_t *)(ESPBOY_MAP_BASE + ESPBOY_ROM_OFF))
-#else
+/* ESPboy: the whole ROM, or bank 0 of a larger one (the rest is rom.bin,
+ * gbl_espboy.h), is in the application's flash. */
 extern const uint8_t gbl_rom[];
-#endif
 extern const uint32_t gbl_rom_size;
 
 /* ---- lifecycle ---------------------------------------------------------- */

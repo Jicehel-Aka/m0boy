@@ -1,4 +1,4 @@
-; ESPboy (ESP-12F, 4 MiB): application <= 640 KiB, ROM image at 0xA0000, saves at 0x3C0000.
+; ESPboy (ESP-12F, 4 MiB): application <= 1 MiB, ROM image at 0x100000, saves at 0x3C0000.
 [env:espboy]
 platform = espressif8266@4.2.1
 platform_packages = platformio/framework-arduinoespressif8266@3.30102.0

@@ -46,7 +46,7 @@ static struct {
  * directly; reads from other chunks go through an LRU cache of 512-byte
  * sectors filled by gbl_platform_rom_read. */
 #if defined(ESP8266)
-#define gbl_rom_resident ((const uint8_t (*)[4096])gbl_rom)
+#define gbl_rom_resident ((const uint8_t (*)[4096])gbl_rom) /* the map has none */
 #else
 extern const uint8_t gbl_rom_resident[][4096];
 #endif
@@ -86,8 +86,8 @@ void gbl_stream_invalidate(void) { stream_reset(); }
 #define GBL_ROM_PACKED_FLASH 1
 #endif
 #if GBL_ROM_PACKED_FLASH
-/* rom.bin beyond the first MiB of flash is not mapped: sectors are read
- * with spi_flash_read (espboy_flash.cpp), aligned and 4 bytes at a time. */
+/* rom.bin (sectors 32 on) is not mapped: sectors are read with
+ * spi_flash_read (espboy_flash.cpp). */
 int espboy_rom_read(uint32_t offset, uint8_t *dst, uint32_t bytes);
 #else
 extern const uint8_t gbl_rom_packed[];
@@ -114,10 +114,9 @@ static int rom_unpack(uint32_t sector, uint8_t *dst) {
     uint32_t a = gbl_rom_packed_off[sector], n = gbl_rom_packed_off[sector + 1] - a;
     if (!n) return 0; /* a hybrid build leaves this sector on the card */
 #if GBL_ROM_PACKED_FLASH
-    /* The image starts with bank 0, raw; the decoders may read two bytes
-     * ahead, so a few more than n are fetched. */
+    /* The decoders may read two bytes ahead, so a few more than n are fetched. */
     static uint8_t packed[512 + 4] __attribute__((aligned(4)));
-    if (!espboy_rom_read(0x4000u + a, packed, n + 2u)) return 0;
+    if (!espboy_rom_read(a, packed, n + 2u)) return 0;
     if (n == 512) memcpy(dst, packed, 512);
     else unpack512(packed, dst);
 #else
@@ -1568,17 +1567,17 @@ static const gbl_bank_table *lookup_page(uint16_t pc) {
     else return 0;
     if (!t->count) return 0;
     uint32_t page = (pc & 0x3FFFu) >> 7;
-    return t->idx[17 + (page >> 4)] >> (page & 15) & 1 ? t : 0;
+    return GBL_TBL16(&t->idx[17 + (page >> 4)]) >> (page & 15) & 1 ? t : 0;
 }
 
 /* Binary search of the entries in pc's 1 KiB block. */
 static gbl_fn lookup_table(const gbl_bank_table *t, uint16_t pc) {
     uint32_t block = (pc & 0x3FFFu) >> 10;
-    uint32_t lo = t->idx[block], hi = t->idx[block + 1];
+    uint32_t lo = GBL_TBL16(&t->idx[block]), hi = GBL_TBL16(&t->idx[block + 1]);
     const uint16_t *addr = t->addr;
     while (lo < hi) {
         uint32_t mid = (lo + hi) >> 1;
-        uint16_t v = addr[mid];
+        uint16_t v = GBL_TBL16(&addr[mid]);
         if (v == pc) return t->fn[mid];
         if (v < pc) lo = mid + 1; else hi = mid;
     }

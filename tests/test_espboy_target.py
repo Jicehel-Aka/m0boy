@@ -24,9 +24,9 @@ def main():
         base = [args.gbrecomp, str(rom), '--target', 'espboy', '--output-prefix', 'e2e',
                 '--meta-static', '--meta-precise', '-o', str(project)]
         run(base)
-        assert (project / 'rom.bin').read_bytes() == rom.read_bytes()
+        assert not (project / 'rom.bin').exists()  # a small ROM is part of the firmware
         run(base + ['--meta-pack'])
-        assert (project / 'rom.bin').read_bytes() == rom.read_bytes()
+        assert not (project / 'rom.bin').exists()
         assert 'GBL_ROM_PACKED' not in (project / 'src/gbl_config.h').read_text()
         assert not list((project / 'src').glob('pokitto_*'))
         assert not (project / 'src/meta_hw.h').exists()
@@ -63,7 +63,7 @@ def main():
         if pio:
             run([pio, 'run', '-d', str(project)])
             binary = project / '.pio/build/espboy/firmware.bin'
-            assert binary.stat().st_size <= 0xA0000
+            assert binary.stat().st_size <= 0x100000
             print('ESPboy Xtensa firmware:', binary.stat().st_size, 'bytes')
         else:
             print('SKIP Xtensa firmware: set ESPBOY_PIO with an installed ESP8266 SDK')
@@ -73,15 +73,15 @@ def main():
         def hdr(name): return int(re.search(r'#define %s (0x[0-9A-Fa-f]+)u' % name, header).group(1), 16)
         def emi(name): return int(re.search(r'constexpr size_t %s = (0x[0-9A-Fa-f]+);' % name, emitter).group(1), 16)
         assert hdr('ESPBOY_APP_BYTES') == emi('kEspApp') == hdr('ESPBOY_ROM_OFF')
+        assert hdr('ESPBOY_EMBED_BYTES') == emi('kEspEmbed')
         assert hdr('ESPBOY_ROM_BYTES') == emi('kEspRomBytes')
         assert hdr('ESPBOY_ROM_OFF') + hdr('ESPBOY_ROM_BYTES') == hdr('ESPBOY_SAVE_OFF')
         assert hdr('ESPBOY_SAVE_OFF') + hdr('ESPBOY_SAVE_BYTES') == 0x3FB000
         assert hdr('ESPBOY_SAVE_BYTES') == int(re.search(r'kEspSaveBlocks = (0x[0-9A-Fa-f]+) / 4096', emitter).group(1), 16)
-        assert 'ESPBOY_ROM_OFF' in (Path(__file__).resolve().parents[1] / 'targets/meta/platform/espboy/espboy_build.py.in').read_text() or '0xA0000' in (Path(__file__).resolve().parents[1] / 'targets/meta/platform/espboy/espboy_build.py.in').read_text()
+        assert '0x100000' in (Path(__file__).resolve().parents[1] / 'targets/meta/platform/espboy/espboy_build.py.in').read_text()
         ld = (Path(__file__).resolve().parents[1] / 'targets/meta/platform/espboy/espboy.ld.in').read_text()
-        assert 'len = 0x9eff0' in ld  # ESPBOY_APP_BYTES - 0x1010
-        # Between the mapped part of the ROM area and the whole area: raw, read
-        # with spi_flash_read (every sector stored as is).
+        assert 'len = 0xfeff0' in ld  # ESPBOY_APP_BYTES - 0x1010
+        # Above what the firmware holds: bank 0 in it, the other sectors raw in rom.bin.
         mid = bytearray(rom.read_bytes())
         mid.extend(bytes(512 * 1024 - len(mid)))
         mid[0x148] = 4
@@ -89,7 +89,7 @@ def main():
         rom.write_bytes(mid)
         run(base)
         assert 'GBL_ROM_PACKED 1' in (project / 'src/gbl_config.h').read_text()
-        assert (project / 'rom.bin').stat().st_size == 512 * 1024 + 2
+        assert (project / 'rom.bin').stat().st_size == 512 * 1024 - 16384 + 2
         # A 4 MiB cartridge needs partial packing in the 3 MiB ROM area.
         large = bytearray(rom.read_bytes())
         large.extend(bytes(4 * 1024 * 1024 - len(large)))
@@ -100,7 +100,7 @@ def main():
         run(base)
         config = (project / 'src/gbl_config.h').read_text()
         assert '#define GBL_ROM_PACKED 1' in config and 'GBL_ROM_SD 1' not in config
-        assert (project / 'rom.bin').stat().st_size <= 0x320000
+        assert (project / 'rom.bin').stat().st_size <= 0x2C0000
         # Read every logical cartridge byte through the actual runtime cache,
         # including raw sectors, LZSS back-references, and bank transitions.
         (project / 'host/rom_check.c').write_text(r'''#include "gbl.h"
@@ -110,10 +110,9 @@ uint16_t *gbl_platform_line_begin(uint8_t y) { return 0; }
 void gbl_platform_line_end(uint8_t y) {}
 void gbl_platform_vblank(void) {}
 extern const uint8_t gbl_rom_packed[];
-/* What espboy_flash.cpp does with spi_flash_read: rom.bin = bank 0, then gbl_rom_packed. */
+/* What espboy_flash.cpp does with spi_flash_read: rom.bin = gbl_rom_packed. */
 int espboy_rom_read(uint32_t off, uint8_t *dst, uint32_t n) {
-    if (off < 0x4000u) return 0;
-    for (uint32_t i = 0; i < n; i++) dst[i] = gbl_rom_packed[off - 0x4000u + i];
+    for (uint32_t i = 0; i < n; i++) dst[i] = gbl_rom_packed[off + i];
     return 1;
 }
 int gbl_platform_save_read(uint32_t s, uint8_t *p) { return 0; }
@@ -153,7 +152,7 @@ int main(int argc, char **argv) {
         print('ESPboy partial packing:', packed, 'compressed sectors,', raw, 'raw; all bytes verified')
         if pio:
             run([pio, 'run', '-d', str(project)])
-            assert (project / '.pio/build/espboy/firmware.bin').stat().st_size <= 0xA0000
+            assert (project / '.pio/build/espboy/firmware.bin').stat().st_size <= 0x100000
         import random
         noise = bytearray(random.Random(8086).randbytes(len(large)))
         noise[:512] = large[:512]

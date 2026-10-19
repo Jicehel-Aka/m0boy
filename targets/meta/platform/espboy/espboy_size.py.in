@@ -14,7 +14,7 @@ def check_size(source, target, env):
     from pathlib import Path
     image = Path(env.subst("$BUILD_DIR/${PROGNAME}.bin"))
     size = image.stat().st_size
-    if size > 0xA0000:
-        raise RuntimeError("ESPboy firmware: %d bytes exceeds 640 KiB" % size)
+    if size > 0x100000:
+        raise RuntimeError("ESPboy firmware: %d bytes exceeds 1 MiB" % size)
 
 env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", check_size)

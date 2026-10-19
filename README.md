@@ -298,16 +298,15 @@ TARGET=espboy ./compile.sh roms/gb
 ```
 
 ESP8266 (ESP-12F, 4 MiB flash), 128×128 LCD, no SD. The firmware (Arduino
-core start-up, as the earlier ESPboy emulator) is limited to 640 KiB; a separate
-`rom.bin` is uploaded at `0xA0000` (3 MiB area). A ROM that fits the part of
-that area the CPU can map (384 KiB) is read in place; a larger one is stored
-raw too and read sector by sector with `spi_flash_read` through the runtime
-cache, and only when it exceeds 3 MiB are enough 512-byte sectors LZSS
-compressed to fit (largest savings first). Cartridges that stay too big are
-rejected. Battery RAM (two alternating copies) and save states (as many slots
-as fit) live in the flash from `0x3C0000`. Batch archives include both images
-and their flash offsets; they are flashed over serial, not copied onto an SD
-card.
+core start-up, as the earlier ESPboy emulator) fills the 1 MiB the CPU can map.
+A ROM of up to 256 KiB is part of it. A larger ROM keeps bank 0 there and the
+rest goes in a separate `rom.bin` uploaded at `0x100000` (2.75 MiB area), read
+sector by sector with `spi_flash_read` through the runtime cache: raw while it
+fits, and only when it does not are enough 512-byte sectors LZSS compressed
+(largest savings first). Cartridges that stay too big are rejected. Battery
+RAM (two alternating copies) and save states (as many slots as fit) live in the
+flash from `0x3C0000`. Batch archives include the images and their flash
+offsets; they are flashed over serial, not copied onto an SD card.
 
 The Game Boy runtime, generated C, menu, palettes and display pipeline are
 shared. Display, buttons, sound and start-up follow the earlier ESPboy

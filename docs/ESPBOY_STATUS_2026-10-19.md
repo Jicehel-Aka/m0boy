@@ -10,17 +10,15 @@ lui, fonctionnait sur la console.
 ## Implantation
 
 - Flash : 4 Mio (ESP-12F). Programme (cœur Arduino, runtime, code généré) au
-  plus 640 Kio à `0x0`, contrôlés par le linker et par la taille du `.bin`.
-  ROM (`rom.bin`) à `0xA0000`, 3 200 Kio. Sauvegardes à `0x3C0000`, 236 Kio.
-  Secteurs SDK (EEPROM, calibration RF, Wi-Fi) à `0x3FB000`.
+  plus 1 Mio à `0x0` : c'est tout ce que le CPU mappe. Une ROM jusqu'à 256 Kio
+  en fait partie. Au-delà, la banque 0 y reste et le reste (secteurs 32 et
+  suivants) est dans `rom.bin` à `0x100000`, 2 816 Kio, lu seulement avec
+  `spi_flash_read` à travers le cache de secteurs du runtime : brut tant que
+  tout tient, sinon seuls les secteurs de 512 octets nécessaires sont
+  compressés (LZSS, plus gros gain d'abord). Une ROM trop peu compressible est
+  refusée. Sauvegardes à `0x3C0000`, 236 Kio. Secteurs SDK à `0x3FB000`.
   Constantes dans `targets/meta/runtime/gbl_espboy.h` (copie dans
   `meta_emitter.cpp`, comparée par le test).
-- Le CPU ne mappe que le premier Mio de flash. ROM ≤ 384 Kio : brute,
-  lue en place. Au-delà : banque 0 mappée, autres secteurs lus avec
-  `spi_flash_read` à travers le cache de secteurs du runtime. Brut tant que
-  tout tient dans les 3 200 Kio ; sinon seuls les secteurs de 512 octets
-  nécessaires sont compressés (LZSS, plus gros gain d'abord). Une ROM trop peu
-  compressible est refusée.
 - RAM cartouche sur pile (16 Kio au plus) : deux copies alternées en flash,
   en-tête (séquence, somme de contrôle) écrit en dernier, écriture 2 s après
   la dernière modification, à la désactivation de la RAM par le jeu et en
@@ -42,7 +40,7 @@ sans ROM commerciale ni fichier de firmware ajouté au dépôt.
 - `tests/test_espboy_target.py` : génération ESPboy → META dans un même
   dossier, égalité du `run_hash` avec l'interpréteur en mode précis, cohérence
   des constantes de la carte flash (en-tête, convertisseur, linker), ROM de
-  512 Kio stockée brute en mode lecture de secteurs, lecture de chaque octet
+  512 Kio stockée brute en mode lecture de secteurs (banque 0 seule dans le programme), lecture de chaque octet
   d'une cartouche MBC5 de 4 Mio à travers le cache (chemin `espboy_rom_read`
   simulé sur l'hôte), refus d'une ROM incompressible, de la SD et de
   `--meta-thumb`.

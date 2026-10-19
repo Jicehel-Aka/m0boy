@@ -37,7 +37,7 @@ static int program_sector(uint32_t off, const uint8_t *src) {
     return flash_program(off, sbuf, 512);
 }
 
-/* ROM bytes at `offset` of rom.bin: any alignment, up to 520 bytes. */
+/* ROM bytes at `offset` of rom.bin (sectors 32 on): any alignment, up to 520 bytes. */
 extern "C" int espboy_rom_read(uint32_t offset, uint8_t *dst, uint32_t bytes) {
     static uint32_t tmp[(520 + 8) / 4];
     uint32_t addr = ESPBOY_ROM_OFF + offset, a0 = addr & ~3u, end = (addr + bytes + 3u) & ~3u;

@@ -315,9 +315,9 @@ const char* kR8[8] = {"gbr.b", "gbr.c", "gbr.d", "gbr.e", "gbr.h", "gbr.l", null
 const char* kR16[4] = {"gbr.bc", "gbr.de", "gbr.hl", "gbr.sp"};
 
 /* ESPboy flash map (4 MiB), as targets/meta/runtime/gbl_espboy.h. */
-constexpr size_t kEspApp = 0x0A0000;       // application
-constexpr size_t kEspRomBytes = 0x320000;  // rom.bin area, from kEspApp
-constexpr size_t kEspMapped = 0x100000 - kEspApp; // ROM bytes the CPU can map
+constexpr size_t kEspApp = 0x100000;       // application: all the CPU maps
+constexpr size_t kEspRomBytes = 0x2C0000;  // rom.bin area, from kEspApp (read with spi_flash_read)
+constexpr size_t kEspEmbed = 0x40000;      // ROMs up to this size are part of the application
 constexpr size_t kEspSaveBlocks = 0x03B000 / 4096;
 constexpr size_t kEspRuntime = 0x60000;    // Arduino core + runtime, before generated code
 
@@ -325,7 +325,7 @@ class Generator {
 public:
     Generator(const ROM& rom, const MetaTargetOptions& opt) : rom_(rom), opt_(opt) {
         stream_ = !opt.espboy && (opt.stream == 1 || (opt.stream < 0 && rom.size() >= 0x40000) || opt.pack);
-        pack_ = opt.espboy ? rom.size() > kEspMapped : opt.pack;
+        pack_ = opt.espboy ? rom.size() > kEspEmbed : opt.pack;
         if (opt.espboy) stream_ = pack_;
     }
 
@@ -462,7 +462,7 @@ bool Generator::load_coverage(MetaTargetStats& stats, std::string& error) {
         budget = stream_code_budget_;
     } else if (!budget) {
         const size_t app = app_flash(), runtime = opt_.espboy ? kEspRuntime : 40960;
-        const size_t rom_flash = opt_.espboy ? 0 : rom_.size();
+        const size_t rom_flash = rom_.size();
         budget = app > runtime + rom_flash ? app - runtime - rom_flash : 0;
     }
     const size_t max_ins = budget / (opt_.bytes_per_instruction ? opt_.bytes_per_instruction : 20);
@@ -561,7 +561,7 @@ bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
             packed_sector_[k].assign(rom_.data() + k * 512, rom_.data() + (k + 1) * 512);
         }
         std::stable_sort(savings.begin(), savings.end(), [](auto a, auto b) { return a.first > b.first; });
-        size_t size = rom_.size() + 2;
+        size_t size = rom_.size() - 16384 + 2; // rom.bin holds sectors 32 on; bank 0 is in the application
         for (auto [saved, k] : savings) {
             if (size <= kEspRomBytes) break;
             if (!saved) continue;
@@ -569,16 +569,16 @@ bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
             size -= saved;
         }
         if (size > kEspRomBytes) {
-            error = "ESPboy ROM does not fit in the 3 MiB ROM area of the 4 MiB flash, even compressed (bank 0 kept raw)";
+            error = "ESPboy ROM does not fit in the 2.75 MiB ROM area of the 4 MiB flash, even compressed (bank 0 stays in the application)";
             return false;
         }
         chunk_weight_.assign((rom_.size() + 4095) / 4096, 0);
         resident_index_.assign(chunk_weight_.size(), -1);
-        stream_code_budget_ = kEspApp - kEspRuntime - (sectors + 1) * 4;
+        stream_code_budget_ = kEspApp - kEspRuntime - 16384 - (sectors + 1) * 4;
         stats.stream = stats.packed = true;
         stats.sd = false;
         stats.packed_raw_bytes = rom_.size() - 16384;
-        stats.packed_bytes = size - 16384;
+        stats.packed_bytes = size - 2;
         return true;
     }
     /* No need to introduce a sector cache when the entire ROM and played
@@ -1707,10 +1707,10 @@ std::string Generator::emit_code() {
     if (ins_.empty()) o << "/* No coverage profile: every instruction runs in the interpreter. */\n";
     for (unsigned b = 0; b < banks; b++) {
         if (per_bank[b].empty()) continue;
-        o << "static const uint16_t t" << b << "_addr[] = {";
+        o << "static const uint16_t t" << b << "_addr[] GBL_TABLE = {";
         for (size_t i = 0; i < per_bank[b].size(); i++)
             o << (i % 12 ? " " : "\n    ") << hex(per_bank[b][i]->addr, 4) << ",";
-        o << "\n};\nstatic const gbl_fn t" << b << "_fn[] = {";
+        o << "\n};\nstatic const gbl_fn t" << b << "_fn[] GBL_TABLE = {";
         for (size_t i = 0; i < per_bank[b].size(); i++)
             o << (i % 6 ? " " : "\n    ") << region_name(per_bank[b][i]->region) << ",";
         /* gbl_lookup's index (gbl.h): first entry of each 1 KiB block, then
@@ -1724,7 +1724,7 @@ std::string Generator::emit_code() {
             const unsigned page = (in->addr & 0x3FFFu) >> 7;
             idx[17 + page / 16] = static_cast<uint16_t>(idx[17 + page / 16] | (1u << (page % 16)));
         }
-        o << "\n};\nstatic const uint16_t t" << b << "_idx[] = {";
+        o << "\n};\nstatic const uint16_t t" << b << "_idx[] GBL_TABLE = {";
         for (unsigned k = 0; k < 17 + 8; k++) o << (k % 12 ? " " : "\n    ") << hex(idx[k], 4) << ",";
         o << "\n};\n";
     }
@@ -1759,8 +1759,8 @@ std::string Generator::emit_rom_full() const {
 }
 
 std::vector<uint8_t> Generator::espboy_image() const {
-    if (!pack_) return std::vector<uint8_t>(rom_.data(), rom_.data() + rom_.size());
-    std::vector<uint8_t> image(rom_.data(), rom_.data() + 16384);
+    if (!pack_) return {}; // the ROM is in the application
+    std::vector<uint8_t> image;
     for (size_t k = 32; k < packed_sector_.size(); ++k)
         image.insert(image.end(), packed_sector_[k].begin(), packed_sector_[k].end());
     image.insert(image.end(), {0, 0});
@@ -1770,16 +1770,16 @@ std::vector<uint8_t> Generator::espboy_image() const {
 std::string Generator::emit_rom() const {
     std::ostringstream o;
     if (opt_.espboy && pack_) {
-        o << "#include <stdint.h>\n#if defined(ESP8266)\n#include <pgmspace.h>\n#define ROM_OFF_ATTR PROGMEM\n#else\n#define ROM_OFF_ATTR\n#endif\n"
+        o << "#include <stdint.h>\n#if defined(ESP8266)\n#include <pgmspace.h>\n#define ROM_ATTR PROGMEM __attribute__((aligned(4)))\n#else\n#define ROM_ATTR __attribute__((aligned(4)))\n#endif\n"
           << "const uint32_t gbl_rom_size = " << rom_.size() << "u;\n"
           << "const uint8_t gbl_rom_chunk_map[" << chunk_weight_.size() << "] = {0};\n"
-          << "#if !defined(ESP8266)\nconst uint8_t gbl_rom[16384] = {";
+          << "const uint8_t gbl_rom[16384] ROM_ATTR = {";
         emit_bytes(o, rom_.data(), 16384);
+        o << "\n};\n#if !defined(ESP8266)\nconst uint8_t gbl_rom_packed[] = {";
         auto image = espboy_image();
-        o << "\n};\nconst uint8_t gbl_rom_packed[] = {";
-        emit_bytes(o, image.data() + 16384, image.size() - 16384);
+        emit_bytes(o, image.data(), image.size());
         o << "\n};\nconst uint8_t gbl_rom_resident[1][4096] = {{0}};\n#endif\n"
-          << "const uint32_t gbl_rom_packed_off[] ROM_OFF_ATTR = {";
+          << "const uint32_t gbl_rom_packed_off[] ROM_ATTR = {";
         size_t offset = 0;
         for (const auto& sector : packed_sector_) { o << offset << "u,"; offset += sector.size(); }
         o << offset << "u};\n";
@@ -1839,15 +1839,14 @@ std::string Generator::emit_rom() const {
     }
     o << "/* ROM image for gbl (flash resident). */\n#include <stdint.h>\n\n"
       << "const uint32_t gbl_rom_size = " << rom_.size() << "u;\n"
-      << "#if defined(ESP8266)\n#include <pgmspace.h>\n#define GBL_ROM_ATTR PROGMEM\n#else\n#define GBL_ROM_ATTR __attribute__((aligned(4)))\n#endif\n"
-      << "#if !defined(ESP8266)\n"
+      << "#if defined(ESP8266)\n#include <pgmspace.h>\n#define GBL_ROM_ATTR PROGMEM __attribute__((aligned(4)))\n#else\n#define GBL_ROM_ATTR __attribute__((aligned(4)))\n#endif\n"
       << "const uint8_t gbl_rom[" << rom_.size() << "] GBL_ROM_ATTR = {";
     const uint8_t* d = rom_.data();
     for (size_t i = 0; i < rom_.size(); i++) {
         if (i % 24 == 0) o << "\n";
         o << unsigned(d[i]) << ",";
     }
-    o << "\n};\n#endif\n";
+    o << "\n};\n";
     return o.str();
 }
 
@@ -2240,10 +2239,12 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         !copy_dir_files(platform_tpl, src, error))
         return false;
     if (options.espboy) {
-        std::ofstream image(out / "rom.bin", std::ios::binary);
         const auto bytes = gen.espboy_image();
+        if (!bytes.empty()) {
+        std::ofstream image(out / "rom.bin", std::ios::binary);
         image.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
         if (!image) { error = "cannot write ESPboy ROM flash image"; return false; }
+        }
         for (const char* name : {"meta_display.c", "meta_display_layout.h"})
             fs::copy_file(tpl / "platform/meta" / name, src / name, fs::copy_options::overwrite_existing);
     }
@@ -2258,7 +2259,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         fs::copy_file(tpl.parent_path() / "common/runtime" / name, src / name, fs::copy_options::overwrite_existing, ec);
         if (ec) { error = std::string("cannot copy the shared card cache: ") + ec.message(); return false; }
     }
-    if (!options.espboy) fs::remove(out / "rom.bin", ec);
+    if (!options.espboy || gen.espboy_image().empty()) fs::remove(out / "rom.bin", ec);
     fs::remove_all(out / "variants", ec);
     /* Subdirectories (the META's boards/) as they are. */
     for (const auto& entry : fs::directory_iterator(platform_tpl)) {

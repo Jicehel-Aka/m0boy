@@ -1,11 +1,11 @@
-/* ESP8266, 4 MiB: 640 KiB application (ESPBOY_APP_BYTES), the ROM image
- * from 0xA0000, saves from 0x3C0000, the SDK's EEPROM/RF/Wi-Fi sectors from
- * 0x3FB000.  Based on Arduino ESP8266 eagle.flash.4m.ld (3.1.2). */
+/* ESP8266, 4 MiB: the application is all the CPU maps (ESPBOY_APP_BYTES);
+ * rom.bin follows at 0x100000, saves at 0x3C0000, and the SDK's EEPROM/RF/
+ * Wi-Fi sectors at 0x3FB000.  Arduino ESP8266 eagle.flash.4m.ld (3.1.2). */
 MEMORY
 {
   dport0_0_seg : org = 0x3FF00000, len = 0x10
   dram0_0_seg : org = 0x3FFE8000, len = 0x14000
-  irom0_0_seg : org = 0x40201010, len = 0x9eff0
+  irom0_0_seg : org = 0x40201010, len = 0xfeff0
 }
 PROVIDE ( _FS_start = 0x405FB000 );
 PROVIDE ( _FS_end = 0x405FB000 );

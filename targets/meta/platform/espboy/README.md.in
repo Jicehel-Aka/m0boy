@@ -1,12 +1,13 @@
 # @NAME@ — ESPboy
 
-Build: `pio run`. Serial upload of **both matching images**: `pio run -t upload`
-(or `esptool.py write_flash 0x00000 firmware.bin 0xA0000 rom.bin`).
+Build: `pio run`. Serial upload: `pio run -t upload` (a ROM larger than
+256 KiB also has `rom.bin`, flashed with it at `0x100000`:
+`esptool.py write_flash 0x00000 firmware.bin 0x100000 rom.bin`).
 
 | Flash offset | Contents | Limit |
 |---|---|---|
-| `0x000000` | `.pio/build/espboy/firmware.bin` (Arduino core, runtime, code) | 640 KiB |
-| `0x0A0000` | `rom.bin`: bank 0 raw, then raw or LZSS sectors | 3200 KiB |
+| `0x000000` | `.pio/build/espboy/firmware.bin`: Arduino core, runtime, code, ROM ≤ 256 KiB or bank 0 | 1 MiB |
+| `0x100000` | `rom.bin`: sectors 32 on of a larger ROM, raw or LZSS (absent for a small ROM) | 2816 KiB |
 | `0x3C0000` | cartridge RAM (two copies), save states | 236 KiB |
 | `0x3FB000` | Arduino/SDK: EEPROM, RF calibration, Wi-Fi settings | 20 KiB |
 
@@ -20,13 +21,13 @@ Horizontal output reduces 160 to 128 without cropping; frames are sent as
 strips without a framebuffer. Native ARM assembly and `--meta-thumb` are
 unavailable; the firmware compiler is GCC.
 
-ROM storage depends on its size: up to 384 KiB it is read in place from the
-mapped flash (the CPU maps the first MiB). Above, bank 0 is mapped and every
-other sector is read with `spi_flash_read` into the runtime's sector cache;
-the sectors are raw as long as the ROM fits the 3200 KiB area, and otherwise
-only enough of them are LZSS compressed to fit (largest savings first). A
-cartridge that stays too big is rejected at generation. `--meta-pack` and
-`--meta-stream on` have no effect / are rejected.
+ROM storage depends on its size: up to 256 KiB it is part of the firmware and
+read in place. Above, bank 0 stays there and every other sector is read with
+`spi_flash_read` into the runtime's sector cache; the sectors are raw as long as
+they fit the 2816 KiB area, and otherwise only enough of them are LZSS
+compressed to fit (largest savings first). A cartridge that stays too big is
+rejected at generation. `--meta-pack` has no effect, `--meta-stream on` is
+rejected.
 
 Saves: battery RAM (at most 16 KiB) is written as a whole new copy, alternating
 between two, with a checksummed header written last; it is written 2 s after
