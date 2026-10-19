@@ -151,6 +151,29 @@ l'ancien émulateur :
 - TFT_eSPI, ST7735_GREENTAB3, rotation 0 : MADCTL = MX | MY | BGR, colonne de
   départ 2, ligne de départ 3 : exactement ce qu'envoie notre pilote.
 
+## Estimation de la charge du processeur (gm0, pas une mesure)
+
+Part du temps où le firmware travaille plutôt que d'attendre l'échéance de son
+image (160 MHz, 900 images avec quelques touches ; `tests/esp/fw_run` de gm0). Les
+coûts d'instruction sont ceux mesurés par l'émulateur de référence ; le coût d'un
+défaut du cache d'instructions n'est mesuré nulle part : la fourchette va de 0 à
+64 cycles par ligne de 32 octets.
+
+| Jeu | Occupé |
+|---|---|
+| Super Mario Land (GB, qui défile) | 22 – 24 % |
+| Super Mario Land 2, écran fixe | 8 – 9 % |
+| Sonic, Pengo, Bubble Bobble, Asterix (Game Gear) | 79 – 86 % |
+| Action Fighter, Aladdin (Master System) | 81 – 88 % |
+| Bank Panic, Bomb Jack (SG-1000) | 74 – 76 % |
+
+Les Sega redessinent les 128×128 pixels à chaque image : 32 Ko par image à 40 MHz,
+environ 6,5 ms, soit près de 40 % du temps, le processeur attendant le SPI.
+Marge estimée sur Game Gear et Master System : 12 à 25 % avant de sauter des
+images, donc fragile ; sur Game Boy, plusieurs fois. Les instructions que le
+profil de jeu n'a pas vues passent par l'interpréteur Z80 et coûtent plus cher :
+ces chiffres valent pour le chemin couvert par les parties automatiques.
+
 ## À vérifier sur la console
 
 Écran (couleurs, décalage 2/3, orientation), boutons, son, saves et états,
