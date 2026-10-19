@@ -56,8 +56,12 @@ static uint8_t mcp_read(uint8_t reg) {
     return value;
 }
 
-/* ESPboy: 0 left, 1 up, 2 down, 3 right, 4 ESC (B), 5 ACT (A), 6 and 7 the
- * two auxiliary buttons (the old emulator: 6 = select, 7 = start). */
+/* ESPboy (MCP23017 port A, low when pressed): 0 left, 1 up, 2 down, 3 right,
+ * 4 ACT, 5 ESC, 6 and 7 the auxiliary buttons (6 = select, 7 = start, as in
+ * the earlier emulator that ran on the console).  The frontends take A from
+ * bit 5 (ESC) and B from bit 4 (ACT), as that emulator did, which had a swap
+ * for them; the reference ESPboy emulator's key help calls bit 4 "A": swap the
+ * two lines below to follow it. */
 extern "C" uint8_t espboy_buttons(void) {
     uint8_t b = (uint8_t)~mcp_read(MCP_GPIOA), out = 0;
     if (b & 1) out |= META_MB_LEFT;

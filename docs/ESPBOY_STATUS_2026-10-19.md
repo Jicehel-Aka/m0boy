@@ -104,6 +104,36 @@ l'écran est un modèle ST7735 (panneau BGR : `MADCTL.BGR` à 0 échange rouge e
 - `ESPBOY_GM0=/chemin/gm0` fait passer chaque firmware construit par gm0 dans
   les deux tests ESPboy.
 
+## Comparaison avec l'émulateur ESPboy de référence
+
+L'émulateur [ESPboy-edu/espboy_emulator](https://github.com/ESPboy-edu/espboy_emulator)
+(MIT) exécute la vraie ROM de la puce (à dumper soi-même : elle n'est pas dans le
+dépôt, donc je n'ai pas pu y lancer nos firmwares) et est recoupé avec une console
+(instructions, durées, panneau). J'ai comparé le matériel que nos firmwares
+supposent et le modèle de gm0 avec le sien :
+
+- **Confirmé** : écran ST7735 128×128 sur HSPI (MOSI 13, SCK 14), D/C sur GPIO16,
+  CS sur la broche B0 du MCP23017 (0x20), I²C sur GPIO4/5, MCP4725 (0x60) pour le
+  rétroéclairage, haut-parleur sur GPIO0 par sigma-delta, boutons sur le port A
+  actifs bas avec tirages, fenêtre visible = colonne 2, ligne 3 de la mémoire avec
+  `MADCTL` 0xC8 (le même bloc que TFT_eSPI), panneau BGR (`MADCTL.BGR` à 1 =
+  couleurs correctes). Le firmware m0boy n'a pas eu à changer.
+- **Corrigé dans gm0** : durées d'instructions mesurées (MULL 2, branche +2, RET
+  +3, chargement +5 hors DRAM, registre de périphérique +15 en lecture, +10 en
+  écriture, interverrouillage chargement-utilisation, MEMW) ; le modèle de défaut
+  de cache d'instructions que j'avais ajouté n'est pas dans la référence : il est
+  éteint par défaut ; écran : adresses de colonne/ligne sur l'octet bas, SWRESET
+  qui garde `MADCTL` et `COLMOD` (je le remettais à zéro), `COLMOD` 12/16/18
+  bits (18 au reset), panneau blanc éteint, BGR appliqué au balayage, CS du
+  MCP23017 ; interruption de FRC1 conditionnée au bit de DPORT ; lecture du port
+  A sans tirage = 0.
+- **À trancher** : les boutons. Bits 4 et 5 : la référence nomme le bit 4 « ACT
+  (A) » et le bit 5 « ESC (B) ». Le firmware m0boy suit l'ancien émulateur qui
+  tournait sur la console : A = bit 5, B = bit 4 (avec un échange par touche).
+  Intervertir deux lignes de `espboy_hw.cpp` suffit si c'est l'autre sens.
+- **Non couvert ici** : le cache d'instructions (la référence ne le mesure pas),
+  la durée réelle des écritures et effacements de flash, le LED WS2812 sur GPIO2.
+
 ## À vérifier sur la console
 
 Écran (couleurs, décalage 2/3, orientation), boutons, son, saves et états,

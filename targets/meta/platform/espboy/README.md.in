@@ -37,7 +37,7 @@ slots as the save area holds; a state is refused if its checksum does not
 match. Saves are tied to the ROM's content: another game flashed later does not
 see them (and overwrites them on its first save).
 
-ACT = A, ESC = B, right auxiliary = Start, left auxiliary tap = Select; hold
+ESC = A, ACT = B (the earlier emulator's mapping), right auxiliary = Start, left auxiliary tap = Select; hold
 the left auxiliary for the shared menu. Quit resets the ESP8266.
 
 Wiring (from the earlier emulator): SPI MOSI GPIO13 / SCK GPIO14, LCD DC
