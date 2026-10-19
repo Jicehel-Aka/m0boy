@@ -28,6 +28,22 @@
 #define GBL_PROFILE_H
 
 #include "gbl_config.h"
+#if defined(GBL_TARGET_ESPBOY) && GBL_TARGET_ESPBOY
+/* Portable C profile; no SAMD peripherals or SD-backed cartridge RAM. */
+#define META_USB 0
+#define META_LCD_DMA 0
+#define META_LCD_12BPP 0
+#define META_OVERCLOCK 0
+#define GBL_ERAM_ON_SD 0
+#define GBL_PPU_RAMFUNC 0
+#define META_SMOOTH_ASM 0
+#define META_SMOOTH_SPECULATE 1
+#define META_MERGE_MODES 0
+#define META_TBLEND 2
+#define META_LCD_BUFFERS 2
+#define META_STRIP_LINES 2
+#define META_DISPLAY_COMPACT 1
+#endif
 #include "gbl_board.h"
 
 /* META_OVERCLOCK: start overclocked instead of at the nominal 48 MHz: 70

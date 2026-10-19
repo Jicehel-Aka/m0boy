@@ -8,7 +8,9 @@
 
 #include "meta_target.h"
 #include <string.h>
-#if !META_TARGET_POKITTO
+#if META_TARGET_ESPBOY
+#include "espboy_hw.h"
+#elif !META_TARGET_POKITTO
 #include "meta_hw.h"
 #endif
 

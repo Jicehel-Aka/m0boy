@@ -25,7 +25,25 @@
 #include "gbl_config.h"
 #include "gbl_profile.h" /* the console's optimisation switches */
 
-#if defined(GBL_TARGET_POKITTO) && GBL_TARGET_POKITTO
+#if defined(GBL_TARGET_ESPBOY) && GBL_TARGET_ESPBOY
+#define META_TARGET_ESPBOY 1
+#else
+#define META_TARGET_ESPBOY 0
+#endif
+
+#if META_TARGET_ESPBOY
+#define META_TARGET_POKITTO 0
+#define META_TARGET_NAME "espboy"
+#define META_LCD_ASYNC 0
+#define META_SCALED_MODES 1
+#define META_SCREEN_ROWS 128
+#define META_SWAP_AB_DEFAULT 0
+#define META_CLOCK_DEFAULT 160
+/* Same byte-swapped RGB565 strips as the META; driver resamples 160->128. */
+#define META_COLOR(rgb) ((uint16_t)( \
+    (((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) >> 8) | \
+    (((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) << 8)))
+#elif defined(GBL_TARGET_POKITTO) && GBL_TARGET_POKITTO
 
 #define META_TARGET_POKITTO 1
 #define META_TARGET_NAME "pokitto"

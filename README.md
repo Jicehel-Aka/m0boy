@@ -287,6 +287,30 @@ ninja -C build
 ctest --test-dir build --output-on-failure
 ```
 
+## ESPboy (initial Game Boy target)
+
+```bash
+build/bin/gbrecomp game.gb --target espboy --meta-static -o out/espboy/game
+pio run -d out/espboy/game
+pio run -d out/espboy/game -t upload
+# Batch conversion, sharing the existing recorded play sessions:
+TARGET=espboy ./compile.sh roms/gb
+```
+
+ESP8266, 128×128 LCD, no SD, 1 MiB total flash. The application binary is
+limited to 256 KiB; a separate `rom.bin` is uploaded at `0x40000`, with
+748 KiB available before the reserved flash tail. ROMs remain raw when they
+fit; otherwise only enough 512-byte sectors are LZSS compressed to fit,
+using the existing runtime cache and decoder. Oversized incompressible
+cartridges are rejected. Batch archives include both images and their flash
+offsets; they are flashed over serial, not copied onto an SD card.
+
+The Game Boy runtime, generated C, menu, palettes and display pipeline are
+shared. Startup and peripheral adapters are ESP8266 specific. Sega source
+systems are not yet supported on ESPboy; battery RAM is volatile and save
+states are unavailable. This port has host tests and an Xtensa build, but
+has not been validated on ESPboy hardware. See the generated README.
+
 ## Limitations
 
 - DMG games only: Game Boy Color-only ROMs are rejected and CGB features

@@ -13,9 +13,10 @@ constexpr std::array cpu_table = {
 constexpr std::array gameboy_targets = {
     TargetId::desktop, TargetId::meta, TargetId::pokitto,
 };
+constexpr std::array espboy_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::espboy};
 constexpr std::array system_table = {
     SystemDescriptor{SystemId::gameboy, "gameboy", CpuId::sm83, 0x0100,
-                     8192, gameboy::inspect, gameboy_targets},
+                     8192, gameboy::inspect, espboy_targets},
     SystemDescriptor{SystemId::sg1000, "sg1000", CpuId::z80, 0x0000,
                      1024, sg1000::inspect, gameboy_targets},
     SystemDescriptor{SystemId::gamegear, "gg", CpuId::z80, 0x0000,
@@ -52,6 +53,7 @@ std::optional<TargetId> parse_target(std::string_view name) {
     if (name == "desktop") return TargetId::desktop;
     if (name == "meta") return TargetId::meta;
     if (name == "pokitto") return TargetId::pokitto;
+    if (name == "espboy") return TargetId::espboy;
     return std::nullopt;
 }
 

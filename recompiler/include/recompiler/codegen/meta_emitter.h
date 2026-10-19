@@ -32,6 +32,7 @@ struct MetaTargetOptions {
      * (bare-metal Makefile; same runtime and generated code, its own
      * drivers in platform/pokitto, 228 KiB of flash below its loader). */
     bool pokitto = false;
+    bool espboy = false; ///< ESP8266, 1 MiB flash, 256 KiB firmware, no SD
     std::vector<std::filesystem::path> coverage_files; ///< gbl coverage v1 files
     bool emit_comments = true;
     std::string compiler = "gcc"; ///< firmware C/C++ compiler: gcc or clang

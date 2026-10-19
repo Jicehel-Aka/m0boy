@@ -1,0 +1,51 @@
+# @NAME@ — ESPboy
+
+Build: `pio run`. Serial upload of **both matching images**: `pio run -t upload`.
+
+| Flash offset | Contents | Limit |
+|---|---|---|
+| `0x00000` | `.pio/build/espboy/firmware.bin` (includes eboot) | 256 KiB |
+| `0x40000` | `rom.bin`, raw or partially LZSS packed | 748 KiB |
+| `0xFB000` | Reserved calibration/configuration sectors | 20 KiB |
+
+ESP8266/LX106, 1 MiB flash, 128×128 ST7735. Runs at 160 MHz; the shared menu
+also offers 80 MHz. No SD, filesystem or networking. The linker bounds the
+application region; a post-build check also bounds the actual upload binary.
+The cartridge occupies its own mapped flash area, leaving the entire program
+budget available to the runtime and compiled code.
+
+Game Boy DMG cartridges only for this first ESPboy version. The recompiler,
+interpreter, mapper, PPU, APU, palettes, input/menu and vertical scaling are
+shared with META/Pokitto. Horizontal output reduces 160 to 128 without
+cropping; frames are sent as strips without a framebuffer. ROM byte reads
+use aligned flash loads on Xtensa. Native ARM assembly and `--meta-thumb`
+are unavailable; the firmware compiler is GCC.
+
+Storage is raw whenever it fits. Otherwise the shared 512-byte LZSS codec
+compresses only enough sectors to fit (largest byte savings first), keeping
+bank 0 raw; the existing runtime sector cache decodes them on demand. There
+is no SD fallback: an incompressible cartridge which exceeds the physical
+flash is rejected during generation. `--meta-pack` is accepted but never
+forces compression when raw already fits. `--meta-stream on` is rejected.
+
+The startup uses the Arduino 3.1.2 image tooling and peripheral drivers but
+runs a single task directly, without the non-OS SDK/network startup. ROM
+interrupt services drive timer1 audio; the cycle counter supplies time at
+both CPU speeds. The program uses the boot stack, separately from cartridge
+RAM. Cartridge RAM works in RAM; battery saves and save states do not persist.
+
+ACT = A, ESC = B, right auxiliary = Start, left auxiliary tap = Select;
+hold left auxiliary for the shared menu. Quit resets the ESP8266.
+
+Wiring: HSPI MOSI GPIO13 / SCK GPIO14, LCD DC GPIO15, MCP23017 at `0x20`
+(buttons PA0..7, LCD CS PB0), I²C SDA GPIO4 / SCL GPIO5, MCP4725 backlight
+at `0x60`, speaker GPIO0. Panel offsets: (2, 3), MADCTL `0xC8`.
+
+References:
+- https://github.com/ESPboy-edu/ESPboy_FirstTest
+- https://github.com/m1cr0lab-espboy/ESPboy/blob/main/src/ESPboy.cpp
+- https://github.com/m1cr0lab-espboy/ESPboy/blob/main/src/ESPboy.h
+- https://github.com/esp8266/Arduino/tree/3.1.2/bootloaders/eboot
+
+Validation is host differential testing and Xtensa compilation/size checks.
+Startup, panel, input and sound still need verification on an actual ESPboy.

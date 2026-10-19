@@ -1,0 +1,14 @@
+"""Keep Arduino peripheral libraries, replace its SDK/task startup."""
+Import("env")
+from pathlib import Path
+
+# Register before the platform constructs esptool's upload command.
+rom = str(Path(env.subst("$PROJECT_DIR")) / "rom.bin")
+env.Append(FLASH_EXTRA_IMAGES=[("0x40000", rom)])
+
+def peripheral_source(env, node):
+    if Path(str(node)).name in ('core_esp8266_main.cpp', 'core_esp8266_postmortem.cpp'):
+        return None
+    return node
+
+env.AddBuildMiddleware(peripheral_source)

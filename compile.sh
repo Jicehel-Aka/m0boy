@@ -215,14 +215,14 @@ if [ "$TARGET" = both ] || [ "$TARGET" = all ]; then
   exit $rc
 fi
 case "$TARGET" in
-  meta|pokitto) ;;
-  *) echo "TARGET=$TARGET inconnu (meta, pokitto ou both)."; exit 1 ;;
+  meta|pokitto|espboy) ;;
+  *) echo "TARGET=$TARGET inconnu (meta, pokitto, espboy ou both)."; exit 1 ;;
 esac
 SRC_DIR="${1:-./roms}"
 DEST_DIR="${2:-./roms/$TARGET}"
 # Projets générés : out/<jeu> pour la META, out/pokitto/<jeu> pour la Pokitto
 # (les deux peuvent coexister).
-if [ "$TARGET" = pokitto ]; then OUT_ROOT="out/pokitto"; else OUT_ROOT="out"; fi
+if [ "$TARGET" != meta ]; then OUT_ROOT="out/$TARGET"; else OUT_ROOT="out"; fi
 PLAY="${PLAY:-0}"
 STATIC="${STATIC:-1}"
 AUTO="${AUTO:-1}"
@@ -263,6 +263,13 @@ NO_ICONS="${NO_ICONS:-0}"
 OVERCLOCK="${OVERCLOCK:-${POKITTO_HC:-1}}"
 export OVERCLOCK POKITTO_HC="$OVERCLOCK"
 export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=$OVERCLOCK${AUDIO_DMA:+ -DMETA_AUDIO_DMA=$AUDIO_DMA}"
+if [ "$TARGET" = espboy ]; then
+  PACK=0
+  FIRMWARE_COMPILER=gcc
+  OVERCLOCK=0
+  OVERCLOCK_FLAG=""
+fi
+PIO_ENV="$TARGET"
 # m0recomp is the console-neutral CLI; keep the historical binary as fallback.
 GBRECOMP="./build/bin/gbrecomp"
 [ -x ./build/bin/m0recomp ] && GBRECOMP="./build/bin/m0recomp"
@@ -727,7 +734,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     else
       build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0
     fi
-    echo "$build_log" | grep -q -E "overflowed|greater than maximum allowed" && return 1
+    echo "$build_log" | grep -q -E "overflowed|will not fit|greater than maximum allowed|exceeds 256 KiB" && return 1
     echo "$build_log" | tail -20
     return 2
   }
@@ -763,7 +770,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     firmware="$sg_build/firmware.bin"
     cp "$firmware" "$game_dir/$game_name.bin" || return 1
   else
-    firmware="$out_dir/.pio/build/meta/firmware.bin"
+    firmware="$out_dir/.pio/build/$PIO_ENV/firmware.bin"
     cp "$firmware" "$game_dir/$sd_name.BIN" || return 1
     fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" "$icons" || echo "[i] (jeu conservé sans icône)"
   fi
@@ -1052,7 +1059,7 @@ PY
     else
       build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0
     fi
-    echo "$build_log" | grep -q -E "overflowed|greater than maximum allowed" && return 1
+    echo "$build_log" | grep -q -E "overflowed|will not fit|greater than maximum allowed|exceeds 256 KiB" && return 1
     echo "$build_log" | tail -20
     return 2
   }
@@ -1100,9 +1107,16 @@ PY
     echo "$build_log" | grep -E "RAM:|Flash:"
     # Le .bin porte le nom court des fichiers du jeu : le loader prend le
     # premier .bin du dossier, le firmware retrouve son dossier par lui.
-    cp "$out_dir/.pio/build/meta/firmware.bin" "$game_dir/$sd_name.BIN"
+    if [ "$TARGET" = espboy ]; then
+      cp "$out_dir/.pio/build/$PIO_ENV/firmware.bin" "$game_dir/firmware.bin" || return 1
+      cp "$out_dir/rom.bin" "$game_dir/rom.bin" || return 1
+      cp "$out_dir/README.md" "$game_dir/README.md" || return 1
+      printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin 0x40000 rom.bin\n' > "$game_dir/FLASH.txt"
+    else
+      cp "$out_dir/.pio/build/$PIO_ENV/firmware.bin" "$game_dir/$sd_name.BIN"
+    fi
     # Icônes du loader (PNG libretro -> BMP 24 bits), sans bloquer le jeu.
-    fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" "$gbc" \
+    [ "$TARGET" = espboy ] || fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" "$gbc" \
       || echo "[i] (jeu conservé sans icône)"
   fi
   # Sauvegarde (cartouche à pile) ou grande RAM de cartouche : un fichier
@@ -1112,7 +1126,7 @@ PY
   save_name=$(sed -n 's/^#define GBL_SAVE_NAME "\(.*\)"$/\1/p' "$out_dir/src/gbl_config.h")
   eram=$(sed -n 's/^#define GBL_ERAM_SIZE \([0-9]*\)$/\1/p' "$out_dir/src/gbl_config.h")
   battery=$(grep -c '^#define GBL_BATTERY 1' "$out_dir/src/gbl_config.h")
-  if [ -n "$save_name" ] && { [ "$battery" = "1" ] || [ "${eram:-0}" -gt 2048 ]; }; then
+  if [ "$TARGET" != espboy ] && [ -n "$save_name" ] && { [ "$battery" = "1" ] || [ "${eram:-0}" -gt 2048 ]; }; then
     if [ ! -f "$game_dir/$save_name" ]; then
       head -c "$eram" /dev/zero | tr '\0' '\377' > "$game_dir/$save_name"
     fi
@@ -1147,6 +1161,7 @@ PY
   } > "$game_dir/.gbrmeta.json"
   local fw_ver
   if [ "$TARGET" = pokitto ]; then fw_ver=$(firmware_version "$game_dir/$game_name.bin")
+  elif [ "$TARGET" = espboy ]; then fw_ver=$(firmware_version "$game_dir/firmware.bin")
   else fw_ver=$(firmware_version "$game_dir/$sd_name.BIN"); fi
   [ -n "$fw_ver" ] || fw_ver="$CUR_VERSION (pas de marqueur : gbrecomp trop ancien)"
   echo "[i] Firmware produit par gbrecomp v$fw_ver"
@@ -1400,5 +1415,9 @@ for f in "$STATUS_DIR"/skip.*; do [ -f "$f" ] && n_skip=$((n_skip + 1)); done
 echo "------------------------------------------"
 echo "Réussis : $n_ok   Échecs : $n_fail   Déjà à jour : $n_skip   Conservés : ${#KEPT[@]}"
 for f in "$STATUS_DIR"/fail.*; do [ -f "$f" ] && echo "  échec : $(cat "$f")"; done
-echo "Jeux dans : $DEST_DIR/<gb|sg|gg|sms>/<Jeu>.zip  (le zip contient le répertoire du jeu, à déposer sur la carte SD)"
+if [ "$TARGET" = espboy ]; then
+  echo "Jeux dans : $DEST_DIR/gb/<Jeu>.zip (firmware.bin + rom.bin, offsets dans FLASH.txt)"
+else
+  echo "Jeux dans : $DEST_DIR/<gb|sg|gg|sms>/<Jeu>.zip  (le zip contient le répertoire du jeu, à déposer sur la carte SD)"
+fi
 [ "$n_fail" -eq 0 ]

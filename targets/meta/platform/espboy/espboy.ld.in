@@ -1,0 +1,16 @@
+/* ESP8266: 256 KiB application, raw ROM at 0x40000, SDK tail at 0xFB000.
+ * Based on Arduino ESP8266 eagle.flash.1m.ld (3.1.2). */
+MEMORY
+{
+  dport0_0_seg : org = 0x3FF00000, len = 0x10
+  dram0_0_seg : org = 0x3FFE8000, len = 0x14000
+  irom0_0_seg : org = 0x40201010, len = 0x3eff0
+}
+PROVIDE ( _FS_start = 0x402FB000 );
+PROVIDE ( _FS_end = 0x402FB000 );
+PROVIDE ( _FS_page = 0 );
+PROVIDE ( _FS_block = 0 );
+PROVIDE ( _EEPROM_start = 0x402FB000 );
+/* Arduino renames the ROM posting primitive; master I2C does not schedule tasks. */
+PROVIDE ( ets_post = 0x40000e24 );
+INCLUDE "local.eagle.app.v6.common.ld"

@@ -1,0 +1,27 @@
+"""Check the actual upload image as well as PlatformIO's ELF size check."""
+Import("env")
+# No floating-point printf/scanf in a game firmware. The framework forces
+# both roots into every link by default, pulling their large libc parsers.
+flags = env['LINKFLAGS']
+for symbol in ('_printf_float', '_scanf_float'):
+    while symbol in flags:
+        pos = flags.index(symbol)
+        if pos and flags[pos - 1] == '-u': del flags[pos - 1:pos + 1]
+        else: del flags[pos]
+env.Replace(LINKFLAGS=flags)
+env.Append(LINKFLAGS=['-Wl,--wrap=' + name for name in (
+    'NMI_Handler', 'digitalWrite', '__digitalWrite', 'micros', 'millis', 'yield', 'optimistic_yield', 'delay',
+    'system_get_time', 'system_get_cpu_freq', 'system_update_cpu_freq')])
+# The bare-metal entry must never gain a networking dependency silently.
+env.Replace(LIBS=[lib for lib in env['LIBS'] if str(lib) not in (
+    'phy', 'pp', 'net80211', 'wpa', 'crypto', 'wps', 'bearssl', 'espnow',
+    'smartconfig', 'airkiss', 'wpa2') and not str(lib).startswith('lwip')])
+
+def check_size(source, target, env):
+    from pathlib import Path
+    image = Path(env.subst("$BUILD_DIR/${PROGNAME}.bin"))
+    size = image.stat().st_size
+    if size > 256 * 1024:
+        raise RuntimeError("ESPboy firmware: %d bytes exceeds 256 KiB" % size)
+
+env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", check_size)

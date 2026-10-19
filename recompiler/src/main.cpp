@@ -40,6 +40,9 @@ namespace fs = std::filesystem;
 #ifndef GBRECOMP_META_VERSION
 #define GBRECOMP_META_VERSION "0.0.0"
 #endif
+#ifndef GBRECOMP_ESPBOY_VERSION
+#define GBRECOMP_ESPBOY_VERSION "0.1.0"
+#endif
 #ifndef GBRECOMP_POKITTO_VERSION
 #define GBRECOMP_POKITTO_VERSION "0.0.0"
 #endif
@@ -154,6 +157,7 @@ void print_usage(const char* program) {
     std::cout << "  --info               Inspect a cartridge without generating code\n";
     std::cout << "  --target meta         Emit a compact gbl project for the Gamebuino META\n";
     std::cout << "                        (coverage-driven; see targets/meta/README.md)\n";
+    std::cout << "  --target espboy       ESP8266, 128x128 LCD, no SD, 256 KiB firmware / 1 MiB flash\n";
     std::cout << "  --target pokitto      Same gbl project for the Pokitto (bare-metal Makefile build;\n";
     std::cout << "                        every --meta-* option applies)\n";
     std::cout << "  --coverage <file>     gbl coverage profile for --target meta (repeatable)\n";
@@ -185,6 +189,7 @@ void print_usage(const char* program) {
     std::cout << "  --version             Print the GB Recompiled version\n";
     std::cout << "  --version-json        Print machine-readable version and ABI identity\n";
     std::cout << "  --meta-version        Print the Gamebuino META edition version (stamped into firmwares)\n";
+    std::cout << "  --espboy-version      Print the ESPboy edition version\n";
     std::cout << "  --pokitto-version     Print the Pokitto edition version (stamped into firmwares)\n";
     std::cout << "  -h, --help            Show this help\n";
 }
@@ -1796,9 +1801,10 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
                            const fs::path& explicit_meta_dir,
                            const std::vector<fs::path>& coverage_paths, bool precise,
                            bool static_coverage, size_t bytes_per_instruction,
-                           bool emit_comments, bool pokitto, bool thumb, const std::string& compiler) {
+                           bool emit_comments, bool pokitto, bool espboy, bool thumb, const std::string& compiler) {
     gbrecomp::MetaTargetOptions options;
     options.pokitto = pokitto;
+    options.espboy = espboy;
     options.template_dir = resolve_meta_dir(argv0, explicit_meta_dir);
     if (options.template_dir.empty()) {
         std::cerr << "Error: could not locate targets/meta. Use --meta-dir or GBRECOMP_META_DIR.\n";
@@ -1815,7 +1821,7 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
                                          : output_prefix;
     options.sd_name = g_sd_name;
     options.output_dir = output_dir.empty()
-                             ? fs::path(fs::path(rom_path).stem().string() + (pokitto ? "_pokitto" : "_meta"))
+                             ? fs::path(fs::path(rom_path).stem().string() + (espboy ? "_espboy" : pokitto ? "_pokitto" : "_meta"))
                              : fs::path(output_dir);
     options.coverage_files = coverage_paths;
     options.bytes_per_instruction = bytes_per_instruction;
@@ -1872,13 +1878,13 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
         std::cerr << "Error: " << error << "\n";
         return 1;
     }
-    if (coverage_paths.empty()) {
+    if (coverage_paths.empty() && !static_coverage) {
         std::cout << "No --coverage profile: the project runs everything in the gbl interpreter.\n"
                      "Record a profile with host/build/" << options.name << "_profile --interp --coverage <file>\n"
                      "and regenerate with --coverage <file> (see targets/meta/README.md).\n";
     }
     const size_t cart_ram = rom->header().ram_size_bytes;
-    if (cart_ram > 4096) {
+    if (cart_ram > 4096 && !espboy) {
         std::cout << "Warning: " << cart_ram << " bytes of cartridge RAM are allocated in the "
                   << (pokitto ? "Pokitto's 32 KiB; check the link map.\n"
                               : "META's 32 KiB; check the PlatformIO RAM report.\n");
@@ -1933,6 +1939,10 @@ int main(int argc, char* argv[]) {
     }
     if (argc == 2 && std::string(argv[1]) == "--meta-version") {
         std::cout << GBRECOMP_META_VERSION << "\n";
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--espboy-version") {
+        std::cout << GBRECOMP_ESPBOY_VERSION << "\n";
         return 0;
     }
     if (argc == 2 && std::string(argv[1]) == "--pokitto-version") {
@@ -2186,6 +2196,7 @@ int main(int argc, char* argv[]) {
                       << (m0boy::cpu_descriptor(system.cpu).decoder_available ? "yes" : "no")
                       << " codegen="
                       << (system.supports(m0boy::TargetId::desktop) ? "desktop,meta,pokitto" : "unavailable")
+                      << (system.supports(m0boy::TargetId::espboy) ? ",espboy" : "")
                       << "\n";
         }
         return 0;
@@ -2195,8 +2206,8 @@ int main(int argc, char* argv[]) {
         print_usage(argv[0]);
         return 1;
     }
-    if (target != "desktop" && target != "meta" && target != "pokitto") {
-        std::cerr << "Error: unknown --target '" << target << "' (expected desktop, meta or pokitto)\n";
+    if (target != "desktop" && target != "meta" && target != "pokitto" && target != "espboy") {
+        std::cerr << "Error: unknown --target '" << target << "' (expected desktop, meta, pokitto or espboy)\n";
         return 1;
     }
     // Resolve the source before invoking any Game Boy parser or emitter.
@@ -2208,6 +2219,10 @@ int main(int argc, char* argv[]) {
     if (requested_cpu && *requested_cpu != source.cpu) {
         std::cerr << "Error: source system " << source.name << " requires CPU "
                   << m0boy::cpu_descriptor(source.cpu).name << "\n";
+        return 1;
+    }
+    if (target == "espboy" && source.id != m0boy::SystemId::gameboy && !info_only && !disasm_only) {
+        std::cerr << "Error: ESPboy currently supports Game Boy cartridges only\n";
         return 1;
     }
     if (info_only) {
@@ -2325,10 +2340,10 @@ int main(int argc, char* argv[]) {
                   << "analysis and code generation are not implemented yet\n";
         return 1;
     }
-    if (target == "meta" || target == "pokitto") {
+    if (target == "meta" || target == "pokitto" || target == "espboy") {
         return run_meta_target(argv[0], rom_path, output_dir, output_prefix, meta_dir,
                                coverage_paths, meta_precise, meta_static, meta_bpi, emit_comments,
-                               target == "pokitto", meta_thumb, meta_compiler);
+                               target == "pokitto", target == "espboy", meta_thumb, meta_compiler);
     }
     if (!coverage_paths.empty() || meta_compiler != "gcc" || meta_thumb || meta_precise || meta_static || !meta_dir.empty()) {
         std::cerr << "Error: --coverage, --meta-compiler, --meta-thumb, --meta-precise, --meta-static and --meta-dir require --target meta or pokitto\n";

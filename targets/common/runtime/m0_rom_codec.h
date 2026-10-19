@@ -4,6 +4,12 @@
 #define M0_ROM_CODEC_H
 #include <stddef.h>
 #include <stdint.h>
+#if defined(ESP8266)
+#include <pgmspace.h>
+#define M0_ROM_BYTE(p) pgm_read_byte(p)
+#else
+#define M0_ROM_BYTE(p) (*(p))
+#endif
 
 /* Raw DEFLATE with independent sectors needs no 32 KiB history: references
  * point into the output sector. Huffman work space is explicit (1032 bytes),
@@ -25,7 +31,7 @@ static inline void m0_rom_unpack512_c(const uint8_t *src, uint8_t *dst) {
     uint32_t bits = 0;
     int32_t count = 0;
     while (d < end) {
-        while (count < 13) { bits |= (uint32_t)*src++ << (24 - count); count += 8; }
+        while (count < 13) { bits |= (uint32_t)M0_ROM_BYTE(src++) << (24 - count); count += 8; }
         uint32_t flag = bits >> 31;
         bits <<= 1;
         if (flag) { *d++ = (uint8_t)(bits >> 24); bits <<= 8; count -= 9; }
@@ -61,7 +67,7 @@ typedef struct {
 static inline unsigned m0_rom_get(m0_rom_bits *b, unsigned n) {
     while (b->count < n) {
         if (b->src == b->end) { b->error = 1; return 0; }
-        b->bits |= (uint32_t)*b->src++ << b->count;
+        b->bits |= (uint32_t)M0_ROM_BYTE(b->src++) << b->count;
         b->count += 8;
     }
     unsigned value = b->bits & ((1u << n) - 1u);
@@ -134,7 +140,7 @@ static inline void m0_rom_lookup(const uint16_t *count, const uint16_t *symbols,
 static inline int m0_rom_fast_symbol(m0_rom_bits *b, const uint16_t *count, const uint16_t *symbols,
                                     unsigned bits, const uint16_t *table, unsigned first, unsigned index) {
     while (b->count < bits && b->src < b->end) {
-        b->bits |= (uint32_t)*b->src++ << b->count; b->count += 8;
+        b->bits |= (uint32_t)M0_ROM_BYTE(b->src++) << b->count; b->count += 8;
     }
     if (b->count < bits) return m0_rom_symbol(b, count, symbols);
     unsigned prefix = b->bits & ((1u << bits) - 1u), entry = table[prefix];

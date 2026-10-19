@@ -373,9 +373,9 @@ void gbl_interp_block(void) {
         const uint8_t *page = gbl_rmap[pc >> 12];
         if (page && (pc & 0xFFFu) < 0xFFEu) {
             /* Opcode and operands in one mapped page: read them directly. */
-            op = page[pc];
-            n8 = page[pc + 1u];
-            n16 = (uint16_t)(n8 | (page[pc + 2u] << 8));
+            op = gbl_load_u8(page + pc);
+            n8 = gbl_load_u8(page + pc + 1u);
+            n16 = (uint16_t)(n8 | (gbl_load_u8(page + pc + 2u) << 8));
         } else {
             op = gbl_rd(pc);
             n8 = gbl_rd((uint16_t)(pc + 1));

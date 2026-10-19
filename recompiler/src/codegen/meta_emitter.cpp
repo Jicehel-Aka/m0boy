@@ -37,6 +37,9 @@
 #ifndef GBRECOMP_META_VERSION
 #define GBRECOMP_META_VERSION "unknown"
 #endif
+#ifndef GBRECOMP_ESPBOY_VERSION
+#define GBRECOMP_ESPBOY_VERSION "0.1.0"
+#endif
 #ifndef GBRECOMP_POKITTO_VERSION
 #define GBRECOMP_POKITTO_VERSION "unknown"
 #endif
@@ -314,8 +317,9 @@ const char* kR16[4] = {"gbr.bc", "gbr.de", "gbr.hl", "gbr.sp"};
 class Generator {
 public:
     Generator(const ROM& rom, const MetaTargetOptions& opt) : rom_(rom), opt_(opt) {
-        stream_ = opt.stream == 1 || (opt.stream < 0 && rom.size() >= 0x40000) || opt.pack;
-        pack_ = opt.pack;
+        stream_ = !opt.espboy && (opt.stream == 1 || (opt.stream < 0 && rom.size() >= 0x40000) || opt.pack);
+        pack_ = opt.espboy ? rom.size() > 0xBB000 : opt.pack;
+        if (opt.espboy) stream_ = pack_;
     }
 
     /* ROM streaming (see MetaTargetOptions::stream): plan_stream reads the
@@ -331,6 +335,7 @@ public:
     void build();
     std::string emit_code();
     std::string emit_rom() const;
+    std::vector<uint8_t> espboy_image() const;
     std::string emit_config(std::string& error) const;
 
     size_t compiled() const { return ins_.size(); }
@@ -389,7 +394,7 @@ private:
     size_t stream_code_budget_ = 0, resident_budget_ = 0;
     /* Flash for the application: META 240 KiB above its 16 KiB loader,
      * Pokitto 228 KiB below its loader at 0x39000. */
-    size_t app_flash() const { return opt_.pokitto ? 0x39000 : 245760; }
+    size_t app_flash() const { return opt_.espboy ? 262144 : opt_.pokitto ? 0x39000 : 245760; }
     std::vector<std::vector<uint8_t>> packed_sector_; /* per ROM sector (banks 1+) */
     std::vector<uint64_t> chunk_weight_; /* per 4 KiB ROM chunk */
     std::vector<int> resident_index_;    /* per chunk: slot in flash, -1 on the card */
@@ -448,8 +453,9 @@ bool Generator::load_coverage(MetaTargetStats& stats, std::string& error) {
     if (!budget && stream_) {
         budget = stream_code_budget_;
     } else if (!budget) {
-        const size_t app = app_flash(), runtime = 40960;
-        budget = app > runtime + rom_.size() ? app - runtime - rom_.size() : 0;
+        const size_t app = app_flash(), runtime = opt_.espboy ? 131072 : 40960;
+        const size_t rom_flash = opt_.espboy ? 0 : rom_.size();
+        budget = app > runtime + rom_flash ? app - runtime - rom_flash : 0;
     }
     const size_t max_ins = budget / (opt_.bytes_per_instruction ? opt_.bytes_per_instruction : 20);
     std::vector<uint8_t> keep(all.size(), 1);
@@ -533,6 +539,39 @@ Ins* Generator::resolve(const Ins& from, uint16_t target, int& bank_check) {
 }
 
 bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
+    if (opt_.espboy) {
+        // Keep bank 0 directly mapped; pack only enough sectors to fit the
+        // remaining physical flash. Largest savings first minimises the
+        // number of sectors which need decoding (no device cost claim).
+        const size_t sectors = rom_.size() / 512;
+        packed_sector_.resize(sectors);
+        std::vector<std::pair<size_t, size_t>> savings;
+        for (size_t k = 32; k < sectors; ++k) {
+            auto block = m0boy::rom::encode(rom_.data() + k * 512, 512);
+            savings.emplace_back(512 - block.bytes.size(), k);
+            packed_sector_[k].assign(rom_.data() + k * 512, rom_.data() + (k + 1) * 512);
+        }
+        std::stable_sort(savings.begin(), savings.end(), [](auto a, auto b) { return a.first > b.first; });
+        size_t size = rom_.size() + 2;
+        for (auto [saved, k] : savings) {
+            if (size <= 0xBB000) break;
+            if (!saved) continue;
+            packed_sector_[k] = m0boy::rom::encode(rom_.data() + k * 512, 512).bytes;
+            size -= saved;
+        }
+        if (size > 0xBB000) {
+            error = "ESPboy ROM does not fit in 1 MiB flash, even compressed (bank 0 kept raw)";
+            return false;
+        }
+        chunk_weight_.assign((rom_.size() + 4095) / 4096, 0);
+        resident_index_.assign(chunk_weight_.size(), -1);
+        stream_code_budget_ = 262144 - 131072 - (sectors + 1) * 4;
+        stats.stream = stats.packed = true;
+        stats.sd = false;
+        stats.packed_raw_bytes = rom_.size() - 16384;
+        stats.packed_bytes = size - 16384;
+        return true;
+    }
     /* No need to introduce a sector cache when the entire ROM and played
      * native code fit raw. Explicit streaming/residency requests still win
      * (in particular the packed/cache regression tests). */
@@ -657,6 +696,7 @@ bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
 }
 
 void Generator::choose_resident(MetaTargetStats& stats) {
+    if (opt_.espboy) return;
     if (partial_pack_) {
         std::vector<size_t> sizes;
         for (const auto& sector : packed_sector_) sizes.push_back(sector.size());
@@ -1709,8 +1749,33 @@ std::string Generator::emit_rom_full() const {
     return o.str();
 }
 
+std::vector<uint8_t> Generator::espboy_image() const {
+    if (!pack_) return std::vector<uint8_t>(rom_.data(), rom_.data() + rom_.size());
+    std::vector<uint8_t> image(rom_.data(), rom_.data() + 16384);
+    for (size_t k = 32; k < packed_sector_.size(); ++k)
+        image.insert(image.end(), packed_sector_[k].begin(), packed_sector_[k].end());
+    image.insert(image.end(), {0, 0});
+    return image;
+}
+
 std::string Generator::emit_rom() const {
     std::ostringstream o;
+    if (opt_.espboy && pack_) {
+        o << "#include <stdint.h>\n#if defined(ESP8266)\n#include <pgmspace.h>\n#define ROM_OFF_ATTR PROGMEM\n#else\n#define ROM_OFF_ATTR\n#endif\n"
+          << "const uint32_t gbl_rom_size = " << rom_.size() << "u;\n"
+          << "const uint8_t gbl_rom_chunk_map[" << chunk_weight_.size() << "] = {0};\n"
+          << "#if !defined(ESP8266)\nconst uint8_t gbl_rom[16384] = {";
+        emit_bytes(o, rom_.data(), 16384);
+        auto image = espboy_image();
+        o << "\n};\nconst uint8_t gbl_rom_packed[] = {";
+        emit_bytes(o, image.data() + 16384, image.size() - 16384);
+        o << "\n};\nconst uint8_t gbl_rom_resident[1][4096] = {{0}};\n#endif\n"
+          << "const uint32_t gbl_rom_packed_off[] ROM_OFF_ATTR = {";
+        size_t offset = 0;
+        for (const auto& sector : packed_sector_) { o << offset << "u,"; offset += sector.size(); }
+        o << offset << "u};\n";
+        return o.str();
+    }
     if (stream_) {
         const size_t chunks = chunk_weight_.size();
         std::vector<size_t> slots;
@@ -1765,13 +1830,15 @@ std::string Generator::emit_rom() const {
     }
     o << "/* ROM image for gbl (flash resident). */\n#include <stdint.h>\n\n"
       << "const uint32_t gbl_rom_size = " << rom_.size() << "u;\n"
-      << "const uint8_t gbl_rom[" << rom_.size() << "] __attribute__((aligned(4))) = {";
+      << "#if defined(ESP8266)\n#include <pgmspace.h>\n#define GBL_ROM_ATTR PROGMEM\n#else\n#define GBL_ROM_ATTR __attribute__((aligned(4)))\n#endif\n"
+      << "#if !defined(ESP8266)\n"
+      << "const uint8_t gbl_rom[" << rom_.size() << "] GBL_ROM_ATTR = {";
     const uint8_t* d = rom_.data();
     for (size_t i = 0; i < rom_.size(); i++) {
         if (i % 24 == 0) o << "\n";
         o << unsigned(d[i]) << ",";
     }
-    o << "\n};\n";
+    o << "\n};\n#endif\n";
     return o.str();
 }
 
@@ -1977,6 +2044,7 @@ std::string Generator::emit_config(std::string& error) const {
                                                   : std::string())
                   : std::string())
       /* The console; its optimisation switches are in gbl_profile.h. */
+      << (opt_.espboy ? "#define GBL_TARGET_ESPBOY 1\n#define GBL_ERAM_ON_SD 0\n" : "")
       << (opt_.pokitto ? "#define GBL_TARGET_POKITTO 1\n" : "")
       << "#define GBL_TITLE \"" << [&] {
              std::string t;
@@ -2010,7 +2078,7 @@ std::string Generator::emit_config(std::string& error) const {
              cgb_generic_palettes(s);
              return s;
          }()
-      << "#define GBL_GEN_VERSION \"" << (opt_.pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) << "\"\n"
+      << "#define GBL_GEN_VERSION \"" << (opt_.espboy ? GBRECOMP_ESPBOY_VERSION : opt_.pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) << "\"\n"
       << "#endif\n";
     return o.str();
 }
@@ -2072,6 +2140,14 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         error = "firmware compiler must be gcc or clang";
         return false;
     }
+    if (options.espboy && options.pokitto) {
+        error = "choose one destination console";
+        return false;
+    }
+    if (options.espboy && (options.stream == 1 || options.thumb || options.compiler != "gcc")) {
+        error = "ESPboy requires portable C/GCC and a flash-resident ROM (no SD or --meta-thumb)";
+        return false;
+    }
     Generator gen(rom, options);
     if (gen.streaming() && !gen.plan_stream(stats, error)) return false;
     if (!gen.load_coverage(stats, error)) return false;
@@ -2082,7 +2158,13 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     }
     gen.build();
 
-    const std::string config = gen.emit_config(error);
+    std::string config = gen.emit_config(error);
+    if (options.espboy) {
+        for (const char* key : {"GBL_SAVE_NAME", "GBL_SAVE_NAME83", "GBL_STATE_NAME", "GBL_STATE_NAME83", "GBL_STATE_SLOTS", "GBL_STATE_SLOT_SECTORS"}) {
+            const auto pos = config.find(std::string("#define ") + key + " ");
+            if (pos != std::string::npos) config.erase(pos, config.find('\n', pos) - pos + 1);
+        }
+    }
     if (config.empty()) return false;
 
     const fs::path out = options.output_dir;
@@ -2096,8 +2178,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
      * the builds compile every source in src/; so is the Arduino variant
      * directory of META projects generated before the firmware went bare
      * metal. */
-    const char* console = options.pokitto ? "pokitto" : "meta";
-    const char* other = options.pokitto ? "meta" : "pokitto";
+    const char* console = options.espboy ? "espboy" : options.pokitto ? "pokitto" : "meta";
     const fs::path platform_tpl = tpl / "platform" / console;
     fs::create_directories(src, ec);
     fs::create_directories(out / "host", ec);
@@ -2106,10 +2187,13 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         error = "cannot create " + out.string() + ": " + ec.message();
         return false;
     }
-    for (const auto& entry : fs::directory_iterator(tpl / "platform" / other, ec)) {
+    for (const char* other : {"meta", "pokitto", "espboy"}) {
+      if (std::string(other) == console) continue;
+      for (const auto& entry : fs::directory_iterator(tpl / "platform" / other, ec)) {
         const fs::path name = entry.path().filename();
         if (entry.is_directory()) fs::remove_all(out / name, ec); /* boards/ */
         else if (name.extension() == ".in" && name.stem() != "README.md") fs::remove(out / name.stem(), ec);
+    }
     }
     /* Template files in src/ that this generation does not copy (the other
      * console's, or renamed since) would be compiled too: remove them. */
@@ -2122,7 +2206,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         for (const auto& entry : fs::directory_iterator(src, ec)) {
             const std::string n = entry.path().filename().string();
             const bool templated = n.rfind("gbl_", 0) == 0 || n.rfind("meta_", 0) == 0 ||
-                                   n.rfind("pokitto_", 0) == 0 || n == "lpc11u6x.h";
+                                   n.rfind("pokitto_", 0) == 0 || n.rfind("espboy_", 0) == 0 || n == "lpc11u6x.h";
             if (templated && n != "gbl_config.h" && !fresh.count(n)) stale.push_back(entry.path());
         }
         for (const auto& path : stale) fs::remove(path, ec);
@@ -2131,6 +2215,14 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         !copy_dir_files(tpl / "platform" / "src", src, error) ||
         !copy_dir_files(platform_tpl, src, error))
         return false;
+    if (options.espboy) {
+        std::ofstream image(out / "rom.bin", std::ios::binary);
+        const auto bytes = gen.espboy_image();
+        image.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        if (!image) { error = "cannot write ESPboy ROM flash image"; return false; }
+        for (const char* name : {"meta_display.c", "meta_display_layout.h"})
+            fs::copy_file(tpl / "platform/meta" / name, src / name, fs::copy_options::overwrite_existing);
+    }
     if (!copy_dir_files(tpl / "toolchain", out / "toolchain", error)) return false;
     fs::copy_file(tpl.parent_path() / "common/runtime/m0_rom_codec.h", src / "m0_rom_codec.h",
                   fs::copy_options::overwrite_existing, ec);
@@ -2142,6 +2234,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         fs::copy_file(tpl.parent_path() / "common/runtime" / name, src / name, fs::copy_options::overwrite_existing, ec);
         if (ec) { error = std::string("cannot copy the shared card cache: ") + ec.message(); return false; }
     }
+    if (!options.espboy) fs::remove(out / "rom.bin", ec);
     fs::remove_all(out / "variants", ec);
     /* Subdirectories (the META's boards/) as they are. */
     for (const auto& entry : fs::directory_iterator(platform_tpl)) {

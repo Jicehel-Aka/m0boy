@@ -45,7 +45,11 @@ static struct {
  * Bank 0 (gbl_rom) and the resident 4 KiB chunks are in flash and mapped
  * directly; reads from other chunks go through an LRU cache of 512-byte
  * sectors filled by gbl_platform_rom_read. */
+#if defined(ESP8266)
+#define gbl_rom_resident ((const uint8_t (*)[4096])0x40240000u)
+#else
 extern const uint8_t gbl_rom_resident[][4096];
+#endif
 extern const uint8_t gbl_rom_chunk_map[];
 
 #if GBL_CACHE_UNIFIED
@@ -78,7 +82,11 @@ void gbl_stream_invalidate(void) { stream_reset(); }
 /* Compressed flash source: sector k of the ROM is gbl_rom_packed
  * [off[k], off[k + 1]), LZSS-coded, or stored as is when that is 512
  * bytes.  Only sectors outside bank 0 and the resident chunks are used. */
+#if defined(ESP8266)
+#define gbl_rom_packed ((const uint8_t *)0x40244000u)
+#else
 extern const uint8_t gbl_rom_packed[];
+#endif
 extern const uint32_t gbl_rom_packed_off[];
 
 /* Decode one 512-byte sector.  Bitstream MSB first; per token a flag bit:
@@ -100,7 +108,13 @@ static void unpack512(const uint8_t *src, uint8_t *dst) {
 static int rom_unpack(uint32_t sector, uint8_t *dst) {
     uint32_t a = gbl_rom_packed_off[sector], n = gbl_rom_packed_off[sector + 1] - a;
     if (!n) return 0; /* a hybrid build leaves this sector on the card */
-    if (n == 512) memcpy(dst, gbl_rom_packed + a, 512);
+    if (n == 512) {
+#if defined(ESP8266)
+        memcpy_P(dst, gbl_rom_packed + a, 512);
+#else
+        memcpy(dst, gbl_rom_packed + a, 512);
+#endif
+    }
     else unpack512(gbl_rom_packed + a, dst);
     gbl_stream_unpacked++;
     return 1;
@@ -1193,8 +1207,9 @@ void gbl_io_wr(uint8_t n, uint8_t v) {
 #else
             const uint8_t *p = page + src;
             for (int i = 0; i < 0xA0; i++) {
-                changed |= (uint32_t)(p[i] ^ gbl_oam[i]);
-                gbl_oam[i] = p[i];
+                uint8_t b = gbl_load_u8(p + i);
+                changed |= (uint32_t)(b ^ gbl_oam[i]);
+                gbl_oam[i] = b;
             }
 #endif
         } else {
@@ -1255,7 +1270,7 @@ uint8_t gbl_rd_slow(uint16_t a) {
 #if !(GBL_CORE_ASM && defined(__ARM_ARCH_6M__)) /* else gbl_core_asm.S */
 uint8_t gbl_rd(uint16_t a) {
     const uint8_t *p = gbl_rmap[a >> 12];
-    if (p) return p[a];
+    if (p) return gbl_load_u8(p + a);
 #if GBL_ERAM_ON_SD
     if (a - 0xA000u < 0x2000u) {
         const uint8_t *e = gbl_eram_rmap[(a - 0xA000u) >> CSHIFT];

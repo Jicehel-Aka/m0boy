@@ -66,7 +66,22 @@ typedef struct {
 } gbl_bank_table;
 extern const gbl_bank_table gbl_tables[];
 extern const uint16_t gbl_table_count;
+/* ESP8266's mapped flash only accepts aligned word loads. RAM keeps its
+ * normal byte accesses; host and ARM builds compile to the original load. */
+#if defined(ESP8266)
+#include <pgmspace.h>
+static inline uint8_t gbl_load_u8(const uint8_t *p) {
+    return (uintptr_t)p >= 0x40200000u ? pgm_read_byte(p) : *p;
+}
+#else
+static inline uint8_t gbl_load_u8(const uint8_t *p) { return *p; }
+#endif
+#if defined(ESP8266)
+/* Raw cartridge image uploaded separately at physical flash offset 256 KiB. */
+#define gbl_rom ((const uint8_t *)0x40240000u)
+#else
 extern const uint8_t gbl_rom[];
+#endif
 extern const uint32_t gbl_rom_size;
 
 /* ---- lifecycle ---------------------------------------------------------- */

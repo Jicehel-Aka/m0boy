@@ -13,7 +13,7 @@ namespace m0boy {
 
 enum class CpuId { sm83, z80 };
 enum class SystemId { gameboy, sg1000, gamegear, mastersystem };
-enum class TargetId { desktop, meta, pokitto };
+enum class TargetId { desktop, meta, pokitto, espboy };
 
 struct CpuDescriptor {
     CpuId id;

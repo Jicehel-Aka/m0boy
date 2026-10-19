@@ -240,8 +240,13 @@ if(BUILD_TESTS)
                 --gbrecomp "$<TARGET_FILE:gbrecomp>")
     set_tests_properties(meta_target_end_to_end PROPERTIES TIMEOUT 600)
 
-    # --target pokitto: the generated project, its host harness, and the
-    # bare-metal firmware when arm-none-eabi-gcc exists.
+    # ESPboy: raw/partly packed flash images, precise runtime parity, no SD.
+    add_test(NAME meta_espboy_target
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_espboy_target.py"
+                --gbrecomp "$<TARGET_FILE:gbrecomp>")
+    set_tests_properties(meta_espboy_target PROPERTIES TIMEOUT 300)
+
+    # Pokitto firmware also links when arm-none-eabi-gcc exists.
     add_test(NAME meta_pokitto_target
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_pokitto_target.py"
                 --gbrecomp "$<TARGET_FILE:gbrecomp>")

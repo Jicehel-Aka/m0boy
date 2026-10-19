@@ -36,7 +36,9 @@
 #include "meta_target.h"
 
 #include <string.h>
-#if META_TARGET_POKITTO
+#if META_TARGET_ESPBOY
+#include "espboy_hw.h"
+#elif META_TARGET_POKITTO
 #include "pokitto_hw.h"
 #else
 #include "meta_hw.h"
@@ -109,7 +111,10 @@ static int close_frame(void) {
 #define META_SWAP_AB META_SWAP_AB_DEFAULT
 #endif
 
-#if !META_TARGET_POKITTO
+#if META_TARGET_ESPBOY
+static void enter_loader(void) { gbl_save_flush(); espboy_restart(); }
+static uint8_t meta_buttons(void) { return espboy_buttons(); }
+#elif !META_TARGET_POKITTO
 
 /* Hand the console back to the Gamebuino loader in the state it expects:
  * display idle, our audio and DMA interrupts off, SD card deselected and in
@@ -352,12 +357,14 @@ static const char *const mode_names[POKITTO_MODE_COUNT] = {"1:1", "200x176", "20
 #endif
 static const char *const skip_names[FSKIP_MODES] = {"Auto", "Aucun", "1 sur 2", "1 sur 3", "1 sur 4"};
 static const char *const speed_names[2] = {"Normale", "Rapide"};
-#if META_TARGET_POKITTO
+#if META_TARGET_ESPBOY
+static const char *const clock_names[2] = {"80 MHz", "160 MHz"};
+#elif META_TARGET_POKITTO
 static const char *const clock_names[2] = {"48 MHz", "72 MHz"};
 #else
 static const char *const clock_names[2] = {"48 MHz", "70 MHz"}; /* meta_clock.cpp: 72 asked, 70 run */
 #endif
-#if !META_TARGET_POKITTO
+#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
 static const char *const lcd_spi_names[4] = {"12 MHz", "24 MHz", "36 MHz", "48 MHz"};
 #endif
 
@@ -419,10 +426,14 @@ extern "C" char end; /* after .bss and .noinit (gamebuino_meta.ld) */
  * STACK_PAINT; the menu shows how much of it was never written since. */
 #define STACK_PAINT 0xC5AC5AC5u
 static unsigned stack_never_used(void) {
+#if META_TARGET_ESPBOY
+    return espboy_free_stack();
+#else
     const uint32_t *p = (const uint32_t *)(((uintptr_t)&DATA_END + 3u) & ~(uintptr_t)3u);
     unsigned n = 0;
     while (p[n] == STACK_PAINT) n++;
     return n * 4u;
+#endif
 }
 
 static void name_slots(void) {
@@ -440,9 +451,9 @@ enum { M_RESUME, M_RESTART, M_SLOT, M_SAVE, M_LOAD, M_VOLUME, M_SCREEN, M_PALETT
 
 static void option_menu(void) {
     uint8_t mode = meta_display_mode(), pal = meta_display_palette(), skip = skip_mode;
-    uint8_t fast = fast_mode, mhz = meta_clock_mhz() == 72, vol = meta_audio_volume();
+    uint8_t fast = fast_mode, mhz = meta_clock_mhz() == (META_TARGET_ESPBOY ? 160 : 72), vol = meta_audio_volume();
     uint8_t slot = state_slot;
-#if !META_TARGET_POKITTO
+#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
     uint8_t lcd_spi = (uint8_t)(meta_clock_lcd_spi() / 12u - 1u);
 #endif
     meta_menu_item items[13];
@@ -464,7 +475,7 @@ static void option_menu(void) {
     ADD(M_SKIP, "Images", META_MENU_CHOICE, &skip, FSKIP_MODES, skip_names);
     ADD(M_SPEED, "Vitesse", META_MENU_CHOICE, &fast, 2, speed_names);
     ADD(M_CLOCK, "Processeur", META_MENU_CHOICE, &mhz, 2, clock_names);
-#if !META_TARGET_POKITTO
+#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
     /* Display SPI clock (meta_clock.cpp): 36 at most at 72 MHz.  Too fast
      * for the panel shows garbage, the menu too: switching the console off
      * restores the boot default, META_LCD_SPI_MHZ (gbl_board.h). */
@@ -500,8 +511,8 @@ static void option_menu(void) {
     state_slot = slot;
     meta_audio_set_volume(vol);
     meta_lcd_end_frame(); /* no transfer while the clocks change */
-    meta_clock_set(mhz ? 72 : 48);
-#if !META_TARGET_POKITTO
+    meta_clock_set(META_TARGET_ESPBOY ? (mhz ? 160 : 80) : (mhz ? 72 : 48));
+#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
     meta_clock_set_lcd_spi((uint8_t)((lcd_spi + 1u) * 12u));
 #endif
     if (pal != meta_display_palette()) meta_display_set_palette(pal);
@@ -658,7 +669,11 @@ static void __attribute__((unused)) boot_error(uint16_t colour) {
     for (;;) {
 #if !META_TARGET_POKITTO
         meta_watchdog_feed();
+#if META_TARGET_ESPBOY
+        uint8_t m = meta_buttons();
+#else
         uint8_t m = meta_pad_read();
+#endif
 #else
         uint8_t m = meta_buttons();
 #endif
@@ -684,13 +699,19 @@ static void stream_error_screen(int err) {
 }
 #endif
 
+#if META_TARGET_ESPBOY
+int espboy_main(void) {
+#else
 int main(void) {
+#endif
+#if !META_TARGET_ESPBOY
     { /* stack_never_used: paint the free RAM, 128 bytes below this frame */
         char here;
         uint32_t *p = (uint32_t *)(((uintptr_t)&DATA_END + 3u) & ~(uintptr_t)3u);
         uint32_t *top = (uint32_t *)((uintptr_t)&here - 128u);
         while (p < top) *p++ = STACK_PAINT;
     }
+#endif
 #if !META_TARGET_POKITTO
     meta_sd_deselect(); /* the card off the shared SPI bus from the start */
 #if META_USB
@@ -703,7 +724,7 @@ int main(void) {
     /* Like the Gamebuino library's SD.begin at boot: the loader relies on
      * the card being in SPI mode when HOME brings it back. */
     int card_ok = meta_sd_init();
-#if !META_TARGET_POKITTO
+#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
     /* The game's files (ROM, save, states) are the ones in the folder of
      * its own .BIN: other games' folders may hold files of the same name. */
     if (card_ok) {
@@ -754,8 +775,8 @@ int main(void) {
     /* Keep generated code within a fixed C stack budget; deeper nesting
      * unwinds to the nearest dispatcher loop. */
     char probe;
-    uintptr_t limit = (uintptr_t)&probe - 3072u;
-    uintptr_t floor_addr = (uintptr_t)&DATA_END + META_STACK_RESERVE; /* gbl_profile.h */
+    uintptr_t limit = (uintptr_t)&probe - (META_TARGET_ESPBOY ? 2048u : 3072u);
+    uintptr_t floor_addr = META_TARGET_ESPBOY ? limit : (uintptr_t)&DATA_END + META_STACK_RESERVE; /* gbl_profile.h */
     gbl_stack_limit = limit > floor_addr ? limit : floor_addr;
     /* Too little RAM left (caches, debug records): the unguarded calls
      * below the limit would run into .bss.  Cyan screen instead. */
