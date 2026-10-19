@@ -720,7 +720,8 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   local sg_build="$out_dir/build" gen_log build_log bpi="" tries=0 rc text compiled
   [ "$FIRMWARE_COMPILER" = clang ] && sg_build="$out_dir/build-clang"
   local size_bin
-  size_bin=$(command -v arm-none-eabi-size || echo "$HOME/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size")
+  if [ "$TARGET" = espboy ]; then size_bin="$HOME/.platformio/packages/toolchain-xtensa/bin/xtensa-lx106-elf-size"
+  else size_bin=$(command -v arm-none-eabi-size || echo "$HOME/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size"); fi
   sg_build_once() { # 0 ok, 1 flash full, 2 error
     gen_log=$("$GBRECOMP" "$rom_path" --system "$sys" --target "$TARGET" --output-prefix "$prefix" --sd-name "$sd_name" \
       --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} \
@@ -741,7 +742,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   sg_code_bpi() { # measured flash per compiled instruction, rounded up
     local obj
     if [ "$TARGET" = pokitto ]; then obj=$(ls "$sg_build"/CMakeFiles/firmware.dir/src/sg_gen.c.o* 2>/dev/null | head -n1)
-    else obj="$out_dir/.pio/build/meta/src/sg_gen.o"; fi
+    else obj=$(ls "$out_dir/.pio/build/$PIO_ENV/src/sg_gen.o" "$out_dir/.pio/build/$PIO_ENV/src/sg_gen.c.o" 2>/dev/null | head -n1); fi
     compiled=$(echo "$gen_log" | sed -n 's/.*instructions: *\([0-9]*\) compiled.*/\1/p')
     [ -f "$obj" ] && [ -n "$compiled" ] && [ "$compiled" -gt 0 ] || return 1
     text=$("$size_bin" "$obj" 2>/dev/null | tail -n1 | awk '{print $1}')
@@ -769,6 +770,16 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   if [ "$TARGET" = pokitto ]; then
     firmware="$sg_build/firmware.bin"
     cp "$firmware" "$game_dir/$game_name.bin" || return 1
+  elif [ "$TARGET" = espboy ]; then
+    firmware="$out_dir/.pio/build/$PIO_ENV/firmware.bin"
+    cp "$firmware" "$game_dir/firmware.bin" || return 1
+    cp "$out_dir/README.md" "$game_dir/README.md" || return 1
+    if [ -f "$out_dir/rom.bin" ]; then # ROM above 256 KiB: pages 1 and up, read from the flash
+      cp "$out_dir/rom.bin" "$game_dir/rom.bin" || return 1
+      printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin 0x100000 rom.bin\n' > "$game_dir/FLASH.txt"
+    else
+      printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin\n' > "$game_dir/FLASH.txt"
+    fi
   else
     firmware="$out_dir/.pio/build/$PIO_ENV/firmware.bin"
     cp "$firmware" "$game_dir/$sd_name.BIN" || return 1
@@ -1420,7 +1431,7 @@ echo "------------------------------------------"
 echo "Réussis : $n_ok   Échecs : $n_fail   Déjà à jour : $n_skip   Conservés : ${#KEPT[@]}"
 for f in "$STATUS_DIR"/fail.*; do [ -f "$f" ] && echo "  échec : $(cat "$f")"; done
 if [ "$TARGET" = espboy ]; then
-  echo "Jeux dans : $DEST_DIR/gb/<Jeu>.zip (firmware.bin + rom.bin, offsets dans FLASH.txt)"
+  echo "Jeux dans : $DEST_DIR/<gb|sg|gg|sms>/<Jeu>.zip (firmware.bin, + rom.bin au-delà de 256 Kio ; offsets dans FLASH.txt)"
 else
   echo "Jeux dans : $DEST_DIR/<gb|sg|gg|sms>/<Jeu>.zip  (le zip contient le répertoire du jeu, à déposer sur la carte SD)"
 fi

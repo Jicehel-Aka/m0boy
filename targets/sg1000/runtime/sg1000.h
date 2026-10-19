@@ -103,8 +103,8 @@ void sg1000_run(void);
 static inline uint8_t sg1000_read(uint16_t a) {
     if (a >= 0xc000) return machine.ram[a & 1023];
     if (a >= 0x8000 && machine.cart_ram) return machine.cart_ram[a & (SG_CART_RAM_SIZE - 1)];
-    if (machine.rom_mask) return machine.rom[a & machine.rom_mask];
-    return a < machine.rom_size ? machine.rom[a] : 0xff;
+    if (machine.rom_mask) return m0_load_u8(machine.rom + (a & machine.rom_mask));
+    return a < machine.rom_size ? m0_load_u8(machine.rom + a) : 0xff;
 }
 void sg1000_write_cart(uint16_t a, uint8_t v);
 static inline void sg1000_write(uint16_t a, uint8_t v) {

@@ -12,13 +12,25 @@
 extern "C" {
 #include <user_interface.h>
 #include <cont.h>
+}
+#if __has_include("gbl.h") /* Game Boy frontend; the Sega ones have sg_audio.h */
 #include "gbl.h"
+#include "meta_sd.h"
+#define ESP_AUDIO_RATE(r) gbl_apu_set_rate(r)
+#define ESP_AUDIO_RENDER(p, n) gbl_apu_render(p, n)
+#define ESPBOY_GB 1
+#else
+#include "sg_audio.h"
+#define ESP_AUDIO_RATE(r) sg_platform_audio_rate(r)
+#define ESP_AUDIO_RENDER(p, n) sg_platform_audio_render(p, n)
+#define ESPBOY_GB 0
+#endif
+extern "C" {
 #include "meta_audio.h"
 #include "meta_clock.h"
 #include "meta_lcd.h"
 }
 #include "meta_menu.h"
-#include "meta_sd.h"
 
 /* GPIO_SIGMA_DELTA, as the core's sigma-delta driver defines it. */
 #define GPSD ESP8266_REG(0x368)
@@ -75,11 +87,13 @@ extern "C" uint8_t meta_clock_set(uint8_t mhz) {
 extern "C" uint8_t meta_clock_mhz(void) { return system_get_cpu_freq(); }
 extern "C" uint32_t meta_micros(void) { return micros(); }
 
+#if ESPBOY_GB
 /* No card: the shared frontend only needs these to say so. */
 extern "C" int meta_sd_init(void) { return 0; }
 extern "C" int meta_sd_read(uint32_t, uint8_t *) { return 0; }
 extern "C" int meta_sd_write(uint32_t, const uint8_t *) { return 0; }
 extern "C" void meta_sd_deselect(void) {}
+#endif
 
 /* ---- display ------------------------------------------------------------ */
 static void command(uint8_t c, const uint8_t *p = nullptr, unsigned n = 0) {
@@ -185,7 +199,7 @@ static void IRAM_ATTR audio_irq(void) {
 }
 extern "C" void meta_audio_init(void) {
     audio_head = audio_tail = 0;
-    gbl_apu_set_rate(11025);
+    ESP_AUDIO_RATE(11025);
     sigmaDeltaSetup(0, 312500);
     sigmaDeltaAttachPin(PIN_SPEAKER);
     sigmaDeltaEnable();
@@ -198,7 +212,7 @@ extern "C" void meta_audio_frame(void) {
     uint8_t samples[192];
     unsigned n = meta_audio_frame_samples(11025, &audio_frac);
     if (n > sizeof samples) n = sizeof samples;
-    gbl_apu_render(samples, n);
+    ESP_AUDIO_RENDER(samples, n);
     if (paused) return;
     for (unsigned i = 0; i < n; i++) {
         uint16_t next = (audio_head + 1) & (AUDIO_RING - 1);

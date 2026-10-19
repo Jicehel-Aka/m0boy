@@ -57,8 +57,13 @@ extern "C" {
 #define GG_ROW_PAD 8
 #define GG_ROW_STRIDE (GG_WIDTH + 2 * GG_ROW_PAD)
 /* Cartridge RAM: a 16 KiB window at 8000-BFFF, two banks (FFFC bit 2) */
+#if defined(GG_CART_RAM_8K) /* ESPboy: 8 KiB in RAM, mirrored over the window */
+#define GG_CART_RAM_SIZE 8192
+static inline uint32_t gg_cart_offset(uint16_t a, uint8_t ram_ctl) { (void)ram_ctl; return a & 0x1fffu; }
+#else
 #define GG_CART_RAM_SIZE 32768
 static inline uint32_t gg_cart_offset(uint16_t a, uint8_t ram_ctl) { return (ram_ctl & 4u) << 12 | (a & 0x3fffu); }
+#endif
 /* ROM larger than the flash (SG_ROM_STREAM, generated projects): only some
  * 16 KiB pages are in flash (gg_page_index), the others are read from the
  * SD card through a cache of GG_STREAM_SECTORS 512-byte sectors. */
@@ -206,12 +211,12 @@ uint8_t *gg_stream_scratch(void);    /* 512 bytes free before gg_init */
 extern uint32_t gg_stream_misses;
 static inline uint8_t gg_slot_read(uint16_t a) {
     const uint8_t *p = machine.slot[a >> 14];
-    if (__builtin_expect(p != 0, 1)) return p[a & 0x3fff];
+    if (__builtin_expect(p != 0, 1)) return m0_load_u8(p + (a & 0x3fff));
     const unsigned s = a >> 14, page = s == 2 ? machine.page2 : machine.page[s];
     return gg_stream_read((uint32_t)page * 0x4000u + (a & 0x3fff));
 }
 #else
-static inline uint8_t gg_slot_read(uint16_t a) { return machine.slot[a >> 14][a & 0x3fff]; }
+static inline uint8_t gg_slot_read(uint16_t a) { return m0_load_u8(machine.slot[a >> 14] + (a & 0x3fff)); }
 #endif
 #if GG_CART_ON_CARD
 uint8_t gg_cart_read(uint32_t offset);
@@ -228,7 +233,7 @@ static inline uint8_t gg_cart_byte(uint16_t a) { return machine.cart_ram[gg_cart
 #endif
 static inline uint8_t gg_read(uint16_t a) {
     if (a >= 0xc000) return machine.ram[a & 8191];
-    if (a < 0x400 && !GG_CODEMASTERS) return machine.rom[a];
+    if (a < 0x400 && !GG_CODEMASTERS) return m0_load_u8(machine.rom + a);
     if (a >= 0x8000 && (machine.ram_ctl & 8) && GG_HAS_CART_RAM) return gg_cart_byte(a);
     return gg_slot_read(a);
 }

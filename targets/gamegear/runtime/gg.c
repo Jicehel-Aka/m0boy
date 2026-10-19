@@ -260,7 +260,8 @@ void gg_init_system(const uint8_t *rom, size_t size, uint8_t *cart_ram, int sms)
      * HardFault at boot). */
 #ifndef GG_MAPPER
     if (size >= 0x8000) {
-        const unsigned sum = rom[0x7fe6] | rom[0x7fe7] << 8, inverse = rom[0x7fe8] | rom[0x7fe9] << 8;
+        const unsigned sum = m0_load_u8(rom + 0x7fe6) | m0_load_u8(rom + 0x7fe7) << 8,
+                       inverse = m0_load_u8(rom + 0x7fe8) | m0_load_u8(rom + 0x7fe9) << 8;
         m->mapper = sum && !((sum + inverse) & 0xffff);
     }
 #else

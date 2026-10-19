@@ -310,8 +310,18 @@ offsets; they are flashed over serial, not copied onto an SD card.
 
 The Game Boy runtime, generated C, menu, palettes and display pipeline are
 shared. Display, buttons, sound and start-up follow the earlier ESPboy
-emulator that ran on the console. Sega source systems are not yet supported
-on ESPboy. This port has host tests (a mock flash included) and an Xtensa
+emulator that ran on the console.
+
+SG-1000, Game Gear and Master System ROMs also convert
+(`gbrecomp rom.gg --target espboy`, `TARGET=espboy ./compile.sh`), on the same
+drivers and flash map: a ROM of up to 256 KiB is part of the firmware; a
+larger Game Gear / Master System one keeps page 0 there and the other pages,
+raw, in `rom.bin` (read by 512-byte sectors through the card cache of the
+Game Boy, here in RAM). Cartridge RAM is 8 KiB in RAM, saved in flash two
+seconds after it stops changing (no states, no menu: START / PAUSE is the
+right auxiliary button). The SG-1000 / SMS picture is filtered to 160 columns
+and 120 rows, the Game Gear's 144 lines to 128 rows; every row is then
+resampled 160 to 128 columns. This port has host tests (a mock flash included) and an Xtensa
 build, but the current version has not been validated on ESPboy hardware. See
 the generated README.
 

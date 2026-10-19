@@ -157,7 +157,7 @@ void print_usage(const char* program) {
     std::cout << "  --info               Inspect a cartridge without generating code\n";
     std::cout << "  --target meta         Emit a compact gbl project for the Gamebuino META\n";
     std::cout << "                        (coverage-driven; see targets/meta/README.md)\n";
-    std::cout << "  --target espboy       ESP8266, 128x128 LCD, no SD, 256 KiB firmware / 1 MiB flash\n";
+    std::cout << "  --target espboy       ESP8266, 128x128 LCD, no SD, 4 MiB flash (1 MiB firmware, ROM above 256 KiB beside it)\n";
     std::cout << "  --target pokitto      Same gbl project for the Pokitto (bare-metal Makefile build;\n";
     std::cout << "                        every --meta-* option applies)\n";
     std::cout << "  --coverage <file>     gbl coverage profile for --target meta (repeatable)\n";
@@ -2221,10 +2221,6 @@ int main(int argc, char* argv[]) {
                   << m0boy::cpu_descriptor(source.cpu).name << "\n";
         return 1;
     }
-    if (target == "espboy" && source.id != m0boy::SystemId::gameboy && !info_only && !disasm_only) {
-        std::cerr << "Error: ESPboy currently supports Game Boy cartridges only\n";
-        return 1;
-    }
     if (info_only) {
         if (disasm_only || analyze_only) {
             std::cerr << "Error: --info cannot be combined with --disasm or --analyze\n";
@@ -2324,9 +2320,10 @@ int main(int argc, char* argv[]) {
                   << stats.speculative << " reached statically)\n"
                   << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
                   << (stats.cart_ram ? (gamegear ? (target == "desktop" ? "  cartridge RAM:      32 KiB, 16 KiB window at 8000-BFFF\n"
+                                                                            : target == "espboy" ? "  cartridge RAM:      8 KiB in RAM, saved in flash\n"
                                                                             : "  cartridge RAM:      32 KiB in the save file on the SD card\n")
                                                  : "  cartridge RAM:      8 KiB at 8000-BFFF\n") : "")
-                  << (stats.streamed_pages && !stats.packed ? "  ROM streaming:      " + std::to_string(stats.streamed_pages) + " pages of 16 KiB read from the SD card"
+                  << (stats.streamed_pages && !stats.packed ? "  ROM streaming:      " + std::to_string(stats.streamed_pages) + (target == "espboy" ? " pages of 16 KiB read from the flash (rom.bin)" : " pages of 16 KiB read from the SD card")
                                                  + (stats.pool_sectors ? ", " + std::to_string(stats.pool_sectors) + " hot sectors of them kept in flash" : std::string()) + "\n" : std::string())
                   << (stats.pool_sectors ? "  ROM flash pool:     " + std::to_string(stats.pool_sectors) + " sectors, " +
                        std::to_string(stats.packed_sectors) + " LZSS, " + std::to_string(stats.pool_bytes) + " bytes" +

@@ -7,7 +7,9 @@
 #include "meta_clock.h"
 #include "meta_audio.h"
 #include "meta_lcd.h"
-#if META_TARGET_POKITTO
+#if META_TARGET_ESPBOY
+#include "espboy_hw.h"
+#elif META_TARGET_POKITTO
 #include "pokitto_hw.h"
 #else
 #include "meta_hw.h"
@@ -22,7 +24,7 @@ void pokitto_sd_clock_changed(uint32_t) {}
 #endif
 }
 #if SG_CART_RAM
-static uint8_t cart_ram[SG_CART_RAM_SIZE];
+static uint8_t cart_ram[SG_CART_RAM_SIZE] __attribute__((aligned(4)));
 #endif
 #if META_TARGET_POKITTO
 static uint16_t line_buffer[SG_OUT_WIDTH] __attribute__((aligned(4)));
@@ -97,15 +99,25 @@ static void frame(void *) {
     pause = raw & 64;
     SG_PAD_WDT();
 #endif
+#if META_TARGET_ESPBOY && SG_CART_RAM
+    espboy_ram_tick(cart_ram, SG_CART_RAM_SIZE, machine.frames);
+#endif
     sg1000_buttons(0, keys);
     sg1000_pause(pause);
     SG_PACE_FRAME(deadline, skip_video, skipped_run, SG_MAX_SKIP);
 }
+#if META_TARGET_ESPBOY
+int espboy_main() {
+#else
 int main() {
+#endif
     SG_STACK_PAINT();
     SG_PLATFORM_INIT();
 #if SG_CART_RAM
     sg1000_init(sg_rom, sg_rom_size, cart_ram);
+#if META_TARGET_ESPBOY
+    espboy_ram_load(cart_ram, SG_CART_RAM_SIZE);
+#endif
 #else
     sg1000_init(sg_rom, sg_rom_size, 0);
 #endif

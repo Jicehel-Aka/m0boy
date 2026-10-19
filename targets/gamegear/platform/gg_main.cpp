@@ -15,7 +15,9 @@
 #include "meta_clock.h"
 #include "meta_audio.h"
 #include "meta_lcd.h"
-#if META_TARGET_POKITTO
+#if META_TARGET_ESPBOY
+#include "espboy_hw.h"
+#elif META_TARGET_POKITTO
 #include "pokitto_hw.h"
 #else
 #include "meta_hw.h"
@@ -31,15 +33,15 @@ void pokitto_sd_clock_changed(uint32_t) {}
 #endif
 void pokitto_lcd_row_zoom(unsigned y, const uint16_t *px);
 #endif
-#if GG_STREAM || GG_CART_ON_CARD
+#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY
 int gg_stream_open(const uint8_t *rom, uint32_t rom_size);
 #endif
 }
-#if GG_STREAM || GG_CART_ON_CARD
+#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY
 #include "meta_card.h"
 #endif
 #if SG_CART_RAM && !GG_CART_ON_CARD
-static uint8_t cart_ram[GG_CART_RAM_SIZE];
+static uint8_t cart_ram[GG_CART_RAM_SIZE] __attribute__((aligned(4)));
 #endif
 /* Rows: GG_WIDTH pixels with GG_ROW_PAD writable pixels on each side.  Two
  * buffers: the META sends one by DMA while the other is drawn. */
@@ -217,13 +219,20 @@ static void frame(void *) {
 #if GG_CART_ON_CARD
     gg_save_tick();
 #endif
+#if META_TARGET_ESPBOY && SG_CART_RAM
+    espboy_ram_tick(cart_ram, GG_CART_RAM_SIZE, machine.frames);
+#endif
     SG_PACE_FRAME(deadline, skip_video, skipped_run, GG_MAX_SKIP);
 }
 
+#if META_TARGET_ESPBOY
+int espboy_main() {
+#else
 int main() {
+#endif
     SG_STACK_PAINT();
     SG_PLATFORM_INIT();
-#if GG_STREAM || GG_CART_ON_CARD
+#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY
     /* The game's files on the card (meta_card.h, the Game Boy's colours):
      * no card blue, ROM file missing red, fragmented orange, another ROM
      * magenta, save file missing yellow */
@@ -235,6 +244,9 @@ int main() {
 #endif
 #if SG_CART_RAM && !GG_CART_ON_CARD
     gg_init(sg_rom, sg_rom_size, cart_ram);
+#if META_TARGET_ESPBOY
+    espboy_ram_load(cart_ram, GG_CART_RAM_SIZE);
+#endif
 #else
     gg_init(sg_rom, sg_rom_size, 0);
 #endif

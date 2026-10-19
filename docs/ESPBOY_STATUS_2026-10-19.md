@@ -1,8 +1,8 @@
 # ESPboy — 19 octobre 2026
 
-Cible ESP8266 (`--target espboy`, version indépendante 0.2.0). Le support
-porte sur les cartouches Game Boy DMG ; les systèmes Sega ne sont pas encore
-portés sur cette destination. **Aucune validation sur console réelle de cette
+Cible ESP8266 (`--target espboy`, version indépendante 0.3.0). Le support
+porte sur les cartouches Game Boy DMG, SG-1000, Game Gear et Master System
+(section « Sega » plus bas). **Aucune validation sur console réelle de cette
 version** : la 0.1.0 (première version, démarrage sans SDK) a été remplacée
 par un démarrage Arduino standard, calqué sur l'ancien émulateur ESPboy qui,
 lui, fonctionnait sur la console.
@@ -54,6 +54,32 @@ sans ROM commerciale ni fichier de firmware ajouté au dépôt.
   projet synthétique (3 400 instructions natives) : 443 776 octets de binaire,
   72 852 octets de RAM statique sur 81 920 (environ 9 Kio de tas libre : à
   surveiller sur la console). Ce sont des tailles de build.
+
+## Sega (SG-1000, Game Gear, Master System)
+
+Même démarrage, mêmes pilotes (`espboy_hw.cpp`) et même carte flash. Les
+façades `sg_main.cpp` / `gg_main.cpp` gardent leur chemin META (lignes
+envoyées par `meta_lcd_send_rows`, 160 → 128 colonnes dans le pilote) ; la
+ROM est lue par des chargements alignés (`m0_load_u8`, z80.h).
+
+- ROM ≤ 256 Kio : dans le firmware (`sg_rom` en PROGMEM). Au-delà (GG/SMS) :
+  page 0 dans le firmware, pages 1 et suivantes brutes dans `rom.bin` à
+  `0x100000`, secteurs de 512 octets lus par `gg_platform_rom_read` à travers
+  le cache de cartes (6 secteurs en RAM). Pas de compression (refusé au-delà de
+  2,75 Mio).
+- RAM cartouche : 8 Kio en RAM (`GG_CART_RAM_8K` : miroir sur la fenêtre de
+  16 Kio, donc les jeux à RAM de 16 ou 32 Kio ne sont pas corrects), écrite en
+  flash 2 s après la dernière modification (somme de contrôle toutes les 8
+  images), copies alternées comme pour le Game Boy. Ni états ni menu.
+- Vérifié : `tests/test_sega_espboy.py` (projet précis natif = interpréteur
+  pour GG, SMS et SG-1000 ; GG de 320 Kio avec `rom.bin` ; ROM refusée
+  trop grande ; `espboy_sega_flash_check.cpp` sur flash simulée : secteurs de
+  `rom.bin`, sauvegarde, copies abîmées) et builds Xtensa (`ESPBOY_PIO`).
+- Lot converti (`TARGET=espboy ./compile.sh`, parties automatiques sur l'hôte) :
+  Bank Panic, Bomb Jack (SG-1000) ; Pengo, Bubble Bobble, Asterix and the Great
+  Rescue (GG) ; Action Fighter, Aladdin (SMS). RAM statique de 62 à 73 Kio sur
+  81,9 Kio (tas libre de 9 à 20 Kio), firmware de 422 à 888 Ko sur 1 Mio,
+  38 à 42 octets de flash par instruction compilée (estimations de build).
 
 ## À vérifier sur la console
 
