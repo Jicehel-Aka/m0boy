@@ -88,7 +88,7 @@ Le firmware ESPboy (le vrai binaire Xtensa, `firmware.bin` + `firmware.sym` +
 du firmware et émule par fonction la ROM de la puce et le SDK Espressif
 (`firmware.sym`, produit par le build, donne les noms). Ce n'est pas la puce :
 le temps y est une estimation, le démarrage du SDK n'est pas exécuté, et
-l'écran est un modèle ST7735.
+l'écran est un modèle ST7735 (panneau BGR : `MADCTL.BGR` à 0 échange rouge et bleu, le firmware pose 0xC8).
 
 - Les 9 jeux convertis (Super Mario Land et 2, Bubble Bobble, Pengo, Asterix,
   Action Fighter, Aladdin, Bank Panic, Bomb Jack) démarrent depuis leur zip,
