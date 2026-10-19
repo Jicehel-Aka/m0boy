@@ -1,4 +1,6 @@
 # Builds and conversions stay local: no ROMs or firmwares in the repository.
+# /build covers the symlink case too (a local build/ -> output/build-gcc).
+/build
 /build/
 /out/
 /output/

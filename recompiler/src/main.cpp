@@ -6,6 +6,7 @@
 #include "m0boy/system.h"
 #include "m0boy/sg1000.h"
 #include "m0boy/sg1000_generator.h"
+#include "m0boy/pico8_generator.h"
 #include "m0boy/cpu/z80/decoder.h"
 #include "recompiler/rom.h"
 #include "recompiler/decoder.h"
@@ -151,7 +152,7 @@ void print_usage(const char* program) {
     std::cout << "  --trace               Trace execution analysis (very verbose)\n";
     std::cout << "  --limit <n>           Limit analysis to n instructions\n";
     std::cout << "  -j, --jobs <n>        Parallel workers for codegen and batch generation (0=auto)\n";
-    std::cout << "  --system auto|gameboy|sg1000|gg|sms  Source console (default auto; legacy GB fallback)\n";
+    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8  Source console (default auto; legacy GB fallback)\n";
     std::cout << "  --cpu sm83|z80       Check the CPU required by the source console\n";
     std::cout << "  --list-systems       List source consoles, CPUs and available pipelines\n";
     std::cout << "  --info               Inspect a cartridge without generating code\n";
@@ -2195,8 +2196,8 @@ int main(int argc, char* argv[]) {
                       << " inspect=yes disasm="
                       << (m0boy::cpu_descriptor(system.cpu).decoder_available ? "yes" : "no")
                       << " codegen="
-                      << (system.supports(m0boy::TargetId::desktop) ? "desktop,meta,pokitto" : "unavailable")
-                      << (system.supports(m0boy::TargetId::espboy) ? ",espboy" : "")
+                      << (system.id == m0boy::SystemId::pico8 ? "desktop,meta" : system.supports(m0boy::TargetId::desktop) ? "desktop,meta,pokitto" : "unavailable")
+                      << (system.id != m0boy::SystemId::pico8 && system.supports(m0boy::TargetId::espboy) ? ",espboy" : "")
                       << "\n";
         }
         return 0;
@@ -2277,6 +2278,30 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: --sd-name must be 1 to 8 letters, digits, '_' or '-'\n";
             return 1;
         }
+    }
+    if (source.id == m0boy::SystemId::pico8) {
+        if (disasm_only || analyze_only || meta_thumb || g_meta_pack || !coverage_paths.empty() || meta_precise ||
+            emit_android_project || !native_patch_manifest_path.empty() || specific_bank > 0) {
+            std::cerr << "Error: unsupported PICO-8 option; a cartridge is compiled to C, use --target and --meta-compiler\n";
+            return 1;
+        }
+        m0boy::pico8::GenerateOptions options;
+        options.target = *m0boy::parse_target(target);
+        options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().stem().string()) : output_prefix;
+        if (options.name.empty() || sanitize_prefix(options.name) != options.name) {
+            std::cerr << "Error: invalid PICO-8 output prefix\n";
+            return 1;
+        }
+        options.output = output_dir.empty() ? fs::path(options.name + "_pico8_" + target) : fs::path(output_dir);
+        options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
+        options.compiler = meta_compiler;
+        std::string error;
+        if (!m0boy::pico8::generate(rom_path, options, error)) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        std::cout << "Generated PICO-8 project for " << target << ": " << options.output << "\n";
+        return 0;
     }
     if (source.id == m0boy::SystemId::sg1000 || source.id == m0boy::SystemId::gamegear ||
         source.id == m0boy::SystemId::mastersystem) {

@@ -130,6 +130,21 @@ MENU / C. Alex Kidd in Miracle World, Shinobi and Wonder Boy III run at
 Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
 `gm0 game.sg`. Details (French): [docs/MULTI_SYSTEM.fr.md](docs/MULTI_SYSTEM.fr.md).
 
+## PICO-8
+
+PICO-8 cartridges (`.p8`, `.p8.png`) are compiled for the Gamebuino META: the
+cartridge's Lua becomes C (one function per Lua function) on a small runtime
+with a garbage-collected 18 KiB heap, integer-only drawing and sound. The PC
+side uses [femto8](https://github.com/benbaker76/femto8)'s cartridge reader
+and Lua compiler (`FEMTO8_DIR`, default `../femto8`). The screen of the
+generated code equals femto8's, byte for byte, on Celeste and its Practice
+Mod; in gm0 Celeste runs at about 26 frames a second at 48 MHz (30 expected
+at 72 MHz, not measured). Notes, limits and evidence: [docs/PICO8.fr.md](docs/PICO8.fr.md).
+
+```bash
+build/bin/m0recomp celeste.p8.png --target meta -o out/celeste && (cd out/celeste && pio run)
+```
+
 ## What was built
 
 ### Recompilation guided by play

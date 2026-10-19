@@ -119,6 +119,22 @@ les deux consoles (gm0). Pas encore de son FM.
 Sur PC, la lecture passe par la [branche `z80` de gm0](https://github.com/r043v/gm0/tree/z80) :
 `gm0 jeu.sg`. Détails : [docs/MULTI_SYSTEM.fr.md](docs/MULTI_SYSTEM.fr.md).
 
+## PICO-8
+
+Les cartouches PICO-8 (`.p8`, `.p8.png`) sont compilées pour la Gamebuino META :
+le Lua de la cartouche devient du C (une fonction par fonction Lua) sur un petit
+runtime avec un tas de 18 Kio à ramasse-miettes, dessin et son entiers. Côté
+PC, le lecteur de cartouches et le compilateur Lua de
+[femto8](https://github.com/benbaker76/femto8) (`FEMTO8_DIR`, par défaut
+`../femto8`). L'écran du code généré est celui de femto8, octet pour octet, sur
+Celeste et son Practice Mod ; dans gm0, Celeste tourne à environ 26 images par
+seconde à 48 MHz (30 attendues à 72 MHz, non mesuré). Notes, limites et
+preuves : [docs/PICO8.fr.md](docs/PICO8.fr.md).
+
+```bash
+build/bin/m0recomp celeste.p8.png --target meta -o out/celeste && (cd out/celeste && pio run)
+```
+
 ## Le travail réalisé
 
 ### Une recompilation guidée par le jeu

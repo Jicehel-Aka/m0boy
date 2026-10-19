@@ -96,6 +96,12 @@ if(BUILD_TESTS)
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_sg1000_player.py"
                     "$<TARGET_FILE:sg1000_play>" "$<TARGET_FILE:sg1000_host>")
     endif()
+    if(TARGET p8c)
+        add_test(NAME pico8_native_end_to_end
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_pico8_e2e.py"
+                    --recompiler "$<TARGET_FILE:m0recomp>")
+        set_tests_properties(pico8_native_end_to_end PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
+    endif()
     add_executable(test_source_systems tests/test_source_systems.cpp)
     target_link_libraries(test_source_systems PRIVATE m0boy_frontends)
     add_test(NAME source_system_profiles COMMAND test_source_systems)
