@@ -287,7 +287,7 @@ ninja -C build
 ctest --test-dir build --output-on-failure
 ```
 
-## ESPboy (initial Game Boy target)
+## ESPboy (Game Boy, SG-1000, Game Gear, Master System)
 
 ```bash
 build/bin/gbrecomp game.gb --target espboy --meta-static -o out/espboy/game
@@ -321,9 +321,18 @@ Game Boy, here in RAM). Cartridge RAM is 8 KiB in RAM, saved in flash two
 seconds after it stops changing (no states, no menu: START / PAUSE is the
 right auxiliary button). The SG-1000 / SMS picture is filtered to 160 columns
 and 120 rows, the Game Gear's 144 lines to 128 rows; every row is then
-resampled 160 to 128 columns. This port has host tests (a mock flash included) and an Xtensa
-build, but the current version has not been validated on ESPboy hardware. See
-the generated README.
+resampled 160 to 128 columns.
+
+Without a console, [gm0](https://github.com/r043v/gm0) runs the built firmware
+(the Xtensa code itself; the chip's ROM and the Espressif SDK are emulated by
+function, time is an estimate): `gm0 game.zip`, where `compile.sh` packs
+`firmware.bin`, `firmware.sym` and, above 256 KiB, `rom.bin`. Set
+`ESPBOY_GM0=/path/to/gm0` for the ESPboy tests to run each firmware in it
+(`ESPBOY_PIO` for the build). The Game Boy A/B buttons are crossed with ACT/ESC
+on purpose (more comfortable to play). This port has host tests (a mock flash
+included), Xtensa builds and gm0 runs, but the current version has not been
+validated on ESPboy hardware. See the generated README and
+`docs/ESPBOY_STATUS_2026-10-19.md`.
 
 ## Limitations
 
