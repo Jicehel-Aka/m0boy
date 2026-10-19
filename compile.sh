@@ -734,7 +734,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     else
       build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0
     fi
-    echo "$build_log" | grep -q -E "overflowed|will not fit|greater than maximum allowed|exceeds 256 KiB" && return 1
+    echo "$build_log" | grep -q -E "overflowed|will not fit|greater than maximum allowed|exceeds 640 KiB" && return 1
     echo "$build_log" | tail -20
     return 2
   }
@@ -1059,7 +1059,7 @@ PY
     else
       build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0
     fi
-    echo "$build_log" | grep -q -E "overflowed|will not fit|greater than maximum allowed|exceeds 256 KiB" && return 1
+    echo "$build_log" | grep -q -E "overflowed|will not fit|greater than maximum allowed|exceeds 640 KiB" && return 1
     echo "$build_log" | tail -20
     return 2
   }
@@ -1111,7 +1111,7 @@ PY
       cp "$out_dir/.pio/build/$PIO_ENV/firmware.bin" "$game_dir/firmware.bin" || return 1
       cp "$out_dir/rom.bin" "$game_dir/rom.bin" || return 1
       cp "$out_dir/README.md" "$game_dir/README.md" || return 1
-      printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin 0x40000 rom.bin\n' > "$game_dir/FLASH.txt"
+      printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin 0xA0000 rom.bin\n' > "$game_dir/FLASH.txt"
     else
       cp "$out_dir/.pio/build/$PIO_ENV/firmware.bin" "$game_dir/$sd_name.BIN"
     fi

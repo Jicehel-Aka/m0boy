@@ -77,8 +77,9 @@ static inline uint8_t gbl_load_u8(const uint8_t *p) {
 static inline uint8_t gbl_load_u8(const uint8_t *p) { return *p; }
 #endif
 #if defined(ESP8266)
-/* Raw cartridge image uploaded separately at physical flash offset 256 KiB. */
-#define gbl_rom ((const uint8_t *)0x40240000u)
+/* Cartridge image (rom.bin) uploaded separately; see gbl_espboy.h. */
+#include "gbl_espboy.h"
+#define gbl_rom ((const uint8_t *)(ESPBOY_MAP_BASE + ESPBOY_ROM_OFF))
 #else
 extern const uint8_t gbl_rom[];
 #endif
@@ -150,6 +151,10 @@ extern uint32_t gbl_stream_unpacked; /* ... decoded from compressed flash */
  * is no file (reads then give 0xFF, writes are dropped). */
 int gbl_platform_save_read(uint32_t sector, uint8_t *dst);
 int gbl_platform_save_write(uint32_t sector, const uint8_t *src);
+#if defined(ESP8266) || defined(GBL_SAVE_IMAGE)
+/* The whole battery RAM as a new copy in flash (0 when it could not be written). */
+int gbl_platform_save_image(const uint8_t *eram, uint32_t bytes);
+#endif
 void gbl_save_flush(void);           /* write back what changed */
 /* Write back the first changed sector (cache way, or 512-byte sector of
  * in-RAM cartridge RAM) at index i or after; returns the index after it,

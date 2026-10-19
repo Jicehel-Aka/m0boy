@@ -776,7 +776,11 @@ int main(void) {
      * unwinds to the nearest dispatcher loop. */
     char probe;
     uintptr_t limit = (uintptr_t)&probe - (META_TARGET_ESPBOY ? 2048u : 3072u);
-    uintptr_t floor_addr = META_TARGET_ESPBOY ? limit : (uintptr_t)&DATA_END + META_STACK_RESERVE; /* gbl_profile.h */
+    #if META_TARGET_ESPBOY
+    uintptr_t floor_addr = espboy_stack_floor(); /* the continuation stack of setup() */
+#else
+    uintptr_t floor_addr = (uintptr_t)&DATA_END + META_STACK_RESERVE; /* gbl_profile.h */
+#endif
     gbl_stack_limit = limit > floor_addr ? limit : floor_addr;
     /* Too little RAM left (caches, debug records): the unguarded calls
      * below the limit would run into .bss.  Cyan screen instead. */

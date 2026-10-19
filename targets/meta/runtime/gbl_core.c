@@ -46,7 +46,7 @@ static struct {
  * directly; reads from other chunks go through an LRU cache of 512-byte
  * sectors filled by gbl_platform_rom_read. */
 #if defined(ESP8266)
-#define gbl_rom_resident ((const uint8_t (*)[4096])0x40240000u)
+#define gbl_rom_resident ((const uint8_t (*)[4096])gbl_rom)
 #else
 extern const uint8_t gbl_rom_resident[][4096];
 #endif
@@ -82,8 +82,13 @@ void gbl_stream_invalidate(void) { stream_reset(); }
 /* Compressed flash source: sector k of the ROM is gbl_rom_packed
  * [off[k], off[k + 1]), LZSS-coded, or stored as is when that is 512
  * bytes.  Only sectors outside bank 0 and the resident chunks are used. */
-#if defined(ESP8266)
-#define gbl_rom_packed ((const uint8_t *)0x40244000u)
+#if defined(ESP8266) && !defined(GBL_ROM_PACKED_FLASH)
+#define GBL_ROM_PACKED_FLASH 1
+#endif
+#if GBL_ROM_PACKED_FLASH
+/* rom.bin beyond the first MiB of flash is not mapped: sectors are read
+ * with spi_flash_read (espboy_flash.cpp), aligned and 4 bytes at a time. */
+int espboy_rom_read(uint32_t offset, uint8_t *dst, uint32_t bytes);
 #else
 extern const uint8_t gbl_rom_packed[];
 #endif
@@ -108,14 +113,17 @@ static void unpack512(const uint8_t *src, uint8_t *dst) {
 static int rom_unpack(uint32_t sector, uint8_t *dst) {
     uint32_t a = gbl_rom_packed_off[sector], n = gbl_rom_packed_off[sector + 1] - a;
     if (!n) return 0; /* a hybrid build leaves this sector on the card */
-    if (n == 512) {
-#if defined(ESP8266)
-        memcpy_P(dst, gbl_rom_packed + a, 512);
+#if GBL_ROM_PACKED_FLASH
+    /* The image starts with bank 0, raw; the decoders may read two bytes
+     * ahead, so a few more than n are fetched. */
+    static uint8_t packed[512 + 4] __attribute__((aligned(4)));
+    if (!espboy_rom_read(0x4000u + a, packed, n + 2u)) return 0;
+    if (n == 512) memcpy(dst, packed, 512);
+    else unpack512(packed, dst);
 #else
-        memcpy(dst, gbl_rom_packed + a, 512);
-#endif
-    }
+    if (n == 512) memcpy(dst, gbl_rom_packed + a, 512);
     else unpack512(gbl_rom_packed + a, dst);
+#endif
     gbl_stream_unpacked++;
     return 1;
 }
@@ -669,7 +677,11 @@ static void eram_store(uint32_t off, uint8_t v) {
 }
 
 void gbl_save_flush(void) {
-#if GBL_BATTERY
+#if GBL_BATTERY && defined(ESP8266)
+    /* Flash is erased by 4 KiB blocks: the platform writes the whole RAM as
+     * a new copy (espboy_flash.cpp) rather than one sector at a time. */
+    if (eram_dirty_mask && gbl_platform_save_image(gbl_eram, GBL_ERAM_SIZE)) eram_dirty_mask = 0;
+#elif GBL_BATTERY
     for (uint32_t sec = 0; eram_dirty_mask; sec++) {
         if (eram_dirty_mask & (1u << sec)) {
             gbl_platform_save_write(sec, gbl_eram + sec * 512u);
@@ -681,7 +693,11 @@ void gbl_save_flush(void) {
 }
 
 int gbl_save_flush_next(int i) {
-#if GBL_BATTERY
+#if GBL_BATTERY && defined(ESP8266)
+    (void)i;
+    gbl_save_flush();
+    return -1;
+#elif GBL_BATTERY
     for (; i >= 0 && i < 32; i++)
         if (eram_dirty_mask & (1u << i)) {
             gbl_platform_save_write((uint32_t)i, gbl_eram + (uint32_t)i * 512u);

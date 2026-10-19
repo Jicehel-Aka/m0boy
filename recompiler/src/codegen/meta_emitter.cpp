@@ -314,11 +314,18 @@ bool decode(const ROM& rom, uint16_t bank, uint16_t addr, Ins& in) {
 const char* kR8[8] = {"gbr.b", "gbr.c", "gbr.d", "gbr.e", "gbr.h", "gbr.l", nullptr, "gbr.a"};
 const char* kR16[4] = {"gbr.bc", "gbr.de", "gbr.hl", "gbr.sp"};
 
+/* ESPboy flash map (4 MiB), as targets/meta/runtime/gbl_espboy.h. */
+constexpr size_t kEspApp = 0x0A0000;       // application
+constexpr size_t kEspRomBytes = 0x320000;  // rom.bin area, from kEspApp
+constexpr size_t kEspMapped = 0x100000 - kEspApp; // ROM bytes the CPU can map
+constexpr size_t kEspSaveBlocks = 0x03B000 / 4096;
+constexpr size_t kEspRuntime = 0x60000;    // Arduino core + runtime, before generated code
+
 class Generator {
 public:
     Generator(const ROM& rom, const MetaTargetOptions& opt) : rom_(rom), opt_(opt) {
         stream_ = !opt.espboy && (opt.stream == 1 || (opt.stream < 0 && rom.size() >= 0x40000) || opt.pack);
-        pack_ = opt.espboy ? rom.size() > 0xBB000 : opt.pack;
+        pack_ = opt.espboy ? rom.size() > kEspMapped : opt.pack;
         if (opt.espboy) stream_ = pack_;
     }
 
@@ -337,6 +344,7 @@ public:
     std::string emit_rom() const;
     std::vector<uint8_t> espboy_image() const;
     std::string emit_config(std::string& error) const;
+    std::string espboy_state_config(size_t eram, bool battery) const;
 
     size_t compiled() const { return ins_.size(); }
     size_t dropped() const { return dropped_; }
@@ -394,7 +402,7 @@ private:
     size_t stream_code_budget_ = 0, resident_budget_ = 0;
     /* Flash for the application: META 240 KiB above its 16 KiB loader,
      * Pokitto 228 KiB below its loader at 0x39000. */
-    size_t app_flash() const { return opt_.espboy ? 262144 : opt_.pokitto ? 0x39000 : 245760; }
+    size_t app_flash() const { return opt_.espboy ? kEspApp : opt_.pokitto ? 0x39000 : 245760; }
     std::vector<std::vector<uint8_t>> packed_sector_; /* per ROM sector (banks 1+) */
     std::vector<uint64_t> chunk_weight_; /* per 4 KiB ROM chunk */
     std::vector<int> resident_index_;    /* per chunk: slot in flash, -1 on the card */
@@ -453,7 +461,7 @@ bool Generator::load_coverage(MetaTargetStats& stats, std::string& error) {
     if (!budget && stream_) {
         budget = stream_code_budget_;
     } else if (!budget) {
-        const size_t app = app_flash(), runtime = opt_.espboy ? 131072 : 40960;
+        const size_t app = app_flash(), runtime = opt_.espboy ? kEspRuntime : 40960;
         const size_t rom_flash = opt_.espboy ? 0 : rom_.size();
         budget = app > runtime + rom_flash ? app - runtime - rom_flash : 0;
     }
@@ -540,9 +548,10 @@ Ins* Generator::resolve(const Ins& from, uint16_t target, int& bank_check) {
 
 bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
     if (opt_.espboy) {
-        // Keep bank 0 directly mapped; pack only enough sectors to fit the
-        // remaining physical flash. Largest savings first minimises the
-        // number of sectors which need decoding (no device cost claim).
+        // Raw first: bank 0 stays mapped and every other sector is stored
+        // as is, read with spi_flash_read.  Only when that exceeds the ROM
+        // area are sectors LZSS-packed, largest savings first (the fewest
+        // sectors to decode; no cost claim).
         const size_t sectors = rom_.size() / 512;
         packed_sector_.resize(sectors);
         std::vector<std::pair<size_t, size_t>> savings;
@@ -554,18 +563,18 @@ bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
         std::stable_sort(savings.begin(), savings.end(), [](auto a, auto b) { return a.first > b.first; });
         size_t size = rom_.size() + 2;
         for (auto [saved, k] : savings) {
-            if (size <= 0xBB000) break;
+            if (size <= kEspRomBytes) break;
             if (!saved) continue;
             packed_sector_[k] = m0boy::rom::encode(rom_.data() + k * 512, 512).bytes;
             size -= saved;
         }
-        if (size > 0xBB000) {
-            error = "ESPboy ROM does not fit in 1 MiB flash, even compressed (bank 0 kept raw)";
+        if (size > kEspRomBytes) {
+            error = "ESPboy ROM does not fit in the 3 MiB ROM area of the 4 MiB flash, even compressed (bank 0 kept raw)";
             return false;
         }
         chunk_weight_.assign((rom_.size() + 4095) / 4096, 0);
         resident_index_.assign(chunk_weight_.size(), -1);
-        stream_code_budget_ = 262144 - 131072 - (sectors + 1) * 4;
+        stream_code_budget_ = kEspApp - kEspRuntime - (sectors + 1) * 4;
         stats.stream = stats.packed = true;
         stats.sd = false;
         stats.packed_raw_bytes = rom_.size() - 16384;
@@ -1988,6 +1997,19 @@ static void cgb_generic_palettes(std::string& out) {
     out += "\n";
 }
 
+/* ESPboy: identity of the game in the save area, and its state slots. */
+std::string Generator::espboy_state_config(size_t eram, bool battery) const {
+    uint32_t id = 2166136261u;
+    for (size_t i = 0; i < rom_.size(); i++) id = (id ^ rom_.data()[i]) * 16777619u;
+    const size_t sectors = 1 + (18432 + eram + 511) / 512, slot_blocks = (sectors + 7) / 8;
+    const size_t ram_blocks = battery ? 2 * ((eram + 4095) / 4096 + 1) : 0;
+    const size_t slots = std::min<size_t>(10, kEspSaveBlocks > ram_blocks ? (kEspSaveBlocks - ram_blocks) / slot_blocks : 0);
+    std::ostringstream o;
+    o << "#define GBL_FLASH_GAME_ID 0x" << std::hex << id << std::dec << "u\n";
+    if (slots) o << "#define GBL_STATE_SLOTS " << slots << "\n#define GBL_STATE_SLOT_SECTORS " << sectors << "\n";
+    return o.str();
+}
+
 std::string Generator::emit_config(std::string& error) const {
     const ROMHeader& h = rom_.header();
     int mbc = -1;
@@ -2012,6 +2034,11 @@ std::string Generator::emit_config(std::string& error) const {
         return {};
     }
     size_t eram = mbc == 2 ? 512 : h.ram_size_bytes;
+    if (opt_.espboy && eram > 16384) {
+        error = "ESPboy keeps the cartridge RAM in its 80 KiB of RAM: " + std::to_string(eram) +
+                " bytes are more than the 16 KiB supported";
+        return {};
+    }
     /* Battery-backed cartridge types (header byte 0x147). */
     const uint8_t cart = rom_.read_banked(0, 0x147);
     const bool battery = cart == 0x03 || cart == 0x06 || cart == 0x09 || cart == 0x0D ||
@@ -2027,15 +2054,18 @@ std::string Generator::emit_config(std::string& error) const {
       << (battery && eram ? "#define GBL_BATTERY 1\n" : "")
       /* The game's files on the card share the .BIN's 8.3 base; the
        * firmware looks for them in the folder of its own .BIN. */
-      << "#define GBL_SD_NAME \"" + sd + "\"\n#define GBL_BIN_NAME83 \"" + name83(sd, "BIN") + "\"\n"
-      << (eram ? "#define GBL_SAVE_NAME \"" + sd + ".SAV\"\n#define GBL_SAVE_NAME83 \"" + name83(sd, "SAV") + "\"\n"
+      << (opt_.espboy ? std::string() : "#define GBL_SD_NAME \"" + sd + "\"\n#define GBL_BIN_NAME83 \"" + name83(sd, "BIN") + "\"\n")
+      << (eram && !opt_.espboy ? "#define GBL_SAVE_NAME \"" + sd + ".SAV\"\n#define GBL_SAVE_NAME83 \"" + name83(sd, "SAV") + "\"\n"
                : std::string())
       /* Save states: GBL_STATE_SLOTS slots of GBL_STATE_SLOT_SECTORS sectors
        * (a header, the machine within 18 KiB, the cartridge RAM) in a file
-       * the converters create; the firmware offers them when it is there. */
-      << "#define GBL_STATE_NAME \"" + sd + ".STA\"\n#define GBL_STATE_NAME83 \"" + name83(sd, "STA") +
-             "\"\n#define GBL_STATE_SLOTS 10\n#define GBL_STATE_SLOT_SECTORS " +
-             std::to_string(1 + (18432 + eram + 511) / 512) + "\n"
+       * the converters create; the firmware offers them when it is there.
+       * ESPboy: the slots that fit in the save area, after the two copies
+       * of the battery RAM. */
+      << (opt_.espboy ? espboy_state_config(eram, battery && eram)
+                      : "#define GBL_STATE_NAME \"" + sd + ".STA\"\n#define GBL_STATE_NAME83 \"" + name83(sd, "STA") +
+                            "\"\n#define GBL_STATE_SLOTS 10\n#define GBL_STATE_SLOT_SECTORS " +
+                            std::to_string(1 + (18432 + eram + 511) / 512) + "\n")
       << (stream_ ? "#define GBL_ROM_STREAM 1\n#define GBL_ROM_CHUNKS " +
                         std::to_string(chunk_weight_.size()) + "\n" +
                          (pack_ ? std::string("#define GBL_ROM_PACKED 1\n") : std::string()) +
@@ -2158,13 +2188,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     }
     gen.build();
 
-    std::string config = gen.emit_config(error);
-    if (options.espboy) {
-        for (const char* key : {"GBL_SAVE_NAME", "GBL_SAVE_NAME83", "GBL_STATE_NAME", "GBL_STATE_NAME83", "GBL_STATE_SLOTS", "GBL_STATE_SLOT_SECTORS"}) {
-            const auto pos = config.find(std::string("#define ") + key + " ");
-            if (pos != std::string::npos) config.erase(pos, config.find('\n', pos) - pos + 1);
-        }
-    }
+    const std::string config = gen.emit_config(error);
     if (config.empty()) return false;
 
     const fs::path out = options.output_dir;

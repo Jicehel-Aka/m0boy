@@ -1,16 +1,17 @@
-; ESPboy: application <= 256 KiB, separate ROM image in the remaining 1 MiB flash.
+; ESPboy (ESP-12F, 4 MiB): application <= 640 KiB, ROM image at 0xA0000, saves at 0x3C0000.
 [env:espboy]
 platform = espressif8266@4.2.1
 platform_packages = platformio/framework-arduinoespressif8266@3.30102.0
-board = esp01_1m
+board = esp12e
 framework = arduino
 board_build.f_cpu = 160000000L
-board_build.flash_mode = dout
+board_build.f_flash = 80000000L
+board_build.flash_mode = qio
 board_build.ldscript = espboy.ld
-board_upload.flash_size = 1MB
-board_upload.maximum_size = 262144
-build_src_filter = +<*> -<*.S> -<meta_sd.c> -<meta_fat.c> -<meta_save.cpp> -<meta_stream.cpp>
+board_upload.flash_size = 4MB
+build_src_filter = +<*> -<*.S> -<meta_sd.c> -<meta_fat.c> -<meta_save.cpp> -<meta_state.cpp> -<meta_stream.cpp>
 extra_scripts = pre:espboy_build.py
     post:espboy_size.py
 build_flags = -Os -Wno-unused-label
+    -DCONT_STACKSIZE=6144
     -DPIO_FRAMEWORK_ARDUINO_LWIP2_LOW_MEMORY_LOW_FLASH

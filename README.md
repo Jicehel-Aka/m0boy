@@ -297,19 +297,24 @@ pio run -d out/espboy/game -t upload
 TARGET=espboy ./compile.sh roms/gb
 ```
 
-ESP8266, 128×128 LCD, no SD, 1 MiB total flash. The application binary is
-limited to 256 KiB; a separate `rom.bin` is uploaded at `0x40000`, with
-748 KiB available before the reserved flash tail. ROMs remain raw when they
-fit; otherwise only enough 512-byte sectors are LZSS compressed to fit,
-using the existing runtime cache and decoder. Oversized incompressible
-cartridges are rejected. Batch archives include both images and their flash
-offsets; they are flashed over serial, not copied onto an SD card.
+ESP8266 (ESP-12F, 4 MiB flash), 128×128 LCD, no SD. The firmware (Arduino
+core start-up, as the earlier ESPboy emulator) is limited to 640 KiB; a separate
+`rom.bin` is uploaded at `0xA0000` (3 MiB area). A ROM that fits the part of
+that area the CPU can map (384 KiB) is read in place; a larger one is stored
+raw too and read sector by sector with `spi_flash_read` through the runtime
+cache, and only when it exceeds 3 MiB are enough 512-byte sectors LZSS
+compressed to fit (largest savings first). Cartridges that stay too big are
+rejected. Battery RAM (two alternating copies) and save states (as many slots
+as fit) live in the flash from `0x3C0000`. Batch archives include both images
+and their flash offsets; they are flashed over serial, not copied onto an SD
+card.
 
 The Game Boy runtime, generated C, menu, palettes and display pipeline are
-shared. Startup and peripheral adapters are ESP8266 specific. Sega source
-systems are not yet supported on ESPboy; battery RAM is volatile and save
-states are unavailable. This port has host tests and an Xtensa build, but
-has not been validated on ESPboy hardware. See the generated README.
+shared. Display, buttons, sound and start-up follow the earlier ESPboy
+emulator that ran on the console. Sega source systems are not yet supported
+on ESPboy. This port has host tests (a mock flash included) and an Xtensa
+build, but the current version has not been validated on ESPboy hardware. See
+the generated README.
 
 ## Limitations
 
