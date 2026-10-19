@@ -127,12 +127,29 @@ supposent et le modèle de gm0 avec le sien :
   bits (18 au reset), panneau blanc éteint, BGR appliqué au balayage, CS du
   MCP23017 ; interruption de FRC1 conditionnée au bit de DPORT ; lecture du port
   A sans tirage = 0.
-- **À trancher** : les boutons. Bits 4 et 5 : la référence nomme le bit 4 « ACT
-  (A) » et le bit 5 « ESC (B) ». Le firmware m0boy suit l'ancien émulateur qui
-  tournait sur la console : A = bit 5, B = bit 4 (avec un échange par touche).
-  Intervertir deux lignes de `espboy_hw.cpp` suffit si c'est l'autre sens.
+- **Voulu, pas un écart** : les boutons. Les bits 4 (ACT) et 5 (ESC) donnent B et
+  A du Game Boy, croisés exprès comme dans l'ancien émulateur : plus commode à
+  jouer. La référence, elle, nomme le bit 4 « A ».
 - **Non couvert ici** : le cache d'instructions (la référence ne le mesure pas),
   la durée réelle des écritures et effacements de flash, le LED WS2812 sur GPIO2.
+
+## Fiche technique du ST7735S (V1.1, Sitronix, 2011-11-21)
+
+Relue pour le modèle d'écran de gm0 (sections 9.10, 9.11.2, 10.1.2, 10.1.20,
+10.1.21, 10.1.29, 10.1.33) et recoupée avec le code de TFT_eSPI utilisé par
+l'ancien émulateur :
+
+- CASET / RASET : la fiche dit que seuls XS[7:0], XE[7:0], YS[7:0], YE[7:0] sont
+  lus au RAMWR : l'octet bas seul est donc dans la fiche, pas seulement une
+  mesure sur le panneau.
+- MADCTL : MY, MX, MV conformes à la table 9.11.2 (mémoire 132×132 : colonne ou
+  ligne ↦ 131 − compteur) ; le bit 3 est « 0 = panneau à filtres RVB, 1 = panneau
+  à filtres BVR » : l'ESPboy est un panneau BVR (TFT_BGR, MADCTL 0xC8).
+- SWRESET : MADCTL et COLMOD ne changent pas (fiche : « S/W Reset – No Change ») ;
+  COLMOD est à 18 bits à la mise sous tension ; l'écran est éteint (blanc) jusqu'à
+  DISPON.
+- TFT_eSPI, ST7735_GREENTAB3, rotation 0 : MADCTL = MX | MY | BGR, colonne de
+  départ 2, ligne de départ 3 : exactement ce qu'envoie notre pilote.
 
 ## À vérifier sur la console
 
