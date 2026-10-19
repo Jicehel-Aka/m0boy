@@ -33,6 +33,22 @@ def host_runs(output, common):
     return run(exe, *common), run(exe, *common, '--interp')
 
 
+def gm0_run(output, frames=240):
+    """Optional (ESPBOY_GM0=/path/to/gm0): the firmware, Xtensa code and all,
+    must run in gm0's ESPboy machine without stopping (timing there is an
+    estimate)."""
+    gm0 = os.environ.get('ESPBOY_GM0')
+    if not gm0:
+        return
+    env = dict(os.environ, SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy', EMU_NOPACE='1')
+    cmd = [gm0, str(output / '.pio/build/espboy/firmware.bin'), '--frames', str(frames)]
+    if (output / 'rom.bin').exists():
+        cmd += ['--rom', str(output / 'rom.bin')]
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    assert result.returncode == 0 and 'ARRÊT' not in result.stderr, result.stderr[-800:]
+    print('  runs in gm0')
+
+
 def pio(output):
     tool = os.environ.get('ESPBOY_PIO')
     if tool:
@@ -40,6 +56,7 @@ def pio(output):
         size = (output / '.pio/build/espboy/firmware.bin').stat().st_size
         assert size <= 0x100000
         print('  Xtensa firmware:', size, 'bytes')
+        gm0_run(output)
 
 
 def small(args, root, system, data, common, host):

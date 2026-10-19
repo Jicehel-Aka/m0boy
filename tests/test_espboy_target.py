@@ -12,6 +12,26 @@ import tempfile
 from test_meta_target_e2e import make_rom, build_host, run, parse
 
 
+def gm0_check(project, rom, frames=240):
+    """Optional (ESPBOY_GM0=/path/to/gm0): the real firmware, Xtensa code and
+    all, in gm0's ESPboy machine: it must neither stop nor leave the screen
+    blank.  Timing in gm0 is estimated, nothing here measures the chip."""
+    gm0 = os.environ.get('ESPBOY_GM0')
+    if not gm0:
+        return
+    shot = project / 'gm0.ppm'
+    env = dict(os.environ, SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy', EMU_NOPACE='1')
+    firmware = project / '.pio/build/espboy/firmware.bin'
+    cmd = [gm0, str(firmware), '--frames', str(frames), '--shot', str(shot)]
+    if rom:
+        cmd += ['--rom', str(rom)]
+    result = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    assert result.returncode == 0 and 'ARRÊT' not in result.stderr, result.stderr[-800:]
+    pixels = shot.read_bytes().split(b'\n255\n', 1)[1]
+    assert len(set(pixels[i:i + 3] for i in range(0, len(pixels), 3))) > 1, 'gm0: blank screen'
+    print('ESPboy in gm0: runs, the screen is drawn')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--gbrecomp', required=True)
@@ -65,8 +85,23 @@ def main():
             binary = project / '.pio/build/espboy/firmware.bin'
             assert binary.stat().st_size <= 0x100000
             print('ESPboy Xtensa firmware:', binary.stat().st_size, 'bytes')
+            gm0_check(project, None)
         else:
             print('SKIP Xtensa firmware: set ESPBOY_PIO with an installed ESP8266 SDK')
+        # A cartridge without battery RAM (nothing to save, states still offered).
+        plain = bytearray(rom.read_bytes())
+        plain[0x147] = 0x00
+        plain[0x149] = 0
+        plain[0x14d] = (-sum(plain[0x134:0x14d]) - 25) & 255
+        rom.write_bytes(plain)
+        plain_project = root / 'plain'
+        run([args.gbrecomp, str(rom), '--target', 'espboy', '--output-prefix', 'e2e', '--meta-static',
+             '--meta-precise', '-o', str(plain_project)])
+        assert 'GBL_BATTERY' not in (plain_project / 'src/gbl_config.h').read_text()
+        if pio:
+            run([pio, 'run', '-d', str(plain_project)])
+            gm0_check(plain_project, None)
+        rom.write_bytes(make_rom(1989))
         # The flash map in the runtime header and in the converter agree.
         header = (Path(__file__).resolve().parents[1] / 'targets/meta/runtime/gbl_espboy.h').read_text()
         emitter = (Path(__file__).resolve().parents[1] / 'recompiler/src/codegen/meta_emitter.cpp').read_text()
@@ -153,6 +188,7 @@ int main(int argc, char **argv) {
         if pio:
             run([pio, 'run', '-d', str(project)])
             assert (project / '.pio/build/espboy/firmware.bin').stat().st_size <= 0x100000
+            gm0_check(project, project / 'rom.bin', 480)
         import random
         noise = bytearray(random.Random(8086).randbytes(len(large)))
         noise[:512] = large[:512]

@@ -43,7 +43,7 @@ static int flash_erase(uint32_t block_off) { return ESP.flashEraseSector(block_o
 static int flash_program(uint32_t off, const void *src, uint32_t n) {
     return ESP.flashWrite(off, (const uint32_t *)src, n) ? 1 : 0;
 }
-static int program_sector(uint32_t off, const uint8_t *src) {
+__attribute__((unused)) static int program_sector(uint32_t off, const uint8_t *src) {
     memcpy(sbuf, src, 512);
     return flash_program(off, sbuf, 512);
 }
@@ -96,7 +96,7 @@ static int copy_valid(unsigned c, uint32_t *seq) {
 }
 
 /* The copy to read, if any: bytes of battery RAM of the game `game`. */
-static int ram_open(uint32_t bytes, uint32_t game) {
+__attribute__((unused)) static int ram_open(uint32_t bytes, uint32_t game) {
     ram_bytes = bytes;
     ram_game = game;
     state_off = ESPBOY_SAVE_OFF + 2 * COPY_BLOCKS(bytes) * ESPBOY_BLOCK;
@@ -109,7 +109,7 @@ static int ram_open(uint32_t bytes, uint32_t game) {
     return current >= 0;
 }
 
-static int ram_read(uint32_t sector, uint8_t *dst) {
+__attribute__((unused)) static int ram_read(uint32_t sector, uint8_t *dst) {
     if (current < 0 || sector * 512u >= ram_bytes) return 0;
     uint32_t n = ram_bytes - sector * 512u < 512 ? ram_bytes - sector * 512u : 512;
     if (!flash_read(copy_off((unsigned)current) + sector * 512u, sbuf, (n + 3u) & ~3u)) {
@@ -120,7 +120,7 @@ static int ram_read(uint32_t sector, uint8_t *dst) {
     return 1;
 }
 
-static int ram_write(const uint8_t *eram, uint32_t bytes) {
+__attribute__((unused)) static int ram_write(const uint8_t *eram, uint32_t bytes) {
     if (bytes != ram_bytes) return 0;
     unsigned target = current == 0 ? 1 : 0; /* the copy not in use */
     uint32_t base = copy_off(target), sum = fnv(2166136261u, eram, bytes);
@@ -186,7 +186,11 @@ extern "C" int gbl_platform_save_read(uint32_t, uint8_t *) { return 0; }
 extern "C" int gbl_platform_save_write(uint32_t, const uint8_t *) { return 0; }
 void meta_save_tick(void) {}
 #endif
-#define STATE_OFF (GBL_ERAM_SIZE > 0 && GBL_BATTERY ? state_off : (uint32_t)ESPBOY_SAVE_OFF)
+#if GBL_ERAM_SIZE > 0 && GBL_BATTERY
+#define STATE_OFF state_off
+#else
+#define STATE_OFF ((uint32_t)ESPBOY_SAVE_OFF)
+#endif
 
 /* ---- save states ----------------------------------------------------------- */
 #if defined(GBL_STATE_SLOTS)

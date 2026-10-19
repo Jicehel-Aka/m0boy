@@ -74,7 +74,11 @@ ctest --test-dir build --output-on-failure
   when a change alters what that console's firmwares do.
 
 To try firmwares without a console, use [gm0](https://github.com/r043v/gm0),
-the META/Pokitto emulator kept in its own repository.
+the META/Pokitto/ESPboy emulator kept in its own repository. For the ESPboy it
+executes the firmware's own Xtensa code and emulates the chip's ROM and the
+Espressif SDK by function: time there is an estimate. `ESPBOY_GM0=/path/to/gm0`
+makes `tests/test_espboy_target.py` and `tests/test_sega_espboy.py` run each
+built firmware in it (`ESPBOY_PIO` for the build).
 
 ## Hygiene
 

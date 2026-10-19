@@ -81,6 +81,29 @@ ROM est lue par des chargements alignés (`m0_load_u8`, z80.h).
   81,9 Kio (tas libre de 9 à 20 Kio), firmware de 422 à 888 Ko sur 1 Mio,
   38 à 42 octets de flash par instruction compilée (estimations de build).
 
+## Essais dans gm0
+
+Le firmware ESPboy (le vrai binaire Xtensa, `firmware.bin` + `firmware.sym` +
+`rom.bin`) tourne dans [gm0](https://github.com/r043v/gm0), qui exécute le code
+du firmware et émule par fonction la ROM de la puce et le SDK Espressif
+(`firmware.sym`, produit par le build, donne les noms). Ce n'est pas la puce :
+le temps y est une estimation, le démarrage du SDK n'est pas exécuté, et
+l'écran est un modèle ST7735.
+
+- Les 9 jeux convertis (Super Mario Land et 2, Bubble Bobble, Pengo, Asterix,
+  Action Fighter, Aladdin, Bank Panic, Bomb Jack) démarrent depuis leur zip,
+  affichent la bonne image avec les bonnes couleurs et ne s'arrêtent pas sur
+  900 images ; les ROM de plus de 256 Kio sont lues de `rom.bin` par
+  `spi_flash_read` ; les sauvegardes (flash `0x3C0000`) passent par l'émulation.
+- Super Mario Land tourne à 59,0 images/s d'après `gbl_frame` et l'horloge
+  estimée (le frontal attend l'échéance de l'image : cela dit que la machine
+  estimée n'est pas en retard, pas combien de marge il lui reste).
+- Un défaut a été trouvé ainsi : le firmware d'une cartouche sans RAM de
+  sauvegarde ne compilait plus après l'ajout de la RAM Sega (`GBL_BATTERY`
+  absent) ; `tests/test_espboy_target.py` a maintenant ce cas.
+- `ESPBOY_GM0=/chemin/gm0` fait passer chaque firmware construit par gm0 dans
+  les deux tests ESPboy.
+
 ## À vérifier sur la console
 
 Écran (couleurs, décalage 2/3, orientation), boutons, son, saves et états,

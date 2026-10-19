@@ -773,6 +773,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   elif [ "$TARGET" = espboy ]; then
     firmware="$out_dir/.pio/build/$PIO_ENV/firmware.bin"
     cp "$firmware" "$game_dir/firmware.bin" || return 1
+    cp "${firmware%.bin}.sym" "$game_dir/firmware.sym" || return 1 # symboles pour gm0
     cp "$out_dir/README.md" "$game_dir/README.md" || return 1
     if [ -f "$out_dir/rom.bin" ]; then # ROM above 256 KiB: pages 1 and up, read from the flash
       cp "$out_dir/rom.bin" "$game_dir/rom.bin" || return 1
@@ -1120,6 +1121,7 @@ PY
     # premier .bin du dossier, le firmware retrouve son dossier par lui.
     if [ "$TARGET" = espboy ]; then
       cp "$out_dir/.pio/build/$PIO_ENV/firmware.bin" "$game_dir/firmware.bin" || return 1
+      cp "$out_dir/.pio/build/$PIO_ENV/firmware.sym" "$game_dir/firmware.sym" || return 1 # symboles pour gm0
       cp "$out_dir/README.md" "$game_dir/README.md" || return 1
       if [ -f "$out_dir/rom.bin" ]; then
         cp "$out_dir/rom.bin" "$game_dir/rom.bin" || return 1
