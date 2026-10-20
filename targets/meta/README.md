@@ -359,14 +359,30 @@ touches the FAT.
   the boot error colours are shared too: blue no card, red ROM file
   missing, orange fragmented, magenta another game's ROM, yellow save file
   missing (the Game Gear used other colours before 0.10.26).
-- Audio goes out by the TC4 interrupt by default (`META_AUDIO_DMA` 0): its
-  ring (`META_AUDIO_IRQ_RING`, 1024 one-byte samples) takes about 540
-  bytes less than the DMA ring, which the cache gets (one more ROM sector,
-  or 512 bytes more in the shared pool). Device, 2026-10-19, fast mode,
-  frames 600-4800 of Pokémon Yellow's intro, two runs each, identical:
-  DMA 202.0 frames/s, interrupt 200.9 (0.5%); Super Mario Land 180.7 /
-  180.9. With `META_AUDIO_DMA=1` the DMA ring holds `META_AUDIO_RING`
-  samples (768).
+- Audio goes out by the TC4 interrupt by default (`META_AUDIO_DMA` 0), and
+  since 0.10.28 the choice is a run-time one: `meta_audio_mode()` (the menus'
+  Audio line) switches between the interrupt and a DMAC beat while playing,
+  from one shared ring (`META_AUDIO_RING` samples of 2 bytes, 512, about
+  1.4 frames, lowered so the card cache grows — the streaming Game Gear
+  builds keep about 2 KiB of RAM free with it; the deepest stack measured
+  there, device 2026-10-20, is 1656 bytes).  Until 0.10.28 the paths had two
+  rings chosen at build time (the interrupt's `META_AUDIO_IRQ_RING`, 1024
+  one-byte samples, 512 on the Game Gear; the DMA's `META_AUDIO_RING`, 768
+  samples of 2 bytes).  Device,
+  2026-10-19, fast mode, frames 600-4800 of Pokémon Yellow's intro, two runs
+  each, identical: DMA 202.0 frames/s, interrupt 200.9 (0.5%); Super Mario
+  Land 180.7 / 180.9.
+- The option menu is on every core since 0.10.28 (it was the Game Boy's
+  alone): HOME held half a second (Pokitto: C, whose tap keeps the game's
+  key; ESPboy: HOME) opens it on the Game Gear, Master System, SG-1000 and
+  PICO-8 cores too, with lines of their own (Reprendre, Redemarrer, Volume,
+  Audio, Vitesse, Processeur, SPI ecran, Quitter; the Game Boy keeps its
+  states, screen modes and palettes).  The shared part is
+  `targets/common/platform/sg_menu.h`; the menu draws through each
+  frontend's line buffers (`meta_menu_scratch`, meta_menu.h).  The
+  streaming Game Gear builds run it on the card cache's blocks, lent out
+  (`gg_cache_lend`, the save written back first); its Redemarrer is a power
+  cycle: the cartridge RAM is flushed to the card, then cleared.
 - The first-level folders of the card are searched 32 at a time: before
   0.10.26 only the first 32 were, and a game in a later folder found
   neither its own folder nor its ROM (red screen).
@@ -791,13 +807,13 @@ run (same picture in Link's Awakening).
 | `META_LCD_BGR` | 0 | BGR order in the ST7735's MADCTL; 0 on the META tested (with 1, red and blue were swapped) |
 | `GBL_ERAM_CACHE_SECTORS` (window) | — | With the cartridge RAM on the card, `gbl_rd`/`gbl_wr` (C and assembly) read the newest cached sector directly, and write it once it is dirty, without `gbl_rd_slow` and `eram_sector`. Estimator on Super Mario Land 2 (2,400 frames into level 1, same pixel and state hashes): 593k → 497k cycles a frame, frames over the 60 Hz budget 455 → 27. Host, four sessions (539,000 frames): cartridge RAM writes / reads with 8 sectors 12,899 / 34,330, 9: 7,833 / 27,725, 10: 3,066 / 4,820, 12: 2,450 / 2,882 |
 | `GBL_ERAM_CACHE_SECTORS` | 8 with the ROM and the cartridge RAM on the card (the ROM cache then gets 2), else 2 | Write-back cache of cartridge RAM kept in the save file (`GBL_ERAM_ON_SD`): Super Mario Land 2 uses its RAM as work RAM (about seven sectors); 2 sectors gave 157 card writes a second, 8 reduced them to about 4/s in the measured run. Exact LRU with no timestamp wrap; deferred flush occurs 120 frames after the last change |
-| `META_USB` | 1 | USB serial port (`meta_usb.c`; about 600 bytes of RAM and 2.6 KiB of flash on Super Mario Land): the 1200-baud touch of upload tools (`pio run -t upload`, bossac, `tools/meta-usb.py flash`) resets into sam-ba without touching the console (the META's bootloader starts sam-ba when 0x20007FFC holds 0x3aecfd88 after a software reset; read from its code). For debugging, `tools/meta-usb.py`: `read`/`write` memory by ELF symbol while the game runs (sam-ba's `R`, `W`, `O`), `prof` (SysTick samples the interrupted PC into a ring of 32, the host drains it: about 1000 samples a second, under 1% of the CPU), `press` (buttons ORed into `meta_pad_read`, for scripted tests), `fault` (below). 0 removes all of it |
+| `META_USB` | 1 | USB serial port (`meta_usb.c`; about 600 bytes of RAM and 2.6 KiB of flash on Super Mario Land): the 1200-baud touch of upload tools (`pio run -t upload`, bossac, `tools/meta-usb.py flash`) resets into sam-ba without touching the console (the META's bootloader starts sam-ba when 0x20007FFC holds 0x3aecfd88 after a software reset; read from its code). For debugging, `tools/meta-usb.py`: `read`/`write` memory by ELF symbol while the game runs (sam-ba's `R`, `W`, `O`), `prof` (SysTick samples the interrupted PC into a ring of 32, the host drains it: about 1000 samples a second, under 1% of the CPU), `press` (buttons ORed into `meta_pad_read`, for scripted tests), `fault` (below). 0 removes all of it: `compile.sh RELEASE=1` builds the streaming Game Gear/Master System firmwares that way (420 bytes back to the card cache, whose growth guard then rises to 2400 free bytes: four sectors, 16 blocks of 128, about 620 bytes of margin over the deepest measured stack — watermark 1640, demo and menu, on the device). Reflashing a USB-less firmware needs the bootloader without the touch (double reset) |
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND and DARK display modes (1 KiB table, a spare line); TBLEND then blends two pixels per lookup |
 | `META_TBLEND` | 2 with a ROM cache or cartridge RAM on SD, otherwise 1 | TBLEND, the default mode, same picture in 1 and 2. 1 keeps the 15 held lines (600 bytes) so each is rendered only when it changes; 2 keeps one, in SMOOTH's buffers, and renders the 15 held lines on every drawn frame (frames that did not change at all are still skipped): 640 bytes less on Super Mario Land 2 (2,576 → 3,216 bytes free above `.bss`), CPU cost not measured on the device. Without `META_MERGE_MODES`, a 16-colour table (one lookup per pixel) instead of the 1 KiB one. 0 leaves TBLEND out (TILE instead), 64 bytes less than 2 |
 | `META_STACK_RESERVE` | 640 (Pokitto 768) | C stack kept below `gbl_stack_limit`, for what generated code calls there unguarded. Static worst case on the META (frames and call graph of the SML2 firmware): a slow-path read that renders a line, about 390 bytes with the region's frame, plus the USB and DMA interrupts nested, about 220. In streamed builds the option menu (about 590 bytes) runs on the ROM cache's buffers, emptied afterwards: in Super Mario Land 2 every VBlank comes deep in the game's calls. The menu shows the stack never used since boot ("pile", bytes above `.bss`) |
 | `META_LCD_12BPP` | 0 | ST7735 in RGB444 (COLMOD 03h): `META_COLOR` gives 0x0RGB, each row is packed in Thumb-1 as it goes out (`meta_lcd_pack_asm.S`), 240 bytes per row instead of 320. meta-emu-sdl estimate on Super Mario Land: display waits 8.5% → 1.3% of the CPU, audio restarts 7 → 1 per minute |
-| `META_AUDIO_DMA` | 0 | 1: audio samples go to the DAC by DMA (TC4-triggered DMAC channel 0, one descriptor per block, the next started by the channel's transfer-complete interrupt) instead of the 22 kHz TC4 interrupt (0.5% of the CPU measured on Pokémon Yellow, the README's earlier 3% was an estimate). No linked descriptors: SAM D21 erratum 1.7.2 (silicon A to F; the META tested is D) — while a channel with linked descriptors runs, enabling another may fetch a wrong descriptor. With the audio chain linked and the display enabled at every Game Gear line, the DMAC wrote audio descriptors over unrelated RAM (HardFaults in Ristar, 4 in 3 minutes); with the channel numbers swapped the display's DMA also stopped mid-strip until the watchdog. The DMA ring takes about 540 bytes more |
-| `META_AUDIO_IRQ_RING` | 1024 (Game Gear 512) | Samples of the interrupt's ring, one byte each, a power of two |
+| `META_AUDIO_DMA` | 0 | Boot value of the run-time output path (`meta_audio_mode()`, the menus' Audio line: Interruption or DMA, switchable while playing; compile.sh `AUDIO_DMA=1` sets the boot value): 1 the samples go to the DAC by DMA (TC4-triggered DMAC channel 0, one descriptor per block, the next started by the channel's transfer-complete interrupt) instead of the 22 kHz TC4 interrupt (0.5% of the CPU measured on Pokémon Yellow, the README's earlier 3% was an estimate). No linked descriptors: SAM D21 erratum 1.7.2 (silicon A to F; the META tested is D) — while a channel with linked descriptors runs, enabling another may fetch a wrong descriptor. With the audio chain linked and the display enabled at every Game Gear line, the DMAC wrote audio descriptors over unrelated RAM (HardFaults in Ristar, 4 in 3 minutes); with the channel numbers swapped the display's DMA also stopped mid-strip until the watchdog |
+| `META_AUDIO_RING` | 512 | Samples of the audio ring, 2 bytes each (a DAC value: the DMA reads it directly), at least 512 (one emulated frame). Until 0.10.28 the two paths had rings of their own, chosen at build time: the interrupt's `META_AUDIO_IRQ_RING` (1024 one-byte samples, 512 on the Game Gear) and the DMA's (768 samples of 2 bytes) |
 | `META_LCD_RUNS` | 1 | The display window reaches the last row: strips that follow the previous one go on as data of the same RAMWR, and the window is set again only for a strip that does not follow and after the bus was released (each frame's end, a card or pad access). Ristar (Game Gear, one window per line before), device, 2400 frames unpaced: 55.69 s → 53.15 s (-4.6%), frames over 25 ms 355 → 157. 0: a window per strip |
 | `META_LCD_SPI_MHZ` | 48 | Display SPI clock at boot: 12, 24, 36 or 48 (menu "SPI ecran"). 48 is the maximum the clock tree gives (shown fine on a META), 35 with the CPU at 70 MHz, the default (the menu's "36", reduced by `meta_clock.cpp`), 24 when the PLL does not lock. A panel that does not take it: rebuild with `-DMETA_LCD_SPI_MHZ=24` (or 36) in build_flags. A full frame 40,960 bytes: 13.7 ms at 24, 9.1 at 36, 6.8 at 48. The Arduino core capped every rate at 12 MHz, so firmwares built before 2026-10-03 sent the picture at 12. |
 | `META_LCD_DMA` | 1 | Strips are sent by DMA through a queue: the DMA-complete interrupt programs the next window and starts the next strip, so rendering waits only when every buffer is in flight. At VBlank, if the bus is still busy, the button read is postponed by one frame (never two in a row). 0 writes pixels from the CPU. |

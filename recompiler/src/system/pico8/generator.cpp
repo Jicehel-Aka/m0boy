@@ -96,9 +96,14 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
         if (o.target == TargetId::meta || esp) {
             copy_template(tpl / "platform" / "p8_main.cpp", src / "p8_main.cpp");
             copy_template(common_dir / "platform" / "sg_frontend.h", src / "sg_frontend.h");
+            copy_template(common_dir / "platform" / "sg_menu.h", src / "sg_menu.h");
             const auto platform = o.meta_templates / "platform" / (esp ? "espboy" : "meta");
             for (const char* name : { "meta_target.h", "meta_lcd.h", "meta_clock.h" })
                 copy_template(o.meta_templates / "platform" / "src" / name, src / name);
+            /* the option menu (sg_menu.h runs it; meta_menu.cpp draws it) */
+            copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");
+            copy_template(o.meta_templates / "platform" / "src" / "meta_font.h", src / "meta_font.h");
+            copy_template(o.meta_templates / "platform" / "src" / "meta_menu.cpp", src / "meta_menu.cpp");
             copy_template(o.meta_templates / "runtime" / "gbl_board.h", src / "gbl_board.h");
             /* the audio driver counts frames of 1/30 s */
             auto audio_header = read(o.meta_templates / "platform/src/meta_audio.h");
@@ -115,7 +120,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             write(src / "gbl_profile.h", "#pragma once\n#include \"gbl_board.h\"\n#ifndef META_OVERCLOCK\n#define META_OVERCLOCK 1\n#endif\n"
                                          "#define POKITTO_LCD_ASM 0\n#define POKITTO_RAM_BANKS 0\n#define POKITTO_AUDIO_ASM 0\n"
                                          "#ifndef META_AUDIO_DMA\n#define META_AUDIO_DMA 0\n#endif\n"
-                                         "#ifndef META_AUDIO_RING\n#define META_AUDIO_RING 768u\n#endif\n");
+                                         "#ifndef META_AUDIO_RING\n#define META_AUDIO_RING 512u\n#endif\n");
             if (esp) {
                 /* Arduino core start-up; the hardware adapter is the Sega frontends' (it finds
                  * its audio in sg_audio.h) with the picture's 128 columns taken as they are */
@@ -129,7 +134,6 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 hw = replace(hw, frame, "uint8_t samples[400]; /* a 30 Hz frame at 11025 Hz */");
                 write(src / "espboy_hw.cpp", hw);
                 copy_template(o.meta_templates / "runtime" / "gbl_espboy.h", src / "gbl_espboy.h");
-                copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");
                 for (const char* name : { "platformio.ini", "espboy.ld", "espboy_build.py", "espboy_size.py" })
                     write(o.output / name, replace(read(platform / (std::string(name) + ".in")), "@NAME@", o.name));
             } else {

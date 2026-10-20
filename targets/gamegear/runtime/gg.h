@@ -209,6 +209,11 @@ uint8_t gg_stream_read(uint32_t offset);
 int gg_platform_rom_read(uint32_t sector, uint8_t *dst);
 uint8_t *gg_stream_scratch(void);    /* 512 bytes free before gg_init */
 extern uint32_t gg_stream_misses;
+/* The card cache's blocks lent to the option menu (sg_menu.h): the save is
+ * written back first, lend returns the lent bytes' top, 8-aligned; until
+ * gg_cache_unlend the cache holds nothing.  Streaming and card-RAM builds. */
+uintptr_t gg_cache_lend(void);
+void gg_cache_unlend(void);
 static inline uint8_t gg_slot_read(uint16_t a) {
     const uint8_t *p = machine.slot[a >> 14];
     if (__builtin_expect(p != 0, 1)) return m0_load_u8(p + (a & 0x3fff));

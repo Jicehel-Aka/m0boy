@@ -13,6 +13,12 @@ void meta_audio_frame(void);  /* once per emulated frame */
 void meta_audio_idle(void);   /* called while waiting for frame pacing */
 void meta_audio_set_volume(uint8_t v); /* 0..8, 4 = default */
 uint8_t meta_audio_volume(void);
+/* Output path, switchable while playing (the option menu's Audio line):
+ * 0 the TC4 interrupt writes each ring entry to the DAC, 1 a DMAC beat
+ * copies it (META_AUDIO_DMA is the boot default).  Implemented on the META
+ * only (the Pokitto and ESPboy have their own drivers). */
+void meta_audio_mode(unsigned dma);
+unsigned meta_audio_mode_get(void);
 void meta_audio_stop(void);   /* timer and interrupt off (before the loader) */
 /* The option menu: the DAC to mid-scale and the sample source off, so the
  * game's sound actually stops while the menu is open (meta_audio_stop's

@@ -14,7 +14,7 @@ struct GenerateOptions {
     TargetId target;
     std::vector<std::filesystem::path> coverage;
     bool precise = false;          ///< sync before every instruction (differential tests)
-    unsigned sync_cycles = 40;     ///< EmitOptions::sync_cycles
+    unsigned sync_cycles = 0;      ///< EmitOptions::sync_cycles (40: bounded interrupt latency)
     bool gamegear = false;         ///< Game Gear cartridge (Sega mapper, VDP mode 4)
     bool mastersystem = false;     ///< with gamegear: a Master System cartridge
     std::string compiler = "gcc";  ///< firmware compiler: gcc or clang

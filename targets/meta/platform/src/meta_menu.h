@@ -1,10 +1,15 @@
 /* Option menu of the Gamebuino META frontend, after the menus of fgb (the
  * GP32 port of gnuboy): a list of lines, each either a choice among values
- * (left/right) or an action (A). */
+ * (left/right) or an action (A).  C names: the menu is drawn by C display
+ * drivers too (meta_display.c, pokitto_display.c). */
 #ifndef META_MENU_H
 #define META_MENU_H
 
 #include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 enum { META_MENU_CHOICE, META_MENU_ACTION };
 
@@ -25,8 +30,19 @@ enum {
 /* Runs the menu until B or HOME closes it (returns -1) or A picks an
  * action (returns its line).  Draws over the whole screen with the strip
  * buffers of the display pipeline: emulation must be stopped.  Up to
- * thirteen lines; info (may be NULL) is shown under them. */
+ * fourteen lines without the info line, thirteen with it; info (may be
+ * NULL) is shown under them. */
 int meta_menu_run(const char *title, const meta_menu_item *items, unsigned n,
                   uint8_t (*buttons)(void), const char *info);
+
+/* The buffer the menu draws through: rows of 160 pixels, *rows of them at
+ * least 1 (bands of 8 rows are sliced to it).  Each frontend lends its own:
+ * the display pipeline's strips (meta_display.c, pokitto_display.c) or the
+ * line buffers (the Sega and PICO-8 frontends). */
+uint16_t *meta_menu_scratch(unsigned *rows);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

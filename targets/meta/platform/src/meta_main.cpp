@@ -446,7 +446,7 @@ static void name_slots(void) {
     }
 }
 
-enum { M_RESUME, M_RESTART, M_SLOT, M_SAVE, M_LOAD, M_VOLUME, M_SCREEN, M_PALETTE, M_SKIP,
+enum { M_RESUME, M_RESTART, M_SLOT, M_SAVE, M_LOAD, M_VOLUME, M_AUDIO, M_SCREEN, M_PALETTE, M_SKIP,
        M_SPEED, M_CLOCK, M_LCD_SPI, M_QUIT };
 
 static void option_menu(void) {
@@ -454,10 +454,11 @@ static void option_menu(void) {
     uint8_t fast = fast_mode, mhz = meta_clock_mhz() == (META_TARGET_ESPBOY ? 160 : 72), vol = meta_audio_volume();
     uint8_t slot = state_slot;
 #if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
+    uint8_t dma = meta_audio_mode_get();
     uint8_t lcd_spi = (uint8_t)(meta_clock_lcd_spi() / 12u - 1u);
 #endif
-    meta_menu_item items[13];
-    uint8_t ids[13];
+    meta_menu_item items[14];
+    uint8_t ids[14];
     unsigned n = 0;
 #define ADD(id, label, type, value, count, names) \
     (ids[n] = (id), items[n++] = (meta_menu_item){label, type, value, count, names})
@@ -470,6 +471,10 @@ static void option_menu(void) {
         ADD(M_LOAD, "Charger l'etat", META_MENU_ACTION, 0, 0, 0);
     }
     ADD(M_VOLUME, "Volume", META_MENU_CHOICE, &vol, 9, volume_names);
+#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
+    static const char *const audio_names[2] = {"Interruption", "DMA"};
+    ADD(M_AUDIO, "Audio", META_MENU_CHOICE, &dma, 2, audio_names);
+#endif
     ADD(M_SCREEN, "Ecran", META_MENU_CHOICE, &mode, SCREEN_MODES, mode_names);
     ADD(M_PALETTE, "Palette", META_MENU_CHOICE, &pal, META_PALETTE_COUNT, meta_palette_names);
     ADD(M_SKIP, "Images", META_MENU_CHOICE, &skip, FSKIP_MODES, skip_names);
@@ -502,7 +507,9 @@ static void option_menu(void) {
     meta_lcd_fill(0); /* the menu covers the 160x144 area only */
 #endif
     meta_audio_pause(1); /* the game's sound stops while the menu is open */
-    int line = meta_menu_run(GBL_TITLE, items, n, meta_buttons, info);
+    /* the META's 16 bands take a title, fourteen lines and the hint: the
+     * info line only when the menu is shorter */
+    int line = meta_menu_run(GBL_TITLE, items, n, meta_buttons, n > 13 ? 0 : info);
     meta_audio_pause(0);
     int action = line >= 0 ? ids[line] : -1;
     if (action == M_QUIT) enter_loader();
@@ -510,6 +517,9 @@ static void option_menu(void) {
     fast_mode = fast;
     state_slot = slot;
     meta_audio_set_volume(vol);
+#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
+    meta_audio_mode(dma);
+#endif
     meta_lcd_end_frame(); /* no transfer while the clocks change */
     meta_clock_set(META_TARGET_ESPBOY ? (mhz ? 160 : 80) : (mhz ? 72 : 48));
 #if !META_TARGET_POKITTO && !META_TARGET_ESPBOY

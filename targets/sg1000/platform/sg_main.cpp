@@ -47,6 +47,87 @@ extern "C" { volatile unsigned sg_selftest_result; }
 #endif
 static const char version[] __attribute__((used)) = "m0boy-sg1000-" META_TARGET_NAME " " GBL_GEN_VERSION;
 
+static int draw_line(void *, unsigned y);
+static void row(void *, unsigned y, uint16_t *pixels);
+static void frame(void *);
+/* The console set up: the runtime inited and the callbacks in place (the
+ * option menu's Redemarrer runs it again). */
+static void sg_start(void) {
+#if SG_CART_RAM
+    sg1000_init(sg_rom, sg_rom_size, cart_ram);
+#if META_TARGET_ESPBOY
+    espboy_ram_load(cart_ram, SG_CART_RAM_SIZE);
+#endif
+#else
+    sg1000_init(sg_rom, sg_rom_size, 0);
+#endif
+    machine.lookup = sg_gen_lookup;
+    machine.draw_line = draw_line;
+    machine.row = row;
+#if META_TARGET_POKITTO
+    machine.row_out = line_buffer;
+#else
+    machine.row_out = line_buffers[0][0];
+#endif
+    machine.frame = frame;
+}
+/* ---- option menu (sg_menu.h): HOME held half a second, MENU stays Pause -- */
+extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
+#if META_TARGET_POKITTO
+    *rows = 1; /* the single line buffer: bands sliced to one row */
+    return line_buffer;
+#else
+    /* the batch buffers, contiguous: the menu's bands of 8 rows are sliced
+     * to what fits */
+    *rows = 2u * SG_BATCH;
+    return line_buffers[0][0];
+#endif
+}
+#if META_TARGET_POKITTO
+static unsigned pause_frames; /* a HOME tap (the Pokitto's C) becomes Pause */
+#define SG_MENU_TAP() do { pause_frames = 6; } while (0)
+#else
+#define SG_MENU_TAP() do { } while (0)
+#endif
+#define SG_MENU_RESTART() do { \
+        sg_start(); /* the cartridge RAM cleared: a power cycle */ \
+        deadline = meta_micros(); \
+        skipped_run = 0; \
+    } while (0)
+#if META_TARGET_ESPBOY
+#define SG_MENU_QUIT() do { espboy_restart(); } while (0)
+#elif META_TARGET_POKITTO
+#define SG_MENU_QUIT() do { \
+        meta_audio_stop(); \
+        pokitto_enter_loader(); /* the SG builds touch no SD card */ \
+        meta_audio_init(); \
+    } while (0)
+#else
+#if META_USB
+#define SG_MENU_USB_STOP() meta_usb_stop()
+#else
+#define SG_MENU_USB_STOP() do { } while (0)
+#endif
+/* Hand the console back to the Gamebuino loader in the state it expects
+ * (the Game Boy frontend's enter_loader). */
+#define SG_MENU_QUIT() do { \
+        meta_lcd_end_frame(); \
+        meta_clock_set_lcd_spi(24); /* the loader expects the core's clocks */ \
+        meta_clock_set(48); \
+        meta_audio_stop(); \
+        NVIC_DisableIRQ(DMAC_IRQn); \
+        meta_watchdog_stop(); \
+        SG_MENU_USB_STOP(); \
+        ((void (*)(void))(*((uint32_t *)0x3FF4)))(); \
+    } while (0)
+#endif
+#define SG_MENU_RESUME() do { \
+        deadline = meta_micros(); \
+        skip_video = 0; \
+        skipped_run = 0; \
+    } while (0)
+#include "sg_menu.h"
+
 static unsigned display_row(unsigned y) {
 #if META_TARGET_POKITTO
     return (y * 25) >> 5; /* 192 -> 150 */
@@ -93,7 +174,7 @@ static void frame(void *) {
 #if META_TARGET_POKITTO
     keys = ((raw & POKITTO_UP) ? 1 : 0) | ((raw & POKITTO_DOWN) ? 2 : 0) | ((raw & POKITTO_LEFT) ? 4 : 0) |
            ((raw & POKITTO_RIGHT) ? 8 : 0) | ((raw & POKITTO_A) ? 16 : 0) | ((raw & POKITTO_B) ? 32 : 0);
-    pause = raw & POKITTO_C;
+    if (pause_frames) { pause = 1; pause_frames--; }
 #else
     keys = ((raw & 8) ? 1 : 0) | ((raw & 1) ? 2 : 0) | ((raw & 2) ? 4 : 0) | ((raw & 4) ? 8 : 0) | (raw & 48);
     pause = raw & 64;
@@ -104,6 +185,9 @@ static void frame(void *) {
 #endif
     sg1000_buttons(0, keys);
     sg1000_pause(pause);
+    sg_menu_frame();
+    sg_menu_poll(raw);
+    sg_menu_tick();
     SG_PACE_FRAME(deadline, skip_video, skipped_run, SG_MAX_SKIP);
 }
 #if META_TARGET_ESPBOY
@@ -113,23 +197,7 @@ int main() {
 #endif
     SG_STACK_PAINT();
     SG_PLATFORM_INIT();
-#if SG_CART_RAM
-    sg1000_init(sg_rom, sg_rom_size, cart_ram);
-#if META_TARGET_ESPBOY
-    espboy_ram_load(cart_ram, SG_CART_RAM_SIZE);
-#endif
-#else
-    sg1000_init(sg_rom, sg_rom_size, 0);
-#endif
-    machine.lookup = sg_gen_lookup;
-    machine.draw_line = draw_line;
-    machine.row = row;
-#if META_TARGET_POKITTO
-    machine.row_out = line_buffer;
-#else
-    machine.row_out = line_buffers[0][0];
-#endif
-    machine.frame = frame;
+    sg_start();
     SG_STACK_GUARD();
 #ifdef SG_SELFTEST
     sg_selftest_result = sg1000_render_selftest() + 1; /* read back by a debugger or gm0 */

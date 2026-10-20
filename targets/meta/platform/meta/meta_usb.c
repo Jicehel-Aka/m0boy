@@ -47,7 +47,12 @@ static uint8_t configured, line_state;
 static uint8_t line_coding[7] = {0x00, 0xC2, 0x01, 0x00, 0, 0, 8}; /* 115200 8N1 */
 volatile uint8_t meta_usb_bootloader_request;
 volatile uint8_t meta_usb_buttons;
+/* The SysTick sampler's ring (meta_startup.c reads it through a weak
+ * pointer): only in a profiling build (-DMETA_USB_PROF=1, meta-usb.py
+ * prof), 132 bytes of RAM the games keep otherwise. */
+#ifdef META_USB_PROF
 volatile uint32_t meta_usb_prof[1 + META_USB_PROF_SAMPLES];
+#endif
 
 #ifdef META_USB_DEBUG
 /* Read through sam-ba after a double press on RESET. */

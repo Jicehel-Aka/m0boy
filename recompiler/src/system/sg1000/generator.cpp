@@ -157,7 +157,10 @@ Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sm
 
 /* Flash for generated code: the application area, less the runtime and
  * drivers (measured at about 24 KiB) and the ROM image. */
-constexpr size_t runtime_bytes = 24 * 1024;
+constexpr size_t runtime_bytes = 30 * 1024; /* drivers, runtime and, since 0.10.28, the option
+                                            * menu (meta_menu.cpp, meta_font.h, sg_menu.h: about 6 KiB — left
+                                            * unbudgeted it pushed the hot instructions to the interpreter:
+                                            * Ristar's first level at 16 fps on the device, 2026-10-20) */
 constexpr size_t bytes_per_instruction = 32; /* measured 13-27 with GCC 7.2 -O2 */
 constexpr size_t gg_bytes_per_instruction = 36; /* Game Gear: paged reads, measured 28-33 */
 constexpr double gg_interpreted_cycles = 300;   /* an interpreted instruction costs about this much more than a compiled one (gm0 profiles) */
@@ -459,11 +462,13 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
          * the Master System shares with its pair tables. */
         if (gg && (streamed || cart_on_card) && o.target == TargetId::pokitto && !o.mastersystem)
             config << "#define GG_STREAM_SECTORS 4 /* the whole USB RAM bank */\n";
-        /* META: the RAM the DMA audio ring would take (audio by interrupt)
-         * goes to the card cache, in 128-byte blocks: 8 blocks and the
-         * sector buffer. */
         if (gg && streamed && esp)
             config << "#define GG_STREAM_SECTORS 6\n#define GG_CACHE_BLOCK 512\n";
+        /* META: 3 sectors in 128-byte blocks - 8 quarter-sector blocks
+         * cover up to 8 sectors at a time, which beats whole-sector blocks:
+         * the working set spans more sectors than it fills (device: whole
+         * 512-byte blocks froze Ristar, the quarters do not).  compile.sh
+         * grows GG_STREAM_SECTORS from the build's RAM report. */
         if (gg && (streamed || cart_on_card) && o.target == TargetId::meta)
             config << "#ifndef GG_STREAM_SECTORS\n#define GG_STREAM_SECTORS 3\n#endif\n#ifndef GG_CACHE_BLOCK\n#define GG_CACHE_BLOCK 128\n#endif\n";
         if (gg) {
@@ -573,7 +578,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const std::string generated_sources = "${SRC}/sg_gen.c ${SRC}/sg_rom.c";
         const std::string render_asm = gg ? "gg_render_asm.S" : "sg_render_asm.S";
         const std::string firmware_sources = core_sources + " " + generated_sources + " ${SRC}/" + main_cpp +
-                                              " ${SRC}/" + render_asm + (gg ? " ${SRC}/m0_rom_lzss.S" : "");
+                                              " ${SRC}/" + render_asm + (gg ? " ${SRC}/m0_rom_lzss.S" : "") +
+                                              " ${SRC}/meta_menu.cpp";
         std::string host_sources = host_c + " " + core_sources + " " + generated_sources;
         if (gg && (streamed || cart_on_card)) {
             /* A generated host project must exercise the same storage plan,
@@ -610,8 +616,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         if (o.target != TargetId::desktop) {
             copy_template(tpl / "platform" / main_cpp, src / main_cpp);
             /* frontend pieces both consoles share (setup, pad, pacing, stack
-             * guard) */
+             * guard, option menu) */
             copy_template(common_dir / "platform" / "sg_frontend.h", src / "sg_frontend.h");
+            copy_template(common_dir / "platform" / "sg_menu.h", src / "sg_menu.h");
             /* files of an earlier generation that this one does not use */
             for (const char* name : { "gg_stream.c", "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h", "meta_sd_bus.cpp", "pokitto_sd.c" })
                 fs::remove(src / name);
@@ -625,6 +632,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             auto platform = o.meta_templates / "platform" / (esp ? "espboy" : o.target == TargetId::pokitto ? "pokitto" : "meta");
             for (const char* name : { "meta_target.h", "meta_lcd.h", "meta_clock.h" })
                 copy_template(o.meta_templates / "platform" / "src" / name, src / name);
+            /* the option menu (sg_menu.h runs it; meta_menu.cpp draws it) */
+            copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");
+            copy_template(o.meta_templates / "platform" / "src" / "meta_font.h", src / "meta_font.h");
+            copy_template(o.meta_templates / "platform" / "src" / "meta_menu.cpp", src / "meta_menu.cpp");
             /* The META's board settings (SPI rates, display pipeline): the
              * same file the Game Boy profile includes. */
             copy_template(o.meta_templates / "runtime" / "gbl_board.h", src / "gbl_board.h");
@@ -656,14 +667,14 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             const std::string overclock = o.target == TargetId::pokitto
                 ? "#ifndef META_OVERCLOCK\n#if defined(POKITTO_HC) && POKITTO_HC\n#define META_OVERCLOCK 1\n#else\n#define META_OVERCLOCK 0\n#endif\n#endif\n"
                 : "#ifndef META_OVERCLOCK\n#define META_OVERCLOCK 1\n#endif\n";
-            /* META: the TC4 interrupt by default, a ring of one-byte samples
-             * (the Game Gear's 512, about 1.4 frames, leaves its RAM to the
-             * card cache); META_AUDIO_DMA=1 (compile.sh AUDIO_DMA=1): the
-             * Game Boy's DMA audio, META_AUDIO_RING samples of 2 bytes.  The
-             * Pokitto has its own driver. */
+            /* META: one ring of META_AUDIO_RING samples of 2 bytes (512,
+             * about 1.4 frames, lowered so the card cache can grow) feeds both
+             * output paths, the TC4 interrupt by default and, at run time
+             * (the menus' Audio line) or at build (META_AUDIO_DMA=1,
+             * compile.sh AUDIO_DMA=1), a DMAC beat.  The Pokitto has its own
+             * driver. */
             const std::string audio_dma = o.target == TargetId::meta
-                ? std::string("#ifndef META_AUDIO_DMA\n#define META_AUDIO_DMA 0\n#endif\n#ifndef META_AUDIO_RING\n#define META_AUDIO_RING 768u\n#endif\n") +
-                      (gg ? "#ifndef META_AUDIO_IRQ_RING\n#define META_AUDIO_IRQ_RING 512u\n#endif\n" : "")
+                ? std::string("#ifndef META_AUDIO_DMA\n#define META_AUDIO_DMA 0\n#endif\n#ifndef META_AUDIO_RING\n#define META_AUDIO_RING 512u\n#endif\n")
                 : "#define META_AUDIO_DMA 0\n";
             write(src / "gbl_profile.h", "#pragma once\n#include \"gbl_board.h\"\n" + overclock +
                                          "#define POKITTO_LCD_ASM " + std::string(gg ? "1" : "0") + "\n#define POKITTO_RAM_BANKS " + std::string(gg ? "1" : "0") + "\n#define POKITTO_AUDIO_ASM " + std::string(gg ? "1" : "0") + "\n" + audio_dma);

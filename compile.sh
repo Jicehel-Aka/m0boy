@@ -14,7 +14,10 @@
 #   et EXPLORERS explorations (voir plus bas).
 #   Game Gear : même chaîne (projets out/gg/<cible>/<jeu>/), parties 9 fois plus longues (les jeux sont plus
 #   longs à atteindre) ; une grosse ROM laisse des pages sur la carte (<NOM>.GG copié à côté du .bin), avec
-#   les secteurs les plus lus gardés en flash ; la RAM de cartouche vit dans <NOM>.SAV.  Les parties
+#   les secteurs les plus lus gardés en flash ; la RAM de cartouche vit dans <NOM>.SAV.
+#   Le cache carte (META) part à 3 secteurs en blocs de 128 et grossit d un
+#   secteur tant que le rapport RAM du build laisse ~2000 octets à la pile.
+#   Les parties
 #   enregistrées par une version qui ne comptait pas les exécutions (sans « # frames ») ou sans exploration
 #   sont refaites.  Parties GG/SMS : bouton 1 maintenu, sans touche, SG_SEEDS parties aléatoires et
 #   EXPLORERS explorations.
@@ -133,8 +136,18 @@
 #                 l'exécution ; POKITTO_HC est l'ancien nom)
 #   SG_SYNC_CYCLES=N  (SG-1000/GG/SMS) le code natif regarde aussi les
 #                 interruptions dès que N cycles Z80 ont passé depuis la
-#                 dernière fois (défaut 40 ; 0 : en tête de boucle seulement,
-#                 comme avant la 0.10.26)
+#                 dernière fois (défaut 0 : en tête de boucle seulement ;
+#                 40 bornait la latence de l'eau de la démo de Ristar, seul
+#                 bug visible)
+#   RELEASE=1     (META) firmware sans port USB (meta_usb.c, -420 octets de
+#                 RAM) : ni meta-usb.py, ni l'entrée du bootloader par le
+#                 toucher 1200 bauds — reflasher demande le bootloader
+#                 autrement (double appui sur reset, à vérifier sur la
+#                 console).  La garde du cache carte passe de 2000 à 2400
+#                 octets libres : quatre secteurs, 16 blocs de 128 au lieu de
+#                 12 (le plus profond mesuré au filigrane est de 1640 octets,
+#                 +128 non peints sous main, USB comprise donc majorée pour un
+#                 firmware sans USB ; marge ~620 octets).
 #   AUDIO_DMA=0|1 son de la META par interruption (0, défaut pour toutes les
 #                 consoles : moins de RAM, laissée au cache carte) ou par DMA
 #                 (1).  Un jeu déjà à jour n'est pas refait : FORCE=1 après
@@ -187,6 +200,11 @@ fi
 OVERCLOCK="${OVERCLOCK:-1}"
 export OVERCLOCK POKITTO_HC="$OVERCLOCK"
 export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=$OVERCLOCK${AUDIO_DMA:+ -DMETA_AUDIO_DMA=$AUDIO_DMA}"
+RELEASE="${RELEASE:-0}"
+export RELEASE
+RELEASE_FLAG=""
+[ "$RELEASE" = 1 ] && RELEASE_FLAG="-DMETA_USB=0"
+export RELEASE_FLAG
 if [ "$TARGET" = both ] || [ "$TARGET" = all ]; then
   # Une exécution par console.  La sélection des jeux et la confirmation des
   # mises à jour sont demandées une seule fois (pass de capture ci-dessous,
@@ -263,6 +281,11 @@ NO_ICONS="${NO_ICONS:-0}"
 OVERCLOCK="${OVERCLOCK:-${POKITTO_HC:-1}}"
 export OVERCLOCK POKITTO_HC="$OVERCLOCK"
 export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=$OVERCLOCK${AUDIO_DMA:+ -DMETA_AUDIO_DMA=$AUDIO_DMA}"
+RELEASE="${RELEASE:-0}"
+export RELEASE
+RELEASE_FLAG=""
+[ "$RELEASE" = 1 ] && RELEASE_FLAG="-DMETA_USB=0"
+export RELEASE_FLAG
 if [ "$TARGET" = espboy ]; then
   PACK=0
   FIRMWARE_COMPILER=gcc
@@ -733,7 +756,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
         -DSG_COMPILER="$FIRMWARE_COMPILER" ${hc_flags} > /dev/null || return 2
       build_log=$(ninja -C "$sg_build" -j"$NPROC" 2>&1) && return 0
     else
-      build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0
+      build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG}" pio run -d "$out_dir" 2>&1) && return 0
     fi
     echo "$build_log" | grep -q -E "overflowed|will not fit|greater than maximum allowed|exceeds 1 MiB" && return 1
     echo "$build_log" | tail -20
@@ -761,6 +784,27 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     done
   elif [ $rc -ne 0 ]; then
     echo "[x] Le firmware ne tient pas en flash."; return 1
+  fi
+  # Le cache carte grossit tant que le rapport RAM du build laisse la pile
+  # large.  Le plus profond mesuré au filigrane (SG_STACK_PAINT, démo et menu
+  # exercés, USB comprise donc majorée) est de 1640 octets, +128 non peints
+  # sous main ; chaque secteur coûte 528 octets de .bss.  En release sans USB
+  # (420 octets rendus), la garde passe à 2400 : quatre secteurs, 16 blocs de
+  # 128, ~620 octets de marge sur le pire mesuré.  L'anneau audio, lui, ne
+  # descend pas : le producteur écrit une image émulée entière (plancher 512
+  # échantillons, meta_audio.cpp).
+  if [ "$TARGET" = meta ] && { [ "$sys" = gg ] || [ "$sys" = sms ]; } \
+     && grep -q "GG_CACHE_BLOCK" "$out_dir/src/sg_config.h"; then
+    local sectors=3 used
+    while :; do
+      used=$(echo "$build_log" | sed -n 's/.*(\(used [0-9]*\) bytes from 32768.*/\1/p'); used=${used#used }
+      local guard=2000; [ "$RELEASE" = 1 ] && guard=2400
+      { [ -n "$used" ] && [ $((32768 - used)) -gt $guard ]; } || break
+      sectors=$((sectors + 1)); [ $sectors -le 8 ] || break
+      build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG} -DGG_STREAM_SECTORS=$sectors" \
+        pio run -d "$out_dir" 2>&1) || break
+      echo "[i] Cache carte : $sectors secteurs"
+    done
   fi
   echo "$gen_log"
   echo "$build_log" | grep -E "^(RAM|Flash):" || true

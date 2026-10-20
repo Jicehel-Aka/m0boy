@@ -38,6 +38,50 @@ static uint32_t deadline;
 static unsigned menu_was_down, audio_phase;
 static const char version[] __attribute__((used)) = "m0boy-pico8-" META_TARGET_NAME " " GBL_GEN_VERSION;
 
+#if !META_TARGET_POKITTO
+/* ---- option menu (sg_menu.h): HOME held half a second, MENU restarts ----- */
+#if !META_TARGET_ESPBOY
+static uint16_t menu_rows[2][160]; /* the picture's buffers are 128 wide */
+#endif
+extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
+#if META_TARGET_ESPBOY
+    *rows = 2u * P8_BATCH; /* the ESPboy's rows take the whole 160 columns */
+    return line_buffers[0][0];
+#else
+    *rows = 2;
+    return menu_rows[0];
+#endif
+}
+#define SG_MENU_TAP() do { } while (0)
+#define SG_MENU_RESTART() do { \
+        p8_start(); /* the cartridge again */ \
+        deadline = meta_micros(); \
+    } while (0)
+#if META_TARGET_ESPBOY
+#define SG_MENU_QUIT() do { espboy_restart(); } while (0)
+#else
+#if META_USB
+#define SG_MENU_USB_STOP() meta_usb_stop()
+#else
+#define SG_MENU_USB_STOP() do { } while (0)
+#endif
+/* Hand the console back to the Gamebuino loader (the Game Boy frontend's
+ * enter_loader; the PICO-8 builds touch no SD card). */
+#define SG_MENU_QUIT() do { \
+        meta_lcd_end_frame(); \
+        meta_clock_set_lcd_spi(24); /* the loader expects the core's clocks */ \
+        meta_clock_set(48); \
+        meta_audio_stop(); \
+        NVIC_DisableIRQ(DMAC_IRQn); \
+        meta_watchdog_stop(); \
+        SG_MENU_USB_STOP(); \
+        ((void (*)(void))(*((uint32_t *)0x3FF4)))(); \
+    } while (0)
+#endif
+#define SG_MENU_RESUME() do { deadline = meta_micros(); } while (0)
+#include "sg_menu.h"
+#endif /* !META_TARGET_POKITTO */
+
 /* the 16 base colours through the screen palette, as the panel takes them */
 static void colour_table(uint16_t *tab) {
     for (unsigned i = 0; i < 16; i++) tab[i] = META_COLOR(p8_palette_rgb[p8g.pal_screen[i] & 15]);
@@ -116,7 +160,7 @@ extern "C" void p8_error(const char *msg, const char *what) {
 static uint16_t read_buttons(unsigned *menu) {
     const uint8_t raw = SG_PAD_RAW();
     SG_PAD_WDT();
-    *menu = raw & 64u;
+    *menu = raw;
     return (uint16_t)(((raw & 2u) ? 1u : 0u) | ((raw & 4u) ? 2u : 0u) | ((raw & 8u) ? 4u : 0u) | ((raw & 1u) ? 8u : 0u) |
                       ((raw & 16u) ? 16u : 0u) | ((raw & 32u) ? 32u : 0u));
 }
@@ -149,8 +193,8 @@ int main() {
     deadline = meta_micros();
     __asm__ volatile("" : : "r"(version));
     for (;;) {
-        unsigned menu;
-        p8_frame(read_buttons(&menu));
+        unsigned raw;
+        p8_frame(read_buttons(&raw));
 #ifdef P8_STACK_CHECK
         stack_check();
 #endif
@@ -161,10 +205,19 @@ int main() {
 #ifdef P8_STOP_AFTER_US /* debug: stop at a time and show the frame count (gm0 profiling) */
         if (meta_micros() > P8_STOP_AFTER_US) p8_error("stopped", "");
 #endif
-        if (menu && !menu_was_down) p8_start();
-        menu_was_down = menu;
-        deadline += p8_fps == 60 ? 16667u : 33333u;
-        while ((int32_t)(meta_micros() - deadline) < 0) meta_audio_idle();
-        if ((int32_t)(meta_micros() - deadline) > 100000) deadline = meta_micros();
+#if !META_TARGET_POKITTO
+        sg_menu_frame();
+        sg_menu_poll((uint8_t)raw);
+        sg_menu_tick();
+#endif
+        if ((raw & 64u) && !menu_was_down) p8_start();
+        menu_was_down = raw & 64u;
+        if (!sg_menu_fast) {
+            deadline += p8_fps == 60 ? 16667u : 33333u;
+            while ((int32_t)(meta_micros() - deadline) < 0) meta_audio_idle();
+            if ((int32_t)(meta_micros() - deadline) > 100000) deadline = meta_micros();
+        } else {
+            deadline = meta_micros();
+        }
     }
 }

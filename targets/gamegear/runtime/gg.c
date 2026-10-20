@@ -67,7 +67,10 @@ static void map_slot(unsigned s, uint8_t value) {
 #define M0C_ROM_LAST card_rom_last
 #define M0C_MISSES gg_stream_misses
 #define M0C_SAVE GG_CART_ON_CARD
-#define M0C_LEND 0
+/* The option menu runs on the lent blocks (sg_menu.h): the emulation is
+ * stopped, so nothing reads the ROM or the save while they are lent out. */
+#define M0C_LEND 1
+#define M0C_LEND_KEEP 0
 #include "m0_cache.h"
 
 uint8_t *gg_stream_scratch(void) { return card_buf[0]; }
@@ -77,13 +80,18 @@ uint8_t *gg_stream_scratch(void) { return card_buf[0]; }
  * the card.  Counted for meta-usb.py: sectors decoded, sectors read. */
 uint32_t gg_stream_unpacked, gg_stream_reads;
 static int rom_sector(uint32_t sec, uint8_t *dst) {
-#ifdef GG_POOL_PACKED
+#if defined(GG_POOL_SECTORS)
     if (gg_pool_index[sec] != GG_POOL_NONE) {
+#ifdef GG_POOL_PACKED
         const uint32_t record = gg_pool_records[gg_pool_index[sec]];
         const uint8_t *src = gg_pool + (record & 0x3fffffffu);
         if (record >> 30) m0_rom_unpack512(src, dst);
         else memcpy(dst, src, 512);
         gg_stream_unpacked++;
+#else
+        /* the pool is raw: a whole sector, copied */
+        memcpy(dst, gg_pool + ((size_t)gg_pool_index[sec] << 9), 512);
+#endif
         return 1;
     }
 #endif
@@ -107,6 +115,13 @@ static uint32_t save_change;
 #include "m0_cache.inc"
 
 #define card_reset cache_reset
+
+#if GG_STREAM || GG_CART_ON_CARD
+/* The option menu's stack (sg_menu.h): the cache's blocks lent out, the
+ * save written back first; lend returns their top, 8-aligned. */
+uintptr_t gg_cache_lend(void) { return cache_lend(); }
+void gg_cache_unlend(void) { cache_unlend(); }
+#endif
 
 #if GG_CART_ON_CARD
 void gg_save_tick(void) {
