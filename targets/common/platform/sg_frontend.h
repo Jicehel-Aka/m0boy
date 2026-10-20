@@ -84,8 +84,10 @@ extern char __StackTop;
 #endif
 
 /* The option menu's "Vitesse" (sg_menu.h): no frame limit, the emulation
- * runs as fast as the console allows. */
-static uint8_t sg_menu_fast;
+ * runs as fast as the console allows — video skipped but for one frame in
+ * thirty, which is what makes it faster than the paced mode (drawing every
+ * frame adds the LCD bus to every frame). */
+static uint8_t sg_menu_fast, sg_fast_draw;
 
 /* Frame pacing: the game itself keeps its speed, a presentation late by less
  * than a frame is skipped (at most max_skip in a row) and the deadline stays
@@ -93,7 +95,8 @@ static uint8_t sg_menu_fast;
 #define SG_PACE_FRAME(deadline, skip_video, skipped_run, max_skip) do { \
         if (sg_menu_fast) { \
             (deadline) = meta_micros(); \
-            (skip_video) = 0; \
+            (skip_video) = ++sg_fast_draw < 30; \
+            if (!(skip_video)) sg_fast_draw = 0; \
             (skipped_run) = 0; \
             break; \
         } \

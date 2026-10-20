@@ -458,6 +458,17 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         if (cart_on_card) {
             config << "#define GG_SAVE_NAME \"" << sd << ".SAV\"\n#define GG_SAVE_NAME83 \"" << name83(sd, "SAV") << "\"\n";
         }
+        /* Save states (meta_state.cpp): the file compile.sh creates holds
+         * slots of the machine's bytes (gg_t, the cartridge RAM when the
+         * game has some in RAM).  gg_state_bytes() refuses more than fits. */
+        const bool states = gg && (streamed || cart_on_card) &&
+                            (o.target == TargetId::meta || o.target == TargetId::pokitto);
+        if (states) {
+            const size_t state_bytes = 25536 + (cart_ram ? 8192u : 0u); /* sizeof(gg_t), keep in sync */
+            config << "#define GG_STATE_NAME \"" << sd << ".ST8\"\n#define GG_STATE_NAME83 \""
+                   << name83(sd, "ST8") << "\"\n#define GG_STATE_SLOTS 10\n#define GG_STATE_SLOT_SECTORS "
+                   << (state_bytes + 511) / 512 + 1 << "\n";
+        }
         /* Pokitto: the sector cache lives in the 2 KiB USB RAM bank, which
          * the Master System shares with its pair tables. */
         if (gg && (streamed || cart_on_card) && o.target == TargetId::pokitto && !o.mastersystem)
@@ -579,7 +590,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const std::string render_asm = gg ? "gg_render_asm.S" : "sg_render_asm.S";
         const std::string firmware_sources = core_sources + " " + generated_sources + " ${SRC}/" + main_cpp +
                                               " ${SRC}/" + render_asm + (gg ? " ${SRC}/m0_rom_lzss.S" : "") +
-                                              " ${SRC}/meta_menu.cpp";
+                                              " ${SRC}/meta_menu.cpp" +
+                                              (states ? " ${SRC}/meta_state.cpp" : "");
         std::string host_sources = host_c + " " + core_sources + " " + generated_sources;
         if (gg && (streamed || cart_on_card)) {
             /* A generated host project must exercise the same storage plan,
@@ -636,6 +648,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");
             copy_template(o.meta_templates / "platform" / "src" / "meta_font.h", src / "meta_font.h");
             copy_template(o.meta_templates / "platform" / "src" / "meta_menu.cpp", src / "meta_menu.cpp");
+            if (states) {
+                copy_template(o.meta_templates / "platform" / "src" / "meta_state.h", src / "meta_state.h");
+                copy_template(o.meta_templates / "platform" / "src" / "meta_state.cpp", src / "meta_state.cpp");
+            }
             /* The META's board settings (SPI rates, display pipeline): the
              * same file the Game Boy profile includes. */
             copy_template(o.meta_templates / "runtime" / "gbl_board.h", src / "gbl_board.h");

@@ -55,6 +55,20 @@ static void map_slot(unsigned s, uint8_t value) {
 #endif
 }
 
+/* The slots' pointers again, after the pages changed behind our back (a save
+ * state's load): slot 2 shows the ROM page behind the cartridge RAM. */
+void gg_remap(void) {
+    for (unsigned s = 0; s < 3; s++) {
+        const uint8_t pg = s == 2 && (machine.ram_ctl & 8) ? machine.page2 : machine.page[s];
+#if GG_STREAM
+        const unsigned index = pg < machine.rom_pages ? gg_page_index[pg] : 0xffu;
+        machine.slot[s] = index == 0xffu ? 0 : machine.rom + (size_t)index * 0x4000u;
+#else
+        machine.slot[s] = machine.rom + (size_t)pg * 0x4000u;
+#endif
+    }
+}
+
 #if GG_STREAM || GG_CART_ON_CARD
 /* The card cache shared with the Game Boy (m0_cache.h): ROM sectors that
  * are not mapped directly (on the card, or LZSS-coded in the pool) and the
@@ -567,3 +581,54 @@ int sg_step(uint16_t after) {
     while (machine.cpu.ei_delay && !machine.stop && !machine.cpu.fault);
     return machine.cpu.pc == after && !machine.stop;
 }
+
+/* Save states: the machine as raw bytes, then the cartridge RAM when the
+ * game has some.  The load re-sets what is not state — the bus callbacks,
+ * the buffers and hooks this firmware set at init — and rebuilds the slots'
+ * pointers from the restored pages (gg_remap).  Bytes are only comparable
+ * within a build: the header's format tag refuses the others. */
+uint32_t gg_state_bytes(void) {
+    return (uint32_t)sizeof(gg_t) + (machine.cart_ram ? GG_CART_RAM_SIZE : 0u);
+}
+
+void gg_state_io(void (*io)(void *data, uint32_t bytes, void *ctx), void *ctx, int load) {
+    if (!load) {
+        io(&machine, (uint32_t)sizeof(gg_t), ctx);
+        if (machine.cart_ram) io(machine.cart_ram, GG_CART_RAM_SIZE, ctx);
+        return;
+    }
+    const uint8_t *rom = machine.rom;
+    uint8_t *cart = machine.cart_ram;
+    uint16_t *row_out = machine.row_out, *row_tmp = machine.row_tmp;
+    void *platform = machine.platform;
+    int (*draw_line)(void *, unsigned y) = machine.draw_line;
+    void (*row)(void *, unsigned y, uint16_t *pixels) = machine.row;
+    void (*frame)(void *) = machine.frame;
+    sg_fn (*lookup)(uint16_t pc) = machine.lookup;
+    uint32_t *coverage = machine.coverage;
+    uint8_t *entries = machine.entries;
+    z80_read_fn read = machine.cpu.read, in = machine.cpu.in;
+    z80_write_fn write = machine.cpu.write, out = machine.cpu.out;
+    io(&machine, (uint32_t)sizeof(gg_t), ctx);
+    if (machine.cart_ram) io(machine.cart_ram, GG_CART_RAM_SIZE, ctx);
+    machine.rom = rom;
+    machine.cart_ram = cart;
+    machine.row_out = row_out;
+    machine.row_tmp = row_tmp;
+    machine.platform = platform;
+    machine.draw_line = draw_line;
+    machine.row = row;
+    machine.frame = frame;
+    machine.lookup = lookup;
+    machine.coverage = coverage;
+    machine.entries = entries;
+    machine.cpu.user = &machine;
+    machine.cpu.read = read;
+    machine.cpu.in = in;
+    machine.cpu.write = write;
+    machine.cpu.out = out;
+    machine.stop = 0; /* the saved run's end must not end this one */
+    gg_remap();
+}
+
+uint32_t gg_state_frame(void) { return machine.frames; }

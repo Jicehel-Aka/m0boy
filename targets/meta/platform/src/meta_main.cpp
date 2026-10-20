@@ -365,7 +365,6 @@ static const char *const clock_names[2] = {"48 MHz", "72 MHz"};
 static const char *const clock_names[2] = {"48 MHz", "70 MHz"}; /* meta_clock.cpp: 72 asked, 70 run */
 #endif
 #if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
-static const char *const lcd_spi_names[4] = {"12 MHz", "24 MHz", "36 MHz", "48 MHz"};
 #endif
 
 static char *put_uint(char *p, unsigned v) {
@@ -447,16 +446,12 @@ static void name_slots(void) {
 }
 
 enum { M_RESUME, M_RESTART, M_SLOT, M_SAVE, M_LOAD, M_VOLUME, M_AUDIO, M_SCREEN, M_PALETTE, M_SKIP,
-       M_SPEED, M_CLOCK, M_LCD_SPI, M_QUIT };
+       M_SPEED, M_CLOCK, M_LCD_SPI, M_BOOTLOADER, M_QUIT };
 
 static void option_menu(void) {
     uint8_t mode = meta_display_mode(), pal = meta_display_palette(), skip = skip_mode;
     uint8_t fast = fast_mode, mhz = meta_clock_mhz() == (META_TARGET_ESPBOY ? 160 : 72), vol = meta_audio_volume();
     uint8_t slot = state_slot;
-#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
-    uint8_t dma = meta_audio_mode_get();
-    uint8_t lcd_spi = (uint8_t)(meta_clock_lcd_spi() / 12u - 1u);
-#endif
     meta_menu_item items[14];
     uint8_t ids[14];
     unsigned n = 0;
@@ -471,20 +466,13 @@ static void option_menu(void) {
         ADD(M_LOAD, "Charger l'etat", META_MENU_ACTION, 0, 0, 0);
     }
     ADD(M_VOLUME, "Volume", META_MENU_CHOICE, &vol, 9, volume_names);
-#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
-    static const char *const audio_names[2] = {"Interruption", "DMA"};
-    ADD(M_AUDIO, "Audio", META_MENU_CHOICE, &dma, 2, audio_names);
-#endif
     ADD(M_SCREEN, "Ecran", META_MENU_CHOICE, &mode, SCREEN_MODES, mode_names);
     ADD(M_PALETTE, "Palette", META_MENU_CHOICE, &pal, META_PALETTE_COUNT, meta_palette_names);
     ADD(M_SKIP, "Images", META_MENU_CHOICE, &skip, FSKIP_MODES, skip_names);
     ADD(M_SPEED, "Vitesse", META_MENU_CHOICE, &fast, 2, speed_names);
     ADD(M_CLOCK, "Processeur", META_MENU_CHOICE, &mhz, 2, clock_names);
 #if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
-    /* Display SPI clock (meta_clock.cpp): 36 at most at 72 MHz.  Too fast
-     * for the panel shows garbage, the menu too: switching the console off
-     * restores the boot default, META_LCD_SPI_MHZ (gbl_board.h). */
-    ADD(M_LCD_SPI, "SPI ecran", META_MENU_CHOICE, &lcd_spi, 4, lcd_spi_names);
+    ADD(M_BOOTLOADER, "Bootloader USB", META_MENU_ACTION, 0, 0, 0);
 #endif
     ADD(M_QUIT, "Quitter", META_MENU_ACTION, 0, 0, 0);
 #undef ADD
@@ -512,19 +500,31 @@ static void option_menu(void) {
     int line = meta_menu_run(GBL_TITLE, items, n, meta_buttons, n > 13 ? 0 : info);
     meta_audio_pause(0);
     int action = line >= 0 ? ids[line] : -1;
+#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
+    if (action == M_BOOTLOADER) {
+        /* The USB bootloader (sam-ba) directly: its magic where the
+         * bootloader looks after a software reset — with or without
+         * META_USB (the double reset reaches the loader, not sam-ba). */
+        meta_lcd_end_frame();
+        gbl_save_flush();
+        meta_audio_stop();
+        NVIC_DisableIRQ(DMAC_IRQn);
+        meta_watchdog_stop();
+#if META_USB
+        meta_usb_stop();
+#endif
+        meta_sd_deselect();
+        *(volatile uint32_t *)0x20007FFC = 0x3aecfd88u;
+        NVIC_SystemReset();
+    }
+#endif
     if (action == M_QUIT) enter_loader();
     skip_mode = skip;
     fast_mode = fast;
     state_slot = slot;
     meta_audio_set_volume(vol);
-#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
-    meta_audio_mode(dma);
-#endif
     meta_lcd_end_frame(); /* no transfer while the clocks change */
     meta_clock_set(META_TARGET_ESPBOY ? (mhz ? 160 : 80) : (mhz ? 72 : 48));
-#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
-    meta_clock_set_lcd_spi((uint8_t)((lcd_spi + 1u) * 12u));
-#endif
     if (pal != meta_display_palette()) meta_display_set_palette(pal);
     meta_display_set_mode(mode); /* also redraws the whole picture */
     skipped_run = 0;

@@ -5,9 +5,11 @@
  * and wraps at 48 MHz / 2177 (about 22049 Hz).  The ring is refilled once
  * per emulated frame.
  *
- * One ring (META_AUDIO_RING samples of 2 bytes, each a DAC value) feeds
- * both output paths; meta_audio_mode() picks one at run time, META_AUDIO_DMA
- * (gbl_profile.h) is the boot default:
+ * One ring (META_AUDIO_RING samples of 2 bytes, each a DAC value) feeds the
+ * output path; META_AUDIO_DMA (gbl_profile.h) selects it at build time, 0
+ * (the default) the interrupt, 1 the DMA — no run-time switching since
+ * 0.10.29: the DMA path's restart logic and its history of descriptor
+ * troubles (erratum 1.7.2) are not worth its 0.5 % of CPU.
  *
  * 1: each wrap triggers one DMAC beat (channel 0, meta_dma.h) that copies
  *    the next ring entry to the DAC, with no CPU work.  Each frame's samples
@@ -124,7 +126,8 @@ static void timer_stop(void) {
 #endif
 
 static uint16_t ring[RING] __attribute__((aligned(4)));
-static uint8_t audio_dma_mode = META_AUDIO_DMA; /* meta_audio_mode() switches it */
+/* The path, chosen at build time: the branches on it fold away. */
+#define audio_dma_mode META_AUDIO_DMA
 
 /* Write cursor, shared by the paths: head = written % RING, kept without
  * dividing.  DMA accounting: written/played, counted from the start. */
@@ -178,6 +181,7 @@ extern "C" void meta_dma_audio_irq(void) {
     block_start(queue[h].start, queue[h].count);
 }
 
+#if META_AUDIO_DMA
 /* The channel off and nothing queued; trigger and interrupt set up again. */
 static void channel_reset(void) {
     __disable_irq();
@@ -207,6 +211,8 @@ static void enqueue(unsigned start, unsigned count) {
     q_tail = (uint8_t)next;
 }
 
+#endif /* META_AUDIO_DMA */
+
 /* The interrupt path off (channel_reset's sibling); the timer keeps running. */
 static void irq_output_off(void) {
     NVIC_DisableIRQ(TC4_IRQn);
@@ -221,25 +227,6 @@ static void irq_output_on(void) {
     NVIC_EnableIRQ(TC4_IRQn);
 }
 
-void meta_audio_mode(unsigned dma) {
-    dma = dma != 0;
-    if (dma == audio_dma_mode) return;
-    __disable_irq();
-    if (audio_dma_mode) channel_reset(); /* channel off, queue empty, busy 0 */
-    else irq_output_off();
-    audio_dma_mode = (uint8_t)dma;
-    if (dma) { /* all samples counted as played: the restart logic applies */
-        written = head;
-        played = head;
-        cycles = 0;
-    } else {
-        irq_output_on();
-    }
-    __enable_irq();
-}
-
-unsigned meta_audio_mode_get(void) { return audio_dma_mode; }
-
 void meta_audio_init(void) {
     dac_start();
     for (unsigned i = 0; i < RING; i++) ring[i] = DAC_MID;
@@ -247,10 +234,13 @@ void meta_audio_init(void) {
     written = played = 0;
     head = 0;
     ring_tail = 0;
+#if META_AUDIO_DMA
     meta_dma_init();
     channel_reset();
     NVIC_EnableIRQ(DMAC_IRQn);
-    if (!audio_dma_mode) irq_output_on();
+#else
+    irq_output_on();
+#endif
     timer_start(false); /* both paths run from TC4's wrap */
     last_us = meta_micros();
 }
@@ -260,6 +250,7 @@ void meta_audio_frame(void) {
     uint32_t now = meta_micros(), dt = now - last_us;
     last_us = now;
     unsigned prefix = 0;
+#if META_AUDIO_DMA
     if (audio_dma_mode) {
         if (!busy) {
             /* Not started, or everything queued was played (the DAC holds the
@@ -285,7 +276,8 @@ void meta_audio_frame(void) {
             drop_samples(n - (room - prefix));
             n = room - prefix;
         }
-    } else {
+#else
+    {
         uint16_t tail = ring_tail;
         unsigned used = head >= tail ? head - tail : head + RING - tail;
         unsigned room = RING - 1u - used;
@@ -294,6 +286,7 @@ void meta_audio_frame(void) {
             n = room;
         }
     }
+#endif
     unsigned total = prefix + n;
 
     unsigned start = head;
@@ -314,25 +307,28 @@ void meta_audio_frame(void) {
     }
     written += total;
 
-    if (audio_dma_mode) {
-        /* One block, two at the ring's wrap. */
-        unsigned part = RING - start;
-        __disable_irq();
-        if (total > part) {
-            enqueue(start, part);
-            enqueue(0, total - part);
-        } else {
-            enqueue(start, total);
-        }
-        __enable_irq();
+#if META_AUDIO_DMA
+    /* One block, two at the ring's wrap. */
+    unsigned part = RING - start;
+    __disable_irq();
+    if (total > part) {
+        enqueue(start, part);
+        enqueue(0, total - part);
+    } else {
+        enqueue(start, total);
     }
+    __enable_irq();
+#endif
 }
 
 void meta_audio_idle(void) {}
 
 void meta_audio_stop(void) {
-    if (audio_dma_mode) channel_reset();
-    else irq_output_off();
+#if META_AUDIO_DMA
+    channel_reset();
+#else
+    irq_output_off();
+#endif
     timer_stop();
     DAC->DATA.reg = DAC_MID; /* mid-scale: no click */
 }
@@ -346,5 +342,7 @@ void meta_audio_pause(int on) {
         return;
     }
     timer_start(false);
-    if (!audio_dma_mode) irq_output_on(); /* INTENSET and NVIC back on */
+#if !META_AUDIO_DMA
+    irq_output_on(); /* INTENSET and NVIC back on */
+#endif
 }

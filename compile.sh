@@ -836,6 +836,13 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     [ -f "$game_dir/$save_name" ] || head -c 32768 /dev/zero | tr '\0' '\377' > "$game_dir/$save_name"
     echo "[i] Sauvegarde : $game_name/$save_name (déjà sur la carte : ne plus y toucher)"
   fi
+  local state_name state_sectors
+  state_name=$(sed -n 's/^#define GG_STATE_NAME "\(.*\)"$/\1/p' "$out_dir/src/sg_config.h")
+  if [ -n "$state_name" ]; then # save states: created once, never overwritten
+    state_sectors=$(sed -n 's/^#define GG_STATE_SLOT_SECTORS \(.*\)$/\1/p' "$out_dir/src/sg_config.h")
+    [ -f "$game_dir/$state_name" ] || head -c $((10 * state_sectors * 512)) /dev/zero | tr '\0' '\377' > "$game_dir/$state_name"
+    echo "[i] Etats : $game_name/$state_name (déjà sur la carte : ne plus y toucher)"
+  fi
   if [ -n "$stream_name" ]; then
     if [ $(( $(stat -c %s "$rom_path") % 16384 )) -eq 512 ]; then # copier header (same rule as m0boy/sg1000.h and targets/common/host/m0_host_util.h): the card holds the ROM itself
       tail -c +513 "$rom_path" > "$game_dir/$stream_name" || return 1

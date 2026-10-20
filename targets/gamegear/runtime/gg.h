@@ -178,6 +178,12 @@ extern gg_t machine;
 extern uintptr_t sg_stack_limit;
 
 void gg_init(const uint8_t *rom, size_t size, uint8_t *cart_ram);
+/* The slots' pointers again from the pages (a save state's load). */
+void gg_remap(void);
+/* The save state's stream: the machine as raw bytes, then the cartridge RAM
+ * when the game has some (meta_state.cpp's io walker). */
+uint32_t gg_state_bytes(void);
+void gg_state_io(void (*io)(void *data, uint32_t bytes, void *ctx), void *ctx, int load);
 void gg_init_system(const uint8_t *rom, size_t size, uint8_t *cart_ram, int sms);
 void gg_reset(void);
 void gg_buttons(uint8_t pressed);

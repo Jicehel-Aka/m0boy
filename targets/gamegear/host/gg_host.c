@@ -20,6 +20,7 @@ static FILE *audio;
 static uint32_t audio_samples;
 static int audio_error;
 static unsigned frames = 300, buttons, start_frame = ~0u, explore_frames;
+static const char *save_state_file, *load_state_file;
 static uint32_t *hits;
 static uint8_t *entries;
 static uint32_t *coverage_order;
@@ -40,6 +41,32 @@ void gg_rom_trace(uint32_t offset) {
  * up, down, left, right, 1, 2, START). */
 static const char *input_script;
 static uint32_t random_state;
+/* --save-state / --load-state: the machine's stream (gg_state_io) through a
+ * file, the byte count first. */
+static int load_state_file_done;
+static void state_file_io(void *data, uint32_t bytes, void *ctx) {
+    FILE *f = (FILE *)ctx;
+    if (load_state_file_done) {
+        if (fread(data, 1, bytes, f) != bytes) { fprintf(stderr, "state file short\\n"); exit(1); }
+    } else if (fwrite(data, 1, bytes, f) != bytes) { fprintf(stderr, "state file write\\n"); exit(1); }
+}
+static int load_state_file_done;
+
+static void state_file(const char *path, int load) {
+    FILE *f = fopen(path, load ? "rb" : "wb");
+    if (!f) { fprintf(stderr, "state file %s\\n", path); exit(1); }
+    uint32_t n = gg_state_bytes();
+    if (load) {
+        uint32_t stored;
+        if (fread(&stored, 4, 1, f) != 1 || stored != n) { fprintf(stderr, "state size mismatch\\n"); exit(1); }
+    } else if (fwrite(&n, 4, 1, f) != 1) { fprintf(stderr, "state file write\\n"); exit(1); }
+    load_state_file_done = load;
+    gg_state_io(state_file_io, f, load);
+    fclose(f);
+    machine.stop = 0;
+}
+
+
 static void inputs(void) {
     unsigned keys = buttons | m0_scripted(input_script, machine.frames) |
                     m0_randomized(&random_state, machine.frames, GG_IS_SMS ? 0u : (unsigned)GG_START);
@@ -177,6 +204,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--start-frame") && i + 1 < argc) start_frame = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_script = argv[++i];
         else if (!strcmp(argv[i], "--explore") && i + 1 < argc) explore_frames = (unsigned)strtoul(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "--save-state") && i + 1 < argc) save_state_file = argv[++i];
+        else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) load_state_file = argv[++i];
         else if (!strcmp(argv[i], "--random") && i + 1 < argc) random_state = (uint32_t)strtoul(argv[++i], 0, 0) | 1u;
         else if (argv[i][0] != '-' && !rom_path) rom_path = argv[i];
         else { fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]); return 1; }
@@ -233,12 +262,14 @@ int main(int argc, char **argv) {
         m0_wav_header(audio, 0);
         gg_audio_rate(22050);
     }
+    if (load_state_file) state_file(load_state_file, 1);
     inputs();
 #ifdef GG_ROM_TRACE
     if (explore_frames && cov_path) { explore(explore_frames); machine.frames = explorer.frames; }
     else
 #endif
     if (frames) gg_run();
+    if (save_state_file) state_file(save_state_file, 0);
     if (audio && (m0_wav_finish(audio, audio_samples) || audio_error)) {
         perror("audio"); if (coverage) fclose(coverage); free(loaded); return 1;
     }

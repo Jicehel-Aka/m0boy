@@ -253,6 +253,19 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
 #else
 #define SG_MENU_USB_STOP() do { } while (0)
 #endif
+/* The USB bootloader (sam-ba) directly: its magic where the bootloader looks
+ * after a software reset (the double reset reaches the loader, not sam-ba),
+ * so the console flashes over USB whatever META_USB was. */
+#define SG_MENU_BOOTLOADER() do { \
+        GG_MENU_SAVE_FLUSH(); \
+        meta_audio_stop(); \
+        NVIC_DisableIRQ(DMAC_IRQn); \
+        meta_watchdog_stop(); \
+        SG_MENU_USB_STOP(); \
+        GG_MENU_SD_DESELECT(); \
+        *(volatile uint32_t *)0x20007FFC = 0x3aecfd88u; \
+        NVIC_SystemReset(); \
+    } while (0)
 #define SG_MENU_QUIT() do { \
         meta_lcd_end_frame(); \
         meta_clock_set_lcd_spi(24); /* the loader expects the core's clocks */ \
@@ -278,6 +291,19 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
  * back). */
 #define SG_MENU_ON_STACK_TOP gg_cache_lend()
 #define SG_MENU_UNLEND() gg_cache_unlend()
+#endif
+#if defined(GG_STATE_NAME83)
+/* Save states (sg_menu.h's Etat lines): the card's state file, the line
+ * buffers as the sector scratch (the menu has closed), and what the frame
+ * loop re-synchronises once a state is loaded. */
+#define SG_MENU_STATE_SLOTS GG_STATE_SLOTS
+#define SG_MENU_STATE_BUF() ((uint8_t *)line_buffers[0])
+#define SG_MENU_STATE_LOADED() \
+    do { \
+        deadline = meta_micros(); \
+        skip_video = 0; \
+        skipped_run = 0; \
+    } while (0)
 #endif
 #include "sg_menu.h"
 
@@ -330,11 +356,16 @@ int main() {
     /* The game's files on the card (meta_card.h, the Game Boy's colours):
      * no card blue, ROM file missing red, fragmented orange, another ROM
      * magenta, save file missing yellow */
-    if (int err = gg_stream_open(sg_rom, (uint32_t)sg_rom_size)) {
+    int card_err = 0;
+#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY
+    if ((card_err = gg_stream_open(sg_rom, (uint32_t)sg_rom_size))) {
         static const uint16_t colours[] = META_CARD_COLOURS(META_COLOR);
-        meta_lcd_fill(err == META_CARD_NO_SAVE ? META_COLOR(META_CARD_RGB_NO_SAVE) : colours[err]);
+        meta_lcd_fill(card_err == META_CARD_NO_SAVE ? META_COLOR(META_CARD_RGB_NO_SAVE) : colours[card_err]);
         for (;;) SG_PAD_WDT(); /* watchdog fed, USB touch served */
     }
+#endif
+#if defined(GG_STATE_NAME83)
+    meta_state_init(card_err == 0, SG_MENU_STATE_BUF());
 #endif
 #if SG_CART_RAM && !GG_CART_ON_CARD
     gg_init(sg_rom, sg_rom_size, cart_ram);

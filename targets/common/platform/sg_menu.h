@@ -4,13 +4,19 @@
  * the cartridge's restart).  The lines differ per console; what they share is
  * here: the HOME hold, the buttons of the menu, the info line (frames of the
  * last second and the stack never used) and the shared lines (Reprendre,
- * Redemarrer, Volume, Audio, Vitesse, Processeur, SPI ecran, Quitter).
+ * Redemarrer, Volume, Vitesse, Processeur, Quitter, plus the save states
+ * when the frontend defines SG_MENU_STATE_SLOTS and the USB bootloader when
+ * it defines SG_MENU_BOOTLOADER).
  *
  * Each frontend defines before including:
  *   SG_MENU_TAP      statements for a HOME tap (the game's key, whose hold
  *                    must then not be the game's key: the Pokitto's C)
  *   SG_MENU_RESTART  statements restarting the cartridge
  *   SG_MENU_QUIT     statements handing the console back to its loader
+ *   SG_MENU_BOOTLOADER()  (META) statements entering the USB bootloader: the
+ *                    sam-ba magic at 0x20007FFC, then a software reset —
+ *                    works without META_USB, where the double reset would
+ *                    reach the loader instead
  *   SG_MENU_RESUME   statements once the menu is closed (the pacing again)
  * optional:
  *   SG_MENU_ON_STACK_TOP
@@ -21,6 +27,11 @@
  *                    with SG_MENU_UNLEND() statements giving the blocks
  *                    back once it has run
  *   SG_MENU_TITLE    the menu's title (default "Options")
+ *   SG_MENU_STATE_SLOTS, SG_MENU_STATE_BUF(), SG_MENU_STATE_LOADED()
+ *                    save states: the slot count (when the console has a
+ *                    state file on the card), 512 bytes of scratch for the
+ *                    card sectors, and what the frame loop re-synchronises
+ *                    after a load
  * and implements meta_menu_scratch (meta_menu.h) over its own buffers.
  */
 #ifndef SG_MENU_H
@@ -38,7 +49,6 @@
 
 static const char *const sg_volume_names[9] = {"0", "1", "2", "3", "4", "5", "6", "7", "8"};
 static const char *const sg_speed_names[2] = {"Normale", "Rapide"};
-static const char *const sg_audio_names[2] = {"Interruption", "DMA"};
 #if META_TARGET_ESPBOY
 static const char *const sg_clock_names[2] = {"80 MHz", "160 MHz"};
 #elif META_TARGET_POKITTO
@@ -46,8 +56,23 @@ static const char *const sg_clock_names[2] = {"48 MHz", "72 MHz"};
 #else
 static const char *const sg_clock_names[2] = {"48 MHz", "70 MHz"}; /* meta_clock.cpp: 72 asked, 70 run */
 #endif
-#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
-static const char *const sg_lcd_spi_names[4] = {"12 MHz", "24 MHz", "36 MHz", "48 MHz"};
+
+#ifdef SG_MENU_STATE_SLOTS
+#include "meta_state.h"
+/* The slots' names, the used ones without " vide". */
+static char sg_slot_text[SG_MENU_STATE_SLOTS][12];
+static const char *sg_slot_names[SG_MENU_STATE_SLOTS];
+static const char *sg_state_msg; /* the last save state operation's result */
+static uint8_t sg_state_slot;
+static void sg_name_slots(void) {
+    uint16_t used = meta_state_used();
+    for (unsigned i = 0; i < SG_MENU_STATE_SLOTS; i++) {
+        char *p = sg_put_uint(sg_slot_text[i], i + 1u);
+        if (!(used >> i & 1u)) memcpy(p, " vide", 6);
+        else *p = 0;
+        sg_slot_names[i] = sg_slot_text[i];
+    }
+}
 #endif
 
 static char *sg_put_uint(char *p, unsigned v) {
@@ -148,45 +173,58 @@ static void sg_menu_run(void) { sg_call_on_stack(sg_option_menu, SG_MENU_ON_STAC
 static void sg_menu_run(void) { sg_option_menu(); }
 #endif
 
-enum { SGM_RESUME, SGM_RESTART, SGM_VOLUME, SGM_AUDIO, SGM_SPEED, SGM_CLOCK, SGM_LCD_SPI, SGM_QUIT };
+enum { SGM_RESUME, SGM_RESTART, SGM_SLOT, SGM_SAVE, SGM_LOAD, SGM_VOLUME, SGM_SPEED, SGM_CLOCK,
+       SGM_BOOTLOADER, SGM_QUIT };
 
 static void sg_option_menu(void) {
     uint8_t vol = meta_audio_volume();
     uint8_t fast = sg_menu_fast;
     uint8_t mhz = meta_clock_mhz() == (META_TARGET_ESPBOY ? 160 : 72);
-#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
-    uint8_t dma = meta_audio_mode_get();
-    uint8_t lcd_spi = (uint8_t)(meta_clock_lcd_spi() / 12u - 1u);
+#ifdef SG_MENU_STATE_SLOTS
+    uint8_t slot = sg_state_slot;
 #endif
-    meta_menu_item items[8];
-    uint8_t ids[8];
+    meta_menu_item items[11];
+    uint8_t ids[11];
     unsigned n = 0;
 #define SG_ADD(id, label, type, value, count, names) \
     (ids[n] = (id), items[n++] = (meta_menu_item){label, type, value, count, names})
     SG_ADD(SGM_RESUME, "Reprendre", META_MENU_ACTION, 0, 0, 0);
     SG_ADD(SGM_RESTART, "Redemarrer", META_MENU_ACTION, 0, 0, 0);
-    SG_ADD(SGM_VOLUME, "Volume", META_MENU_CHOICE, &vol, 9, sg_volume_names);
-#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
-    SG_ADD(SGM_AUDIO, "Audio", META_MENU_CHOICE, &dma, 2, sg_audio_names);
+#ifdef SG_MENU_STATE_SLOTS
+    if (meta_state_available()) {
+        sg_name_slots();
+        SG_ADD(SGM_SLOT, "Etat", META_MENU_CHOICE, &slot, SG_MENU_STATE_SLOTS, sg_slot_names);
+        SG_ADD(SGM_SAVE, "Sauver l'etat", META_MENU_ACTION, 0, 0, 0);
+        SG_ADD(SGM_LOAD, "Charger l'etat", META_MENU_ACTION, 0, 0, 0);
+    }
 #endif
+    SG_ADD(SGM_VOLUME, "Volume", META_MENU_CHOICE, &vol, 9, sg_volume_names);
     SG_ADD(SGM_SPEED, "Vitesse", META_MENU_CHOICE, &fast, 2, sg_speed_names);
     SG_ADD(SGM_CLOCK, "Processeur", META_MENU_CHOICE, &mhz, 2, sg_clock_names);
-#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
-    SG_ADD(SGM_LCD_SPI, "SPI ecran", META_MENU_CHOICE, &lcd_spi, 4, sg_lcd_spi_names);
+#ifdef SG_MENU_BOOTLOADER
+    SG_ADD(SGM_BOOTLOADER, "Bootloader USB", META_MENU_ACTION, 0, 0, 0);
 #endif
     SG_ADD(SGM_QUIT, "Quitter", META_MENU_ACTION, 0, 0, 0);
 #undef SG_ADD
     /* "59 ips, pile 812": frames of the last second and the stack never
      * used so far (bytes above the end of .bss). */
     char info[32];
-    char *p = sg_put_uint(info, sg_ips);
-    memcpy(p, " ips, pile ", 11);
-#if META_TARGET_ESPBOY
-    p = sg_put_uint(p + 11, 0);
-#else
-    p = sg_put_uint(p + 11, sg_stack_never_used());
+#ifdef SG_MENU_STATE_SLOTS
+    if (sg_state_msg) {
+        strcpy(info, sg_state_msg);
+        sg_state_msg = 0;
+    } else
 #endif
-    *p = 0;
+    {
+        char *p = sg_put_uint(info, sg_ips);
+        memcpy(p, " ips, pile ", 11);
+#if META_TARGET_ESPBOY
+        p = sg_put_uint(p + 11, 0);
+#else
+        p = sg_put_uint(p + 11, sg_stack_never_used());
+#endif
+        *p = 0;
+    }
     meta_audio_pause(1); /* the game's sound stops while the menu is open */
     int line = meta_menu_run(SG_MENU_TITLE, items, n, sg_menu_buttons, info);
     meta_audio_pause(0);
@@ -195,12 +233,25 @@ static void sg_option_menu(void) {
     sg_menu_fast = fast;
     meta_lcd_end_frame(); /* no transfer while the clocks change */
     meta_clock_set(META_TARGET_ESPBOY ? (mhz ? 160 : 80) : (mhz ? 72 : 48));
-#if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
-    meta_audio_mode(dma);
-    meta_clock_set_lcd_spi((uint8_t)((lcd_spi + 1u) * 12u));
+#ifdef SG_MENU_STATE_SLOTS
+    sg_state_slot = slot;
+    if (action == SGM_SAVE || action == SGM_LOAD) {
+        meta_lcd_end_frame();
+        if (action == SGM_SAVE)
+            sg_state_msg = meta_state_save(slot, SG_MENU_STATE_BUF()) ? "Etat sauve" : "Echec sauvegarde";
+        else if (!meta_state_load(slot, SG_MENU_STATE_BUF()))
+            sg_state_msg = "Echec chargement";
+        else {
+            SG_MENU_STATE_LOADED();
+            sg_state_msg = "Etat charge";
+        }
+    }
 #endif
     SG_MENU_RESUME();
     if (action == SGM_RESTART) SG_MENU_RESTART();
+#ifdef SG_MENU_BOOTLOADER
+    if (action == SGM_BOOTLOADER) SG_MENU_BOOTLOADER();
+#endif
     if (action == SGM_QUIT) SG_MENU_QUIT();
 }
 
