@@ -1,5 +1,10 @@
 # Nombre de parties et durée du profiling
 
+Cette campagne précède le balayage partagé de la version 0.10.30.
+Voir la [réévaluation après ce changement](PROFILING_AFTER_STATIC_SCAN_2026-10-21.fr.md) :
+ces gains de couverture ne constituent pas des gains de vitesse démontrés
+sur la chaîne actuelle.
+
 L'amélioration des sauvegardes a été commitée dans `f910da6`. Cette seconde
 expérience multiplie le nombre de sessions par 2 et 4, et leur budget
 d'images par 4, en partant des 2 sessions de 24 000 images du premier essai.

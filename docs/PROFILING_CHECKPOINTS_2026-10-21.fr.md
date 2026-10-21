@@ -1,5 +1,9 @@
 # Profiling : sauvegarder les découvertes avant la fin du segment
 
+Cette campagne précède le balayage partagé de la version 0.10.30.
+Voir la [réévaluation avec le balayage statique](PROFILING_AFTER_STATIC_SCAN_2026-10-21.fr.md)
+pour distinguer ses gains de couverture du bénéfice actuel sur l'interprétation.
+
 L'explorateur gardait uniquement l'état final d'un segment qui avait trouvé
 du code ou des données nouveaux. Une mort ou un retour au titre entre la
 découverte et cette sauvegarde pouvait faire perdre un point de reprise utile.
