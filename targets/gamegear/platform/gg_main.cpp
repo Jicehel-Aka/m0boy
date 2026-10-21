@@ -357,7 +357,6 @@ int main() {
      * no card blue, ROM file missing red, fragmented orange, another ROM
      * magenta, save file missing yellow */
     int card_err = 0;
-#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY
     if ((card_err = gg_stream_open(sg_rom, (uint32_t)sg_rom_size))) {
         static const uint16_t colours[] = META_CARD_COLOURS(META_COLOR);
         meta_lcd_fill(card_err == META_CARD_NO_SAVE ? META_COLOR(META_CARD_RGB_NO_SAVE) : colours[card_err]);
