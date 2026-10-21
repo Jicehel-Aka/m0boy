@@ -29,6 +29,12 @@
 #define M0C_UNUSED __attribute__((unused))
 
 uint32_t M0C_MISSES; /* ROM blocks loaded */
+#if M0C_DYN && defined(M0C_LOADS)
+uint32_t M0C_LOADS; /* every block loaded (M0C_DYN: the frontend's measure) */
+#define M0C_COUNT_LOAD() (M0C_LOADS++)
+#else
+#define M0C_COUNT_LOAD() ((void)0)
+#endif
 static uint8_t cache_changed; /* a cartridge RAM block left what shows them */
 
 #if M0C_BLOCK < 512
@@ -50,7 +56,7 @@ static void cache_writeback(unsigned i) {
     M0C_HOOK_WRITEBACK(i);
 #if M0C_BLOCK == 512
     /* Still dirty when the card refused it: a later flush tries again. */
-    if (!M0C_SAVE_WRITE(CACHE_ETAG_BLK(cache_tag[i]), cache_buf[i])) return;
+    if (!M0C_SAVE_WRITE(CACHE_ETAG_BLK(cache_tag[i]), CACHE_BLK(i))) return;
     cache_dirty[i] = 0;
 #else
     /* The sector as on the card, then every dirty block of it from the pool:
@@ -61,14 +67,14 @@ static void cache_writeback(unsigned i) {
         if (!M0C_SAVE_READ(sec, sector_buf)) return;
         sector_tag = CACHE_ETAG(sec);
     }
-    for (unsigned j = 0; j < M0C_WAYS; j++)
+    for (unsigned j = 0; j < CACHE_N; j++)
         if (CACHE_IS_ETAG(cache_tag[j]) && cache_dirty[j] && CACHE_ETAG_BLK(cache_tag[j]) >> (9 - M0C_SHIFT) == sec)
-            memcpy(sector_buf + (CACHE_ETAG_BLK(cache_tag[j]) * M0C_BLOCK & 511u), cache_buf[j], M0C_BLOCK);
+            memcpy(sector_buf + (CACHE_ETAG_BLK(cache_tag[j]) * M0C_BLOCK & 511u), CACHE_BLK(j), M0C_BLOCK);
     if (!M0C_SAVE_WRITE(sec, sector_buf)) {
         sector_tag = -1; /* the card may hold either */
         return;
     }
-    for (unsigned j = 0; j < M0C_WAYS; j++)
+    for (unsigned j = 0; j < CACHE_N; j++)
         if (CACHE_IS_ETAG(cache_tag[j]) && CACHE_ETAG_BLK(cache_tag[j]) >> (9 - M0C_SHIFT) == sec) cache_dirty[j] = 0;
 #endif
 }
@@ -79,7 +85,7 @@ static unsigned cache_victim(void) {
     unsigned i;
     for (;;) {
         i = cache_hand;
-        cache_hand = (uint8_t)(i + 1u == M0C_WAYS ? 0 : i + 1u);
+        cache_hand = (uint8_t)(i + 1u == CACHE_N ? 0 : i + 1u);
 #if M0C_WAYS > 2 /* two blocks: the referenced bytes alone */
         if (i == cache_mru || i == cache_rom_last) continue;
 #endif
@@ -111,9 +117,10 @@ static void cache_load(unsigned i, uint32_t b, int rom) {
 #else
 #define M0C_SOURCE(sec, dst) (rom ? M0C_ROM_SECTOR(sec, dst) : M0C_SAVE_READ(sec, dst))
 #endif
+    M0C_COUNT_LOAD();
 #if M0C_BLOCK == 512
-    int ok = M0C_SOURCE(b, cache_buf[i]);
-    if (!ok) memset(cache_buf[i], 0xFF, 512);
+    int ok = M0C_SOURCE(b, CACHE_BLK(i));
+    if (!ok) memset(CACHE_BLK(i), 0xFF, 512);
 #else
     uint32_t sec = b >> (9 - M0C_SHIFT);
     int32_t want = rom ? (int32_t)sec : CACHE_ETAG(sec);
@@ -121,8 +128,8 @@ static void cache_load(unsigned i, uint32_t b, int rom) {
         sector_tag = -1;
         if (M0C_SOURCE(sec, sector_buf)) sector_tag = want;
     }
-    if (sector_tag == want) memcpy(cache_buf[i], sector_buf + (b * M0C_BLOCK & 511u), M0C_BLOCK);
-    else memset(cache_buf[i], 0xFF, M0C_BLOCK);
+    if (sector_tag == want) memcpy(CACHE_BLK(i), sector_buf + (b * M0C_BLOCK & 511u), M0C_BLOCK);
+    else memset(CACHE_BLK(i), 0xFF, M0C_BLOCK);
 #endif
 #undef M0C_SOURCE
 }
@@ -135,8 +142,8 @@ static uint8_t *cache_ram_block(uint32_t off) {
     int32_t tag = CACHE_ETAG(off >> M0C_SHIFT);
     unsigned i = cache_mru;
     if (cache_tag[i] != tag) {
-        for (i = 0; i < M0C_WAYS && cache_tag[i] != tag; i++) {}
-        if (i == M0C_WAYS) {
+        for (i = 0; i < CACHE_N && cache_tag[i] != tag; i++) {}
+        if (i == CACHE_N) {
             i = cache_victim();
             cache_load(i, off >> M0C_SHIFT, 0);
             cache_tag[i] = tag;
@@ -149,7 +156,7 @@ static uint8_t *cache_ram_block(uint32_t off) {
         cache_changed = 0;
         M0C_SHOWN();
     }
-    return cache_buf[i];
+    return CACHE_BLK(i);
 }
 
 static uint8_t cache_ram_load(uint32_t off) { return cache_ram_block(off)[off & (M0C_BLOCK - 1u)]; }
@@ -170,15 +177,15 @@ static void cache_ram_store(uint32_t off, uint8_t v) {
 /* A ROM byte from the pool (off: in the ROM). */
 static M0C_UNUSED uint8_t cache_rom_byte(uint32_t off) {
     int32_t b = (int32_t)(off >> M0C_SHIFT);
-    if (cache_tag[cache_rom_last] == b) return cache_buf[cache_rom_last][off & (M0C_BLOCK - 1u)];
+    if (cache_tag[cache_rom_last] == b) return CACHE_BLK(cache_rom_last)[off & (M0C_BLOCK - 1u)];
 #if M0C_BLOCK < 512
     /* the staged sector, still whole from the last miss: the 4×128 accolé
      * served before taking a block from the pool */
     if (sector_tag == (int32_t)(off >> 9)) return sector_buf[off & 511u];
 #endif
     unsigned i = 0;
-    while (i < M0C_WAYS && cache_tag[i] != b) i++;
-    if (i == M0C_WAYS) {
+    while (i < CACHE_N && cache_tag[i] != b) i++;
+    if (i == CACHE_N) {
         i = cache_victim();
         cache_load(i, (uint32_t)b, 1);
         cache_tag[i] = b;
@@ -190,13 +197,13 @@ static M0C_UNUSED uint8_t cache_rom_byte(uint32_t off) {
     }
     cache_ref[i] = 1;
     cache_rom_last = (uint8_t)i;
-    return cache_buf[i][off & (M0C_BLOCK - 1u)];
+    return CACHE_BLK(i)[off & (M0C_BLOCK - 1u)];
 }
 
 #if M0C_SAVE
 static int cache_any_dirty(void) {
     unsigned dirty = 0;
-    for (unsigned w = 0; w < M0C_WAYS; w++) dirty |= cache_dirty[w];
+    for (unsigned w = 0; w < CACHE_N; w++) dirty |= cache_dirty[w];
     return dirty != 0;
 }
 
@@ -207,7 +214,7 @@ void cache_flush(void) {
 #else
 static void cache_flush(void) {
 #endif
-    for (unsigned i = 0; i < M0C_WAYS; i++) cache_writeback(i);
+    for (unsigned i = 0; i < CACHE_N; i++) cache_writeback(i);
     M0C_PENDING = (uint8_t)cache_any_dirty();
     M0C_SHOWN(); /* clean again: the write slots close */
 }
@@ -220,7 +227,7 @@ int cache_flush_next(int i) {
 #else
 static M0C_UNUSED int cache_flush_next(int i) {
 #endif
-    for (; i >= 0 && i < M0C_WAYS; i++)
+    for (; i >= 0 && i < CACHE_N; i++)
         if (CACHE_IS_ETAG(cache_tag[i]) && cache_dirty[i]) {
             cache_writeback(i);
             M0C_SHOWN();
@@ -234,7 +241,7 @@ static M0C_UNUSED int cache_flush_next(int i) {
 /* Every block void (none dirty: flushed first, or a reset); lent ones stay
  * lent. */
 static void cache_drop(void) {
-    for (unsigned i = 0; i < M0C_WAYS; i++) {
+    for (unsigned i = 0; i < CACHE_N; i++) {
 #if M0C_LEND
         if (cache_tag[i] != CACHE_LENT) cache_tag[i] = -1;
 #else
@@ -263,10 +270,11 @@ static void cache_reset(void) {
 }
 
 #if M0C_LEND
-/* A menu's stack: the whole pool but its last M0C_LEND_KEEP blocks (what
- * the hand needs if something reads the ROM meanwhile), written back first
- * and kept out of the cache until cache_unlend.  Returns the top of the
- * lent part, 8-aligned; it starts at cache_buf[0]. */
+/* A menu's stack: the array but its last M0C_LEND_KEEP blocks (what the
+ * hand needs if something reads the ROM meanwhile; with M0C_DYN, the
+ * blocks after the array too), written back first and kept out of the
+ * cache until cache_unlend.  Returns the top of the lent part, 8-aligned;
+ * it starts at cache_buf[0]. */
 static uintptr_t cache_lend(void) {
 #if M0C_SAVE
     cache_flush();
@@ -274,11 +282,51 @@ static uintptr_t cache_lend(void) {
     unsigned n = M0C_WAYS - M0C_LEND_KEEP;
     for (unsigned i = 0; i < n; i++) cache_tag[i] = CACHE_LENT;
     cache_drop();
-    return ((uintptr_t)cache_buf[0] + n * M0C_BLOCK) & ~(uintptr_t)7;
+    return ((uintptr_t)CACHE_BLK(0) + n * M0C_BLOCK) & ~(uintptr_t)7;
 }
 
 static void cache_unlend(void) {
-    for (unsigned i = 0; i < M0C_WAYS; i++)
+    for (unsigned i = 0; i < CACHE_N; i++)
         if (cache_tag[i] == CACHE_LENT) cache_tag[i] = -1;
+}
+#endif
+
+#if M0C_DYN
+/* The blocks after the array (M0C_DYN): the frontend gives the C stack's
+ * RAM to the cache, and takes it back, one block at a time, the stack
+ * first.  cache_top is the end of the last block in use. */
+static M0C_UNUSED uintptr_t cache_top(void) { return (uintptr_t)CACHE_BLK(cache_ways); }
+
+/* One block more, at cache_top (the caller made sure nothing uses that
+ * RAM): 0 at M0C_MAX_WAYS. */
+static M0C_UNUSED int cache_grow(void) {
+    if (cache_ways >= M0C_MAX_WAYS) return 0;
+    unsigned i = cache_ways;
+    cache_tag[i] = -1;
+    cache_ref[i] = 0;
+    cache_dirty[i] = 0;
+    cache_ways = (uint8_t)(i + 1u);
+    return 1;
+}
+
+/* The last block out of the cache, its RAM free from now on: 0 when only
+ * the array's are left, or when the card refused its write-back (the
+ * changes are kept). */
+static M0C_UNUSED int cache_shrink(void) {
+    if (cache_ways <= M0C_WAYS) return 0;
+    unsigned i = cache_ways - 1u;
+#if M0C_SAVE
+    cache_writeback(i);
+    if (cache_dirty[i]) return 0;
+#endif
+    int shown = CACHE_IS_ETAG(cache_tag[i]);
+    cache_tag[i] = -1;
+    cache_ref[i] = 0;
+    cache_ways = (uint8_t)i;
+    if (cache_rom_last >= i) cache_rom_last = 0;
+    if (cache_mru >= i) cache_mru = 0;
+    if (cache_hand >= i) cache_hand = 0;
+    if (shown) M0C_SHOWN(); /* what showed it points to the stack now */
+    return 1;
 }
 #endif

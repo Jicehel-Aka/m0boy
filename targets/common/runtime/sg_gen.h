@@ -25,6 +25,15 @@
 
 extern const uint8_t sg_rom[];
 
+/* The entry tables of sg_gen.c (32-bit words only): in flash on the ESP8266,
+ * whose constants are otherwise copied to its 80 KiB of RAM (Ristar's 2564
+ * entries, 20 KiB, did not link). */
+#if defined(ESP8266)
+#define SG_ENTRY_ATTR __attribute__((section(".irom.text"), aligned(4)))
+#else
+#define SG_ENTRY_ATTR
+#endif
+
 #if SG_SYSTEM_GG
 /* Paged ROM through the slot pointers; the first KiB is fixed. */
 static inline __attribute__((always_inline)) uint8_t RD(uint16_t a) {

@@ -145,6 +145,22 @@ void gbl_stream_invalidate(void);
  * but 3 blocks, written back first), out of the cache until
  * gbl_stream_invalidate. */
 uintptr_t gbl_cache_lend(void);
+/* GBL_CACHE_DYN (gbl_options.h): the blocks after the cache's fixed part,
+ * GBL_CACHE_DYN_BLOCK bytes each.  gbl_cache_top is the end of the last
+ * one in use; gbl_cache_grow adds the block at gbl_cache_top (the caller
+ * made sure nothing uses that RAM), 0 at the most; gbl_cache_shrink takes
+ * the last one out, its RAM free on return, 0 when only the fixed part is
+ * left or its cartridge RAM could not be written back. */
+uintptr_t gbl_cache_top(void);
+extern uint32_t gbl_cache_loads;  /* blocks the cache loaded (ROM and cartridge RAM) */
+extern uint32_t gbl_exec_refused; /* gbl_exec calls refused for want of stack (unwinds) */
+/* Nonzero: gbl_exec calls gbl_platform_pool on entry with its frame above
+ * this address (the stack pool's blocks taken back, m0_stack_pool_run). */
+extern uintptr_t gbl_pool_sp;
+void gbl_platform_pool(void);
+unsigned gbl_cache_ways(void);
+int gbl_cache_grow(void);
+int gbl_cache_shrink(void);
 extern uint32_t gbl_stream_misses;  /* sectors read so far */
 extern uint32_t gbl_stream_unpacked; /* ... decoded from compressed flash */
 

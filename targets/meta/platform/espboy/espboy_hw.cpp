@@ -12,6 +12,7 @@
 extern "C" {
 #include <user_interface.h>
 #include <cont.h>
+#include <coredecls.h> /* disable_extra4k_at_link_time */
 }
 #if __has_include("gbl.h") /* Game Boy frontend; the Sega ones have sg_audio.h */
 #include "gbl.h"
@@ -74,7 +75,10 @@ extern "C" uint8_t espboy_buttons(void) {
     return out;
 }
 extern "C" void espboy_restart(void) { ESP.restart(); for (;;) {} }
-/* The emulation runs in setup(), on the core's continuation stack. */
+/* The emulation runs in setup(), on the core's continuation stack:
+ * CONT_STACKSIZE (platformio.ini) bytes in .bss, not on the SDK's SYS stack
+ * where the core puts it by default (its "extra 4k" of heap; 12 KiB there
+ * would overrun what the SDK uses). */
 extern "C" uintptr_t espboy_stack_floor(void) { return (uintptr_t)g_pcont->stack + 256u; }
 extern "C" unsigned espboy_free_stack(void) {
     char here;
@@ -241,6 +245,7 @@ extern "C" void meta_audio_pause(int on) {
  * Everything runs inside setup(): no loop() iterations, so the watchdogs are
  * disabled as the earlier emulator did. */
 void setup(void) {
+    disable_extra4k_at_link_time(); /* links the core's .bss continuation stack */
     ESP.wdtDisable();
     *((volatile uint32_t *)0x60000900) &= ~1u;
     wifi_set_opmode_current(NULL_MODE);

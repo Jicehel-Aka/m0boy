@@ -13,5 +13,5 @@ build_src_filter = +<*> -<*.S> -<meta_sd.c> -<meta_fat.c> -<meta_save.cpp> -<met
 extra_scripts = pre:espboy_build.py
     post:espboy_size.py
 build_flags = -Os -Wno-unused-label
-    -DCONT_STACKSIZE=6144
+    -DCONT_STACKSIZE=12288
     -DPIO_FRAMEWORK_ARDUINO_LWIP2_LOW_MEMORY_LOW_FLASH

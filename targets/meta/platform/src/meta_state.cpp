@@ -16,6 +16,13 @@
 #include "meta_fat.h"
 #include "meta_sd.h"
 
+/* Sega projects name their state file in sg_config.h; without it this file
+ * built its empty stubs on the consoles and the menu never showed Etat (the
+ * host harness, which includes sg_config.h itself, had states). */
+#if __has_include("sg_config.h")
+#include "sg_config.h"
+#endif
+
 /* The machine behind the slots: the Game Boy's runtime (gbl_state_io), or
  * the Sega one (gg_state_io, the machine as raw bytes). */
 #if defined(GBL_STATE_NAME83)

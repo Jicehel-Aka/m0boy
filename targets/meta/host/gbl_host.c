@@ -344,7 +344,12 @@ static void trace_report(void) {
 #endif
 
 #if GBL_ERAM_SIZE > 0
-/* Cartridge RAM file (--save FILE), or kept in memory for the run. */
+/* Cartridge RAM file (--save FILE), or kept in memory for the run.  What
+ * was never written reads as the .SAV compile.sh puts on the card (0xFF),
+ * a missing file too: a failed read would also fail the write-back of a
+ * block smaller than a sector (its sector is read first), the game's
+ * writes would be lost, and profiles recorded on another path than the
+ * console's (Super Mario Land 2's demo: a quarter of the code it runs). */
 static const char *save_path;
 static uint8_t save_mem[GBL_ERAM_SIZE];
 static uint8_t save_mem_valid[(GBL_ERAM_SIZE + 511) / 512];
@@ -354,12 +359,15 @@ int gbl_platform_save_read(uint32_t sector, uint8_t *dst) {
     if (sector * 512u >= GBL_ERAM_SIZE) return 0;
     if (save_path) {
         FILE *f = fopen(save_path, "rb");
-        if (!f) return 0;
-        size_t n = fseek(f, (long)sector * 512L, SEEK_SET) ? 0 : fread(dst, 1, 512, f);
-        fclose(f);
-        return n == 512;
+        size_t n = f && !fseek(f, (long)sector * 512L, SEEK_SET) ? fread(dst, 1, 512, f) : 0;
+        if (f) fclose(f);
+        if (n < 512) memset(dst + n, 0xFF, 512 - n); /* past the file's end: a fresh card */
+        return 1;
     }
-    if (!save_mem_valid[sector]) return 0;
+    if (!save_mem_valid[sector]) {
+        memset(dst, 0xFF, 512);
+        return 1;
+    }
     memcpy(dst, save_mem + sector * 512u, 512);
     return 1;
 }

@@ -56,7 +56,22 @@
  * GBL_UNPACK_ASM          Decode those sectors with the Thumb-1 decoder
  *                         (gbl_core_asm.S); default on for Cortex-M0+.
  * GBL_STREAM_SECTORS      512-byte sectors cached for a streamed ROM
- *                         (GBL_ROM_STREAM projects only).
+ *                         (GBL_ROM_STREAM projects only); with
+ *                         GBL_CACHE_DYN, how many the cache starts with.
+ * GBL_CACHE_DYN           The ROM cache (or the unified pool) is a fixed
+ *                         part, which the option menu runs on, and blocks
+ *                         after it in the C stack's RAM: the frontend lends
+ *                         those to the stack when it runs short and takes
+ *                         them back when it stays shallow (meta_main.cpp,
+ *                         m0_stack_pool.h).  The fixed part must be the
+ *                         last thing in RAM below the stack (.cachepool,
+ *                         gamebuino_meta.ld, pokitto.ld); the device
+ *                         projects turn it on, off elsewhere.
+ * GBL_STREAM_FIXED        GBL_CACHE_DYN: sectors of the fixed part (2, the
+ *                         menu's stack); GBL_STREAM_MAX the most in all.
+ * GBL_CACHE_FIXED_BYTES   GBL_CACHE_DYN with GBL_CACHE_UNIFIED: the fixed
+ *                         part of the pool (the menu's stack, a sector and
+ *                         3 blocks); GBL_CACHE_MAX_BYTES the most in all.
  * GBL_DEBUG_ERAM_MAPS     Check every read through the cartridge RAM read
  *                         table against the sector search (gbl_dbg_eram,
  *                         meta-usb.py eram); off by default.
@@ -67,7 +82,7 @@
  *                         cartridge RAM on the card (both needed), instead
  *                         of GBL_STREAM_SECTORS + GBL_ERAM_CACHE_SECTORS
  *                         sectors of each; off by default.
- * GBL_CACHE_BLOCK         Its block size: 128, 256 or 512 bytes.  Below
+ * GBL_CACHE_BLOCK         Its block size: 64, 128, 256 or 512 bytes.  Below
  *                         512, the card and the unpacker still work on
  *                         512-byte sectors, through one more sector buffer
  *                         that also serves the next block of the same
@@ -157,19 +172,82 @@
 #undef GBL_CACHE_BLOCK
 #define GBL_CACHE_BLOCK 512 /* the separate caches' sectors */
 #endif
-#if GBL_CACHE_BLOCK == 128
+#if GBL_CACHE_BLOCK == 64
+#define GBL_CACHE_SHIFT 6
+#elif GBL_CACHE_BLOCK == 128
 #define GBL_CACHE_SHIFT 7
 #elif GBL_CACHE_BLOCK == 256
 #define GBL_CACHE_SHIFT 8
 #elif GBL_CACHE_BLOCK == 512
 #define GBL_CACHE_SHIFT 9
 #else
-#error "GBL_CACHE_BLOCK: 128, 256 or 512"
+#error "GBL_CACHE_BLOCK: 64, 128, 256 or 512"
 #endif
-#if GBL_CACHE_UNIFIED && (GBL_CACHE_BYTES % GBL_CACHE_BLOCK || GBL_CACHE_BYTES / GBL_CACHE_BLOCK < 4 || \
-                          GBL_CACHE_BYTES / GBL_CACHE_BLOCK > 255 ||                                   \
-                          GBL_CACHE_MENU_STACK + 512 + 3 * GBL_CACHE_BLOCK > GBL_CACHE_BYTES)
+
+/* Stack gbl_exec / gbl_run want above gbl_stack_limit (gbl_core.c); the
+ * frontend's stack pool keeps the raised limit under it too. */
+#ifndef GBL_EXEC_HEADROOM
+#define GBL_EXEC_HEADROOM 512u
+#endif
+
+/* ---- the cache's blocks after its fixed part (GBL_CACHE_DYN) ------------ */
+#ifndef GBL_CACHE_DYN
+#define GBL_CACHE_DYN 0
+#endif
+#ifndef GBL_CACHE_DYN_INLINE /* host tests: every block in the array */
+#define GBL_CACHE_DYN_INLINE 0
+#endif
+/* Device builds only: the host has no such layout, and the estimator
+ * (BENCH_FRAMES) keeps the whole cache in its array, as before. */
+#if !GBL_ROM_STREAM || (!defined(__ARM_ARCH_6M__) && !GBL_CACHE_DYN_INLINE) || defined(BENCH_FRAMES)
+#undef GBL_CACHE_DYN
+#define GBL_CACHE_DYN 0
+#endif
+#if GBL_CACHE_UNIFIED
+#if GBL_CACHE_DYN
+#ifndef GBL_CACHE_FIXED_BYTES
+#define GBL_CACHE_FIXED_MIN \
+    ((GBL_CACHE_MENU_STACK + 512 + 3 * GBL_CACHE_BLOCK + GBL_CACHE_BLOCK - 1) / GBL_CACHE_BLOCK * GBL_CACHE_BLOCK)
+#define GBL_CACHE_FIXED_BYTES (GBL_CACHE_FIXED_MIN < GBL_CACHE_BYTES ? GBL_CACHE_FIXED_MIN : GBL_CACHE_BYTES)
+#endif
+#ifndef GBL_CACHE_MAX_BYTES
+#define GBL_CACHE_MAX_BYTES \
+    (GBL_CACHE_BYTES + 2048 > 255 * GBL_CACHE_BLOCK ? 255 * GBL_CACHE_BLOCK : GBL_CACHE_BYTES + 2048)
+#endif
+#else
+#undef GBL_CACHE_FIXED_BYTES
+#undef GBL_CACHE_MAX_BYTES
+#define GBL_CACHE_FIXED_BYTES GBL_CACHE_BYTES
+#define GBL_CACHE_MAX_BYTES GBL_CACHE_BYTES
+#endif
+#define GBL_CACHE_DYN_BLOCK GBL_CACHE_BLOCK
+#define GBL_CACHE_DYN_TARGET (GBL_CACHE_BYTES / GBL_CACHE_BLOCK) /* blocks at boot */
+#if GBL_CACHE_FIXED_BYTES % GBL_CACHE_BLOCK || GBL_CACHE_FIXED_BYTES / GBL_CACHE_BLOCK < 4 || \
+    GBL_CACHE_MAX_BYTES / GBL_CACHE_BLOCK > 255 || GBL_CACHE_MAX_BYTES < GBL_CACHE_BYTES ||   \
+    GBL_CACHE_BYTES < GBL_CACHE_FIXED_BYTES ||                                               \
+    GBL_CACHE_MENU_STACK + 512 + 3 * GBL_CACHE_BLOCK > GBL_CACHE_FIXED_BYTES
 #error "GBL_CACHE_BYTES: 4 to 255 blocks, room for the menu's stack and a sector"
+#endif
+#else
+#if GBL_CACHE_DYN
+#ifndef GBL_STREAM_FIXED
+#define GBL_STREAM_FIXED (GBL_STREAM_SECTORS < 2 ? GBL_STREAM_SECTORS : 2)
+#endif
+#ifndef GBL_STREAM_MAX
+#define GBL_STREAM_MAX (GBL_STREAM_SECTORS + 4)
+#endif
+#else
+#undef GBL_STREAM_FIXED
+#undef GBL_STREAM_MAX
+#define GBL_STREAM_FIXED GBL_STREAM_SECTORS
+#define GBL_STREAM_MAX GBL_STREAM_SECTORS
+#endif
+#define GBL_CACHE_DYN_BLOCK 512
+#define GBL_CACHE_DYN_TARGET GBL_STREAM_SECTORS
+#if GBL_ROM_STREAM && (GBL_STREAM_FIXED < 1 || GBL_STREAM_SECTORS < GBL_STREAM_FIXED || \
+                       GBL_STREAM_MAX < GBL_STREAM_SECTORS || GBL_STREAM_MAX > 255)
+#error "GBL_STREAM_FIXED <= GBL_STREAM_SECTORS <= GBL_STREAM_MAX <= 255"
+#endif
 #endif
 
 /* ---- what the build can do: Thumb-1 paths need an ARMv6-M compiler (not

@@ -500,13 +500,15 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             config << "#define GG_STREAM_SECTORS 4 /* the whole USB RAM bank */\n";
         if (gg && streamed && esp)
             config << "#define GG_STREAM_SECTORS 6\n#define GG_CACHE_BLOCK 512\n";
-        /* META: 3 sectors in 128-byte blocks - 8 quarter-sector blocks
-         * cover up to 8 sectors at a time, which beats whole-sector blocks:
-         * the working set spans more sectors than it fills (device: whole
-         * 512-byte blocks froze Ristar, the quarters do not).  compile.sh
-         * grows GG_STREAM_SECTORS from the build's RAM report. */
+        /* META: 3 sectors in 64-byte blocks - small blocks cover more
+         * sectors at a time, which beats whole-sector blocks: the working
+         * set spans more sectors than it fills (device: whole 512-byte
+         * blocks froze Ristar, quarters did not; 64-byte blocks loaded
+         * 4131 blocks in 150 s of its demo against 7573 with 128, 2026-10-21).
+         * With GG_CACHE_DYN the frontend fills the cache at boot (gg.h);
+         * without, compile.sh grows GG_STREAM_SECTORS from the RAM report. */
         if (gg && (streamed || cart_on_card) && o.target == TargetId::meta)
-            config << "#ifndef GG_STREAM_SECTORS\n#define GG_STREAM_SECTORS 3\n#endif\n#ifndef GG_CACHE_BLOCK\n#define GG_CACHE_BLOCK 128\n#endif\n";
+            config << "#ifndef GG_STREAM_SECTORS\n#define GG_STREAM_SECTORS 3\n#endif\n#ifndef GG_CACHE_BLOCK\n#define GG_CACHE_BLOCK 64\n#endif\n";
         if (gg) {
             if (streamed && !pool.empty()) config << "#define GG_POOL_SECTORS " << pool.size() << " /* raw/LZSS ROM sectors in flash */\n";
             if (pool_packed) config << "#define GG_POOL_PACKED 1\n";
@@ -599,6 +601,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         if (gg) { /* the card cache shared with the Game Boy */
             copy_template(common_dir / "runtime/m0_cache.h", src / "m0_cache.h");
             copy_template(common_dir / "runtime/m0_cache.inc", src / "m0_cache.inc");
+            copy_template(common_dir / "runtime/m0_stack_pool.h", src / "m0_stack_pool.h");
         }
         if (gg) /* the Z80 core is the SG-1000 runtime's */
             for (const char* name : { "z80.c", "z80.h", "z80_ops.h", "z80_fast.h" }) copy_template(shared / "runtime" / name, src / name);

@@ -99,7 +99,55 @@ static inline uint32_t gg_cart_offset(uint16_t a, uint8_t ram_ctl) { return (ram
 #if GG_CACHE_BYTES < 512 || GG_CACHE_BYTES % GG_CACHE_BLOCK
 #error "GG_CACHE_BYTES: whole blocks, at least 512 bytes (gg_stream_scratch)"
 #endif
+/* GG_CACHE_DYN (META builds): the cache is a fixed part, the option menu's
+ * stack (GG_CACHE_FIXED_BYTES, .cachepool, last in RAM), and blocks after
+ * it in the C stack's RAM, up to GG_CACHE_MAX_BYTES: gg_main.cpp fills
+ * them at boot while the stack keeps its guard, then lends them to the
+ * stack and takes them back (m0_stack_pool.h).  GG_CACHE_BYTES is then
+ * the fixed part.  Off on the Pokitto (the cache is in the USB RAM bank),
+ * the ESPboy and the host. */
+#if defined(__has_include)
+#if __has_include("gbl_config.h")
+#include "gbl_config.h"
 #endif
+#endif
+#ifndef GG_CACHE_DYN
+#if defined(__ARM_ARCH_6M__) && !(defined(GBL_TARGET_POKITTO) && GBL_TARGET_POKITTO) && !defined(GG_BENCH)
+#define GG_CACHE_DYN 1
+#else
+#define GG_CACHE_DYN 0
+#endif
+#endif
+#if GG_CACHE_DYN
+#ifndef GG_CACHE_FIXED_BYTES
+#define GG_CACHE_FIXED_BYTES (GG_CACHE_BLOCK < 512 ? 768 : 1024)
+#endif
+#ifndef GG_CACHE_MAX_BYTES
+#define GG_CACHE_MAX_BYTES (GG_CACHE_BLOCK * (4096 / GG_CACHE_BLOCK > 255 ? 255 : 4096 / GG_CACHE_BLOCK))
+#endif
+#undef GG_CACHE_BYTES
+#define GG_CACHE_BYTES GG_CACHE_FIXED_BYTES
+#if GG_CACHE_FIXED_BYTES < 512 || GG_CACHE_FIXED_BYTES % GG_CACHE_BLOCK || GG_CACHE_MAX_BYTES < GG_CACHE_FIXED_BYTES
+#error "GG_CACHE_FIXED_BYTES: whole blocks, at least 512 bytes, up to GG_CACHE_MAX_BYTES"
+#endif
+uintptr_t gg_cache_top(void);
+unsigned gg_cache_ways(void);
+int gg_cache_grow(void);
+int gg_cache_shrink(void);
+extern uint32_t gg_cache_loads;  /* blocks the cache loaded (ROM and cartridge RAM) */
+extern uint32_t sg_exec_refused; /* sg_exec calls refused for want of stack (unwinds) */
+/* Nonzero: sg_exec calls gg_platform_pool on entry with its frame above
+ * this address (the stack pool's blocks taken back, m0_stack_pool_run). */
+extern uintptr_t sg_pool_sp;
+void gg_platform_pool(void);
+#endif
+#endif
+#ifndef GG_CACHE_DYN
+#define GG_CACHE_DYN 0
+#endif
+/* Room above the limit for the frames between sg_exec and the first
+ * ENTER() (gg.c); the stack pool keeps a raised limit under it too. */
+#define SG_EXEC_HEADROOM 384u
 
 /* Buttons (gg_buttons): active high */
 enum { GG_UP = 1, GG_DOWN = 2, GG_LEFT_KEY = 4, GG_RIGHT_KEY = 8, GG_B1 = 16, GG_B2 = 32, GG_START = 64,

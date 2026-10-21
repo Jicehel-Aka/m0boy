@@ -148,6 +148,13 @@
 #                 12 (le plus profond mesuré au filigrane est de 1640 octets,
 #                 +128 non peints sous main, USB comprise donc majorée pour un
 #                 firmware sans USB ; marge ~620 octets).
+#   SOURCE=1      le code source prêt à compiler au lieu du firmware : chaque
+#                 zip contient source/ (le projet généré ; platformio.ini
+#                 porte les options de ce build, BUILD.txt dit la commande)
+#                 et les fichiers de la carte SD (ROM lue sur la carte,
+#                 .SAV, états).  Destination par défaut ./roms/<console>-source.
+#                 Le firmware est tout de même construit : le remplissage de
+#                 la flash se règle sur ses tailles, la source livrée tient.
 #   AUDIO_DMA=0|1 son de la META par interruption (0, défaut pour toutes les
 #                 consoles : moins de RAM, laissée au cache carte) ou par DMA
 #                 (1).  Un jeu déjà à jour n'est pas refait : FORCE=1 après
@@ -204,6 +211,8 @@ RELEASE="${RELEASE:-0}"
 export RELEASE
 RELEASE_FLAG=""
 [ "$RELEASE" = 1 ] && RELEASE_FLAG="-DMETA_USB=0"
+# CACHE_DYN=0 : caches de taille fixe (GBL_CACHE_DYN, GG_CACHE_DYN ; META).
+[ "${CACHE_DYN:-1}" = 0 ] && export PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }-DGBL_CACHE_DYN=0 -DGG_CACHE_DYN=0"
 export RELEASE_FLAG
 if [ "$TARGET" = both ] || [ "$TARGET" = all ]; then
   # Une exécution par console.  La sélection des jeux et la confirmation des
@@ -237,7 +246,8 @@ case "$TARGET" in
   *) echo "TARGET=$TARGET inconnu (meta, pokitto, espboy ou both)."; exit 1 ;;
 esac
 SRC_DIR="${1:-./roms}"
-DEST_DIR="${2:-./roms/$TARGET}"
+SOURCE="${SOURCE:-0}"
+if [ "$SOURCE" = 1 ]; then DEST_DIR="${2:-./roms/$TARGET-source}"; else DEST_DIR="${2:-./roms/$TARGET}"; fi
 # Projets générés : out/<jeu> pour la META, out/pokitto/<jeu> pour la Pokitto
 # (les deux peuvent coexister).
 if [ "$TARGET" != meta ]; then OUT_ROOT="out/$TARGET"; else OUT_ROOT="out"; fi
@@ -426,6 +436,24 @@ with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(p, os.path.join(name, os.path.relpath(p, src)))
 os.replace(tmp, dst)
 PY
+}
+
+# SOURCE=1 : le projet généré remplace le firmware dans le dossier du jeu.
+# Les options que ce script passe au build par l'environnement vont dans
+# platformio.ini (build_flags y est la dernière clé) ; la Pokitto, construite
+# par cmake ou make, reçoit les siennes dans BUILD.txt.
+export_source() { # $1 projet généré, $2 dossier du jeu, $3 options pio de ce build, $4 commande de build
+  local src="$2/source" f
+  rm -rf "$src" && mkdir -p "$src" || return 1
+  tar -C "$1" --exclude=./.pio --exclude=./build --exclude=./build-clang --exclude='./host/build*' \
+    --exclude=./compile.log -cf - . | tar -C "$src" -xf - || return 1
+  if [ -n "$3" ] && [ -f "$src/platformio.ini" ]; then
+    [ -z "$(tail -c1 "$src/platformio.ini")" ] || echo >> "$src/platformio.ini"
+    for f in $3; do printf '    %s\n' "$f"; done >> "$src/platformio.ini"
+  fi
+  printf '%s\n' "$4" > "$src/BUILD.txt"
+  rm -f "$2"/*.BIN "$2/firmware.bin" "$2/firmware.sym" "$2/FLASH.txt" "$2/README.md" "$2/$(basename "$2").bin"
+  echo "[i] Source prête à compiler : $(basename "$2")/source ($4)"
 }
 
 unzip_game() { # $1 zip, $2 dossier de destination
@@ -754,7 +782,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   # Firmware filling the flash: a first build measures the generated code
   # per instruction (sg_gen.o), the second generates with that measure;
   # when it overflows, a few bytes more per instruction until it fits.
-  local sg_build="$out_dir/build" gen_log build_log bpi="" fill="" tries=0 rc text compiled
+  local sg_build="$out_dir/build" gen_log build_log bpi="" fill="" tries=0 rc text compiled sg_extra=""
   [ "$FIRMWARE_COMPILER" = clang ] && sg_build="$out_dir/build-clang"
   local size_bin
   if [ "$TARGET" = espboy ]; then size_bin="$HOME/.platformio/packages/toolchain-xtensa/bin/xtensa-lx106-elf-size"
@@ -825,7 +853,9 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   # 128, ~620 octets de marge sur le pire mesuré.  L'anneau audio, lui, ne
   # descend pas : le producteur écrit une image émulée entière (plancher 512
   # échantillons, meta_audio.cpp).
-  if [ "$TARGET" = meta ] && { [ "$sys" = gg ] || [ "$sys" = sms ]; } \
+  # Sauf avec le cache dynamique (GG_CACHE_DYN, par défaut sur META) : le
+  # firmware remplit lui-même le cache au démarrage jusqu'à cette garde.
+  if [ "$TARGET" = meta ] && [ "${CACHE_DYN:-1}" = 0 ] && { [ "$sys" = gg ] || [ "$sys" = sms ]; } \
      && grep -q "GG_CACHE_BLOCK" "$out_dir/src/sg_config.h"; then
     local sectors=3 used
     used=$(echo "$build_log" | sed -n 's/.*(\(used [0-9]*\) bytes from 32768.*/\1/p'); used=${used#used }
@@ -835,7 +865,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
       sectors=2
       build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG} -DGG_STREAM_SECTORS=2" \
         pio run -d "$out_dir" 2>&1) || return 1
-      echo "[i] Cache carte : 2 secteurs (pile courte)"
+      echo "[i] Cache carte : 2 secteurs (pile courte)"; sg_extra="-DGG_STREAM_SECTORS=2"
     fi
     while [ $sectors -ge 3 ]; do
       used=$(echo "$build_log" | sed -n 's/.*(\(used [0-9]*\) bytes from 32768.*/\1/p'); used=${used#used }
@@ -844,7 +874,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
       sectors=$((sectors + 1)); [ $sectors -le 8 ] || break
       build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG} -DGG_STREAM_SECTORS=$sectors" \
         pio run -d "$out_dir" 2>&1) || break
-      echo "[i] Cache carte : $sectors secteurs"
+      echo "[i] Cache carte : $sectors secteurs"; sg_extra="-DGG_STREAM_SECTORS=$sectors"
     done
   fi
   echo "$gen_log"
@@ -892,9 +922,16 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   fi
   printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "system": "%s",\n  "pack": 0,\n  "hc": %s,\n  "compiler": "%s"\n}\n' \
     "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$sys" "$([ "$OVERCLOCK" = 1 ] && echo 1 || echo 0)" "$FIRMWARE_COMPILER" > "$game_dir/.gbrmeta.json"
+  if [ "$SOURCE" = 1 ]; then
+    if [ "$TARGET" = pokitto ]; then
+      export_source "$out_dir" "$game_dir" "" "cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake -DSG_COMPILER=$FIRMWARE_COMPILER -DEXTRA_DEFS=-DMETA_OVERCLOCK=$OVERCLOCK && ninja -C build" || return 1
+    else
+      export_source "$out_dir" "$game_dir" "${PLATFORMIO_BUILD_FLAGS:-} ${OVERCLOCK_FLAG:-} ${RELEASE_FLAG:-} $sg_extra" "pio run -d ." || return 1
+    fi
+  fi
   zip_game "$game_dir" "$game_dir.zip" || { echo "[x] Zip impossible : le jeu reste en dossier."; return 1; }
   rm -rf "$game_dir"
-  echo "[i] Firmware $label $TARGET v$CUR_VERSION : $game_dir.zip"
+  echo "[i] $([ "$SOURCE" = 1 ] && echo "Source" || echo "Firmware") $label $TARGET v$CUR_VERSION : $game_dir.zip"
 }
 
 build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 sha1
@@ -1274,6 +1311,13 @@ PY
   else fw_ver=$(firmware_version "$game_dir/$sd_name.BIN"); fi
   [ -n "$fw_ver" ] || fw_ver="$CUR_VERSION (pas de marqueur : gbrecomp trop ancien)"
   echo "[i] Firmware produit par gbrecomp v$fw_ver"
+  if [ "$SOURCE" = 1 ]; then
+    if [ "$TARGET" = pokitto ]; then
+      export_source "$out_dir" "$game_dir" "" "make COMPILER=$FIRMWARE_COMPILER EXTRA_CFLAGS='$(printf '%s\n' $extra_flags | awk '!seen[$0]++' | tr '\n' ' ' | sed 's/ $//')'" || return 1
+    else
+      export_source "$out_dir" "$game_dir" "${PLATFORMIO_BUILD_FLAGS:-} ${OVERCLOCK_FLAG:-}" "FIRMWARE_COMPILER=$FIRMWARE_COMPILER pio run -d ." || return 1
+    fi
+  fi
   zip_game "$game_dir" "$game_dir.zip" || { echo "[x] Zip impossible : le jeu reste en dossier."; return 1; }
   rm -rf "$game_dir"
   echo "[i] Jeu : $game_dir.zip"

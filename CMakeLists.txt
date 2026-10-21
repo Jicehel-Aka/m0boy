@@ -233,7 +233,7 @@ if(BUILD_TESTS)
     endforeach()
 
     # One pool for the streamed ROM and the cartridge RAM, per block size.
-    foreach(block 128 256 512)
+    foreach(block 64 128 256 512)
         add_executable(test_meta_cache_unified_${block} "${GBL_META_DIR}/tests/cache_unified.c" ${GBL_META_RUNTIME_SOURCES})
         target_include_directories(test_meta_cache_unified_${block} PRIVATE "${GBL_META_DIR}/tests/config_stream"
             "${GBL_META_DIR}/runtime")
@@ -242,6 +242,30 @@ if(BUILD_TESTS)
         target_compile_options(test_meta_cache_unified_${block} PRIVATE -UNDEBUG)
         add_test(NAME meta_cache_unified_${block}_rom_and_ram_one_pool COMMAND test_meta_cache_unified_${block})
     endforeach()
+
+    # The cache's blocks after its fixed part (GBL_CACHE_DYN) coming and
+    # going: the unified pool, and the ROM sectors beside the RAM's cache.
+    foreach(variant unified_64 unified_128 unified_512 stream)
+        add_executable(test_meta_cache_dyn_${variant} "${GBL_META_DIR}/tests/cache_unified.c" ${GBL_META_RUNTIME_SOURCES})
+        target_include_directories(test_meta_cache_dyn_${variant} PRIVATE "${GBL_META_DIR}/tests/config_stream"
+            "${GBL_META_DIR}/runtime")
+        target_compile_definitions(test_meta_cache_dyn_${variant} PRIVATE GBL_CACHE_DYN=1 GBL_CACHE_DYN_INLINE=1)
+        if(variant MATCHES "unified_")
+            string(REPLACE "unified_" "" block ${variant})
+            target_compile_definitions(test_meta_cache_dyn_${variant} PRIVATE GBL_CACHE_UNIFIED=1
+                GBL_CACHE_BLOCK=${block} GBL_CACHE_BYTES=3072 GBL_CACHE_MENU_STACK=1024)
+        else()
+            target_compile_definitions(test_meta_cache_dyn_${variant} PRIVATE GBL_CACHE_UNIFIED=0
+                GBL_STREAM_SECTORS=4 GBL_ERAM_CACHE_SECTORS=2)
+        endif()
+        target_compile_options(test_meta_cache_dyn_${variant} PRIVATE -UNDEBUG)
+        add_test(NAME meta_cache_dyn_${variant}_blocks_come_and_go COMMAND test_meta_cache_dyn_${variant})
+    endforeach()
+
+    # The stack pool's policy over a simulated RAM (m0_stack_pool.h).
+    add_executable(test_m0_stack_pool "${GBL_META_DIR}/tests/stack_pool.c")
+    target_compile_options(test_m0_stack_pool PRIVATE -UNDEBUG)
+    add_test(NAME m0_stack_pool_stack_first COMMAND test_m0_stack_pool)
 
     add_executable(test_meta_lcd_pack "${GBL_META_DIR}/tests/lcd_pack.c")
     target_include_directories(test_meta_lcd_pack PRIVATE "${GBL_META_DIR}/platform/meta")

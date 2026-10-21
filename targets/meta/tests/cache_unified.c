@@ -2,7 +2,10 @@
  * (GBL_CACHE_BLOCK), through the public bus: every ROM byte read matches
  * the ROM, every cartridge RAM byte the last one written, the save file
  * holds them after a flush, and blocks lent to the option menu (scribbled
- * over meanwhile) never serve a byte. */
+ * over meanwhile) never serve a byte.  With GBL_CACHE_DYN (all blocks in
+ * the array, GBL_CACHE_DYN_INLINE), the blocks after the fixed part come
+ * and go meanwhile, scribbled over while out of the cache (the C stack's
+ * use of them); without GBL_CACHE_UNIFIED, the same for the ROM sectors. */
 #include "gbl.h"
 #include "gbl_options.h"
 #include <assert.h>
@@ -66,6 +69,29 @@ static void step(unsigned i) {
     }
 }
 
+#if GBL_CACHE_DYN
+void gbl_platform_pool(void) {}
+
+/* The blocks after the fixed part follow a saw: shrink to it, grow to the
+ * most, and the RAM out of the cache scribbled over every step. */
+static void dyn_step(unsigned i) {
+    static int down;
+    if (i % 997 == 0) {
+        if (down ? !gbl_cache_shrink() : !gbl_cache_grow()) down = !down;
+    }
+    uintptr_t top = gbl_cache_top(), end = (uintptr_t)gbl_stream_scratch() + GBL_CACHE_DYN_BLOCK *
+#if GBL_CACHE_UNIFIED
+        (GBL_CACHE_MAX_BYTES / GBL_CACHE_BLOCK);
+#else
+        GBL_STREAM_MAX;
+#endif
+    memset((void *)top, (int)(i * 5u + 3u), end - top);
+}
+#define DYN_STEP(i) dyn_step(i)
+#else
+#define DYN_STEP(i) ((void)0)
+#endif
+
 int main(void) {
     for (unsigned s = 0; s < NSEC; s++)
         for (unsigned k = 0; k < 512; k++) disk[s][k] = mirror[s * 512 + k] = (uint8_t)(s * 31 + k);
@@ -73,7 +99,11 @@ int main(void) {
     gbl_wr(0x2000, 1); /* ROM bank 1 */
     gbl_wr(0x4000, 0); /* RAM bank 0 */
     gbl_wr(0, 0x0A);   /* RAM on */
-    for (unsigned i = 0; i < 200000; i++) step(i);
+    for (unsigned i = 0; i < 200000; i++) {
+        step(i);
+        DYN_STEP(i);
+    }
+#if GBL_CACHE_UNIFIED
     /* The option menu borrows the pool's start: scribble over it. */
     uintptr_t top = gbl_cache_lend();
     memset((void *)gbl_stream_scratch(), 0x5A, top - (uintptr_t)gbl_stream_scratch());
@@ -82,11 +112,15 @@ int main(void) {
         step(i);
     }
     gbl_stream_invalidate();
-    for (unsigned i = 0; i < 50000; i++) step(i);
+#endif
+    for (unsigned i = 0; i < 50000; i++) {
+        step(i);
+        DYN_STEP(i);
+    }
     gbl_save_flush();
     assert(!gbl_save_pending());
     for (unsigned s = 0; s < NSEC; s++) assert(!memcmp(disk[s], mirror + s * 512, 512));
-    printf("block %d, %d blocks: %u ROM sectors, %u RAM sectors read, %u written\n", GBL_CACHE_BLOCK,
-           GBL_CACHE_BYTES / GBL_CACHE_BLOCK, rom_reads, reads, writes);
+    printf("block %d: %u ROM sectors, %u RAM sectors read, %u written\n", GBL_CACHE_BLOCK, rom_reads, reads,
+           writes);
     return 0;
 }

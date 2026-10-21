@@ -147,7 +147,9 @@ int gbl_platform_rom_read(uint32_t sector, uint8_t *dst) {
 #endif
 #if GBL_ERAM_SIZE > 0
 /* Save file like the host's in-memory one: sectors never written read as
- * missing (the runtime then sees 0xFF), written ones keep their data.  The
+ * the fresh .SAV on the card (0xFF), written ones keep their data (a
+ * failed read would fail the write-back of blocks smaller than a sector,
+ * which reads the sector first, and lose the game's writes).  The
  * data lives in the stand-in SD region (m0_estimate.py maps it writable):
  * cartridge RAM kept "on the card" (GBL_ERAM_ON_SD) can be 32 KiB.
  * (Dropping the writes made Zelda and Donkey Kong Land read garbage back
@@ -156,7 +158,11 @@ int gbl_platform_rom_read(uint32_t sector, uint8_t *dst) {
 static uint8_t save_valid[(GBL_ERAM_SIZE + 511) / 512];
 
 int gbl_platform_save_read(uint32_t sector, uint8_t *dst) {
-    if (sector * 512u >= GBL_ERAM_SIZE || !save_valid[sector]) return 0;
+    if (sector * 512u >= GBL_ERAM_SIZE) return 0;
+    if (!save_valid[sector]) {
+        for (int i = 0; i < 512; i++) dst[i] = 0xFF;
+        return 1;
+    }
     const uint8_t *s = BENCH_SAVE_AREA + sector * 512u;
     for (int i = 0; i < 512; i++) dst[i] = s[i];
     return 1;

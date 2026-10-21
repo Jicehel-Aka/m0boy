@@ -316,8 +316,8 @@ touches the FAT.
 
   Switching the console off during the two seconds that follow a save
   without RAM disable can lose it.
-- With a streamed ROM too, both share one pool of 128-byte blocks
-  (`GBL_CACHE_UNIFIED`, `GBL_CACHE_BLOCK` 128/256/512, `GBL_CACHE_BYTES`,
+- With a streamed ROM too, both share one pool of 64-byte blocks
+  (`GBL_CACHE_UNIFIED`, `GBL_CACHE_BLOCK` 64/128/256/512, `GBL_CACHE_BYTES`,
   by default 1 KiB less than the two caches it replaces), CLOCK
   replacement, the last ROM block and the newest RAM block never evicted.
   The card and the unpacker still work on 512-byte sectors through one
@@ -425,6 +425,77 @@ just above the limit returned at once without progress and the dispatcher
 called it again forever (seen on R.C. Pro-Am with a packed ROM at frame 86).
 With no room at all, `gbl_run` interprets instead. The host takes
 `--stack-kib N` or `--stack-bytes N` to reproduce small budgets.
+
+### ROM cache and C stack sharing their RAM (`GBL_CACHE_DYN`)
+
+On the META and the Pokitto, the streamed ROM's cache (or the unified pool)
+is a fixed part plus blocks that live in the C stack's RAM. The fixed part
+(2 sectors, or in the pool the menu's stack, a sector and 3 blocks;
+`GBL_STREAM_FIXED`, `GBL_CACHE_FIXED_BYTES`) is the `.cachepool` section,
+the last thing in RAM in `gamebuino_meta.ld` and `pokitto.ld`. The option
+menu runs on that part only. The other blocks follow it, up to
+`GBL_STREAM_MAX` / `GBL_CACHE_MAX_BYTES`. At boot the cache gets as many
+as `GBL_STREAM_SECTORS` / `GBL_CACHE_BYTES` ask, so it starts with the same
+split as a fixed cache, while the stack keeps `META_STACK_DYN_MIN`.
+
+After that, `m0_stack_pool.h` (targets/common/runtime) moves the boundary
+by moving `gbl_stack_limit` (`sg_stack_limit` for the Game Gear and Master
+System, `GG_CACHE_DYN`). The generated code is unchanged.
+
+- A frame with an unwind (a `gbl_exec` / `sg_exec` call refused for want of
+  stack, counted in `gbl_exec_refused` / `sg_exec_refused`) gives the stack
+  one block at once: free RAM first, then the cache's last block (written
+  back first if it holds dirty cartridge RAM), never below the size the
+  cache had after boot. A game is therefore never slower than with the
+  cache the build sized.
+- RAM goes back to the cache only with room to spare: no unwind and the
+  calm zone (a block, `M0SP_NEAR` and the dispatcher's headroom above the
+  limit, painted) untouched for `M0SP_CALM_WINDOWS` windows of
+  `M0SP_WINDOW` frames (8 x 30), the cache loading blocks meanwhile, and the
+  stack `M0SP_MARGIN` above that zone when the block is taken. One block at
+  a time, then the count starts over. Nothing flickers between the two.
+- The frame's call can come deep in the game's calls (Super Mario Land 2:
+  always). The block is then taken from `gbl_exec` / `sg_exec`, on entry
+  with the stack above `gbl_pool_sp` / `sg_pool_sp`.
+
+Raising the limit needs the stack above the calm zone at that moment: the
+RAM under it is dead, and every running dispatcher loop (above the current
+frame) stays at least its headroom above the raised limit, so no region is
+refused at entry forever.
+
+The Game Gear / Master System frontend fills the cache at boot while the
+stack keeps the guard `compile.sh` used to size the cache by (2000 bytes,
+2400 without USB; `GG_DYN_STACK_GUARD`); `compile.sh` no longer grows
+`GG_STREAM_SECTORS` from the RAM report (`CACHE_DYN=0` restores fixed
+caches). On the Pokitto the Game Gear cache is in the USB RAM bank and
+stays fixed.
+
+The menu's info line reads `59/41 pile 812 c36`: emulated and drawn frames,
+stack never used above the cache, cache blocks. The host and the estimator
+(`BENCH_FRAMES`) keep the whole cache in its array, as before.
+
+Cache blocks are 64 bytes by default on the META (`GBL_CACHE_BLOCK` for the
+unified pool, whose default `GBL_CACHE_BYTES` keeps the same RAM: 3904;
+`GG_CACHE_BLOCK` written by the generator). On the host, Super Mario Land 2's demo from a fresh save (12000 frames) at the
+same RAM (pool, tags and cartridge RAM tables, about 5.8 KiB): 64-byte
+blocks (3904-byte pool) read 1113 save sectors and wrote 239, and decoded
+1046 ROM sectors; 128-byte blocks (4608) 10062, 2006 and 5136; 256-byte
+blocks 27254, 7592 and 20308. Ristar's demo (8000 frames, about 1.6 KiB):
+718 sectors decoded and 357 read with 64-byte blocks, 1576 and 402 with
+128. On the device (2026-10-21, 150 s of each demo, fast mode, one run
+each): Super Mario Land 2 with the corrected profile (below) loaded 823 ROM
+blocks with 64-byte blocks against 3036 with 128 (13646 frames emulated
+against 11758; the demo's path depends on timing, so frame counts compare
+loosely), Ristar 4131 against 7573 (116.4 frames a second on average
+against 115.3; 114.7 with the fixed 128-byte cache).
+
+The host harness, `gbl_metaview` and the estimator read cartridge RAM that
+was never written as the fresh `.SAV` `compile.sh` puts on the card (0xFF).
+They used to fail those reads; a block smaller than a sector is written
+back after reading its sector, so the write-back failed too and the game's
+writes were lost. Profiles were then recorded on another path than the
+console's: Super Mario Land 2's demo ran a quarter of the interpreted
+instructions it runs from a fresh save.
 
 ## ROMs larger than the flash (SD streaming)
 

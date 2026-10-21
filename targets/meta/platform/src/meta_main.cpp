@@ -64,6 +64,9 @@ extern "C" {
 #include "gbl_config.h"
 #include "gbl_options.h"
 }
+#if GBL_CACHE_DYN
+#include "m0_stack_pool.h"
+#endif
 
 /* Switches (gbl_profile.h): META_MAX_SKIP, frames skipped in a row at
  * most by the automatic frame skip; META_STATIC_SKIP, no rendering nor
@@ -384,10 +387,13 @@ static char slot_text[GBL_STATE_SLOTS_OR_1][8];
 static const char *slot_names[GBL_STATE_SLOTS_OR_1];
 static const char *const volume_names[9] = {"0", "1", "2", "3", "4", "5", "6", "7", "8"};
 
-#if defined(GBL_ROM_STREAM) && GBL_ROM_STREAM && GBL_STREAM_SECTORS >= 2 && defined(__ARM_ARCH_6M__)
+#if defined(GBL_ROM_STREAM) && GBL_ROM_STREAM && (GBL_CACHE_UNIFIED ? GBL_STREAM_SECTORS : GBL_STREAM_FIXED) >= 2 && \
+    defined(__ARM_ARCH_6M__)
 /* The option menu needs about 600 bytes of stack, and VBlank can come deep
  * in the game's calls (always, in Super Mario Land 2): it runs on the ROM
- * cache's buffers instead, emptied afterwards (a few sectors read again).
+ * cache's buffers instead (the fixed part with GBL_CACHE_DYN, away from
+ * the blocks lent to the stack), emptied afterwards (a few sectors read
+ * again).
  * It reads no ROM; its interrupts use that stack too.  "Redemarrer" and
  * "Quitter" leave it by longjmp or reset. */
 __attribute__((naked, noinline)) static void call_on_stack(void (*fn)(void), uintptr_t top) {
@@ -404,7 +410,7 @@ static void run_menu(void) {
 #if GBL_CACHE_UNIFIED
     uintptr_t top = gbl_cache_lend(); /* written back, kept out until gbl_stream_invalidate */
 #else
-    uintptr_t top = ((uintptr_t)gbl_stream_scratch() + GBL_STREAM_SECTORS * 512u) & ~(uintptr_t)7;
+    uintptr_t top = ((uintptr_t)gbl_stream_scratch() + GBL_STREAM_FIXED * 512u) & ~(uintptr_t)7;
 #endif
     call_on_stack(option_menu, top);
     gbl_stream_invalidate();
@@ -421,14 +427,29 @@ extern "C" char end; /* after .bss and .noinit (gamebuino_meta.ld) */
 #define DATA_END end
 #endif
 
+#if GBL_CACHE_DYN
+/* The cache's blocks after its fixed part and the C stack share the RAM
+ * above .bss (m0_stack_pool.h); main fills this in. */
+static m0_stack_pool stack_pool;
+
+/* gbl_exec entered with the stack high enough (gbl_pool_sp): the blocks
+ * the cache wants back. */
+extern "C" void gbl_platform_pool(void) { m0_stack_pool_run(&stack_pool); }
+#endif
+
 /* Stack high-water mark: main paints the free RAM below its frame with
- * STACK_PAINT; the menu shows how much of it was never written since. */
+ * STACK_PAINT; the menu shows how much of it was never written since
+ * (with GBL_CACHE_DYN, above the cache's last block). */
 #define STACK_PAINT 0xC5AC5AC5u
 static unsigned stack_never_used(void) {
 #if META_TARGET_ESPBOY
     return espboy_free_stack();
 #else
+#if GBL_CACHE_DYN
+    const uint32_t *p = (const uint32_t *)((gbl_cache_top() + 3u) & ~(uintptr_t)3u);
+#else
     const uint32_t *p = (const uint32_t *)(((uintptr_t)&DATA_END + 3u) & ~(uintptr_t)3u);
+#endif
     unsigned n = 0;
     while (p[n] == STACK_PAINT) n++;
     return n * 4u;
@@ -487,8 +508,16 @@ static void option_menu(void) {
         char *p = put_uint(info, last_frames);
         *p++ = '/';
         p = put_uint(p, last_shown);
+#if GBL_CACHE_DYN
+        /* "59/41 pile 812 c36": and the cache's blocks, in the 20 columns */
+        memcpy(p, " pile ", 6);
+        p = put_uint(p + 6, stack_never_used());
+        memcpy(p, " c", 2);
+        p = put_uint(p + 2, gbl_cache_ways());
+#else
         memcpy(p, " ips, pile ", 11);
         p = put_uint(p + 11, stack_never_used());
+#endif
         *p = 0;
     }
 #if META_TARGET_POKITTO
@@ -638,6 +667,9 @@ extern "C" void gbl_platform_vblank(void) {
      * plays from a full ring (meta_audio.cpp). */
     meta_audio_frame();
     meta_save_tick();
+#if GBL_CACHE_DYN
+    if (stack_pool.top) m0_stack_pool_frame(&stack_pool);
+#endif
     pace_frame();
 
     static uint8_t phase;
@@ -792,6 +824,29 @@ int main(void) {
     uintptr_t floor_addr = (uintptr_t)&DATA_END + META_STACK_RESERVE; /* gbl_profile.h */
 #endif
     gbl_stack_limit = limit > floor_addr ? limit : floor_addr;
+#if GBL_CACHE_DYN
+    /* The cache's fixed part ends .bss (.cachepool, last before DATA_END):
+     * its other blocks start there, as many as GBL_STREAM_SECTORS /
+     * GBL_CACHE_BYTES asked while the stack keeps META_STACK_DYN_MIN.  Not
+     * there (another linker script): the fixed part alone, as before. */
+#ifndef META_STACK_DYN_MIN
+#define META_STACK_DYN_MIN 1024u /* gbl_run's headroom and its own frames */
+#endif
+    if (gbl_cache_top() == (uintptr_t)&DATA_END) {
+        stack_pool.limit = &gbl_stack_limit;
+        stack_pool.ceil = (uintptr_t)&probe - META_STACK_DYN_MIN;
+        stack_pool.top = gbl_cache_top;
+        stack_pool.grow = gbl_cache_grow;
+        stack_pool.shrink = gbl_cache_shrink;
+        stack_pool.want_sp = &gbl_pool_sp;
+        stack_pool.refused = &gbl_exec_refused;
+        stack_pool.loads = &gbl_cache_loads;
+        stack_pool.block = GBL_CACHE_DYN_BLOCK;
+        stack_pool.reserve = META_STACK_RESERVE;
+        stack_pool.headroom = GBL_EXEC_HEADROOM;
+        m0_stack_pool_boot(&stack_pool, GBL_CACHE_DYN_TARGET - gbl_cache_ways());
+    }
+#endif
     /* Too little RAM left (caches, debug records): the unguarded calls
      * below the limit would run into .bss.  Cyan screen instead. */
 #ifndef META_STACK_NEST_MIN

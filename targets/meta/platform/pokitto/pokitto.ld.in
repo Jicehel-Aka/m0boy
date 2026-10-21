@@ -105,11 +105,20 @@ SECTIONS
     *(COMMON)
     . = ALIGN(4);
     _ebss = .;
+  } > RAM
+
+  /* The ROM cache's fixed part (GBL_CACHE_DYN, gbl_core.c), last before
+   * the stack: its other blocks follow it, in RAM the frontend shares with
+   * the stack (m0_stack_pool.h).  Not zeroed. */
+  .cachepool (NOLOAD) : ALIGN(4)
+  {
+    *(.cachepool*)
+    . = ALIGN(4);
     __bss_end__ = .;
   } > RAM
 
   __StackTop = ORIGIN(RAM) + LENGTH(RAM);
-  end = _ebss;
-  PROVIDE(_end = _ebss);
-  ASSERT(_ebss + __stack_min <= __StackTop, "RAM: no room left for the stack")
+  end = __bss_end__;
+  PROVIDE(_end = __bss_end__);
+  ASSERT(__bss_end__ + __stack_min <= __StackTop, "RAM: no room left for the stack")
 }

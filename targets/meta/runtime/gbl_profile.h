@@ -149,6 +149,12 @@
 #define GBL_STREAM_SECTORS 4
 #endif
 #endif
+/* The ROM cache's sectors past 2 in the C stack's RAM: lent to the stack
+ * when it runs short, taken back when it stays shallow (gbl_options.h,
+ * m0_stack_pool.h).  Not measured on the device yet. */
+#ifndef GBL_CACHE_DYN
+#define GBL_CACHE_DYN 1
+#endif
 #ifndef GBL_PPU_ASM
 #define GBL_PPU_ASM 1
 #endif
@@ -268,6 +274,14 @@
 #define GBL_ERAM_CACHE_SECTORS 2
 #endif
 #endif
+/* GBL_STREAM_SECTORS (or the unified pool's GBL_CACHE_BYTES) is what the
+ * cache starts with: past its fixed part (2 sectors, or the menu's stack
+ * and 3 blocks in the pool), the blocks sit in the C stack's RAM, lent to
+ * the stack when it runs short and taken back when it stays shallow
+ * (gbl_options.h, m0_stack_pool.h).  Not measured on the device yet. */
+#ifndef GBL_CACHE_DYN
+#define GBL_CACHE_DYN 1
+#endif
 /* A streamed ROM and cartridge RAM on the card share one pool of 128-byte
  * blocks (gbl_options.h), 1 KiB smaller than the two caches it replaces:
  * its tables and sector buffer take about that, and the C stack keeps its
@@ -284,12 +298,19 @@
 #define GBL_CACHE_UNIFIED 0
 #endif
 #endif
+/* 64-byte blocks: Super Mario Land 2's demo from a fresh save, host, at
+ * the same RAM (tags and cartridge RAM tables counted): 1113 save sectors
+ * read, 239 written, 1046 ROM sectors decoded, against 10062, 2006 and
+ * 5136 with 128-byte blocks; device (2026-10-21, 150 s, fast mode): 823
+ * ROM blocks loaded against 3036, frames emulated 13646 against 11758. */
 #ifndef GBL_CACHE_BLOCK
-#define GBL_CACHE_BLOCK 128
+#define GBL_CACHE_BLOCK 64
 #endif
 #if GBL_CACHE_UNIFIED && !defined(GBL_CACHE_BYTES)
 #define GBL_CACHE_BYTES \
-    ((GBL_STREAM_SECTORS + GBL_ERAM_CACHE_SECTORS) * 512 - (GBL_CACHE_BLOCK < 512 ? 1024 : 0) + GBL_AUDIO_SPARE)
+    ((GBL_STREAM_SECTORS + GBL_ERAM_CACHE_SECTORS) * 512 - \
+     (GBL_CACHE_BLOCK == 64 ? 1728 /* the tables and tags of twice the blocks */ : GBL_CACHE_BLOCK < 512 ? 1024 : 0) + \
+     GBL_AUDIO_SPARE)
 #endif
 #ifndef GBL_PPU_ASM
 #define GBL_PPU_ASM 1

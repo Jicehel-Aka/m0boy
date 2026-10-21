@@ -57,24 +57,65 @@ extern const uint8_t gbl_rom_chunk_map[];
 #define stream_reset() ((void)0)
 #else
 /* Buffers, tags and the last slot are global: the assembly gbl_rd reads a
- * byte of the last sector used without calling gbl_rd_slow. */
-uint8_t gbl_stream_buf[GBL_STREAM_SECTORS][512] __attribute__((aligned(4)));
-int32_t gbl_stream_tag[GBL_STREAM_SECTORS];
+ * byte of the last sector used without calling gbl_rd_slow.  With
+ * GBL_CACHE_DYN the array is the fixed part (.cachepool, last in RAM) and
+ * stream_ways - GBL_STREAM_FIXED more sectors follow it, in RAM the
+ * frontend takes from the C stack (gbl_cache_grow, gbl_cache_shrink). */
+#if GBL_CACHE_DYN && !GBL_CACHE_DYN_INLINE
+uint8_t gbl_stream_buf[GBL_STREAM_FIXED][512] __attribute__((aligned(4), section(".cachepool")));
+#else
+uint8_t gbl_stream_buf[GBL_STREAM_MAX][512] __attribute__((aligned(4)));
+#endif
+int32_t gbl_stream_tag[GBL_STREAM_MAX];
 uint8_t gbl_stream_last;
-#define stream_buf gbl_stream_buf
 #define stream_tag gbl_stream_tag
 #define stream_last gbl_stream_last
-static uint32_t stream_age[GBL_STREAM_SECTORS], stream_clock;
+static uint32_t stream_age[GBL_STREAM_MAX], stream_clock;
 uint32_t gbl_stream_misses;
+#if GBL_CACHE_DYN
+static uint8_t stream_ways = GBL_STREAM_FIXED;
+/* A sector past the array: its address hides where it comes from. */
+static inline uint8_t *stream_buf_of(unsigned i) {
+    uint8_t *p = &gbl_stream_buf[0][0];
+    __asm__("" : "+r"(p));
+    return p + i * 512u;
+}
+#define stream_buf(i) stream_buf_of(i)
+#else
+#define stream_ways GBL_STREAM_SECTORS
+#define stream_buf(i) gbl_stream_buf[i]
+#endif
 
-uint8_t *gbl_stream_scratch(void) { return stream_buf[0]; }
+uint8_t *gbl_stream_scratch(void) { return gbl_stream_buf[0]; }
 
 static void stream_reset(void) {
-    for (int i = 0; i < GBL_STREAM_SECTORS; i++) { stream_tag[i] = -1; stream_age[i] = 0; }
+    for (unsigned i = 0; i < stream_ways; i++) { stream_tag[i] = -1; stream_age[i] = 0; }
     stream_last = 0;
 }
 
 void gbl_stream_invalidate(void) { stream_reset(); }
+
+#if GBL_CACHE_DYN
+uint32_t gbl_cache_loads;
+uintptr_t gbl_cache_top(void) { return (uintptr_t)stream_buf(stream_ways); }
+unsigned gbl_cache_ways(void) { return stream_ways; }
+
+int gbl_cache_grow(void) {
+    if (stream_ways >= GBL_STREAM_MAX) return 0;
+    stream_tag[stream_ways] = -1;
+    stream_age[stream_ways] = 0;
+    stream_ways++;
+    return 1;
+}
+
+int gbl_cache_shrink(void) {
+    if (stream_ways <= GBL_STREAM_FIXED) return 0;
+    stream_ways--;
+    stream_tag[stream_ways] = -1; /* the assembly gbl_rd compares the last slot's tag */
+    if (stream_last >= stream_ways) stream_last = 0;
+    return 1;
+}
+#endif
 #endif
 
 #if GBL_ROM_PACKED
@@ -145,27 +186,30 @@ static int rom_sector(uint32_t sec, uint8_t *dst) {
 #else
 static uint8_t stream_read(uint32_t off) {
     int32_t sec = (int32_t)(off >> 9);
-    if (stream_tag[stream_last] == sec) return stream_buf[stream_last][off & 511u];
+    if (stream_tag[stream_last] == sec) return stream_buf(stream_last)[off & 511u];
     unsigned slot = 0;
-    for (unsigned i = 0; i < GBL_STREAM_SECTORS; i++) {
+    for (unsigned i = 0; i < stream_ways; i++) {
         if (stream_tag[i] == sec) { slot = i; goto hit; }
         if (stream_age[i] < stream_age[slot]) slot = i;
     }
 #if GBL_ROM_PACKED
-    if (!rom_unpack((uint32_t)sec, stream_buf[slot]))
+    if (!rom_unpack((uint32_t)sec, stream_buf(slot)))
 #endif
 #if GBL_ROM_SD
-    if (!gbl_platform_rom_read((uint32_t)sec, stream_buf[slot]))
-        for (int i = 0; i < 512; i++) stream_buf[slot][i] = 0xFF;
+    if (!gbl_platform_rom_read((uint32_t)sec, stream_buf(slot)))
+        for (int i = 0; i < 512; i++) stream_buf(slot)[i] = 0xFF;
 #elif GBL_ROM_PACKED
-        for (int i = 0; i < 512; i++) stream_buf[slot][i] = 0xFF;
+        for (int i = 0; i < 512; i++) stream_buf(slot)[i] = 0xFF;
 #endif
     stream_tag[slot] = sec;
     gbl_stream_misses++;
+#if GBL_CACHE_DYN
+    gbl_cache_loads++;
+#endif
 hit:
     stream_age[slot] = ++stream_clock;
     stream_last = (uint8_t)slot;
-    return stream_buf[slot][off & 511u];
+    return stream_buf(slot)[off & 511u];
 }
 #endif
 #endif
@@ -264,16 +308,25 @@ static uint8_t save_pending;
  * block). */
 #define M0C_BLOCK CBLK
 #define M0C_SHIFT CSHIFT
-#define M0C_WAYS (GBL_CACHE_BYTES / CBLK)
+#define M0C_WAYS (GBL_CACHE_FIXED_BYTES / CBLK)
+#define M0C_DYN GBL_CACHE_DYN
+#define M0C_MAX_WAYS (GBL_CACHE_MAX_BYTES / CBLK)
+#if GBL_CACHE_DYN_INLINE
+#define M0C_DYN_INLINE 1
+#elif GBL_CACHE_DYN
+#define M0C_BUF_ATTR __attribute__((section(".cachepool"))) /* last in RAM, under the stack */
+#endif
 #define M0C_BUF gbl_cache_buf
 #define M0C_TAG gbl_cache_tag
 #define M0C_ROM_LAST gbl_cache_rom_last
 #define M0C_MISSES gbl_stream_misses
+#define M0C_LOADS gbl_cache_loads
 #define M0C_SAVE 1
 #define M0C_LEND 1
 #include "m0_cache.h"
-#define ERAM_WAYS M0C_WAYS
+#define ERAM_WAYS CACHE_N
 #define eram_buf cache_buf
+#define eram_way(i) CACHE_BLK(i)
 #define eram_tag cache_tag
 #define eram_ref cache_ref
 #define eram_hand cache_hand
@@ -292,6 +345,7 @@ static uint8_t save_pending;
 #error "GBL_ERAM_CACHE_SECTORS must be between 1 and 256"
 #endif
 static uint8_t eram_buf[ERAM_WAYS][512] __attribute__((aligned(4)));
+#define eram_way(i) eram_buf[i]
 static int32_t eram_tag[ERAM_WAYS];
 #define ETAG(b) ((int32_t)(b))
 #define IS_ETAG(t) ((t) >= 0)
@@ -322,7 +376,7 @@ static void eram_tables(uint8_t **rmap, uint8_t **wmap) {
     for (unsigned i = 0; i < ERAM_WAYS; i++) {
         uint32_t off = ETAG_BLK(eram_tag[i]) * CBLK - base;
         if (!IS_ETAG(eram_tag[i]) || off >= 0x2000u || !eram_ref[i]) continue;
-        uint8_t *p = BIAS(eram_buf[i], 0xA000u + off);
+        uint8_t *p = BIAS(eram_way(i), 0xA000u + off);
         rmap[off >> CSHIFT] = p;
         if (eram_dirty[i]) wmap[off >> CSHIFT] = p;
     }
@@ -515,8 +569,8 @@ static int rom_sector(uint32_t sec, uint8_t *dst);
         } \
     } while (0)
 #endif
-/* The option menu's stack: the whole pool but 3 blocks.  A state save uses
- * gbl_save_scratch at its bottom. */
+/* The option menu's stack: the pool's fixed part but 3 blocks.  A state
+ * save uses gbl_save_scratch at its bottom. */
 #define M0C_LEND_KEEP 3u
 #define M0C_FLUSH gbl_save_flush
 #define M0C_FLUSH_NEXT gbl_save_flush_next
@@ -529,6 +583,12 @@ uint8_t *gbl_stream_scratch(void) { return &eram_buf[0][0]; }
 
 uintptr_t gbl_cache_lend(void) { return cache_lend(); }
 void gbl_stream_invalidate(void) { cache_unlend(); }
+#if GBL_CACHE_DYN
+uintptr_t gbl_cache_top(void) { return cache_top(); }
+unsigned gbl_cache_ways(void) { return cache_ways; }
+int gbl_cache_grow(void) { return cache_grow(); }
+int gbl_cache_shrink(void) { return cache_shrink(); }
+#endif
 #else
 static void eram_writeback(unsigned i) {
     if (eram_dirty[i]) {
@@ -860,7 +920,7 @@ uint16_t gbl_dbg_pop(uint16_t sp, uint16_t v) {
         s->flags = 0;
         for (unsigned w = 0; w < 16; w++) s->tag[w] = w < ERAM_WAYS ? (int16_t)(IS_ETAG(eram_tag[w]) ? ETAG_BLK(eram_tag[w]) : eram_tag[w] | 0x4000) : -2;
         for (unsigned w = 0; w < ERAM_WAYS; w++) {
-            const uint8_t *b = eram_buf[w];
+            const uint8_t *b = eram_way(w);
             if (gbl_eram_rmap[slot] && gbl_eram_rmap[slot] + GBL_DBG_STACK_BASE == b + (off & (CBLK - 1u))) s->rmap_way = (int8_t)w;
             if (gbl_eram_wmap[slot] && gbl_eram_wmap[slot] + GBL_DBG_STACK_BASE == b + (off & (CBLK - 1u))) s->wmap_way = (int8_t)w;
             if (eram_tag[w] == ETAG(off >> CSHIFT)) {
@@ -1618,23 +1678,33 @@ gbl_interp_ctx_t gbl_interp_ctx = {{1, 0, 3, 2, 5, 4, 0xFF, 10}, 0, 0};
 _Static_assert(offsetof(gbl_interp_ctx_t, sp0) == 8 && offsetof(gbl_interp_ctx_t, bounded) == 10,
                "gbl_interp_ctx_t layout");
 
-/* gbl_exec only runs with this much stack above gbl_stack_limit, so the
- * region it calls always passes its own ENTER() check: otherwise a region
- * refused at entry would be called again forever without progress (seen
- * with deep call chains in R.C. Pro-Am under the META's 3 KiB budget). */
-#ifndef GBL_EXEC_HEADROOM
-#define GBL_EXEC_HEADROOM 512u
-#endif
+/* gbl_exec only runs with GBL_EXEC_HEADROOM (gbl_options.h) above
+ * gbl_stack_limit, so the region it calls always passes its own ENTER()
+ * check: otherwise a region refused at entry would be called again forever
+ * without progress (seen with deep call chains in R.C. Pro-Am under the
+ * META's 3 KiB budget). */
 
 /* The innermost gbl_exec's entry SP, or no bound under gbl_run: the
  * assembly interpreter continues across a transfer only while this loop
  * would call it again (gbl_interp_asm.S). */
+#if GBL_CACHE_DYN
+uint32_t gbl_exec_refused;
+uintptr_t gbl_pool_sp;
+#endif
 #define gbl_exec_sp0 gbl_interp_ctx.sp0
 #define gbl_exec_bounded gbl_interp_ctx.bounded
 
 void gbl_exec(void) {
     char probe;
-    if ((uintptr_t)&probe < gbl_stack_limit + GBL_EXEC_HEADROOM) return; /* unwind: callers resume */
+#if GBL_CACHE_DYN
+    if (gbl_pool_sp && (uintptr_t)&probe > gbl_pool_sp) gbl_platform_pool();
+#endif
+    if ((uintptr_t)&probe < gbl_stack_limit + GBL_EXEC_HEADROOM) { /* unwind: callers resume */
+#if GBL_CACHE_DYN
+        gbl_exec_refused++; /* the frontend's measure of the stack's shortage */
+#endif
+        return;
+    }
     uint16_t sp0 = gbr.sp, outer_sp0 = gbl_exec_sp0;
     uint8_t outer_bounded = gbl_exec_bounded;
     gbl_exec_sp0 = sp0;

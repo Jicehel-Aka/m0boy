@@ -74,8 +74,14 @@ void gg_remap(void) {
  * are not mapped directly (on the card, or LZSS-coded in the pool) and the
  * cartridge RAM's save file, written back when dirty. */
 #define M0C_BLOCK GG_CACHE_BLOCK
-#define M0C_SHIFT (GG_CACHE_BLOCK == 128 ? 7 : GG_CACHE_BLOCK == 256 ? 8 : 9)
+#define M0C_SHIFT (GG_CACHE_BLOCK == 64 ? 6 : GG_CACHE_BLOCK == 128 ? 7 : GG_CACHE_BLOCK == 256 ? 8 : 9)
 #define M0C_WAYS (GG_CACHE_BYTES / GG_CACHE_BLOCK)
+#if GG_CACHE_DYN
+#define M0C_DYN 1
+#define M0C_MAX_WAYS (GG_CACHE_MAX_BYTES / GG_CACHE_BLOCK)
+#define M0C_BUF_ATTR __attribute__((section(".cachepool"))) /* last in RAM, under the stack */
+#define M0C_LOADS gg_cache_loads
+#endif
 #define M0C_BUF card_buf     /* Pokitto: in the USB RAM bank (pokitto.ld) */
 #define M0C_TAG card_tag
 #define M0C_ROM_LAST card_rom_last
@@ -135,6 +141,12 @@ static uint32_t save_change;
  * save written back first; lend returns their top, 8-aligned. */
 uintptr_t gg_cache_lend(void) { return cache_lend(); }
 void gg_cache_unlend(void) { cache_unlend(); }
+#endif
+#if GG_CACHE_DYN
+uintptr_t gg_cache_top(void) { return cache_top(); }
+unsigned gg_cache_ways(void) { return cache_ways; }
+int gg_cache_grow(void) { return cache_grow(); }
+int gg_cache_shrink(void) { return cache_shrink(); }
 #endif
 
 #if GG_CART_ON_CARD
@@ -452,10 +464,14 @@ void sg_halt(void) {
 
 /* ---- dispatch ------------------------------------------------------------- */
 
-/* Room above the limit for the frames between here and the first ENTER().
- * The limit already holds the runtime's reserve; 768 here refused every
- * native entry once the stack was under ~1.4 KiB (Master System, 2026-10-21). */
-#define SG_EXEC_HEADROOM 384u
+/* SG_EXEC_HEADROOM (gg.h): room above the limit for the frames between
+ * here and the first ENTER().  The limit already holds the runtime's
+ * reserve; 768 there refused every native entry once the stack was under
+ * ~1.4 KiB (Master System, 2026-10-21). */
+#if GG_CACHE_DYN
+uint32_t sg_exec_refused;
+uintptr_t sg_pool_sp;
+#endif
 
 static void dispatch_one(int compiled) {
     gg_t *m = &machine;
@@ -475,7 +491,15 @@ static void dispatch_one(int compiled) {
 
 void sg_exec(void) {
     char probe;
-    if ((uintptr_t)&probe < sg_stack_limit + SG_EXEC_HEADROOM) return;
+#if GG_CACHE_DYN
+    if (sg_pool_sp && (uintptr_t)&probe > sg_pool_sp) gg_platform_pool();
+#endif
+    if ((uintptr_t)&probe < sg_stack_limit + SG_EXEC_HEADROOM) {
+#if GG_CACHE_DYN
+        sg_exec_refused++; /* the frontend's measure of the stack's shortage */
+#endif
+        return;
+    }
     uint16_t sp0 = machine.cpu.sp;
     do {
         if (machine.stop) return;

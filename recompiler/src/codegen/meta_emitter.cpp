@@ -2255,7 +2255,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     fs::copy_file(tpl.parent_path() / "common/runtime/m0_rom_lzss.inc", src / "m0_rom_lzss.inc",
                   fs::copy_options::overwrite_existing, ec);
     if (ec) { error = "cannot copy shared ROM assembler: " + ec.message(); return false; }
-    for (const char* name : { "m0_cache.h", "m0_cache.inc" }) {
+    for (const char* name : { "m0_cache.h", "m0_cache.inc", "m0_stack_pool.h" }) {
         fs::copy_file(tpl.parent_path() / "common/runtime" / name, src / name, fs::copy_options::overwrite_existing, ec);
         if (ec) { error = std::string("cannot copy the shared card cache: ") + ec.message(); return false; }
     }

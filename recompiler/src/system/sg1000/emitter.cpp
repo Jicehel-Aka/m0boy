@@ -1202,11 +1202,14 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
     stats.regions = regions_.size();
     stats.entries = entries.size();
     const char* key = opt_.banked ? "uint32_t" : "uint16_t";
-    o << "\nstatic const " << key << " entry_pc[" << std::max<size_t>(entries.size(), 1) << "] = {";
+    /* SG_ENTRY_ATTR (sg_gen.h): flash on the ESP8266, which reads it by
+     * 32-bit words only, so not the SG-1000's 16-bit keys. */
+    o << "\nstatic const " << key << " entry_pc[" << std::max<size_t>(entries.size(), 1) << "]"
+      << (opt_.banked ? " SG_ENTRY_ATTR" : "") << " = {";
     for (size_t i = 0; i < entries.size(); i++)
         o << (i % 12 ? " " : "\n    ") << (opt_.banked ? hex(entries[i]->loc, 6) : hex(entries[i]->addr)) << ",";
     if (entries.empty()) o << "0";
-    o << "\n};\nstatic const sg_fn entry_fn[" << std::max<size_t>(entries.size(), 1) << "] = {";
+    o << "\n};\nstatic const sg_fn entry_fn[" << std::max<size_t>(entries.size(), 1) << "] SG_ENTRY_ATTR = {";
     for (size_t i = 0; i < entries.size(); i++) o << (i % 8 ? " " : "\n    ") << region_name(entries[i]->region) << ",";
     if (entries.empty()) o << "0";
     o << "\n};\n"

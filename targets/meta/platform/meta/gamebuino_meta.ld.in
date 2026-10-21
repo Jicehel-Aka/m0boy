@@ -198,6 +198,16 @@ SECTIONS
 		. = ALIGN(4);
 	} > RAM
 
+	/* The ROM cache's fixed part (GBL_CACHE_DYN, gbl_core.c), last before
+	 * the stack: its other blocks follow it, in RAM the frontend shares
+	 * with the stack (m0_stack_pool.h). */
+	.cachepool (NOLOAD) :
+	{
+		. = ALIGN(4);
+		*(.cachepool*)
+		. = ALIGN(4);
+	} > RAM
+
 	.heap (COPY):
 	{
 		__end__ = .;

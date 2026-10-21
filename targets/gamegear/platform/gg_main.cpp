@@ -23,6 +23,16 @@
 #include "meta_hw.h"
 #endif
 #include "sg_frontend.h"
+#if GG_CACHE_DYN
+#include "m0_stack_pool.h"
+/* The card cache's blocks after its fixed part and the C stack share the
+ * RAM above .bss (m0_stack_pool.h); main fills this in. */
+static m0_stack_pool stack_pool;
+
+/* sg_exec entered with the stack high enough (sg_pool_sp): the blocks the
+ * cache wants back. */
+extern "C" void gg_platform_pool(void) { m0_stack_pool_run(&stack_pool); }
+#endif
 extern "C" {
 extern const uint8_t sg_rom[];
 extern const size_t sg_rom_size;
@@ -342,6 +352,9 @@ static void frame(void *) {
     sg_menu_frame();
     sg_menu_poll(raw);
     sg_menu_tick();
+#if GG_CACHE_DYN
+    if (stack_pool.top) m0_stack_pool_frame(&stack_pool);
+#endif
     SG_PACE_FRAME(deadline, skip_video, skipped_run, GG_MAX_SKIP);
 }
 
@@ -380,7 +393,44 @@ int main() {
     machine.row_out = line_buffers[0] + GG_ROW_PAD;
     machine.row_tmp = line_buffers[1] + GG_ROW_PAD;
     machine.frame = frame;
+#if GG_CACHE_DYN
+    /* The fixed part ends .bss (.cachepool, last before end): the cache's
+     * other blocks start there, as many as leave the stack the guard
+     * compile.sh used to size the cache by (the deepest stack measured,
+     * USB included, and a margin); the stack guard then from their top.
+     * Not there (another linker script): the fixed part alone. */
+#ifndef GG_DYN_STACK_GUARD
+#if META_USB
+#define GG_DYN_STACK_GUARD 2000u
+#else
+#define GG_DYN_STACK_GUARD 2400u
+#endif
+#endif
+    if (gg_cache_top() == (uintptr_t)&end) {
+        char probe;
+        while ((uintptr_t)&__StackTop - (gg_cache_top() + GG_CACHE_BLOCK) >= GG_DYN_STACK_GUARD && gg_cache_grow()) {}
+        uintptr_t base = gg_cache_top(), stack = (uintptr_t)&__StackTop - base, reserve = 2560;
+        if (stack < reserve + 1024) reserve = stack > 2048 ? stack - 1024 : stack / 2; /* as SG_STACK_GUARD */
+        sg_stack_limit = base + reserve;
+        stack_pool.limit = &sg_stack_limit;
+        stack_pool.ceil = (uintptr_t)&probe - 1024u;
+        if (stack_pool.ceil < sg_stack_limit) stack_pool.ceil = sg_stack_limit;
+        stack_pool.top = gg_cache_top;
+        stack_pool.grow = gg_cache_grow;
+        stack_pool.shrink = gg_cache_shrink;
+        stack_pool.want_sp = &sg_pool_sp;
+        stack_pool.refused = &sg_exec_refused;
+        stack_pool.loads = &gg_cache_loads;
+        stack_pool.block = GG_CACHE_BLOCK;
+        stack_pool.reserve = (uint16_t)reserve;
+        stack_pool.headroom = SG_EXEC_HEADROOM;
+        m0_stack_pool_boot(&stack_pool, 0);
+    } else {
+        SG_STACK_GUARD();
+    }
+#else
     SG_STACK_GUARD();
+#endif
 #ifdef GG_SELFTEST
     gg_selftest_result = gg_render_selftest() + 1; /* read back by gm0 or a debugger */
     for (;;) {}

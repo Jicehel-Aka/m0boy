@@ -46,7 +46,7 @@ GPIO4 / SCL GPIO5, MCP4725 backlight at `0x60`, speaker GPIO0 (sigma-delta
 generator at 312.5 kHz, fed at 11025 Hz by timer1). Panel offsets (2, 3),
 MADCTL `0xC8`.
 
-The emulation runs inside `setup()` on the core's continuation stack (6 KiB);
+The emulation runs inside `setup()` on the core's continuation stack (12 KiB in .bss, not on the SDK's stack: the recompiled code's calls nest deep);
 the watchdogs are disabled.
 
 Validation is host differential testing, a mock-flash test of the save code,
