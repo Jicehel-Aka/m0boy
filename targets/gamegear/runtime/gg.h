@@ -86,6 +86,14 @@ static inline uint32_t gg_cart_offset(uint16_t a, uint8_t ram_ctl) { return (ram
 #else
 #define GG_CART_ON_CARD 0
 #endif
+/* The frontend opens the SD card: the ROM or the cartridge RAM are there,
+ * or the save states' file (GG_STATE_NAME83, sg_config.h).  The ESPboy
+ * (SG_FLASH_GAME_ID) has none: its ROM and states are in flash. */
+#if (GG_STREAM || GG_CART_ON_CARD || defined(GG_STATE_NAME83)) && !defined(SG_FLASH_GAME_ID)
+#define GG_CARD 1
+#else
+#define GG_CARD 0
+#endif
 /* The card cache (m0_cache.h, the Game Boy's): GG_CACHE_BYTES in blocks of
  * GG_CACHE_BLOCK bytes (128, 256 or 512), plus one 512-byte sector buffer
  * under 512.  By default GG_STREAM_SECTORS sectors of RAM in all. */

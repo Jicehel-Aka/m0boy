@@ -479,20 +479,31 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                << "#define GG_SMS " << (o.mastersystem ? 1 : 0) << " /* Master System */\n";
         /* The game's files on the card share the .BIN's 8.3 base; the
          * firmware looks for them in the folder of its own .BIN. */
-        if (gg && !esp) config << "#define GG_BIN_NAME83 \"" << name83(sd, "BIN") << "\"\n";
+        if (!esp) config << "#define GG_BIN_NAME83 \"" << name83(sd, "BIN") << "\"\n";
         if (cart_on_card) {
             config << "#define GG_SAVE_NAME \"" << sd << ".SAV\"\n#define GG_SAVE_NAME83 \"" << name83(sd, "SAV") << "\"\n";
         }
         /* Save states (meta_state.cpp): the file compile.sh creates holds
-         * slots of the machine's bytes (gg_t, the cartridge RAM when the
-         * game has some in RAM).  gg_state_bytes() refuses more than fits. */
-        const bool states = gg && (streamed || cart_on_card) &&
-                            (o.target == TargetId::meta || o.target == TargetId::pokitto);
+         * slots of the machine's bytes (gg_t or sg1000_t, the cartridge RAM
+         * when the game has some in RAM).  meta_state_init refuses a machine
+         * larger than a slot. */
+        const bool states = o.target == TargetId::meta || o.target == TargetId::pokitto;
         if (states) {
-            const size_t state_bytes = 25536 + (cart_ram ? 8192u : 0u); /* sizeof(gg_t), keep in sync */
+            const size_t state_bytes = (gg ? 25536u : 18216u) + (cart_ram ? 8192u : 0u); /* sizeof(gg_t), sizeof(sg1000_t) */
             config << "#define GG_STATE_NAME \"" << sd << ".ST8\"\n#define GG_STATE_NAME83 \""
                    << name83(sd, "ST8") << "\"\n#define GG_STATE_SLOTS 10\n#define GG_STATE_SLOT_SECTORS "
                    << (state_bytes + 511) / 512 + 1 << "\n";
+        }
+        /* ESPboy: the slots that fit in the flash's save area (59 blocks of
+         * 4 KiB, espboy_flash.cpp), after the two copies of the cartridge
+         * RAM (8 KiB, and a header block each). */
+        const bool esp_states = esp;
+        if (esp_states) {
+            const size_t state_bytes = (gg ? 25536u : 18216u) + (cart_ram ? 8192u : 0u);
+            const size_t sectors = 1 + (state_bytes + 511) / 512, slot_blocks = (sectors + 7) / 8;
+            const size_t ram_blocks = cart_ram ? 2 * (8192 / 4096 + 1) : 0;
+            const size_t slots = std::min<size_t>(10, (0x03B000 / 4096 - ram_blocks) / slot_blocks);
+            config << "#define GG_STATE_SLOTS " << slots << " /* in flash */\n#define GG_STATE_SLOT_SECTORS " << sectors << "\n";
         }
         /* Pokitto: the sector cache lives in the 2 KiB USB RAM bank, which
          * the Master System shares with its pair tables. */
@@ -641,7 +652,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         }
         /* The Game Gear streams its ROM: its FAT reader and SD bus join the
          * Pokitto platform files in PLATFORM_C. */
-        const std::string platform_extra = gg ? " ${SRC}/pokitto_*.S ${SRC}/gg_stream.c ${SRC}/meta_sd.c ${SRC}/meta_fat.c" : "";
+        const std::string platform_extra = gg ? " ${SRC}/pokitto_*.S ${SRC}/gg_stream.c ${SRC}/meta_sd.c ${SRC}/meta_fat.c"
+                                              : states ? " ${SRC}/meta_sd.c ${SRC}/meta_fat.c" : "";
         {
             std::string host_cmake = read(cmake_tpl / "host.txt.in");
             host_cmake = replace(host_cmake, "@NAME@", o.name);
@@ -662,8 +674,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             /* files of an earlier generation that this one does not use */
             for (const char* name : { "gg_stream.c", "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h", "meta_sd_bus.cpp", "pokitto_sd.c" })
                 fs::remove(src / name);
-            if (gg && (streamed || cart_on_card) && !esp) {
-                copy_template(tpl / "platform" / "gg_stream.c", src / "gg_stream.c");
+            if ((streamed || cart_on_card || states) && !esp) { /* gg.h's GG_CARD; SG-1000: the states */
+                if (gg) copy_template(tpl / "platform" / "gg_stream.c", src / "gg_stream.c");
                 for (const char* name : { "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h" })
                     copy_template(o.meta_templates / "platform" / "src" / name, src / name);
                 const auto bus = o.target == TargetId::pokitto ? fs::path("pokitto/pokitto_sd.c") : fs::path("meta/meta_sd_bus.cpp");
@@ -676,10 +688,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");
             copy_template(o.meta_templates / "platform" / "src" / "meta_font.h", src / "meta_font.h");
             copy_template(o.meta_templates / "platform" / "src" / "meta_menu.cpp", src / "meta_menu.cpp");
-            if (states) {
+            if (states || esp_states) /* ESPboy: espboy_flash.cpp implements it */
                 copy_template(o.meta_templates / "platform" / "src" / "meta_state.h", src / "meta_state.h");
+            if (states)
                 copy_template(o.meta_templates / "platform" / "src" / "meta_state.cpp", src / "meta_state.cpp");
-            }
             /* The META's board settings (SPI rates, display pipeline): the
              * same file the Game Boy profile includes. */
             copy_template(o.meta_templates / "runtime" / "gbl_board.h", src / "gbl_board.h");

@@ -384,7 +384,16 @@ touches the FAT.
   Sega cores** (Etat, Sauver l'etat, Charger l'etat; the state file
   `<NAME>.ST8` sits on the card next to the ROM, made by `compile.sh`, ten
   slots of the machine's bytes — on the host, `Ristar_host --save-state` /
-  `--load-state` round-trips the same stream, byte-identical resumes), a
+  `--load-state` round-trips the same stream, byte-identical resumes).
+  Since 0.10.34 every Sega game has them, on the three consoles: the
+  Game Gear and Master System games whose ROM is all in flash open the card
+  for the state file alone (packed ROMs too, which did not open it), the
+  SG-1000 gains `sg_state_io` (the machine's bytes, its pointers kept, the
+  renderer's caches rebuilt), and the ESPboy keeps the slots in its flash
+  after the cartridge RAM's copies (8 for a Game Gear game, 5 with
+  cartridge RAM, 10 for an SG-1000 one; `espboy_flash.cpp` serves both
+  cores).  Checked in gm0 on each console: save, play on, load, the menu
+  says "Etat charge" and the picture is the saved one.  Also a
   **Bootloader USB** line (the sam-ba magic where the META's bootloader
   looks after a software reset — reached without META_USB, where the double
   reset opens the loader instead of the bootloader), and **Vitesse runs

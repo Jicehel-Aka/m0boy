@@ -8,7 +8,7 @@ Build: `pio run`. Serial upload: `pio run -t upload` (a ROM larger than
 |---|---|---|
 | `0x000000` | `.pio/build/espboy/firmware.bin`: Arduino core, runtime, code, ROM ≤ 256 KiB or bank 0 | 1 MiB |
 | `0x100000` | `rom.bin`: sectors 32 on of a larger ROM, raw or LZSS (absent for a small ROM) | 2816 KiB |
-| `0x3C0000` | cartridge RAM (two copies), save states | 236 KiB |
+| `0x3C0000` | cartridge RAM (two copies), save states (Game Boy and Sega) | 236 KiB |
 | `0x3FB000` | Arduino/SDK: EEPROM, RF calibration, Wi-Fi settings | 20 KiB |
 
 ESP8266/LX106, ESP-12F with 4 MiB flash, 128×128 ST7735. Runs at 160 MHz; the

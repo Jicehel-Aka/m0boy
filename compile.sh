@@ -456,6 +456,32 @@ export_source() { # $1 projet généré, $2 dossier du jeu, $3 options pio de ce
   echo "[i] Source prête à compiler : $(basename "$2")/source ($4)"
 }
 
+# ESPboy : la pile de continuation (CONT_STACKSIZE, 12 Kio par défaut) cède
+# au tas ce qui lui manque pour garder 4 Kio libres, sans descendre sous
+# 6 Kio.  platformio.ini étant régénéré à chaque passe, la taille retenue
+# pour le jeu (esp_stack, variable de l'appelant) y est remise avant chaque
+# build.  Remplit build_log ; code de pio run.
+espboy_pio_run() { # $1 projet, $2 options de build
+  local ini="$1/platformio.ini" stack used free cut rc tries=0
+  while :; do
+    [ -n "${esp_stack:-}" ] && sed -i "s/-DCONT_STACKSIZE=[0-9]*/-DCONT_STACKSIZE=$esp_stack/" "$ini"
+    stack=$(sed -n 's/.*-DCONT_STACKSIZE=\([0-9]*\).*/\1/p' "$ini")
+    build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" PLATFORMIO_BUILD_FLAGS="$2" pio run -d "$1" 2>&1); rc=$?
+    used=$(sed -n 's/^RAM:.*(used \([0-9]*\) bytes from 81920 bytes).*/\1/p' <<<"$build_log")
+    if [ $rc -eq 0 ] && [ -n "$used" ]; then
+      free=$((81920 - used)); [ $free -ge 4096 ] && return 0
+      cut=$(( (4096 - free + 511) / 512 * 512 ))
+    elif grep -q "dram0_0_seg" <<<"$build_log"; then
+      free=0; cut=2048 # RAM dépassée d'une quantité que l'éditeur de liens ne dit pas
+    else
+      return $rc
+    fi
+    { [ -n "$stack" ] && [ $((stack - cut)) -ge 6144 ] && [ $tries -lt 6 ]; } || return $rc
+    esp_stack=$((stack - cut)); tries=$((tries + 1))
+    echo "[i] Pile ESPboy : $esp_stack octets (tas libre : $free octets)"
+  done
+}
+
 unzip_game() { # $1 zip, $2 dossier de destination
   python3 - "$1" "$2" <<'PY'
 import sys, zipfile
@@ -782,7 +808,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   # Firmware filling the flash: a first build measures the generated code
   # per instruction (sg_gen.o), the second generates with that measure;
   # when it overflows, a few bytes more per instruction until it fits.
-  local sg_build="$out_dir/build" gen_log build_log bpi="" fill="" tries=0 rc text compiled sg_extra=""
+  local sg_build="$out_dir/build" gen_log build_log bpi="" fill="" tries=0 rc text compiled sg_extra="" esp_stack=""
   [ "$FIRMWARE_COMPILER" = clang ] && sg_build="$out_dir/build-clang"
   local size_bin
   if [ "$TARGET" = espboy ]; then size_bin="$HOME/.platformio/packages/toolchain-xtensa/bin/xtensa-lx106-elf-size"
@@ -797,6 +823,8 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
       cmake -G Ninja -S "$out_dir" -B "$sg_build" -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake \
         -DSG_COMPILER="$FIRMWARE_COMPILER" ${hc_flags} > /dev/null || return 2
       build_log=$(ninja -C "$sg_build" -j"$NPROC" 2>&1) && return 0
+    elif [ "$TARGET" = espboy ]; then
+      espboy_pio_run "$out_dir" "${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG}" && return 0
     else
       build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG}" pio run -d "$out_dir" 2>&1) && return 0
     fi
@@ -1197,6 +1225,8 @@ PY
     if [ "$TARGET" = pokitto ]; then
       extra_flags="${extra_flags:+$extra_flags }-DMETA_OVERCLOCK=$OVERCLOCK"
       build_log=$(make -C "$out_dir" -j"$NPROC" COMPILER="$FIRMWARE_COMPILER" EXTRA_CFLAGS="${extra_flags:-}" 2>&1) && return 0
+    elif [ "$TARGET" = espboy ]; then
+      espboy_pio_run "$out_dir" "${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" && return 0
     else
       build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0
     fi
@@ -1204,7 +1234,7 @@ PY
     echo "$build_log" | tail -20
     return 2
   }
-  local lo=8 hi=64 mid best=0 rc build_log gen_log need_rebuild=1
+  local lo=8 hi=64 mid best=0 rc build_log gen_log need_rebuild=1 esp_stack=""
   if [ ${#static_args[@]} -eq 0 ] && [ ${#cov_args[@]} -eq 0 ]; then lo=64; fi
   # Rebuild de version (même ROM, même PACK) : le remplissage trouvé à la
   # passe précédente reste le bon ordre de grandeur — on le vérifie, on

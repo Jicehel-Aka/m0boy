@@ -44,19 +44,29 @@ extern "C" {
 
 #include "gbl_config.h" /* GBL_GEN_VERSION */
 
+/* Game Gear / Master System (gg_state_io) or SG-1000 (sg_state_io) */
+#if SG_SYSTEM_GG
+#define SEGA_STATE(fn) gg_state_##fn
+#else
+#define SEGA_STATE(fn) sg_state_##fn
+#endif
 extern "C" {
-uint32_t gg_state_bytes(void);
-void gg_state_io(void (*io)(void *data, uint32_t bytes, void *ctx), void *ctx, int load);
-uint32_t gg_state_frame(void);
+uint32_t SEGA_STATE(bytes)(void);
+void SEGA_STATE(io)(void (*io)(void *data, uint32_t bytes, void *ctx), void *ctx, int load);
+uint32_t SEGA_STATE(frame)(void);
 }
 
 #define STATE_NAME83 GG_STATE_NAME83
 #define STATE_SLOTS GG_STATE_SLOTS
 #define STATE_SLOT_SECTORS GG_STATE_SLOT_SECTORS
+#ifdef GG_STREAM_NAME
 #define STATE_TITLE GG_STREAM_NAME
-#define STATE_BYTES() gg_state_bytes()
-#define STATE_IO(fn, ctx, load) gg_state_io(fn, ctx, load)
-#define STATE_FRAME gg_state_frame()
+#else /* the whole ROM in flash */
+#define STATE_TITLE GG_STATE_NAME
+#endif
+#define STATE_BYTES() SEGA_STATE(bytes)()
+#define STATE_IO(fn, ctx, load) SEGA_STATE(io)(fn, ctx, load)
+#define STATE_FRAME SEGA_STATE(frame)()
 
 #endif
 

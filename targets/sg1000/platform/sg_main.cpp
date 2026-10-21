@@ -15,11 +15,14 @@
 #include "meta_hw.h"
 #endif
 #include "sg_frontend.h"
+#if defined(GG_STATE_NAME83)
+#include "meta_card.h"
+#endif
 extern "C" {
 extern const uint8_t sg_rom[];
 extern const size_t sg_rom_size;
 sg_fn sg_gen_lookup(uint16_t pc);
-#if META_TARGET_POKITTO
+#if META_TARGET_POKITTO && !defined(GG_STATE_NAME83) /* else pokitto_sd.c */
 void pokitto_sd_clock_changed(uint32_t) {}
 #endif
 }
@@ -27,7 +30,12 @@ void pokitto_sd_clock_changed(uint32_t) {}
 static uint8_t cart_ram[SG_CART_RAM_SIZE] __attribute__((aligned(4)));
 #endif
 #if META_TARGET_POKITTO
+/* one row, or with save states the 512 bytes of their sector scratch */
+#if defined(GG_STATE_NAME83)
+static uint16_t line_buffer[256] __attribute__((aligned(4)));
+#else
 static uint16_t line_buffer[SG_OUT_WIDTH] __attribute__((aligned(4)));
+#endif
 #else
 /* Displayed lines go to the LCD in batches of consecutive rows (one window
  * and one DMA chain per batch); two batches alternate. */
@@ -94,12 +102,18 @@ static unsigned pause_frames; /* a HOME tap (the Pokitto's C) becomes Pause */
         deadline = meta_micros(); \
         skipped_run = 0; \
     } while (0)
+#if defined(GG_STATE_NAME83)
+#define SG_MENU_SD_DESELECT() meta_sd_deselect()
+#else
+#define SG_MENU_SD_DESELECT() do { } while (0)
+#endif
 #if META_TARGET_ESPBOY
 #define SG_MENU_QUIT() do { espboy_restart(); } while (0)
 #elif META_TARGET_POKITTO
 #define SG_MENU_QUIT() do { \
         meta_audio_stop(); \
-        pokitto_enter_loader(); /* the SG builds touch no SD card */ \
+        SG_MENU_SD_DESELECT(); \
+        pokitto_enter_loader(); \
         meta_audio_init(); \
     } while (0)
 #else
@@ -108,6 +122,16 @@ static unsigned pause_frames; /* a HOME tap (the Pokitto's C) becomes Pause */
 #else
 #define SG_MENU_USB_STOP() do { } while (0)
 #endif
+/* The USB bootloader (sam-ba) directly, as the Game Gear frontend does. */
+#define SG_MENU_BOOTLOADER() do { \
+        meta_audio_stop(); \
+        NVIC_DisableIRQ(DMAC_IRQn); \
+        meta_watchdog_stop(); \
+        SG_MENU_USB_STOP(); \
+        SG_MENU_SD_DESELECT(); \
+        *(volatile uint32_t *)0x20007FFC = 0x3aecfd88u; \
+        NVIC_SystemReset(); \
+    } while (0)
 /* Hand the console back to the Gamebuino loader in the state it expects
  * (the Game Boy frontend's enter_loader). */
 #define SG_MENU_QUIT() do { \
@@ -118,14 +142,45 @@ static unsigned pause_frames; /* a HOME tap (the Pokitto's C) becomes Pause */
         NVIC_DisableIRQ(DMAC_IRQn); \
         meta_watchdog_stop(); \
         SG_MENU_USB_STOP(); \
+        SG_MENU_SD_DESELECT(); \
         ((void (*)(void))(*((uint32_t *)0x3FF4)))(); \
     } while (0)
 #endif
+/* The game draws 120 (Pokitto 150) of the screen's rows: the menu's
+ * leftovers on the others are cleared. */
 #define SG_MENU_RESUME() do { \
+        meta_lcd_fill(0); \
         deadline = meta_micros(); \
         skip_video = 0; \
         skipped_run = 0; \
     } while (0)
+#if defined(GG_STATE_SLOTS)
+/* Save states (sg_menu.h's Etat lines): the card's state file, in the
+ * folder of the game's .BIN on the META (ESPboy: the flash,
+ * espboy_flash.cpp); the line buffers as the sector scratch (the menu has
+ * closed). */
+#if META_TARGET_POKITTO
+#define SG_MENU_STATE_BUF() ((uint8_t *)line_buffer)
+#else
+#define SG_MENU_STATE_BUF() ((uint8_t *)line_buffers)
+#endif
+#define SG_MENU_STATE_SLOTS GG_STATE_SLOTS
+#define SG_MENU_STATE_LOADED() \
+    do { \
+        deadline = meta_micros(); \
+        skip_video = 0; \
+        skipped_run = 0; \
+    } while (0)
+#endif
+#if defined(GG_STATE_NAME83)
+static int sg_card_open(void) {
+    if (!meta_sd_init()) return 0;
+#if !META_TARGET_POKITTO
+    meta_fat_dir = meta_fat_game_dir(meta_card_sector, SG_MENU_STATE_BUF(), GG_BIN_NAME83, META_APP_START);
+#endif
+    return 1;
+}
+#endif
 #include "sg_menu.h"
 
 static unsigned display_row(unsigned y) {
@@ -197,7 +252,13 @@ int main() {
 #endif
     SG_STACK_PAINT();
     SG_PLATFORM_INIT();
+#if defined(GG_STATE_NAME83)
+    meta_state_init(sg_card_open(), SG_MENU_STATE_BUF());
+#endif
     sg_start();
+#if META_TARGET_ESPBOY && defined(GG_STATE_SLOTS)
+    meta_state_init(1, SG_MENU_STATE_BUF()); /* the slots follow the cartridge RAM's copies */
+#endif
     SG_STACK_GUARD();
 #ifdef SG_SELFTEST
     sg_selftest_result = sg1000_render_selftest() + 1; /* read back by a debugger or gm0 */

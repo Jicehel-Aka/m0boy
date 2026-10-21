@@ -384,8 +384,10 @@ gauche/droite (ou A) change la valeur, B ou HOME referme.
 Sous les lignes : images émulées et affichées pendant la dernière seconde,
 ou le résultat de la dernière sauvegarde d'état.
 
-Les états sont dans le fichier `<NOM>.STA` que le convertisseur crée à côté
-du `.bin` (10 emplacements) : copie-le sur la carte avec le jeu. Sans lui,
+Les états sont dans le fichier `<NOM>.STA` (Game Boy) ou `<NOM>.ST8`
+(Game Gear, Master System, SG-1000) que le convertisseur crée à côté du
+`.bin` (10 emplacements) : copie-le sur la carte avec le jeu. Sur l'ESPboy,
+ils sont dans la flash de la console. Sans lui,
 les lignes d'état n'apparaissent pas. Un état ne se recharge qu'avec le
 firmware qui l'a écrit (une nouvelle version de gbrecomp le refuse).
 Les choix ne sont pas gardés à l'extinction.

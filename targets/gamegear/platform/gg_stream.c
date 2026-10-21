@@ -10,7 +10,7 @@
 #include "gg.h"
 #include "sg_config.h"
 
-#if GG_STREAM || GG_CART_ON_CARD
+#if GG_CARD
 #include "meta_card.h"
 #include "meta_target.h"
 #include <string.h>
@@ -49,19 +49,20 @@ static int rom_matches(uint32_t first_lba, uint32_t size, uint8_t *buf, void *ct
 #endif
 
 /* A META_CARD_ code (meta_card.h): the ROM file when it is on the card,
- * then the save file, looked up in the folder of the game's .BIN. */
-int gg_stream_open(const uint8_t *rom, uint32_t rom_size) {
-#if defined(GG_ROM_PACKED) && !GG_CART_ON_CARD
-    (void)rom; (void)rom_size;
+ * then the save file, looked up in the folder of the game's .BIN (which
+ * meta_fat_dir keeps for the save states' file).  buf: 512 bytes. */
+int gg_stream_open(const uint8_t *rom, uint32_t rom_size, uint8_t *buf) {
+#if defined(GG_ROM_PACKED) && !GG_CART_ON_CARD && !defined(GG_STATE_NAME83)
+    (void)rom; (void)rom_size; (void)buf;
     return META_CARD_OK;
 #else
     if (!meta_sd_init()) return META_CARD_NO_CARD;
-    uint8_t *buf = gg_stream_scratch();
     uint32_t dir = META_FAT_ANY_DIR;
 #if !META_TARGET_POKITTO
     /* The game's files are the ones in the folder of its own .BIN: other
      * games' folders may hold files of the same name. */
     dir = meta_fat_game_dir(meta_card_sector, buf, GG_BIN_NAME83, META_APP_START);
+    meta_fat_dir = dir;
 #endif
 #if GG_STREAM && !defined(GG_ROM_PACKED)
     {

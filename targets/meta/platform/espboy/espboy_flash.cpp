@@ -1,5 +1,5 @@
 /* ESPboy flash: ROM sectors beyond the mapped megabyte, battery RAM and
- * (Game Boy) save states, all in the 4 MiB chip (map in gbl_espboy.h).
+ * save states, all in the 4 MiB chip (map in gbl_espboy.h).
  *
  * Flash is erased by 4 KiB blocks and wears out, so:
  *  - battery RAM is written as a whole new copy, alternating between two
@@ -11,8 +11,8 @@
  *    sector comes last, with the checksum the load checks first.
  * Nothing here masks interrupts: the audio interrupt runs from IRAM.
  *
- * Built for the Game Boy frontend (gbl.h: meta_save_*, meta_state_*) and for
- * the Sega ones (no gbl.h: espboy_ram_load / espboy_ram_tick). */
+ * Built for the Game Boy frontend (gbl.h: meta_save_*) and for the Sega ones
+ * (no gbl.h: espboy_ram_load / espboy_ram_tick); both get meta_state_*. */
 #include <Arduino.h>
 #include <string.h>
 #if __has_include("gbl.h")
@@ -26,6 +26,10 @@ extern "C" {
 #else
 #define ESPBOY_GB 0
 #include "sg_config.h"
+#include "gbl_config.h" /* GBL_GEN_VERSION */
+#if defined(GG_STATE_SLOTS)
+#include "meta_state.h"
+#endif
 #endif
 #include "gbl_espboy.h"
 #include "espboy_hw.h"
@@ -191,11 +195,49 @@ void meta_save_tick(void) {}
 #else
 #define STATE_OFF ((uint32_t)ESPBOY_SAVE_OFF)
 #endif
+#endif /* ESPBOY_GB */
 
-/* ---- save states ----------------------------------------------------------- */
-#if defined(GBL_STATE_SLOTS)
+/* ---- save states ------------------------------------------------------------
+ * The machine behind the slots: the Game Boy's runtime, or the Sega one
+ * (gg_state_io or sg_state_io), after the copies of the cartridge RAM. */
+#if ESPBOY_GB && defined(GBL_STATE_SLOTS)
+#define ESPBOY_STATES 1
+#define STATE_SLOTS GBL_STATE_SLOTS
+#define STATE_SLOT_SECTORS GBL_STATE_SLOT_SECTORS
+#define STATE_BYTES() gbl_state_bytes()
+#define STATE_IO(fn, ctx, load) gbl_state_io(fn, ctx, load)
+#define STATE_FRAME gbl_frame
+#define STATE_GAME GBL_FLASH_GAME_ID
+#define STATE_TITLE GBL_TITLE
+#define STATE_ERROR() (meta_save_errors = ++errors)
+#elif !ESPBOY_GB && defined(GG_STATE_SLOTS)
+#define ESPBOY_STATES 1
+#if SG_SYSTEM_GG
+#define SEGA_STATE(fn) gg_state_##fn
+#else
+#define SEGA_STATE(fn) sg_state_##fn
+#endif
+extern "C" {
+uint32_t SEGA_STATE(bytes)(void);
+void SEGA_STATE(io)(void (*io)(void *data, uint32_t bytes, void *ctx), void *ctx, int load);
+uint32_t SEGA_STATE(frame)(void);
+}
+#define STATE_SLOTS GG_STATE_SLOTS
+#define STATE_SLOT_SECTORS GG_STATE_SLOT_SECTORS
+#define STATE_BYTES() SEGA_STATE(bytes)()
+#define STATE_IO(fn, ctx, load) SEGA_STATE(io)(fn, ctx, load)
+#define STATE_FRAME SEGA_STATE(frame)()
+#define STATE_GAME SG_FLASH_GAME_ID
+#define STATE_TITLE (SG_SYSTEM_GG ? "m0boy gg" : "m0boy sg1000")
+#define STATE_ERROR() (++errors)
+#define STATE_OFF state_off /* after the cartridge RAM's copies, espboy_ram_load first */
+#else
+#define ESPBOY_STATES 0
+#endif
 
-#define SLOT_BLOCKS ((GBL_STATE_SLOT_SECTORS + 7u) / 8u)
+#if ESPBOY_STATES
+
+#define SLOT_BLOCKS ((STATE_SLOT_SECTORS + 7u) / 8u)
 #define SLOT_OFF(s) (STATE_OFF + (s) * SLOT_BLOCKS * ESPBOY_BLOCK)
 
 typedef struct {
@@ -210,12 +252,12 @@ static uint8_t have_states;
 static uint32_t format_tag(void) {
     const char *v = GBL_GEN_VERSION;
     uint32_t h = fnv(2166136261u, (const uint8_t *)v, (uint32_t)strlen(v));
-    uint32_t n = gbl_state_bytes();
+    uint32_t n = STATE_BYTES();
     return fnv(h, (const uint8_t *)&n, sizeof(n));
 }
 static int header_ok(const state_header *h) {
-    return !memcmp(h->magic, "GBLSTATE", 8) && h->format == format_tag() && h->bytes == gbl_state_bytes() &&
-           h->game == GBL_FLASH_GAME_ID && !strncmp(h->title, GBL_TITLE, sizeof(h->title));
+    return !memcmp(h->magic, "GBLSTATE", 8) && h->format == format_tag() && h->bytes == STATE_BYTES() &&
+           h->game == STATE_GAME && !strncmp(h->title, STATE_TITLE, sizeof(h->title));
 }
 static int read_sector(unsigned slot, uint32_t sector, uint8_t *buf) {
     if (!flash_read(SLOT_OFF(slot) + sector * 512u, sbuf, 512)) return 0;
@@ -226,10 +268,10 @@ static int read_sector(unsigned slot, uint32_t sector, uint8_t *buf) {
 void meta_state_init(int card_ok, uint8_t *buf) {
     (void)card_ok;
     used = 0;
-    have_states = SLOT_OFF(GBL_STATE_SLOTS) <= ESPBOY_SAVE_OFF + ESPBOY_SAVE_BYTES &&
-                  gbl_state_bytes() <= (GBL_STATE_SLOT_SECTORS - 1u) * 512u;
+    have_states = SLOT_OFF(STATE_SLOTS) <= ESPBOY_SAVE_OFF + ESPBOY_SAVE_BYTES &&
+                  STATE_BYTES() <= (STATE_SLOT_SECTORS - 1u) * 512u;
     if (!have_states) return;
-    for (unsigned s = 0; s < GBL_STATE_SLOTS; s++)
+    for (unsigned s = 0; s < STATE_SLOTS; s++)
         if (read_sector(s, 0, buf) && header_ok((const state_header *)buf)) used |= 1u << s;
 }
 int meta_state_available(void) { return have_states; }
@@ -274,10 +316,10 @@ static void stream_io(void *data, uint32_t bytes, void *ctxp) {
 }
 
 int meta_state_save(unsigned slot, uint8_t *buf) {
-    if (!have_states || slot >= GBL_STATE_SLOTS) return 0;
+    if (!have_states || slot >= STATE_SLOTS) return 0;
     used &= ~(1u << slot);
     stream_ctx c = {buf, slot, 1, 0, 2166136261u, -1, 0, 0};
-    gbl_state_io(stream_io, &c, 0);
+    STATE_IO(stream_io, &c, 0);
     if (c.fill && !c.error) {
         memset(buf + c.fill, 0, 512u - c.fill);
         int32_t block = (int32_t)(c.sector / 8u);
@@ -285,22 +327,22 @@ int meta_state_save(unsigned slot, uint8_t *buf) {
         if (!c.error && !program_sector(SLOT_OFF(slot) + c.sector * 512u, buf)) c.error = 1;
     }
     if (c.error) {
-        meta_save_errors = ++errors;
+        STATE_ERROR();
         return 0;
     }
     state_header h;
     memset(&h, 0, sizeof h);
     memcpy(h.magic, "GBLSTATE", 8);
     h.format = format_tag();
-    h.bytes = gbl_state_bytes();
+    h.bytes = STATE_BYTES();
     h.checksum = c.checksum;
-    h.frame = gbl_frame;
-    h.game = GBL_FLASH_GAME_ID;
-    strncpy(h.title, GBL_TITLE, sizeof(h.title));
+    h.frame = STATE_FRAME;
+    h.game = STATE_GAME;
+    strncpy(h.title, STATE_TITLE, sizeof(h.title));
     memset(buf, 0xff, 512);
     memcpy(buf, &h, sizeof h);
     if (!program_sector(SLOT_OFF(slot), buf)) {
-        meta_save_errors = ++errors;
+        STATE_ERROR();
         return 0;
     }
     used |= 1u << slot;
@@ -308,7 +350,7 @@ int meta_state_save(unsigned slot, uint8_t *buf) {
 }
 
 int meta_state_load(unsigned slot, uint8_t *buf) {
-    if (!have_states || slot >= GBL_STATE_SLOTS || !(used >> slot & 1u)) return 0;
+    if (!have_states || slot >= STATE_SLOTS || !(used >> slot & 1u)) return 0;
     state_header h;
     if (!read_sector(slot, 0, buf)) return 0;
     memcpy(&h, buf, sizeof h);
@@ -323,11 +365,11 @@ int meta_state_load(unsigned slot, uint8_t *buf) {
     }
     if (sum != h.checksum) return 0;
     stream_ctx c = {buf, slot, 1, 0, 2166136261u, -1, 1, 0};
-    gbl_state_io(stream_io, &c, 1);
+    STATE_IO(stream_io, &c, 1);
     return !c.error;
 }
 
-#else
+#elif ESPBOY_GB
 
 void meta_state_init(int, uint8_t *) {}
 int meta_state_available(void) { return 0; }
@@ -337,7 +379,6 @@ int meta_state_load(unsigned, uint8_t *) { return 0; }
 
 #endif
 
-#endif /* ESPBOY_GB */
 
 /* ---- Sega frontends ------------------------------------------------------------
  * rom.bin holds the ROM from page 1 on (page 0 is in the application):

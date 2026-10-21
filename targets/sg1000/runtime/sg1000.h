@@ -133,6 +133,12 @@ void sg1000_filter_line(const uint8_t *pixels, uint16_t *out); /* 256 indices ->
 void sg1000_render_pair(unsigned ya, uint16_t *out);  /* device row from lines ya and ya + 1 */
 unsigned sg1000_render_selftest(void);              /* SG_SELFTEST: Thumb-1 vs C */
 
+/* Save states (meta_state.cpp): the machine as raw bytes, then the
+ * cartridge RAM; a load keeps this run's pointers and callbacks. */
+uint32_t sg_state_bytes(void);
+void sg_state_io(void (*io)(void *data, uint32_t bytes, void *ctx), void *ctx, int load);
+uint32_t sg_state_frame(void);
+
 /* Audio: unsigned 8-bit samples at rate, following emulated time */
 void sg1000_audio_rate(unsigned rate);
 void sg1000_audio_catchup(void);

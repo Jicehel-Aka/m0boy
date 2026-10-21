@@ -38,16 +38,21 @@ extern const uint8_t sg_rom[];
 extern const size_t sg_rom_size;
 sg_fn sg_gen_lookup(uint16_t pc);
 #if META_TARGET_POKITTO
-#if !GG_STREAM && !GG_CART_ON_CARD /* else pokitto_sd.c */
+#if !GG_CARD /* else pokitto_sd.c */
 void pokitto_sd_clock_changed(uint32_t) {}
 #endif
 void pokitto_lcd_row_zoom(unsigned y, const uint16_t *px);
 #endif
-#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY
-int gg_stream_open(const uint8_t *rom, uint32_t rom_size);
+#if (GG_STREAM && !defined(GG_ROM_PACKED)) || GG_CART_ON_CARD
+#define GG_CARD_REQUIRED 1 /* the game's ROM pages or cartridge RAM are there */
+#else
+#define GG_CARD_REQUIRED 0
+#endif
+#if GG_CARD
+int gg_stream_open(const uint8_t *rom, uint32_t rom_size, uint8_t *buf);
 #endif
 }
-#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY
+#if GG_CARD
 #include "meta_card.h"
 #endif
 #if SG_CART_RAM && !GG_CART_ON_CARD
@@ -240,7 +245,7 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
         deadline = meta_micros(); \
         skipped_run = 0; \
     } while (0)
-#if GG_STREAM || GG_CART_ON_CARD
+#if GG_CARD
 #define GG_MENU_SD_DESELECT() meta_sd_deselect()
 #else
 #define GG_MENU_SD_DESELECT() do { } while (0)
@@ -302,10 +307,11 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
 #define SG_MENU_ON_STACK_TOP gg_cache_lend()
 #define SG_MENU_UNLEND() gg_cache_unlend()
 #endif
-#if defined(GG_STATE_NAME83)
-/* Save states (sg_menu.h's Etat lines): the card's state file, the line
- * buffers as the sector scratch (the menu has closed), and what the frame
- * loop re-synchronises once a state is loaded. */
+#if defined(GG_STATE_SLOTS)
+/* Save states (sg_menu.h's Etat lines): the card's state file (ESPboy: the
+ * flash, espboy_flash.cpp), the line buffers as the sector scratch (the
+ * menu has closed), and what the frame loop re-synchronises once a state
+ * is loaded. */
 #define SG_MENU_STATE_SLOTS GG_STATE_SLOTS
 #define SG_MENU_STATE_BUF() ((uint8_t *)line_buffers[0])
 #define SG_MENU_STATE_LOADED() \
@@ -365,12 +371,13 @@ int main() {
 #endif
     SG_STACK_PAINT();
     SG_PLATFORM_INIT();
-#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY
+#if GG_CARD
     /* The game's files on the card (meta_card.h, the Game Boy's colours):
      * no card blue, ROM file missing red, fragmented orange, another ROM
-     * magenta, save file missing yellow */
-    int card_err = 0;
-    if ((card_err = gg_stream_open(sg_rom, (uint32_t)sg_rom_size))) {
+     * magenta, save file missing yellow.  Only the save states' file there:
+     * the game runs without it (no Etat lines). */
+    int card_err = gg_stream_open(sg_rom, (uint32_t)sg_rom_size, (uint8_t *)line_buffers);
+    if (card_err && GG_CARD_REQUIRED) {
         static const uint16_t colours[] = META_CARD_COLOURS(META_COLOR);
         meta_lcd_fill(card_err == META_CARD_NO_SAVE ? META_COLOR(META_CARD_RGB_NO_SAVE) : colours[card_err]);
         for (;;) SG_PAD_WDT(); /* watchdog fed, USB touch served */
@@ -386,6 +393,9 @@ int main() {
 #endif
 #else
     gg_init(sg_rom, sg_rom_size, 0);
+#endif
+#if META_TARGET_ESPBOY && defined(GG_STATE_SLOTS)
+    meta_state_init(1, SG_MENU_STATE_BUF()); /* the slots follow the cartridge RAM's copies */
 #endif
     machine.lookup = sg_gen_lookup;
     machine.draw_line = draw_line;

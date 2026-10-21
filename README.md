@@ -333,8 +333,10 @@ rest goes in a separate `rom.bin` uploaded at `0x100000` (2.75 MiB area), read
 sector by sector with `spi_flash_read` through the runtime cache: raw while it
 fits, and only when it does not are enough 512-byte sectors LZSS compressed
 (largest savings first). Cartridges that stay too big are rejected. Battery
-RAM (two alternating copies) and save states (as many slots as fit) live in the
-flash from `0x3C0000`. Batch archives include the images and their flash
+RAM (two alternating copies) and save states (as many slots as fit, Game Boy and
+Sega) live in the flash from `0x3C0000`. The continuation stack is 12 KiB in
+`.bss`; `compile.sh` gives the heap back what it lacks to keep 4 KiB free
+(the stack never below 6 KiB). Batch archives include the images and their flash
 offsets; they are flashed over serial, not copied onto an SD card.
 
 The Game Boy runtime, generated C, menu, palettes and display pipeline are

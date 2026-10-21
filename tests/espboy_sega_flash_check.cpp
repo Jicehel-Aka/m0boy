@@ -1,9 +1,18 @@
 /* espboy_flash.cpp built for a Sega frontend (no gbl.h): the ROM sector
- * mapping of rom.bin and the cartridge RAM saved in flash. */
+ * mapping of rom.bin, the cartridge RAM saved in flash, and the save states
+ * after its copies (a stand-in machine for gg_state_io). */
 #include <Arduino.h>
 #include <stdio.h>
 #include "gbl_espboy.h"
 #include "espboy_hw.h"
+#include "meta_state.h"
+#include "sg_config.h"
+
+static uint8_t fake_machine[25536];
+static uint32_t fake_frame;
+extern "C" uint32_t gg_state_bytes(void) { return sizeof fake_machine; }
+extern "C" void gg_state_io(void (*io)(void *, uint32_t, void *), void *ctx, int) { io(fake_machine, sizeof fake_machine, ctx); }
+extern "C" uint32_t gg_state_frame(void) { return fake_frame; }
 
 MockEsp ESP;
 extern "C" int gg_platform_rom_read(uint32_t sector, uint8_t *dst);
@@ -51,6 +60,26 @@ int main(void) {
     memset(again, 0, sizeof again);
     espboy_ram_load(again, sizeof again);
     CHECK(again[10] == 0); /* both copies damaged: nothing is loaded */
-    printf("espboy sega flash ok: %u erases, %u programs\n", ESP.erases, ESP.programs);
+
+    /* save states, after the RAM's two copies */
+    espboy_ram_flush(ram, sizeof ram);
+    memset(again, 0, sizeof again);
+    espboy_ram_load(again, sizeof again);
+    CHECK(!memcmp(again, ram, sizeof ram));
+    meta_state_init(1, sec);
+    CHECK(meta_state_available() && meta_state_used() == 0);
+    for (unsigned i = 0; i < sizeof fake_machine; i++) fake_machine[i] = (uint8_t)(i * 7 + 3);
+    fake_frame = 1234;
+    CHECK(meta_state_save(GG_STATE_SLOTS - 1, sec));
+    CHECK(meta_state_used() == 1u << (GG_STATE_SLOTS - 1));
+    memset(fake_machine, 0, sizeof fake_machine);
+    CHECK(!meta_state_load(0, sec)); /* an empty slot */
+    CHECK(meta_state_load(GG_STATE_SLOTS - 1, sec) && fake_machine[1] == 10 && fake_machine[25535] == (uint8_t)(25535 * 7 + 3));
+    memset(again, 0, sizeof again);
+    espboy_ram_load(again, sizeof again); /* the last slot did not reach the RAM's copies */
+    CHECK(!memcmp(again, ram, sizeof ram));
+    meta_state_init(1, sec); /* reboot: the slot is still there */
+    CHECK(meta_state_used() == 1u << (GG_STATE_SLOTS - 1));
+    printf("espboy sega flash ok: %u erases, %u programs, %u state slots\n", ESP.erases, ESP.programs, (unsigned)GG_STATE_SLOTS);
     return 0;
 }

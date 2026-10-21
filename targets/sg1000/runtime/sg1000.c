@@ -354,3 +354,51 @@ int sg_step(uint16_t after) {
     while (machine.cpu.ei_delay && !machine.stop && !machine.cpu.fault);
     return machine.cpu.pc == after && !machine.stop;
 }
+
+uint32_t sg_state_bytes(void) {
+    return (uint32_t)sizeof(sg1000_t) + (machine.cart_ram ? SG_CART_RAM_SIZE : 0u);
+}
+
+void sg_state_io(void (*io)(void *data, uint32_t bytes, void *ctx), void *ctx, int load) {
+    if (!load) {
+        io(&machine, (uint32_t)sizeof(sg1000_t), ctx);
+        if (machine.cart_ram) io(machine.cart_ram, SG_CART_RAM_SIZE, ctx);
+        return;
+    }
+    const uint8_t *rom = machine.rom;
+    uint8_t *cart = machine.cart_ram;
+    uint16_t *row_out = machine.row_out;
+    void *platform = machine.platform;
+    int (*draw_line)(void *, unsigned y) = machine.draw_line;
+    void (*row)(void *, unsigned y, uint16_t *pixels) = machine.row;
+    void (*ref_row)(void *, unsigned y, const uint8_t *pixels) = machine.ref_row;
+    void (*frame)(void *) = machine.frame;
+    sg_fn (*lookup)(uint16_t pc) = machine.lookup;
+    uint32_t *coverage = machine.coverage;
+    uint8_t *entries = machine.entries;
+    z80_read_fn read = machine.cpu.read, in = machine.cpu.in;
+    z80_write_fn write = machine.cpu.write, out = machine.cpu.out;
+    io(&machine, (uint32_t)sizeof(sg1000_t), ctx);
+    if (cart) io(cart, SG_CART_RAM_SIZE, ctx);
+    machine.rom = rom;
+    machine.cart_ram = cart;
+    machine.row_out = row_out;
+    machine.platform = platform;
+    machine.draw_line = draw_line;
+    machine.row = row;
+    machine.ref_row = ref_row;
+    machine.frame = frame;
+    machine.lookup = lookup;
+    machine.coverage = coverage;
+    machine.entries = entries;
+    machine.cpu.user = &machine;
+    machine.cpu.read = read;
+    machine.cpu.in = in;
+    machine.cpu.write = write;
+    machine.cpu.out = out;
+    machine.stop = 0; /* the saved run's end must not end this one */
+    machine.sprites_dirty = 1; /* the renderer's caches follow the loaded VRAM */
+    sg1000_palette_changed();
+}
+
+uint32_t sg_state_frame(void) { return machine.frames; }
