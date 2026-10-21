@@ -30,6 +30,7 @@
  * window.
  */
 #include "meta_display.h"
+#include "meta_menu.h"
 
 #include "gbl.h"
 #include "gbl_config.h"
@@ -291,6 +292,11 @@ uint16_t *meta_display_scratch(unsigned *rows) {
     meta_display_flush(); /* the caller waits for the display (meta_lcd_wait) */
     *rows = META_LCD_BUFFERS * META_STRIP_LINES;
     return strip[0];
+}
+
+/* The menu draws through the same strips (meta_menu.h). */
+uint16_t *meta_menu_scratch(unsigned *rows) {
+    return meta_display_scratch(rows);
 }
 
 /* Per-line layout of the current mode: what each DMG line becomes. */

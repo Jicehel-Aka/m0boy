@@ -10,6 +10,7 @@
  * are added in batches.  Instructions without a hand-written lowering use
  * the interpreter's semantics (z80_ops.h) on constant operands. */
 #include "m0boy/sg1000_emitter.h"
+#include "m0boy/code_scan.h"
 #include "z80.h"
 #include <algorithm>
 #include <cstring>
@@ -104,6 +105,103 @@ uint8_t sb_read(void* u, uint16_t a) { return static_cast<Sandbox*>(u)->read(a);
 void sb_write(void*, uint16_t, uint8_t) {}
 uint8_t sb_in(void*, uint16_t) { return 0xff; }
 void sb_out(void*, uint16_t, uint8_t) {}
+
+/* ---- Z80 adapter of the shared speculative sweep (m0boy/code_scan.h) ---- */
+struct Z80ScanCtx {
+    Sandbox* sb;
+    const EmitOptions* opt;
+    size_t rom_size;
+    unsigned page;      ///< page of the region (banked), 0 otherwise
+    int slot;           ///< slot whose view the region decodes in (banked), -1 unbanked
+    uint16_t addr_base; ///< CPU address of the region start
+};
+
+/* Known hardware: PSG 40-7F, VDP 80-BF, controller ports C0-FF on every
+ * board; the Game Gear registers 00-06; the Master System I/O 3E/3F.  An
+ * access to a known port is evidence of code; writing ROM is evidence of
+ * data. */
+static int z80_port_signal(unsigned port, const EmitOptions& opt) {
+    if (port >= 0x40) return 1;
+    if (opt.mastersystem) return (port == 0x3e || port == 0x3f) ? 1 : 0;
+    if (opt.banked && port <= 0x06) return 1;
+    return 0;
+}
+
+static int z80_store_signal(uint16_t a, const EmitOptions& opt) {
+    if (a < 0x8000) return -1;         /* writing ROM never happens */
+    if (a >= 0xc000) return 1;         /* RAM */
+    return opt.cart_ram ? 1 : 0;       /* 8000-BFFF: cartridge RAM when enabled */
+}
+
+static int z80_target_signal(uint16_t a, const EmitOptions& opt, size_t rom_size) {
+    if (a >= 0xc000) return 0;         /* RAM code: the dispatcher handles it */
+    if (!opt.banked && a >= rom_size) return -1;
+    return 0;
+}
+
+static bool z80_scan_step(const void* ctxp, size_t pc, size_t end, m0boy::ScanStep* out) {
+    const Z80ScanCtx* ctx = static_cast<const Z80ScanCtx*>(ctxp);
+    const EmitOptions& opt = *ctx->opt;
+    const uint16_t addr = static_cast<uint16_t>(ctx->addr_base + pc);
+    auto slot_of = [&](uint16_t a) {
+        return (a < 0x400 && opt.fixed_kib) || a >= 0xc000 ? -1 : a >> 14;
+    };
+    ctx->sb->slot = opt.banked ? slot_of(addr) : -1;
+    ctx->sb->page = ctx->page;
+    z80_t c{};
+    c.user = ctx->sb;
+    c.read = sb_read;
+    c.pc = addr;
+    z80_decoded_t d{};
+    if (!z80_decode(&c, &d)) return false;
+    if (pc + d.length > end) return false;
+    const uint16_t last = static_cast<uint16_t>(addr + d.length - 1);
+    if (opt.banked && (slot_of(addr) != slot_of(last) || last < addr)) return false;
+
+    out->length = d.length;
+    out->terminator = false;
+    out->access = 0;
+    const unsigned op = d.opcode, x = op >> 6, y = (op >> 3) & 7, z = op & 7, p = y >> 1, q = y & 1;
+    const uint16_t next = static_cast<uint16_t>(addr + d.length);
+    if (d.group == 0) {
+        if (x == 0 && z == 0 && y >= 2) { /* DJNZ / JR (cc) */
+            const uint16_t target = static_cast<uint16_t>(next + static_cast<int8_t>(d.immediate));
+            out->access = z80_target_signal(target, opt, ctx->rom_size);
+            if (y == 3) out->terminator = true;
+        } else if (x == 3) switch (z) {
+        case 1:
+            if (q && p == 0) out->terminator = true; /* RET */
+            if (q && p == 2) out->terminator = true; /* JP (HL)/(IX)/(IY) */
+            break;
+        case 2: /* JP cc,nn */
+            out->access = z80_target_signal(d.immediate, opt, ctx->rom_size);
+            break;
+        case 3:
+            if (y == 0) { /* JP nn */
+                out->terminator = true;
+                out->access = z80_target_signal(d.immediate, opt, ctx->rom_size);
+            } else if (y == 2 || y == 3) { /* OUT (n),A / IN A,(n) */
+                out->access = z80_port_signal(d.immediate, opt);
+            }
+            break;
+        case 4: /* CALL cc,nn */
+            out->access = z80_target_signal(d.immediate, opt, ctx->rom_size);
+            break;
+        case 5:
+            if (q && p == 0) out->access = z80_target_signal(d.immediate, opt, ctx->rom_size);
+            break;
+        default:
+            break;
+        }
+        if (x == 0 && z == 2 && !q && p >= 2) /* LD (nn),HL / LD (nn),A: (BC)/(DE) have no immediate */
+            out->access = z80_store_signal(d.immediate, opt);
+    } else if (d.group == 2) {
+        if (x == 1 && z == 5) out->terminator = true; /* RETI/RETN */
+        else if (x == 1 && z <= 1) out->access = 1;   /* IN/OUT (C) */
+        else if (x == 1 && z == 3 && !q) out->access = z80_store_signal(d.immediate, opt); /* LD (nn),rr */
+    }
+    return true;
+}
 
 struct Run { unsigned cycles; uint16_t pc; };
 Run measure(Sandbox& sb, const z80_decoded_t& d, uint16_t addr, uint8_t f, uint16_t bc) {
@@ -1005,11 +1103,87 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
     };
     auto reach = [&](Loc a) { if (a != NOLOC && !ins_.count(a) && in_rom(a) && !padding(a)) add(a, false, 0); };
     for (Loc v : { 0x0000u, 0x0038u, 0x0066u }) reach(v);
-    while (!work.empty()) {
-        Ins in = ins_[work.front()];
-        work.pop_front();
-        if (in.falls()) reach(in.next_dest.loc);
-        if (in.jumps() || in.calls()) reach(in.target_dest.loc);
+    auto drain = [&]() {
+        while (!work.empty()) {
+            Ins in = ins_[work.front()];
+            work.pop_front();
+            if (in.falls()) reach(in.next_dest.loc);
+            if (in.jumps() || in.calls()) reach(in.target_dest.loc);
+        }
+    };
+    drain();
+    /* Speculative sweep (the GB aggressive scan): the shared code/data driver
+     * classifies the ROM; courses it validates but profiling never played and
+     * the walk never reached still compile while the budget lasts, and what
+     * it rejects is reported as data zones.  Nothing blocks the reachability
+     * walk: the interpreter stays the safety net for anything missed. */
+    if (opt_.aggressive_scan || opt_.infer_data_zones) {
+        struct SweptRegion {
+            m0boy::ScanResult scan;
+            unsigned page = 0;
+            int slot = -1;
+            uint16_t addr_base = 0;
+        };
+        std::vector<SweptRegion> swept;
+        std::vector<m0boy::ScanZone> zones; /* (page << 16 | page offset) keys */
+        m0boy::ScanOptions scan_options;
+        scan_options.min_instructions = 2;
+        scan_options.pointer_lo = 0x0000;
+        scan_options.pointer_hi = 0xc000;
+        const size_t page_count = opt_.banked ? (rom_.size() + 0x3fff) / 0x4000 : 1;
+        for (size_t pi = 0; pi < page_count; pi++) {
+            const size_t base = opt_.banked ? pi * 0x4000 : 0;
+            const size_t size = opt_.banked ? std::min<size_t>(0x4000, rom_.size() - base) : rom_.size();
+            SweptRegion region;
+            region.page = opt_.banked ? static_cast<unsigned>(pi) : 0;
+            region.slot = opt_.banked ? (pi == 0 ? 0 : 1) : -1;
+            region.addr_base = opt_.banked && pi > 0 ? 0x4000 : 0x0000;
+            Z80ScanCtx ctx{&sb_, &opt_, rom_.size(), region.page, region.slot, region.addr_base};
+            m0boy::ScanAdapter adapter{&ctx, z80_scan_step};
+            m0boy::scan_region(rom_.data() + base, size, adapter, scan_options, region.scan);
+            const uint32_t zone_base = opt_.banked ? static_cast<uint32_t>(pi) << 16 : 0;
+            for (const m0boy::ScanZone& z : m0boy::scan_data_zones(region.scan, 512)) {
+                zones.push_back({zone_base | z.start, zone_base | z.end, z.dominant});
+                stats.data_bytes += z.end - z.start;
+            }
+            swept.push_back(std::move(region));
+        }
+        stats.data_zones = zones.size();
+        if (opt_.aggressive_scan) {
+            size_t seeded = 0;
+            for (const SweptRegion& region : swept) {
+                const m0boy::ScanResult& scan = region.scan;
+                for (size_t off = 0; off < scan.klass.size(); ) {
+                    if (scan.klass[off] != m0boy::ScanClass::Code) { off++; continue; }
+                    const size_t run_start = off;
+                    while (off < scan.klass.size() && scan.klass[off] == m0boy::ScanClass::Code) off++;
+                    /* seed the run instruction by instruction; the budget and
+                     * the decoder decide how much of it compiles */
+                    size_t cur = run_start;
+                    while (cur < off) {
+                        const Loc a = region.page == 0
+                            ? static_cast<Loc>(region.addr_base + cur)
+                            : (static_cast<Loc>(region.page) << 16) |
+                                  static_cast<uint16_t>(region.addr_base + cur);
+                        if (ins_.count(a)) break;
+                        if (ins_.size() >= opt_.max_instructions) break;
+                        Ins in;
+                        if (!decode(a, in)) break;
+                        in.covered = false;
+                        in.hits = 0;
+                        ins_[a] = in;
+                        work.push_back(a);
+                        seeded++;
+                        if (in.flow == Flow::Ret || in.flow == Flow::Reti ||
+                            in.flow == Flow::Jump || in.flow == Flow::JumpDyn)
+                            break;
+                        cur += in.d.length;
+                    }
+                }
+            }
+            stats.swept = seeded;
+            drain();
+        }
     }
     stats.compiled = ins_.size();
     stats.speculative = stats.compiled - stats.covered;

@@ -35,8 +35,13 @@ static uint8_t cache_changed; /* a cartridge RAM block left what shows them */
 /* One sector of the card or of the packed ROM: what blocks are copied from,
  * and where a dirty block meets the rest of its sector before the write.
  * Tag: the ROM sector, CACHE_ETAG(save sector), or -1. */
+/* Whole-sector blocks read straight into the block (cache_load): the
+ * staging buffer is only for smaller blocks, and for the save file's
+ * write-back, which assembles the sector from its cached blocks. */
+#if M0C_BLOCK != 512 || M0C_SAVE
 static uint8_t sector_buf[512] __attribute__((aligned(4)));
 static int32_t sector_tag = -1;
+#endif
 #endif
 
 #if M0C_SAVE
@@ -166,6 +171,11 @@ static void cache_ram_store(uint32_t off, uint8_t v) {
 static M0C_UNUSED uint8_t cache_rom_byte(uint32_t off) {
     int32_t b = (int32_t)(off >> M0C_SHIFT);
     if (cache_tag[cache_rom_last] == b) return cache_buf[cache_rom_last][off & (M0C_BLOCK - 1u)];
+#if M0C_BLOCK < 512
+    /* the staged sector, still whole from the last miss: the 4×128 accolé
+     * served before taking a block from the pool */
+    if (sector_tag == (int32_t)(off >> 9)) return sector_buf[off & 511u];
+#endif
     unsigned i = 0;
     while (i < M0C_WAYS && cache_tag[i] != b) i++;
     if (i == M0C_WAYS) {

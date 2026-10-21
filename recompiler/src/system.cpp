@@ -9,20 +9,27 @@ namespace {
 constexpr std::array cpu_table = {
     CpuDescriptor{CpuId::sm83, "sm83", true},
     CpuDescriptor{CpuId::z80, "z80", true},
+    CpuDescriptor{CpuId::lua, "lua", false}, // PICO-8 Lua bytecode (femto8's compiler)
 };
 constexpr std::array gameboy_targets = {
     TargetId::desktop, TargetId::meta, TargetId::pokitto,
 };
 constexpr std::array espboy_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::espboy};
+// The Sega consoles' frontends run on every destination, the ESPboy included.
+constexpr std::array sega_targets = espboy_targets;
+// PICO-8 cartridges are compiled to C for the META (and a desktop harness).
+constexpr std::array pico8_targets = {TargetId::desktop, TargetId::meta};
 constexpr std::array system_table = {
     SystemDescriptor{SystemId::gameboy, "gameboy", CpuId::sm83, 0x0100,
                      8192, gameboy::inspect, espboy_targets},
     SystemDescriptor{SystemId::sg1000, "sg1000", CpuId::z80, 0x0000,
-                     1024, sg1000::inspect, gameboy_targets},
+                     1024, sg1000::inspect, sega_targets},
     SystemDescriptor{SystemId::gamegear, "gg", CpuId::z80, 0x0000,
-                     8192, sg1000::inspect_gamegear, gameboy_targets},
+                     8192, sg1000::inspect_gamegear, sega_targets},
     SystemDescriptor{SystemId::mastersystem, "sms", CpuId::z80, 0x0000,
-                     8192, sg1000::inspect_mastersystem, gameboy_targets},
+                     8192, sg1000::inspect_mastersystem, sega_targets},
+    SystemDescriptor{SystemId::pico8, "pico8", CpuId::lua, 0x0000,
+                     0x8000, pico8::inspect, pico8_targets},
 };
 }
 
@@ -69,6 +76,12 @@ std::optional<SystemId> detect_system(const std::filesystem::path& path) {
     if (ext == ".sg") return SystemId::sg1000;
     if (ext == ".gg") return SystemId::gamegear;
     if (ext == ".sms") return SystemId::mastersystem;
+    if (ext == ".p8") return SystemId::pico8;
+    if (ext == ".png") {
+        auto stem = path.stem().string();
+        std::transform(stem.begin(), stem.end(), stem.begin(), [](unsigned char c) { return std::tolower(c); });
+        if (stem.size() > 3 && stem.compare(stem.size() - 3, 3, ".p8") == 0) return SystemId::pico8;
+    }
     if (ext == ".gb" || ext == ".gbc" || ext == ".sgb") return SystemId::gameboy;
     return std::nullopt;
 }

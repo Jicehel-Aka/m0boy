@@ -4,6 +4,7 @@
  */
 
 #include "recompiler/analyzer.h"
+#include "m0boy/code_scan.h"
 #include <algorithm>
 #include <queue>
 #include <iostream>
@@ -93,6 +94,10 @@ struct AnnotationDataRange {
 struct AnnotationIndex {
     std::set<uint32_t> function_entries;
     std::vector<AnnotationDataRange> data_ranges;
+    // Inferred by the static sweep, not annotated by the user: they keep the
+    // speculative seeders (pointer scan, aggressive scan) out of large data
+    // stretches but never stop the reachability walk of real code.
+    std::vector<AnnotationDataRange> inferred_data;
 
     bool has_function(BankId bank, uint16_t addr) const {
         return function_entries.count(make_address(bank, addr)) > 0;
@@ -105,6 +110,25 @@ struct AnnotationIndex {
             }
         }
         return false;
+    }
+
+    bool contains_inferred_data(BankId bank, uint16_t addr) const {
+        for (const AnnotationDataRange& range : inferred_data) {
+            if (range.bank == bank && addr >= range.start && addr < range.end) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // End of the inferred zone at addr, or 0 when none.
+    uint32_t inferred_zone_end(BankId bank, uint16_t addr) const {
+        for (const AnnotationDataRange& range : inferred_data) {
+            if (range.bank == bank && addr >= range.start && addr < range.end) {
+                return range.end;
+            }
+        }
+        return 0;
     }
 };
 
@@ -157,6 +181,158 @@ static AnnotationIndex build_annotation_index(const ROM& rom, const AnalyzerOpti
     }
 
     return annotations;
+}
+
+/* ============================================================================
+ * Speculative code/data sweep (SM83 adapter of the shared m0boy driver)
+ * ========================================================================== */
+
+static bool is_jump_table_rst_vector(const ROM& rom, uint8_t rst_vector);
+
+struct Sm83ScanCtx {
+    const ROM* rom;
+    Decoder* decoder;
+    BankId bank;    ///< bank 0: pc in [0x0150, 0x4000); bank > 0: CPU pc in [0x4000, 0x8000)
+    uint16_t base;  ///< CPU address of the region start
+};
+
+/* Known console areas.  An access there is evidence of real code; echo RAM
+ * and the unusable FE A0-FE FF window betray data. */
+static int sm83_data_signal(uint16_t addr) {
+    if ((addr >= 0xE000 && addr <= 0xFDFF) || (addr >= 0xFEA0 && addr <= 0xFEFF)) {
+        return -1;
+    }
+    if (addr >= 0xFF00 || (addr >= 0xC000 && addr <= 0xDFFF) ||
+        (addr >= 0x8000 && addr <= 0x9FFF)) {
+        return 1; /* MMIO, HRAM, IE, WRAM, VRAM */
+    }
+    return 0;
+}
+
+static int sm83_target_signal(uint16_t target) {
+    if (target >= 0x8000) return -1;
+    if (target >= 0x61 && target < 0x100) return -1; /* neither a vector nor code */
+    return 0;
+}
+
+static bool sm83_scan_step(const void* p, size_t pc, size_t end, m0boy::ScanStep* out) {
+    const Sm83ScanCtx* ctx = static_cast<const Sm83ScanCtx*>(p);
+    const uint16_t addr = static_cast<uint16_t>(ctx->base + pc);
+    const Instruction instr = ctx->decoder->decode(addr, ctx->bank);
+    if (instr.type == InstructionType::UNDEFINED || instr.type == InstructionType::INVALID) {
+        return false;
+    }
+    if (pc + instr.length > end) return false;
+    out->length = instr.length;
+    out->terminator = !instr.is_conditional && (instr.is_return || instr.is_jump);
+    if (instr.type == InstructionType::RST &&
+        is_jump_table_rst_vector(*ctx->rom, instr.rst_vector)) {
+        /* an RST 28/00 dispatcher call: what follows the call site is table */
+        out->terminator = true;
+    }
+    out->access = 0;
+    switch (instr.opcode) {
+        case 0xE0: case 0xF0: case 0xE2: case 0xF2: /* LDH, LD (FF00+C) */
+            out->access = 1;
+            break;
+        case 0xEA: case 0xFA: case 0x08: /* LD (nn),A / LD A,(nn) / LD (nn),SP */
+            out->access = sm83_data_signal(instr.imm16);
+            break;
+        default:
+            break;
+    }
+    if (instr.is_jump || instr.is_call) {
+        if (instr.type == InstructionType::JR_N || instr.type == InstructionType::JR_CC_N) {
+            out->access = sm83_target_signal(
+                static_cast<uint16_t>(addr + instr.length + instr.offset));
+        } else if (instr.type != InstructionType::JP_HL &&
+                   instr.type != InstructionType::RST) {
+            out->access = sm83_target_signal(instr.imm16);
+        }
+    }
+    return true;
+}
+
+/* One sweep-validated course at addr, or 0.  The bank bytes are rebuilt each
+ * call: the analyzer runs in parallel workers, so nothing may cache per ROM. */
+static size_t sm83_sweep_candidate(const ROM& rom, Decoder& decoder,
+                                   BankId bank, uint16_t addr) {
+    const uint16_t base = bank == 0 ? 0x0150 : 0x4000;
+    const size_t span = bank == 0 ? 0x4000 - 0x0150 : 0x4000;
+    if (addr < base) return 0;
+    std::vector<uint8_t> bytes(span);
+    for (size_t k = 0; k < bytes.size(); k++) {
+        bytes[k] = rom.read_banked(bank, static_cast<uint16_t>(base + k));
+    }
+    Sm83ScanCtx ctx{&rom, &decoder, bank, base};
+    m0boy::ScanAdapter adapter{&ctx, sm83_scan_step};
+    m0boy::ScanOptions scan_options;
+    scan_options.min_instructions = 2; /* a lone RET is padding, not a course */
+    scan_options.pointer_lo = 0x0150;
+    scan_options.pointer_hi = 0x8000;
+    return m0boy::scan_course(bytes.data(), bytes.size(), adapter, addr - base, scan_options);
+}
+
+/* Soft data zones: large stretches no course ever validates.  They keep the
+ * speculative seeders out but never block the reachability walk. */
+static void infer_data_zones(const ROM& rom, const AnalyzerOptions& options,
+                             AnnotationIndex& annotations, AnalysisResult& result) {
+    if (!options.infer_data_zones) return;
+
+    Decoder decoder(rom);
+    size_t total_bytes = 0;
+    for (BankId bank = 0; bank < rom.bank_count(); bank++) {
+        const uint16_t base = bank == 0 ? 0x0150 : 0x4000;
+        const size_t size = bank == 0 ? 0x4000 - 0x0150 : 0x4000;
+        std::vector<uint8_t> bytes(size);
+        for (size_t k = 0; k < size; k++) {
+            bytes[k] = rom.read_banked(bank, static_cast<uint16_t>(base + k));
+        }
+        Sm83ScanCtx ctx{&rom, &decoder, bank, base};
+        m0boy::ScanAdapter adapter{&ctx, sm83_scan_step};
+        m0boy::ScanOptions scan_options;
+        scan_options.min_instructions = 2; /* a lone RET is padding, not a course */
+        scan_options.pointer_lo = 0x0150;
+        scan_options.pointer_hi = 0x8000;
+        m0boy::ScanResult scan;
+        m0boy::scan_region(bytes.data(), bytes.size(), adapter, scan_options, scan);
+
+        for (const m0boy::ScanZone& zone : m0boy::scan_data_zones(scan, 512)) {
+            const uint16_t start = static_cast<uint16_t>(base + zone.start);
+            const uint32_t zone_bytes = zone.end - zone.start;
+            annotations.inferred_data.push_back({bank, start, start + zone_bytes});
+            total_bytes += zone_bytes;
+
+            AnalysisDiagnostic diagnostic;
+            diagnostic.kind = "data_zone";
+            diagnostic.bank = bank;
+            diagnostic.address = start;
+            diagnostic.memory_space = "physical_rom";
+            diagnostic.status = "inferred";
+            std::ostringstream evidence;
+            evidence << "static sweep validated " << scan.code
+                     << " code-like byte(s) in the bank and left this "
+                     << zone_bytes << " byte(s) undecoded";
+            diagnostic.evidence = evidence.str();
+            diagnostic.suggested_annotation =
+                "data " + annotation_address(bank, start) + " " +
+                std::to_string(zone_bytes);
+            diagnostic.relationship = "inferred_static_data_zone";
+            record_analysis_diagnostic(result, std::move(diagnostic));
+        }
+
+        if (options.verbose) {
+            std::cout << "[ANALYSIS] Sweep bank " << std::hex << std::setw(2)
+                      << std::setfill('0') << static_cast<int>(bank) << std::dec
+                      << ": code " << scan.code << ", padding " << scan.padding
+                      << ", repetitive " << scan.repetitive << ", pointers "
+                      << scan.pointer << ", illogical " << scan.illogical << "\n";
+        }
+    }
+    if (options.verbose) {
+        std::cout << "[ANALYSIS] Sweep inferred " << annotations.inferred_data.size()
+                  << " data zone(s), " << total_bytes << " byte(s)\n";
+    }
 }
 
 /* ============================================================================
@@ -764,141 +940,16 @@ static std::set<BankId> detect_bank_values(const ROM& rom) {
 }
 
 /**
- * @brief Calculate Shannon entropy of a memory region
- */
-static double calculate_entropy(const ROM& rom, BankId bank, uint16_t addr, size_t len) {
-    if (addr + len > 0x8000) return 0.0;
-    
-    uint32_t counts[256] = {0};
-    for (size_t i = 0; i < len; i++) {
-        counts[rom.read_banked(bank, addr + i)]++;
-    }
-    
-    double entropy = 0;
-    for (int i = 0; i < 256; i++) {
-        if (counts[i] > 0) {
-            double p = (double)counts[i] / len;
-            entropy -= p * std::log2(p);
-        }
-    }
-    return entropy;
-}
-
-/**
- * @brief Heuristic check if an address looks like valid code start
- * 
- * Checks for:
- * 1. Shannon Entropy (filtering tile data / PCM)
- * 2. Repetitive byte patterns
- * 3. Illegal address access/jumps
- * 4. Instruction density (loads vs math/control flow)
+ * @brief Heuristic check if an address starts a sweep-validated course
+ *
+ * One validator for every speculative caller: the shared course walk
+ * (m0boy::scan_course) must reach an unconditional terminator - or an RST
+ * into a jump-table dispatcher, whose followers are table data - without an
+ * illegal opcode or an access to a nonexistent area.
  */
 static int is_likely_valid_code(const ROM& rom, BankId bank, uint16_t addr) {
-    // 1. Shannon Entropy Check
-    // Typical code has moderate entropy (3.0-6.0). 
-    // Data like tilemaps is very low (< 2.0). PCM is very high (> 7.5).
-    double entropy = calculate_entropy(rom, bank, addr, 48);
-    if (entropy < 1.8 || entropy > 7.6) return 0;
-
-    // 2. Check for repetitive patterns (e.g. tile data)
-    const int PATTERN_CHECK_LEN = 128;
-    if (addr + PATTERN_CHECK_LEN < 0x8000) {
-        for (int period = 1; period <= 8; period++) {
-            const int REQUIRED_REPEATS = 16;
-            const int REQUIRED_LEN = period * REQUIRED_REPEATS;
-            
-            bool matches = true;
-            for (int i = 0; i < REQUIRED_LEN; i++) {
-                if (rom.read_banked(bank, addr + i) != rom.read_banked(bank, addr + i + period)) {
-                    matches = false;
-                    break;
-                }
-            }
-            if (matches) return 0;
-        }
-    }
-
-    // 3. Decode instructions
     Decoder decoder(rom);
-    uint16_t curr = addr;
-    int instructions_checked = 0;
-    const int MAX_CHECK = 64;
-    int nop_count = 0;
-    int ld_count = 0;
-    int control_flow_count = 0;
-    int math_count = 0;
-
-    while (instructions_checked < MAX_CHECK) {
-        Instruction instr = decoder.decode(curr, bank);
-        
-        if (instr.type == InstructionType::UNDEFINED || instr.type == InstructionType::INVALID) return 0;
-        
-        if (instr.type == InstructionType::NOP) {
-            nop_count++;
-            if (nop_count > 4) return 0; // Too many NOPs
-        }
-        
-        // 4. Illegal address check
-        if (instr.type == InstructionType::LD_A_NN || instr.type == InstructionType::LD_NN_A ||
-            instr.type == InstructionType::LD_NN_SP || instr.type == InstructionType::LD_RR_NN ||
-            instr.is_call || instr.is_jump) {
-            
-            uint16_t imm = (instr.type == InstructionType::JR_N || instr.type == InstructionType::JR_CC_N) ? 0 : instr.imm16;
-            if (imm != 0) {
-                // Prohibited memory areas
-                if (imm >= 0xFEA0 && imm <= 0xFEFF) return 0;
-                // Echo RAM (usually not used by real code)
-                if (imm >= 0xE000 && imm <= 0xFDFF) return 0;
-            }
-        }
-
-        if (instr.reads_memory || instr.writes_memory) ld_count++;
-        if (instr.is_call || instr.is_jump || instr.is_return) control_flow_count++;
-        
-        // Math/Logic
-        if (instr.opcode >= 0x80 && instr.opcode <= 0xBF) math_count++;
-
-        // Reject rare/data-like opcodes if too frequent at start
-        if (instr.opcode == 0x27 || instr.opcode == 0x2F || instr.opcode == 0x37 || instr.opcode == 0x3F) {
-            if (instructions_checked < 4) return 0;
-        }
-        
-        // RST instructions in data are suspicious (0x00 or 0xFF)
-        if (instr.type == InstructionType::RST) {
-            if (is_jump_table_rst_vector(rom, instr.rst_vector)) {
-                if (instructions_checked >= 1) {
-                    return (curr + instr.length - addr);
-                }
-                return 0;
-            }
-
-            if (instr.opcode == 0xC7 || instr.opcode == 0xFF) {
-                if (instructions_checked < 2) return 0;
-            }
-        }
-
-        // Terminator Check
-        if (instr.is_return && !instr.is_conditional) {
-            if (instructions_checked < 2) return 0; 
-            // Avoid load-only functions discovered via scanning
-            if (ld_count >= instructions_checked && instructions_checked > 2) return 0;
-            return (curr + instr.length - addr);
-        }
-        
-        if (instr.is_jump && !instr.is_conditional) {
-             if (instructions_checked >= 3) return (curr + instr.length - addr);
-             return 0;
-        }
-        
-        curr += instr.length;
-        if (curr >= 0x8000) return 0;
-        instructions_checked++;
-        
-        // High density of loads (indicative of data or large tables)
-        if (instructions_checked >= 15 && ld_count == instructions_checked) return 0;
-    }
-
-    return 0;
+    return static_cast<int>(sm83_sweep_candidate(rom, decoder, bank, addr));
 }
 
 static bool is_uniform_padding(const ROM& rom, BankId bank, uint16_t addr, uint8_t value, size_t len) {
@@ -1013,6 +1064,9 @@ static void find_pointer_entry_points(const ROM& rom,
         if (annotations.contains_data(target_bank, target)) {
             return;
         }
+        if (annotations.contains_inferred_data(target_bank, target)) {
+            return;
+        }
         if (!annotations.has_function(target_bank, target) &&
             !is_likely_direct_branch_target(rom, target_bank, target)) {
             return;
@@ -1106,7 +1160,8 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
     AnalysisResult result;
     result.rom = &rom;
     result.entry_point = 0x100;
-    const AnnotationIndex annotations = build_annotation_index(rom, options);
+    AnnotationIndex annotations = build_annotation_index(rom, options);
+    infer_data_zones(rom, options, annotations, result);
     
     // Add standard GameBoy entry points
     result.interrupt_vectors = {0x40, 0x48, 0x50, 0x58, 0x60};  // Interrupt vectors
@@ -1197,7 +1252,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
             if (annotations.has_function(bank, 0x4000) ||
                 (!annotations.contains_data(bank, 0x4000) &&
                  (is_likely_direct_branch_target(rom, bank, 0x4000) ||
-                  is_likely_valid_code(rom, bank, 0x4000) > 0))) {
+                  sm83_sweep_candidate(rom, decoder, bank, 0x4000) > 0))) {
                 seed_bank_target(0x4000);
                 seeded_bank = true;
             }
@@ -1211,7 +1266,7 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
 
             if (!seeded_bank &&
                 !annotations.contains_data(bank, 0x4001) &&
-                is_likely_valid_code(rom, bank, 0x4001)) {
+                sm83_sweep_candidate(rom, decoder, bank, 0x4001)) {
                 seed_bank_target(0x4001);
             }
         }
@@ -1999,14 +2054,24 @@ AnalysisResult analyze(const ROM& rom, const AnalyzerOptions& options) {
                     continue;
                 }
 
+                // Inferred data zones: the sweep never validated a course in
+                // there, so no candidate starts inside; skip to the zone end.
+                if (const uint32_t zone_end =
+                        annotations.inferred_zone_end(bank, static_cast<uint16_t>(addr))) {
+                    addr = zone_end;
+                    continue;
+                }
+
                 uint8_t byte = rom.read_banked(bank, addr);
                 if (byte == 0xFF || byte == 0x00) {
                     addr++;
                     continue;
                 }
 
-                // Check if this looks like valid code
-                int code_len = is_likely_valid_code(rom, bank, addr);
+                // Check if this looks like valid code: a whole course of
+                // instructions reaching an unconditional terminator.
+                int code_len = static_cast<int>(
+                    sm83_sweep_candidate(rom, decoder, bank, static_cast<uint16_t>(addr)));
                 if (code_len > 0) {
                     AnalysisDiagnostic diagnostic;
                     diagnostic.kind = "data_as_code_candidate";

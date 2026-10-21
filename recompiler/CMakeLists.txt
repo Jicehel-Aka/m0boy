@@ -19,17 +19,20 @@ add_library(m0boy_frontends STATIC
     src/system/gameboy/cartridge.cpp
     src/system/gameboy/frontend.cpp
     src/system/sg1000/cartridge.cpp
+    src/system/pico8/cartridge.cpp
 )
 target_link_libraries(m0boy_frontends PUBLIC m0boy_common)
 set_target_properties(m0boy_frontends PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # Existing Game Boy analysis, IR and emitters retain their public API.
 add_library(gbrecomp_core STATIC
+    src/code_scan.cpp
     src/system/gameboy/analyzer.cpp
     src/system/gameboy/bank_tracker.cpp
     src/system/gameboy/decode_bank.cpp
     src/system/sg1000/generator.cpp
     src/system/sg1000/emitter.cpp
+    src/system/pico8/generator.cpp
     src/symbol_table.cpp
     src/native_patch.cpp
     src/generator.cpp
@@ -100,3 +103,38 @@ target_compile_definitions(m0boy_cli PRIVATE
     GBRECOMP_POKITTO_VERSION="${GBRECOMP_POKITTO_VERSION}"
     GBRECOMP_ESPBOY_VERSION="${GBRECOMP_ESPBOY_VERSION}"
 )
+
+# PICO-8: the cartridge reader and the Lua 5.2 (PICO-8 flavour, fix32 numbers)
+# compiler of femto8 do the front end on the PC; the generated C needs none of
+# it.  femto8 stays a separate checkout (FEMTO8_DIR).
+set(FEMTO8_DIR "${PROJECT_SOURCE_DIR}/../femto8" CACHE PATH "femto8 checkout (PICO-8 front end)")
+if(EXISTS "${FEMTO8_DIR}/src/lua/lparser.c")
+    file(GLOB P8_LUA_SOURCES "${FEMTO8_DIR}/src/lua/*.c")
+    list(FILTER P8_LUA_SOURCES EXCLUDE REGEX "ltests\\.c$")
+    add_library(m0boy_p8_femto8 STATIC ${P8_LUA_SOURCES}
+        ${FEMTO8_DIR}/src/p8_parser.c ${FEMTO8_DIR}/src/strtcpy.c
+        ${FEMTO8_DIR}/src/lodepng/lodepng.c
+        ${FEMTO8_DIR}/src/lexaloffle/p8_compress.c ${FEMTO8_DIR}/src/lexaloffle/pxa_compress_snippets.c)
+    target_include_directories(m0boy_p8_femto8 PUBLIC ${FEMTO8_DIR}/src ${FEMTO8_DIR}/src/lua ${FEMTO8_DIR}/src/data
+        ${FEMTO8_DIR}/src/lodepng ${FEMTO8_DIR}/src/lexaloffle)
+    target_compile_definitions(m0boy_p8_femto8 PRIVATE LUA_USE_POSIX LODEPNG_NO_COMPILE_ENCODER LODEPNG_NO_COMPILE_DISK
+        LODEPNG_NO_COMPILE_ANCILLARY_CHUNKS LODEPNG_NO_COLOR_CONVERT _GNU_SOURCE)
+    target_compile_options(m0boy_p8_femto8 PRIVATE -w)
+    find_package(SDL2 REQUIRED) # p8_emu.h includes SDL.h; nothing of it is linked or run
+    target_include_directories(m0boy_p8_femto8 PRIVATE ${SDL2_INCLUDE_DIRS})
+    set_target_properties(m0boy_p8_femto8 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    # the compiler itself (p8c_main), used by the p8c tool and by m0recomp
+    add_library(m0boy_p8c STATIC src/system/pico8/p8c.c)
+    target_link_libraries(m0boy_p8c PUBLIC m0boy_p8_femto8 m)
+    target_compile_definitions(m0boy_p8c PRIVATE LUA_USE_POSIX LODEPNG_NO_COLOR_CONVERT)
+    target_include_directories(m0boy_p8c PRIVATE ${PROJECT_SOURCE_DIR}/targets/pico8/runtime ${FEMTO8_DIR}/src/data)
+    set_target_properties(m0boy_p8c PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    add_executable(p8c src/system/pico8/p8c_main.c)
+    target_link_libraries(p8c PRIVATE m0boy_p8c)
+endif()
+
+# gbrecomp_core compiles PICO-8 projects when the front end is there
+if(TARGET m0boy_p8c)
+    target_link_libraries(gbrecomp_core PUBLIC m0boy_p8c)
+    target_compile_definitions(gbrecomp_core PRIVATE M0BOY_PICO8=1)
+endif()

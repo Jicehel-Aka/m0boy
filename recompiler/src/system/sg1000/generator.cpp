@@ -157,12 +157,19 @@ Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sm
 
 /* Flash for generated code: the application area, less the runtime and
  * drivers (measured at about 24 KiB) and the ROM image. */
-constexpr size_t runtime_bytes = 24 * 1024;
+constexpr size_t runtime_bytes = 30 * 1024; /* drivers, runtime and, since 0.10.28, the option
+                                            * menu (meta_menu.cpp, meta_font.h, sg_menu.h: about 6 KiB — left
+                                            * unbudgeted it pushed the hot instructions to the interpreter:
+                                            * Ristar's first level at 16 fps on the device, 2026-10-20) */
 constexpr size_t bytes_per_instruction = 32; /* measured 13-27 with GCC 7.2 -O2 */
 constexpr size_t gg_bytes_per_instruction = 36; /* Game Gear: paged reads, measured 28-33 */
 constexpr double gg_interpreted_cycles = 300;   /* an interpreted instruction costs about this much more than a compiled one (gm0 profiles) */
 constexpr double gg_sector_miss_cycles = 50000; /* a ROM sector read from the SD card, assumed 0.7 ms at 72 MHz (not measured on a console) */
 constexpr size_t gg_pool_max = 254;             /* the pool's index is a byte, 255 meaning "not in flash" */
+/* ESPboy (4 MiB flash, targets/meta/runtime/gbl_espboy.h): the application
+ * is the 1 MiB the CPU maps; a Game Gear / Master System ROM above esp_embed
+ * keeps page 0 there and the rest, raw, in rom.bin read with spi_flash_read. */
+constexpr size_t esp_app = 0x100000, esp_runtime = 0x5C000, esp_embed = 0x40000, esp_rom_bytes = 0x2C0000;
 
 } // namespace
 
@@ -201,7 +208,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         bool cart_ram = profile.cart_ram;
         const size_t rom_size = rom.size();
         /* consoles: no room for 8 KiB more, the RAM lives in a save file */
-        const bool cart_on_card = gg && cart_ram && o.target != TargetId::desktop;
+        const bool cart_on_card = gg && cart_ram && o.target != TargetId::desktop && o.target != TargetId::espboy;
         if (!gg) cart_ram = cart_ram && rom_size <= 0x8000; /* 40/48 KiB boards: ROM at 8000 */
 
         // compile.sh writes its log into the project directory before generation.
@@ -214,7 +221,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         if (fs::exists(o.output) && !fs::exists(marker) && foreign())
             throw std::runtime_error("Output directory is not an " + system_name + " project; choose a fresh directory");
         // A project owns one platform and cannot silently mix drivers.
-        const std::string target = o.target == TargetId::meta ? "meta" : o.target == TargetId::pokitto ? "pokitto" : "desktop";
+        const bool esp = o.target == TargetId::espboy;
+        const std::string target = o.target == TargetId::meta ? "meta" : o.target == TargetId::pokitto ? "pokitto" : esp ? "espboy" : "desktop";
         if (fs::exists(marker) && read(marker) != target + "\n")
             throw std::runtime_error("Use a separate output directory for each destination");
         fs::create_directories(o.output / "src");
@@ -225,6 +233,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         eo.precise = o.precise;
         eo.sync_cycles = o.sync_cycles;
         eo.cart_ram = cart_ram;
+        eo.mastersystem = o.mastersystem;
+        eo.aggressive_scan = o.aggressive_scan;
+        eo.infer_data_zones = o.infer_data_zones;
         eo.entries.assign(entries.begin(), entries.end());
         /* Codemasters boards: checksum and its complement at 7FE6/7FE8 */
         bool codemasters = false;
@@ -249,7 +260,18 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const size_t pages = rom_size / 0x4000;
         const size_t per_instruction = o.bytes_per_instruction ? o.bytes_per_instruction
                                        : gg ? gg_bytes_per_instruction : bytes_per_instruction;
-        if (o.target != TargetId::desktop) {
+        if (esp) {
+            const size_t free = esp_app > esp_runtime ? esp_app - esp_runtime : 0;
+            if (gg && rom_size > esp_embed) {
+                if (rom_size - 0x4000 > esp_rom_bytes) {
+                    error = "ROM does not fit the ESPboy's 2.75 MiB ROM area";
+                    return false;
+                }
+                page_index.assign(pages, -1);
+                page_index[0] = 0;
+                budget = free > 0x4000 ? free - 0x4000 : 0;
+            } else budget = free > rom_size ? free - rom_size : 0;
+        } else if (o.target != TargetId::desktop) {
             const size_t area = o.target == TargetId::pokitto ? 0x39000 : 240 * 1024;
             const size_t free = area > runtime_bytes ? area - runtime_bytes : 0;
             const size_t all_code = o.code_budget_bytes ? o.code_budget_bytes : hot.size() * per_instruction + 16 * 1024;
@@ -407,6 +429,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         stats.covered = es.covered;
         stats.compiled = es.compiled;
         stats.speculative = es.speculative;
+        stats.swept = es.swept;
+        stats.data_zones = es.data_zones;
+        stats.data_bytes = es.data_bytes;
         stats.regions = es.regions;
         stats.entries = es.entries;
         stats.cart_ram = cart_ram;
@@ -417,36 +442,57 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
          * flash on the META, where code run from SRAM faulted with the CPU
          * overclocked (device, 2026-10-17; the overclock is the default). */
         const char* code_in_sram = o.target == TargetId::pokitto ? "#define SG_CODE_IN_SRAM 1\n" : "#define SG_CODE_IN_SRAM 0\n";
+        /* The ROM's identity in the ESPboy's save area. */
+        uint32_t game_id = 2166136261u;
+        for (uint8_t byte : rom) game_id = (game_id ^ byte) * 16777619u;
+        const std::string esp_id = esp ? "#define SG_FLASH_GAME_ID " + std::to_string(game_id) + "u\n" : std::string();
+        const bool swap_panel = o.target == TargetId::meta || esp; /* high byte first on the SPI */
         if (gg) config << "/* Generated by m0recomp --system gg. */\n#pragma once\n" << code_in_sram
                << "#define SG_SYSTEM_GG 1 /* sg_gen.h: paged ROM, ports through gg_write */\n"
                << "#define SG_ROM_SIZE " << rom_size << "u\n"
                << "#define SG_CART_RAM " << (cart_ram ? 1 : 0) << "\n"
                << "#define SG_PRECISE " << (o.precise ? 1 : 0) << "\n"
-               << "#define GG_PANEL_SWAP " << (o.target == TargetId::meta ? 1 : 0) << " /* META SPI: high byte first */\n"
+               << "#define GG_PANEL_SWAP " << (swap_panel ? 1 : 0) << " /* META SPI: high byte first */\n"
+               << esp_id << (esp ? "#define GG_CART_RAM_8K 1 /* ESPboy: 8 KiB in RAM, mirrored */\n" : "")
                << "#define SG_ROM_STREAM " << (streamed ? 1 : 0) << "\n"
                << "#define GG_MAPPER " << (codemasters ? 1 : 0) << " /* 0 Sega, 1 Codemasters */\n"
                << "#define GG_CART_SD " << (cart_on_card ? 1 : 0) << " /* cartridge RAM in the save file */\n"
                << "#define GG_SMS " << (o.mastersystem ? 1 : 0) << " /* Master System */\n";
         /* The game's files on the card share the .BIN's 8.3 base; the
          * firmware looks for them in the folder of its own .BIN. */
-        if (gg) config << "#define GG_BIN_NAME83 \"" << name83(sd, "BIN") << "\"\n";
+        if (gg && !esp) config << "#define GG_BIN_NAME83 \"" << name83(sd, "BIN") << "\"\n";
         if (cart_on_card) {
             config << "#define GG_SAVE_NAME \"" << sd << ".SAV\"\n#define GG_SAVE_NAME83 \"" << name83(sd, "SAV") << "\"\n";
+        }
+        /* Save states (meta_state.cpp): the file compile.sh creates holds
+         * slots of the machine's bytes (gg_t, the cartridge RAM when the
+         * game has some in RAM).  gg_state_bytes() refuses more than fits. */
+        const bool states = gg && (streamed || cart_on_card) &&
+                            (o.target == TargetId::meta || o.target == TargetId::pokitto);
+        if (states) {
+            const size_t state_bytes = 25536 + (cart_ram ? 8192u : 0u); /* sizeof(gg_t), keep in sync */
+            config << "#define GG_STATE_NAME \"" << sd << ".ST8\"\n#define GG_STATE_NAME83 \""
+                   << name83(sd, "ST8") << "\"\n#define GG_STATE_SLOTS 10\n#define GG_STATE_SLOT_SECTORS "
+                   << (state_bytes + 511) / 512 + 1 << "\n";
         }
         /* Pokitto: the sector cache lives in the 2 KiB USB RAM bank, which
          * the Master System shares with its pair tables. */
         if (gg && (streamed || cart_on_card) && o.target == TargetId::pokitto && !o.mastersystem)
             config << "#define GG_STREAM_SECTORS 4 /* the whole USB RAM bank */\n";
-        /* META: the RAM the DMA audio ring would take (audio by interrupt)
-         * goes to the card cache, in 128-byte blocks: 8 blocks and the
-         * sector buffer. */
+        if (gg && streamed && esp)
+            config << "#define GG_STREAM_SECTORS 6\n#define GG_CACHE_BLOCK 512\n";
+        /* META: 3 sectors in 128-byte blocks - 8 quarter-sector blocks
+         * cover up to 8 sectors at a time, which beats whole-sector blocks:
+         * the working set spans more sectors than it fills (device: whole
+         * 512-byte blocks froze Ristar, the quarters do not).  compile.sh
+         * grows GG_STREAM_SECTORS from the build's RAM report. */
         if (gg && (streamed || cart_on_card) && o.target == TargetId::meta)
             config << "#ifndef GG_STREAM_SECTORS\n#define GG_STREAM_SECTORS 3\n#endif\n#ifndef GG_CACHE_BLOCK\n#define GG_CACHE_BLOCK 128\n#endif\n";
         if (gg) {
             if (streamed && !pool.empty()) config << "#define GG_POOL_SECTORS " << pool.size() << " /* raw/LZSS ROM sectors in flash */\n";
             if (pool_packed) config << "#define GG_POOL_PACKED 1\n";
             if (packed_all) config << "#define GG_ROM_PACKED 1 /* no ROM file required */\n#define GG_POOL_WIDE 1\n";
-            if (streamed && !packed_all) {
+            if (streamed && !packed_all && !esp) {
                 const std::string ext = o.mastersystem ? "SMS" : "GG";
                 config << "#define GG_STREAM_NAME \"" << sd << "." << ext << "\"\n#define GG_STREAM_NAME83 \""
                        << name83(sd, ext) << "\"\n";
@@ -459,10 +505,12 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                << "#define SG_CART_RAM " << (cart_ram ? 1 : 0) << "\n"
                << "#define SG_LOW_RAM " << (cart_ram ? 1 : 0) << "\n"
                << "#define SG_PRECISE " << (o.precise ? 1 : 0) << "\n"
-               << "#define SG_PANEL_SWAP " << (o.target == TargetId::meta ? 1 : 0) << " /* META SPI: high byte first */\n";
+               << "#define SG_PANEL_SWAP " << (swap_panel ? 1 : 0) << " /* META SPI: high byte first */\n" << esp_id;
         write(src / "sg_config.h", config.str());
         std::ostringstream data;
-        data << "#include <stdint.h>\n#include <stddef.h>\nconst uint8_t sg_rom[] = {";
+        data << "#include <stdint.h>\n#include <stddef.h>\n"
+             << (esp ? "#if defined(ESP8266)\n#include <pgmspace.h>\n#define SG_ROM_ATTR PROGMEM __attribute__((aligned(4))) /* read with aligned loads (m0_load_u8) */\n#else\n#define SG_ROM_ATTR\n#endif\nconst uint8_t sg_rom[] SG_ROM_ATTR = {"
+                     : "const uint8_t sg_rom[] = {");
         size_t count = 0;
         if (streamed) { /* the pages kept in flash, in flash slot order */
             std::vector<size_t> order(pages);
@@ -510,6 +558,14 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             data << "\n};\nconst size_t sg_rom_size = sizeof(sg_rom);\n";
         }
         write(src / "sg_rom.c", data.str());
+        if (esp) { /* ROM pages 1 and up, raw, for spi_flash_read */
+            const auto image = o.output / "rom.bin";
+            if (streamed) {
+                std::ofstream file(image, std::ios::binary);
+                file.write(reinterpret_cast<const char*>(rom.data()) + 0x4000, static_cast<std::streamsize>(rom.size() - 0x4000));
+                if (!file) throw std::runtime_error("Cannot write the ESPboy ROM image");
+            } else fs::remove(image);
+        }
 
         for (const auto& entry : fs::directory_iterator(tpl / "runtime"))
             if (entry.is_regular_file()) copy_template(entry.path(), src / entry.path().filename());
@@ -539,7 +595,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const std::string generated_sources = "${SRC}/sg_gen.c ${SRC}/sg_rom.c";
         const std::string render_asm = gg ? "gg_render_asm.S" : "sg_render_asm.S";
         const std::string firmware_sources = core_sources + " " + generated_sources + " ${SRC}/" + main_cpp +
-                                              " ${SRC}/" + render_asm + (gg ? " ${SRC}/m0_rom_lzss.S" : "");
+                                              " ${SRC}/" + render_asm + (gg ? " ${SRC}/m0_rom_lzss.S" : "") +
+                                              " ${SRC}/meta_menu.cpp" +
+                                              (states ? " ${SRC}/meta_state.cpp" : "");
         std::string host_sources = host_c + " " + core_sources + " " + generated_sources;
         if (gg && (streamed || cart_on_card)) {
             /* A generated host project must exercise the same storage plan,
@@ -576,21 +634,30 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         if (o.target != TargetId::desktop) {
             copy_template(tpl / "platform" / main_cpp, src / main_cpp);
             /* frontend pieces both consoles share (setup, pad, pacing, stack
-             * guard) */
+             * guard, option menu) */
             copy_template(common_dir / "platform" / "sg_frontend.h", src / "sg_frontend.h");
+            copy_template(common_dir / "platform" / "sg_menu.h", src / "sg_menu.h");
             /* files of an earlier generation that this one does not use */
             for (const char* name : { "gg_stream.c", "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h", "meta_sd_bus.cpp", "pokitto_sd.c" })
                 fs::remove(src / name);
-            if (gg && (streamed || cart_on_card)) {
+            if (gg && (streamed || cart_on_card) && !esp) {
                 copy_template(tpl / "platform" / "gg_stream.c", src / "gg_stream.c");
                 for (const char* name : { "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h" })
                     copy_template(o.meta_templates / "platform" / "src" / name, src / name);
                 const auto bus = o.target == TargetId::pokitto ? fs::path("pokitto/pokitto_sd.c") : fs::path("meta/meta_sd_bus.cpp");
                 copy_template(o.meta_templates / "platform" / bus, src / bus.filename());
             }
-            auto platform = o.meta_templates / "platform" / (o.target == TargetId::pokitto ? "pokitto" : "meta");
+            auto platform = o.meta_templates / "platform" / (esp ? "espboy" : o.target == TargetId::pokitto ? "pokitto" : "meta");
             for (const char* name : { "meta_target.h", "meta_lcd.h", "meta_clock.h" })
                 copy_template(o.meta_templates / "platform" / "src" / name, src / name);
+            /* the option menu (sg_menu.h runs it; meta_menu.cpp draws it) */
+            copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");
+            copy_template(o.meta_templates / "platform" / "src" / "meta_font.h", src / "meta_font.h");
+            copy_template(o.meta_templates / "platform" / "src" / "meta_menu.cpp", src / "meta_menu.cpp");
+            if (states) {
+                copy_template(o.meta_templates / "platform" / "src" / "meta_state.h", src / "meta_state.h");
+                copy_template(o.meta_templates / "platform" / "src" / "meta_state.cpp", src / "meta_state.cpp");
+            }
             /* The META's board settings (SPI rates, display pipeline): the
              * same file the Game Boy profile includes. */
             copy_template(o.meta_templates / "runtime" / "gbl_board.h", src / "gbl_board.h");
@@ -598,19 +665,22 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             auto audio_header = read(o.meta_templates / "platform/src/meta_audio.h");
             audio_header = replace(replace(audio_header, "70224u", "59736u"), "4194304u", "3579545u");
             write(src / "meta_audio.h", audio_header);
-            const std::string audio_name = o.target == TargetId::pokitto ? "pokitto_audio.c" : "meta_audio.cpp";
-            auto audio = read(platform / audio_name);
-            audio = replace(audio, "#include \"gbl.h\"", "#include \"sg_audio.h\"");
-            audio = replace(replace(audio, "gbl_apu_render", "sg_platform_audio_render"), "gbl_apu_set_rate", "sg_platform_audio_rate");
-            write(src / audio_name, audio);
+            if (!esp) {
+                const std::string audio_name = o.target == TargetId::pokitto ? "pokitto_audio.c" : "meta_audio.cpp";
+                auto audio = read(platform / audio_name);
+                audio = replace(audio, "#include \"gbl.h\"", "#include \"sg_audio.h\"");
+                audio = replace(replace(audio, "gbl_apu_render", "sg_platform_audio_render"), "gbl_apu_set_rate", "sg_platform_audio_rate");
+                write(src / audio_name, audio);
+            }
             /* One version stamp for all three frontends: the target console
              * runtime's version, compiled into gbrecomp from the VERSION
              * files (targets/meta/VERSION, platform/pokitto/VERSION) by
              * CMake.  gbrecomp --meta-version/--pokitto-version print it and
              * compile.sh reads it back from firmware.bin. */
             write(src / "gbl_config.h", "#pragma once\n#define GBL_TARGET_POKITTO " + std::to_string(o.target == TargetId::pokitto) +
+                                        (esp ? "\n#define GBL_TARGET_ESPBOY 1" : "") +
                                         "\n#define GBL_GEN_VERSION \"" +
-                                        (o.target == TargetId::pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) + "\"\n");
+                                        (esp ? GBRECOMP_ESPBOY_VERSION : o.target == TargetId::pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) + "\"\n");
             /* gbl_board.h carries the META's SPI rates and display pipeline
              * switches, shared with the Game Boy profile; only what this
              * build decides differently is written here. */
@@ -619,18 +689,27 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             const std::string overclock = o.target == TargetId::pokitto
                 ? "#ifndef META_OVERCLOCK\n#if defined(POKITTO_HC) && POKITTO_HC\n#define META_OVERCLOCK 1\n#else\n#define META_OVERCLOCK 0\n#endif\n#endif\n"
                 : "#ifndef META_OVERCLOCK\n#define META_OVERCLOCK 1\n#endif\n";
-            /* META: the TC4 interrupt by default, a ring of one-byte samples
-             * (the Game Gear's 512, about 1.4 frames, leaves its RAM to the
-             * card cache); META_AUDIO_DMA=1 (compile.sh AUDIO_DMA=1): the
-             * Game Boy's DMA audio, META_AUDIO_RING samples of 2 bytes.  The
-             * Pokitto has its own driver. */
+            /* META: one ring of META_AUDIO_RING samples of 2 bytes (512,
+             * about 1.4 frames, lowered so the card cache can grow) feeds both
+             * output paths, the TC4 interrupt by default and, at run time
+             * (the menus' Audio line) or at build (META_AUDIO_DMA=1,
+             * compile.sh AUDIO_DMA=1), a DMAC beat.  The Pokitto has its own
+             * driver. */
             const std::string audio_dma = o.target == TargetId::meta
-                ? std::string("#ifndef META_AUDIO_DMA\n#define META_AUDIO_DMA 0\n#endif\n#ifndef META_AUDIO_RING\n#define META_AUDIO_RING 768u\n#endif\n") +
-                      (gg ? "#ifndef META_AUDIO_IRQ_RING\n#define META_AUDIO_IRQ_RING 512u\n#endif\n" : "")
+                ? std::string("#ifndef META_AUDIO_DMA\n#define META_AUDIO_DMA 0\n#endif\n#ifndef META_AUDIO_RING\n#define META_AUDIO_RING 512u\n#endif\n")
                 : "#define META_AUDIO_DMA 0\n";
             write(src / "gbl_profile.h", "#pragma once\n#include \"gbl_board.h\"\n" + overclock +
                                          "#define POKITTO_LCD_ASM " + std::string(gg ? "1" : "0") + "\n#define POKITTO_RAM_BANKS " + std::string(gg ? "1" : "0") + "\n#define POKITTO_AUDIO_ASM " + std::string(gg ? "1" : "0") + "\n" + audio_dma);
-            if (o.target == TargetId::pokitto) {
+            if (esp) {
+                /* Arduino core start-up; the drivers and flash code the Game Boy
+                 * build uses (they find the Sega frontend by its sg_config.h) */
+                for (const char* name : { "espboy_hw.cpp", "espboy_hw.h", "espboy_flash.cpp" })
+                    copy_template(platform / name, src / name);
+                copy_template(o.meta_templates / "runtime" / "gbl_espboy.h", src / "gbl_espboy.h");
+                copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");
+                for (const char* name : { "platformio.ini", "espboy.ld", "espboy_build.py", "espboy_size.py" })
+                    write(o.output / name, replace(read(platform / (std::string(name) + ".in")), "@NAME@", o.name));
+            } else if (o.target == TargetId::pokitto) {
                 for (const char* name : { "pokitto_startup.c", "pokitto_clock.c", "pokitto_buttons.c", "pokitto_lcd.c", "pokitto_hw.h", "lpc11u6x.h" })
                     copy_template(platform / name, src / name);
                 if (gg) { /* rows pushed and the audio interrupt in Thumb-1 */
@@ -672,7 +751,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         write(o.output / "README.md",
               "# " + system_name + " project: " + o.name + "\n\nRecompiled Z80 code (regions of C) with interpreter fallback.\n\n" +
               "Source: " + system_name + ". Destination: " + target + ". Compiled instructions: " + std::to_string(es.compiled) +
-              " (" + std::to_string(es.covered) + " played), regions: " + std::to_string(es.regions) + ".\n\n" +
+              " (" + std::to_string(es.covered) + " played, " + std::to_string(es.swept) +
+              " from the speculative sweep), regions: " + std::to_string(es.regions) + ".\n" +
+              "Static sweep: " + std::to_string(es.data_zones) + " data zone(s), " +
+              std::to_string(es.data_bytes) + " ROM byte(s) never decoded as code.\n\n" +
               "Host: cmake -G Ninja -S host -B host/build && ninja -C host/build\n" +
               "Run: host/build/" + o.name + "_host --frames 300 [--interp] [--shot image.ppm]\n\n" +
               (o.target == TargetId::pokitto ? "Firmware: cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake && ninja -C build\n"

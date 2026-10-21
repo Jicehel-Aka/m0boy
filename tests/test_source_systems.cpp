@@ -12,7 +12,7 @@ static void require(bool condition, const char* message) {
 int main() {
     using namespace m0boy;
     try {
-        require(systems().size() == 4, "Source registry incomplete");
+        require(systems().size() == 5, "Source registry incomplete");
         require(detect_system("game.sms") == SystemId::mastersystem && parse_system("sms") == SystemId::mastersystem,
                 "Master System detection failed");
         const auto& gg = system_descriptor(SystemId::gamegear);

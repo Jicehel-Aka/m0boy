@@ -16,6 +16,7 @@
  * written (GBL_LINE_SIGNATURE), as on the META.
  */
 #include "meta_display.h"
+#include "meta_menu.h"
 
 #include <string.h>
 
@@ -81,6 +82,11 @@ void meta_display_set_palette_colors(const uint32_t pal[4]) {
 uint16_t *meta_display_scratch(unsigned *rows) {
     *rows = 8;
     return scratch;
+}
+
+/* The menu draws through the same strips (meta_menu.h). */
+uint16_t *meta_menu_scratch(unsigned *rows) {
+    return meta_display_scratch(rows);
 }
 
 void meta_display_flush(void) {}

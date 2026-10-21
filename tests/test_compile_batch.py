@@ -25,6 +25,7 @@ if name=='gbrecomp':
  (out/'mock_target').write_text(value('--target'))
  print('compiled: 1')
 elif name=='sg1000_host':
+ if os.environ.get('FAIL_PROFILE')=='1':sys.exit(1)
  p=pathlib.Path(value('--coverage'));p.write_text('# m0boy.sg1000.coverage.v1\\n0000\\n')
 elif name in ('pio','ninja','make'):
  out=pathlib.Path(value('-d') if name=='pio' else value('-C'))
@@ -110,4 +111,58 @@ elif name=='nproc':print('4')
     assert len(list((root/'roms/meta/sg').glob('*.zip')))==2
     assert len(list((root/'roms/pokitto/sg').glob('*.zip')))==2
     assert all('--coverage' in args for name,args in calls if name=='gbrecomp' and '--system' in args)
+    # Corrected automatic profiles are cached only for the same revision and
+    # requested counts/durations. Hand-recorded profiles must survive refresh.
+    stores=list((root/'roms/sg/profiles').glob('*/sg1000'))
+    for store in stores:
+        assert (store/'.auto-profile-config').read_text().strip()=='v2 120 2 4 12000'
+        (store/'coverage-manual.cov').write_text('# m0boy.sg1000.coverage.v1\n1234\n')
+    def profile_calls():
+        return [args for name,args in map(json.loads,(root/'calls.jsonl').read_text().splitlines())
+                if name=='sg1000_host']
+    (root/'calls.jsonl').write_text('')
+    run('roms/sg', TARGET='pokitto', AUTO='1', AUTO_SECONDS='2', FORCE='1', SG_SEEDS='2')
+    assert not profile_calls()  # same settings: reuse
+    for store in stores:
+        (store/'.auto-profile-config').unlink()  # pre-fix, aliased seed cache
+    (root/'calls.jsonl').write_text('')
+    run('roms/sg', TARGET='pokitto', AUTO='1', AUTO_SECONDS='2', FORCE='1', SG_SEEDS='2')
+    assert len(profile_calls())==16
+    (root/'calls.jsonl').write_text('')
+    run('roms/sg', TARGET='pokitto', AUTO='1', AUTO_SECONDS='2', FORCE='1', SG_SEEDS='3', EXPLORERS='5')
+    assert len(profile_calls())==20
+    assert sum('--random' in a and a[a.index('--random')+1]=='3' for a in profile_calls())==4
+    assert sum('--explore' in a and a[a.index('--random')+1]=='5' for a in profile_calls())==2
+    (root/'calls.jsonl').write_text('')
+    run('roms/sg', TARGET='pokitto', AUTO='1', AUTO_SECONDS='2', FORCE='1', SG_SEEDS='3', EXPLORERS='5',
+        SG_AUTO_FRAMES='240', EXPLORE_FRAMES='24000')
+    assert len(profile_calls())==20
+    assert all(a[a.index('--frames')+1]=='240' for a in profile_calls() if '--frames' in a)
+    assert all(a[a.index('--explore')+1]=='24000' for a in profile_calls() if '--explore' in a)
+    # A failed refresh cannot certify an incomplete run as a current cache.
+    failed=subprocess.run(['bash','./compile.sh','roms/sg'],cwd=root,
+                          env=dict(env,TARGET='pokitto',AUTO='1',FORCE='1',SG_SEEDS='3',EXPLORERS='5',
+                                   SG_AUTO_FRAMES='241',EXPLORE_FRAMES='24000',FAIL_PROFILE='1'),
+                          text=True,capture_output=True,timeout=30)
+    assert failed.returncode!=0, failed.stdout+failed.stderr
+    for store in stores:
+        assert (store/'.auto-profile-config').read_text().strip()=='v2 240 3 5 24000'
+        assert (store/'coverage-manual.cov').read_text()=='# m0boy.sg1000.coverage.v1\n1234\n'
+    (stores[0]/'coverage-explore5.cov').unlink()
+    (root/'calls.jsonl').write_text('')
+    run('roms/sg', TARGET='pokitto', AUTO='1', AUTO_SECONDS='2', FORCE='1', SG_SEEDS='3', EXPLORERS='5',
+        SG_AUTO_FRAMES='240', EXPLORE_FRAMES='24000')
+    assert len(profile_calls())==10  # only the cartridge with a missing session
+    assert (stores[0]/'coverage-explore5.cov').exists()
+    (root/'calls.jsonl').write_text('')
+    run('roms/sg', TARGET='pokitto', AUTO='1', AUTO_SECONDS='2', FORCE='1', SG_SEEDS='3', EXPLORERS='5',
+        SG_AUTO_FRAMES='240', EXPLORE_FRAMES='0')
+    assert len(profile_calls())==10 and all('--explore' not in a for a in profile_calls())
+    # Old exploration files need not exist when exploration is disabled.
+    for store in stores:
+        for p in store.glob('coverage-explore*.cov'):p.unlink()
+    (root/'calls.jsonl').write_text('')
+    run('roms/sg', TARGET='pokitto', AUTO='1', AUTO_SECONDS='2', FORCE='1', SG_SEEDS='3', EXPLORERS='5',
+        SG_AUTO_FRAMES='240', EXPLORE_FRAMES='0')
+    assert not profile_calls()
 print('batch: mixed source systems, both targets, duplicate filtering, caching and SG profiles pass')

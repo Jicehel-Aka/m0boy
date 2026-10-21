@@ -6,7 +6,7 @@ Analyse de `main` à `5c05929` (balayage ajouté dans `e5bd063`, version
 
 Les nouveautés étaient sur `main`, pas sur `feat/espboy`. Elles ont été
 récupérées et étudiées dans le worktree isolé `out/profile-review/`.
-Les branches n'ont pas été fusionnées dans le répertoire de travail principal.
+Les branches n'étaient pas encore fusionnées à ce stade de l'analyse.
 
 ## Verdict
 
@@ -120,7 +120,24 @@ dans les options CLI de `gg_host.c` : conserver `--save-state` et
 Cette combinaison a été vérifiée dans le worktree : construction
 CMake/Ninja, test unitaire des checkpoints/graines réussi, et deux
 explorations Columns identiques de 6 465 images, deux segments et trois
-snapshots. La suite complète n'a pas été relancée sur cette combinaison.
+snapshots. L'intégration finale a ensuite été validée sur les 48 tests CTest,
+avec un contrôle supplémentaire du cache de profils.
+
+L'intégration ultérieure conserve ces corrections et le balayage partagé,
+ainsi que les options de sauvegarde de `main`. Le cache automatique Sega
+porte désormais une configuration de profiling révision 2 : une conversion
+refait les anciennes sessions aux graines dupliquées, ou les sessions dont
+le nombre/durée demandé a changé. Une session manquante invalide aussi le
+cache ; la configuration n'est publiée qu'après réussite de toutes les
+sessions. Les profils manuels restent conservés, et les durées/nombres par
+défaut restent inchangés. Pour un firmware déclaré déjà à jour, `FORCE=1`
+permet de demander cette reconversion immédiatement.
+
+Le test GG a aussi révélé un défaut préexistant du menu de sauvegardes :
+`sg_put_uint` était utilisé avant sa déclaration. Une déclaration anticipée
+corrige la compilation du firmware GG/Pokitto compressé. Le test e2e GG
+réussit après cette correction ; un firmware SG/META synthétique produit
+avec et sans cette déclaration est identique octet pour octet.
 
 Je garderais la correction des graines et le mécanisme de checkpoints,
 mais sans présenter ce dernier comme une optimisation majeure démontrée

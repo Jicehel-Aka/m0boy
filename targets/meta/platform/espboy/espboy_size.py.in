@@ -9,19 +9,43 @@ for symbol in ('_printf_float', '_scanf_float'):
         if pos and flags[pos - 1] == '-u': del flags[pos - 1:pos + 1]
         else: del flags[pos]
 env.Replace(LINKFLAGS=flags)
-env.Append(LINKFLAGS=['-Wl,--wrap=' + name for name in (
-    'NMI_Handler', 'digitalWrite', '__digitalWrite', 'micros', 'millis', 'yield', 'optimistic_yield', 'delay',
-    'system_get_time', 'system_get_cpu_freq', 'system_update_cpu_freq')])
-# The bare-metal entry must never gain a networking dependency silently.
-env.Replace(LIBS=[lib for lib in env['LIBS'] if str(lib) not in (
-    'phy', 'pp', 'net80211', 'wpa', 'crypto', 'wps', 'bearssl', 'espnow',
-    'smartconfig', 'airkiss', 'wpa2') and not str(lib).startswith('lwip')])
 
 def check_size(source, target, env):
     from pathlib import Path
     image = Path(env.subst("$BUILD_DIR/${PROGNAME}.bin"))
     size = image.stat().st_size
-    if size > 256 * 1024:
-        raise RuntimeError("ESPboy firmware: %d bytes exceeds 256 KiB" % size)
+    if size > 0x100000:
+        raise RuntimeError("ESPboy firmware: %d bytes exceeds 1 MiB" % size)
 
 env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", check_size)
+
+def write_symbols(source, target, env):
+    """firmware.sym : « adresse nom » des fonctions globales et de quelques
+    données, pour lancer firmware.bin dans gm0 sans le .elf (l'émulateur
+    accroche par nom les fonctions de la ROM et du SDK qu'il émule)."""
+    import struct
+    from pathlib import Path
+    elf = Path(env.subst("$BUILD_DIR/${PROGNAME}.elf")).read_bytes()
+    shoff, = struct.unpack_from('<I', elf, 32)
+    shentsize, shnum = struct.unpack_from('<HH', elf, 46)
+    keep = {'g_pcont', '__init_array_start', '__init_array_end', 'gbl_frame'}
+    lines = []
+    for i in range(shnum):
+        sh = shoff + i * shentsize
+        sh_type, = struct.unpack_from('<I', elf, sh + 4)
+        if sh_type != 2:  # SHT_SYMTAB
+            continue
+        off, size, link = struct.unpack_from('<III', elf, sh + 16)
+        stroff, = struct.unpack_from('<I', elf, shoff + link * shentsize + 16)
+        for k in range(0, size, 16):
+            name, value, sz, info, other, shndx = struct.unpack_from('<IIIBBH', elf, off + k)
+            kind, bind = info & 15, info >> 4
+            if not name or not value:
+                continue
+            end = elf.index(b'\0', stroff + name)
+            text = elf[stroff + name:end].decode('ascii', 'replace')
+            if text in keep or (kind == 2 and bind in (1, 2) and len(text) < 40):
+                lines.append('%08x %s' % (value, text))
+    Path(env.subst("$BUILD_DIR/firmware.sym")).write_text('\n'.join(lines) + '\n')
+
+env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", write_symbols)

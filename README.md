@@ -9,8 +9,8 @@ Pokitto.**
 m0boy turns a Game Boy (DMG) ROM into a folder that you copy to the
 console's SD card. The game's code is translated to C and compiled for the
 console's processor: it is neither an emulator nor a JIT. Code seen during
-automatic play sessions is recompiled, and a small interpreter runs the
-rest. The PPU, APU, timers and MBC mappers are reimplemented in a compact
+automatic play sessions, plus the instruction courses a static code/data
+sweep validates, is recompiled, and a small interpreter runs the rest. The PPU, APU, timers and MBC mappers are reimplemented in a compact
 runtime whose hot paths are written in Thumb-1 assembly.
 
 It started as a port of [gb-recompiled](https://github.com/arcanite24/gb-recompiled)
@@ -36,7 +36,8 @@ pipeline: the Z80 code is recompiled, not emulated.
 
 - **Recompiler** (`--system sg1000`): code played during automatic sessions
   (button 1 held, no input at all for logos and demos, random games), then
-  the code it reaches statically, becomes C regions like the Game Boy
+  the code it reaches statically, then the courses the static sweep
+  validates, becomes C regions like the Game Boy
   backend's: gotos inside, `CALL` as a C call, flags computed only where a
   later instruction reads them (common cases inline), cycles added in
   batches, device sync at loop heads. Targets of `RET` and `JP (HL)` seen
@@ -97,6 +98,8 @@ banked code:
   discovery instead of always keeping the segment-end state, which may
   follow a death. Older
   sessions, without the execution counts or the explorations, are redone. The
+  automatic Sega sessions are also refreshed when their profiling revision,
+  session count or duration changes; manual recordings are preserved. The
   sectors the interpreter fetches the code of, for what is not compiled, count
   like the sectors read as data.
   The encoder, C/Thumb-1 LZSS decoders and hot-block promotion policy are
@@ -133,6 +136,21 @@ MENU / C. Alex Kidd in Miracle World, Shinobi and Wonder Boy III run at
 Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
 `gm0 game.sg`. Details (French): [docs/MULTI_SYSTEM.fr.md](docs/MULTI_SYSTEM.fr.md).
 
+## PICO-8
+
+PICO-8 cartridges (`.p8`, `.p8.png`) are compiled for the Gamebuino META: the
+cartridge's Lua becomes C (one function per Lua function) on a small runtime
+with a garbage-collected 18 KiB heap, integer-only drawing and sound. The PC
+side uses [femto8](https://github.com/benbaker76/femto8)'s cartridge reader
+and Lua compiler (`FEMTO8_DIR`, default `../femto8`). The screen of the
+generated code equals femto8's, byte for byte, on Celeste and its Practice
+Mod; in gm0 Celeste runs at about 26 frames a second at 48 MHz (30 expected
+at 72 MHz, not measured). Notes, limits and evidence: [docs/PICO8.fr.md](docs/PICO8.fr.md).
+
+```bash
+build/bin/m0recomp celeste.p8.png --target meta -o out/celeste && (cd out/celeste && pio run)
+```
+
 ## What was built
 
 ### Recompilation guided by play
@@ -140,13 +158,21 @@ Desktop play uses the [gm0 `z80` branch](https://github.com/r043v/gm0/tree/z80):
 - `compile.sh` plays each ROM by itself before compiling it: one
   random-input session per CPU core, 20 s each at full speed (3,000 to
   12,000 frames a second, so 15 to 60 minutes of play per session), four
-  explorations (below) and any session you record yourself. Only the
-  instructions these sessions
-  executed are compiled, so data is never mistaken for code and the
-  firmware fits in flash.
+  explorations (below) and any session you record yourself. These sessions
+  identify code actually executed and its hot paths, guiding what gets
+  compiled within the flash budget.
 - Everything else, including code copied to RAM, runs in the `gbl`
   interpreter. Compiled code and interpreter hand over to each other at any
   instruction.
+- A static code/data sweep completes the sessions. One shared driver for
+  both CPUs classifies every byte of the ROM (padding, repeated patterns,
+  pointer tables) and then tries speculative courses of instructions: a
+  course only counts as code when it reaches an unconditional terminator
+  without an illegal opcode or an access to a nonexistent area (an access
+  to known hardware counts the other way, as evidence of code). What
+  survives but the sessions never played is compiled when the flash budget
+  allows; the rest piles up into data zones reported in the build log.
+  `--no-scan` drops the speculative seeding, `--no-infer-data` the sweep.
 - The generator recognises wait loops (polling LY, STAT, the joypad or a
   flag set by an interrupt, delay loops) and skips whole iterations up to
   the next event. Registers, flags and cycle counts stay identical to
@@ -290,7 +316,7 @@ ninja -C build
 ctest --test-dir build --output-on-failure
 ```
 
-## ESPboy (initial Game Boy target)
+## ESPboy (Game Boy, SG-1000, Game Gear, Master System)
 
 ```bash
 build/bin/gbrecomp game.gb --target espboy --meta-static -o out/espboy/game
@@ -300,19 +326,42 @@ pio run -d out/espboy/game -t upload
 TARGET=espboy ./compile.sh roms/gb
 ```
 
-ESP8266, 128×128 LCD, no SD, 1 MiB total flash. The application binary is
-limited to 256 KiB; a separate `rom.bin` is uploaded at `0x40000`, with
-748 KiB available before the reserved flash tail. ROMs remain raw when they
-fit; otherwise only enough 512-byte sectors are LZSS compressed to fit,
-using the existing runtime cache and decoder. Oversized incompressible
-cartridges are rejected. Batch archives include both images and their flash
+ESP8266 (ESP-12F, 4 MiB flash), 128×128 LCD, no SD. The firmware (Arduino
+core start-up, as the earlier ESPboy emulator) fills the 1 MiB the CPU can map.
+A ROM of up to 256 KiB is part of it. A larger ROM keeps bank 0 there and the
+rest goes in a separate `rom.bin` uploaded at `0x100000` (2.75 MiB area), read
+sector by sector with `spi_flash_read` through the runtime cache: raw while it
+fits, and only when it does not are enough 512-byte sectors LZSS compressed
+(largest savings first). Cartridges that stay too big are rejected. Battery
+RAM (two alternating copies) and save states (as many slots as fit) live in the
+flash from `0x3C0000`. Batch archives include the images and their flash
 offsets; they are flashed over serial, not copied onto an SD card.
 
 The Game Boy runtime, generated C, menu, palettes and display pipeline are
-shared. Startup and peripheral adapters are ESP8266 specific. Sega source
-systems are not yet supported on ESPboy; battery RAM is volatile and save
-states are unavailable. This port has host tests and an Xtensa build, but
-has not been validated on ESPboy hardware. See the generated README.
+shared. Display, buttons, sound and start-up follow the earlier ESPboy
+emulator that ran on the console.
+
+SG-1000, Game Gear and Master System ROMs also convert
+(`gbrecomp rom.gg --target espboy`, `TARGET=espboy ./compile.sh`), on the same
+drivers and flash map: a ROM of up to 256 KiB is part of the firmware; a
+larger Game Gear / Master System one keeps page 0 there and the other pages,
+raw, in `rom.bin` (read by 512-byte sectors through the card cache of the
+Game Boy, here in RAM). Cartridge RAM is 8 KiB in RAM, saved in flash two
+seconds after it stops changing (no states, no menu: START / PAUSE is the
+right auxiliary button). The SG-1000 / SMS picture is filtered to 160 columns
+and 120 rows, the Game Gear's 144 lines to 128 rows; every row is then
+resampled 160 to 128 columns.
+
+Without a console, [gm0](https://github.com/r043v/gm0) runs the built firmware
+(the Xtensa code itself; the chip's ROM and the Espressif SDK are emulated by
+function, time is an estimate): `gm0 game.zip`, where `compile.sh` packs
+`firmware.bin`, `firmware.sym` and, above 256 KiB, `rom.bin`. Set
+`ESPBOY_GM0=/path/to/gm0` for the ESPboy tests to run each firmware in it
+(`ESPBOY_PIO` for the build). The Game Boy A/B buttons are crossed with ACT/ESC
+on purpose (more comfortable to play). This port has host tests (a mock flash
+included), Xtensa builds and gm0 runs, but the current version has not been
+validated on ESPboy hardware. See the generated README and
+`docs/ESPBOY_STATUS_2026-10-19.md`.
 
 ## Limitations
 

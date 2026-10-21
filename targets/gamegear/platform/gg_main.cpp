@@ -15,7 +15,9 @@
 #include "meta_clock.h"
 #include "meta_audio.h"
 #include "meta_lcd.h"
-#if META_TARGET_POKITTO
+#if META_TARGET_ESPBOY
+#include "espboy_hw.h"
+#elif META_TARGET_POKITTO
 #include "pokitto_hw.h"
 #else
 #include "meta_hw.h"
@@ -31,15 +33,15 @@ void pokitto_sd_clock_changed(uint32_t) {}
 #endif
 void pokitto_lcd_row_zoom(unsigned y, const uint16_t *px);
 #endif
-#if GG_STREAM || GG_CART_ON_CARD
+#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY
 int gg_stream_open(const uint8_t *rom, uint32_t rom_size);
 #endif
 }
-#if GG_STREAM || GG_CART_ON_CARD
+#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY
 #include "meta_card.h"
 #endif
 #if SG_CART_RAM && !GG_CART_ON_CARD
-static uint8_t cart_ram[GG_CART_RAM_SIZE];
+static uint8_t cart_ram[GG_CART_RAM_SIZE] __attribute__((aligned(4)));
 #endif
 /* Rows: GG_WIDTH pixels with GG_ROW_PAD writable pixels on each side.  Two
  * buffers: the META sends one by DMA while the other is drawn. */
@@ -190,6 +192,121 @@ static void row(void *, unsigned y, uint16_t *pixels) {
 }
 #endif
 
+static void frame(void *);
+/* ---- option menu (sg_menu.h): HOME held half a second, MENU stays Start -- */
+extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
+    /* the two line buffers, contiguous: the menu's bands of 8 rows are
+     * sliced to what fits (two rows of 160 pixels) */
+    *rows = 2u * GG_ROW_STRIDE / GG_WIDTH;
+    return line_buffers[0];
+}
+#if META_TARGET_POKITTO
+static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
+#define SG_MENU_TAP() do { start_frames = 6; } while (0)
+#else
+#define SG_MENU_TAP() do { } while (0)
+#endif
+#if GG_CART_ON_CARD
+#define GG_MENU_SAVE_FLUSH() gg_save_flush()
+#else
+#define GG_MENU_SAVE_FLUSH() do { } while (0)
+#endif
+#if SG_CART_RAM && !GG_CART_ON_CARD
+#define GG_MENU_CART_RAM cart_ram
+#else
+#define GG_MENU_CART_RAM 0
+#endif
+/* Redemarrer: the cartridge RAM is saved, then cleared (a power cycle; it
+ * comes back from the save file at the next boot). */
+#define SG_MENU_RESTART() do { \
+        GG_MENU_SAVE_FLUSH(); \
+        gg_init(sg_rom, sg_rom_size, GG_MENU_CART_RAM); \
+        machine.lookup = sg_gen_lookup; \
+        machine.draw_line = draw_line; \
+        machine.row = row; \
+        machine.row_out = line_buffers[0] + GG_ROW_PAD; \
+        machine.row_tmp = line_buffers[1] + GG_ROW_PAD; \
+        machine.frame = frame; \
+        deadline = meta_micros(); \
+        skipped_run = 0; \
+    } while (0)
+#if GG_STREAM || GG_CART_ON_CARD
+#define GG_MENU_SD_DESELECT() meta_sd_deselect()
+#else
+#define GG_MENU_SD_DESELECT() do { } while (0)
+#endif
+#if META_TARGET_ESPBOY
+#define SG_MENU_QUIT() do { espboy_restart(); } while (0)
+#elif META_TARGET_POKITTO
+#define SG_MENU_QUIT() do { \
+        GG_MENU_SAVE_FLUSH(); \
+        meta_audio_stop(); \
+        GG_MENU_SD_DESELECT(); \
+        pokitto_enter_loader(); \
+        meta_audio_init(); \
+    } while (0)
+#else
+/* Hand the console back to the Gamebuino loader in the state it expects
+ * (the Game Boy frontend's enter_loader). */
+#if META_USB
+#define SG_MENU_USB_STOP() meta_usb_stop()
+#else
+#define SG_MENU_USB_STOP() do { } while (0)
+#endif
+/* The USB bootloader (sam-ba) directly: its magic where the bootloader looks
+ * after a software reset (the double reset reaches the loader, not sam-ba),
+ * so the console flashes over USB whatever META_USB was. */
+#define SG_MENU_BOOTLOADER() do { \
+        GG_MENU_SAVE_FLUSH(); \
+        meta_audio_stop(); \
+        NVIC_DisableIRQ(DMAC_IRQn); \
+        meta_watchdog_stop(); \
+        SG_MENU_USB_STOP(); \
+        GG_MENU_SD_DESELECT(); \
+        *(volatile uint32_t *)0x20007FFC = 0x3aecfd88u; \
+        NVIC_SystemReset(); \
+    } while (0)
+#define SG_MENU_QUIT() do { \
+        meta_lcd_end_frame(); \
+        meta_clock_set_lcd_spi(24); /* the loader expects the core's clocks */ \
+        meta_clock_set(48); \
+        GG_MENU_SAVE_FLUSH(); \
+        meta_audio_stop(); \
+        NVIC_DisableIRQ(DMAC_IRQn); \
+        meta_watchdog_stop(); \
+        SG_MENU_USB_STOP(); \
+        GG_MENU_SD_DESELECT(); \
+        ((void (*)(void))(*((uint32_t *)0x3FF4)))(); \
+    } while (0)
+#endif
+#define SG_MENU_RESUME() do { \
+        deadline = meta_micros(); \
+        skip_video = 0; \
+        skipped_run = 0; \
+    } while (0)
+#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY && defined(__ARM_ARCH_6M__)
+/* The menu needs about 600 bytes of stack, and the dispatcher calls frame()
+ * deep in the game's calls: it runs on the card cache's blocks instead (the
+ * save is written back first, the cache holds nothing until it is given
+ * back). */
+#define SG_MENU_ON_STACK_TOP gg_cache_lend()
+#define SG_MENU_UNLEND() gg_cache_unlend()
+#endif
+#if defined(GG_STATE_NAME83)
+/* Save states (sg_menu.h's Etat lines): the card's state file, the line
+ * buffers as the sector scratch (the menu has closed), and what the frame
+ * loop re-synchronises once a state is loaded. */
+#define SG_MENU_STATE_SLOTS GG_STATE_SLOTS
+#define SG_MENU_STATE_BUF() ((uint8_t *)line_buffers[0])
+#define SG_MENU_STATE_LOADED() \
+    do { \
+        deadline = meta_micros(); \
+        skip_video = 0; \
+        skipped_run = 0; \
+    } while (0)
+#endif
+#include "sg_menu.h"
+
 static void frame(void *) {
     meta_audio_frame();
     meta_lcd_end_frame();
@@ -203,11 +320,13 @@ static void frame(void *) {
 #if META_TARGET_POKITTO
     keys = ((raw & POKITTO_UP) ? GG_UP : 0) | ((raw & POKITTO_DOWN) ? GG_DOWN : 0) |
            ((raw & POKITTO_LEFT) ? GG_LEFT_KEY : 0) | ((raw & POKITTO_RIGHT) ? GG_RIGHT_KEY : 0) |
-           ((raw & POKITTO_A) ? GG_B1 : 0) | ((raw & POKITTO_B) ? GG_B2 : 0) | ((raw & POKITTO_C) ? (GG_SMS ? GG_PAUSE : GG_START) : 0);
+           ((raw & POKITTO_A) ? GG_B1 : 0) | ((raw & POKITTO_B) ? GG_B2 : 0);
+    if (start_frames) { keys |= GG_SMS ? GG_PAUSE : GG_START; start_frames--; }
 #else
     /* META: A is button 1, B button 2, MENU is START */
     keys = ((raw & 8) ? GG_UP : 0) | ((raw & 1) ? GG_DOWN : 0) | ((raw & 2) ? GG_LEFT_KEY : 0) |
-           ((raw & 4) ? GG_RIGHT_KEY : 0) | ((raw & 16) ? GG_B1 : 0) | ((raw & 32) ? GG_B2 : 0) | ((raw & 64) ? (GG_SMS ? GG_PAUSE : GG_START) : 0);
+           ((raw & 4) ? GG_RIGHT_KEY : 0) | ((raw & 16) ? GG_B1 : 0) | ((raw & 32) ? GG_B2 : 0) |
+           ((raw & 64) ? (GG_SMS ? GG_PAUSE : GG_START) : 0);
     SG_PAD_WDT();
 #endif
     gg_buttons(keys);
@@ -217,24 +336,41 @@ static void frame(void *) {
 #if GG_CART_ON_CARD
     gg_save_tick();
 #endif
+#if META_TARGET_ESPBOY && SG_CART_RAM
+    espboy_ram_tick(cart_ram, GG_CART_RAM_SIZE, machine.frames);
+#endif
+    sg_menu_frame();
+    sg_menu_poll(raw);
+    sg_menu_tick();
     SG_PACE_FRAME(deadline, skip_video, skipped_run, GG_MAX_SKIP);
 }
 
+#if META_TARGET_ESPBOY
+int espboy_main() {
+#else
 int main() {
+#endif
     SG_STACK_PAINT();
     SG_PLATFORM_INIT();
-#if GG_STREAM || GG_CART_ON_CARD
+#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY
     /* The game's files on the card (meta_card.h, the Game Boy's colours):
      * no card blue, ROM file missing red, fragmented orange, another ROM
      * magenta, save file missing yellow */
-    if (int err = gg_stream_open(sg_rom, (uint32_t)sg_rom_size)) {
+    int card_err = 0;
+    if ((card_err = gg_stream_open(sg_rom, (uint32_t)sg_rom_size))) {
         static const uint16_t colours[] = META_CARD_COLOURS(META_COLOR);
-        meta_lcd_fill(err == META_CARD_NO_SAVE ? META_COLOR(META_CARD_RGB_NO_SAVE) : colours[err]);
+        meta_lcd_fill(card_err == META_CARD_NO_SAVE ? META_COLOR(META_CARD_RGB_NO_SAVE) : colours[card_err]);
         for (;;) SG_PAD_WDT(); /* watchdog fed, USB touch served */
     }
 #endif
+#if defined(GG_STATE_NAME83)
+    meta_state_init(card_err == 0, SG_MENU_STATE_BUF());
+#endif
 #if SG_CART_RAM && !GG_CART_ON_CARD
     gg_init(sg_rom, sg_rom_size, cart_ram);
+#if META_TARGET_ESPBOY
+    espboy_ram_load(cart_ram, GG_CART_RAM_SIZE);
+#endif
 #else
     gg_init(sg_rom, sg_rom_size, 0);
 #endif

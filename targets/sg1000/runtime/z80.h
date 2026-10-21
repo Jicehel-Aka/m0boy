@@ -5,6 +5,18 @@
 extern "C" {
 #endif
 
+/* ROM bytes.  ESP8266: the memory-mapped flash only accepts aligned word
+ * loads, so a byte of ROM is read with pgm_read_byte; RAM (the card cache)
+ * keeps its normal access. */
+#if defined(ESP8266)
+#include <pgmspace.h>
+static inline uint8_t m0_load_u8(const uint8_t *p) {
+    return (uintptr_t)p >= 0x40200000u ? pgm_read_byte(p) : *p;
+}
+#else
+static inline uint8_t m0_load_u8(const uint8_t *p) { return *p; }
+#endif
+
 enum { Z80_C=1, Z80_N=2, Z80_PV=4, Z80_X=8, Z80_H=16, Z80_Y=32, Z80_Z=64, Z80_S=128 };
 typedef uint8_t (*z80_read_fn)(void *, uint16_t);
 typedef void (*z80_write_fn)(void *, uint16_t, uint8_t);

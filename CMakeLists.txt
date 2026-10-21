@@ -80,6 +80,13 @@ if(BUILD_TESTS)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_gg_e2e.py"
                 --recompiler "$<TARGET_FILE:m0recomp>" --host "$<TARGET_FILE:gg_host>")
     set_tests_properties(gg_native_end_to_end PROPERTIES TIMEOUT 300)
+    # SG-1000, Game Gear, Master System on the ESPboy: generated projects and
+    # the cartridge RAM saved in flash (mock flash).
+    add_test(NAME sega_espboy_target
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_sega_espboy.py"
+                --recompiler "$<TARGET_FILE:m0recomp>" --gg-host "$<TARGET_FILE:gg_host>"
+                --sg-host "$<TARGET_FILE:sg1000_host>")
+    set_tests_properties(sega_espboy_target PROPERTIES TIMEOUT 300)
     if(TARGET sg1000_play)
         add_executable(test_sg1000_input tests/test_sg1000_input.c)
         target_include_directories(test_sg1000_input PRIVATE targets/sg1000/host)
@@ -91,6 +98,12 @@ if(BUILD_TESTS)
         add_test(NAME sg1000_desktop_player
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_sg1000_player.py"
                     "$<TARGET_FILE:sg1000_play>" "$<TARGET_FILE:sg1000_host>")
+    endif()
+    if(TARGET p8c)
+        add_test(NAME pico8_native_end_to_end
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_pico8_e2e.py"
+                    --recompiler "$<TARGET_FILE:m0recomp>")
+        set_tests_properties(pico8_native_end_to_end PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
     endif()
     add_executable(test_source_systems tests/test_source_systems.cpp)
     target_link_libraries(test_source_systems PRIVATE m0boy_frontends)

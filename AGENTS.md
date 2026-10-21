@@ -22,6 +22,14 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
   `sg_gen.h`); `targets/sg1000/platform/`: META/Pokitto frontend.
 - SG-1000 rule: a `--meta-precise` project must print the same `run_hash` as
   `--interp` (host harness), and `out_mismatch=0` (device renderer = reference).
+- PICO-8 (`--system pico8`): `recompiler/src/system/pico8/p8c.c` compiles a
+  cartridge's Lua (femto8's reader and compiler, `FEMTO8_DIR`) to C;
+  `targets/pico8/runtime/` (values, tables, collector, drawing, sound, API in
+  `p8_natives.def`), `targets/pico8/platform/p8_main.cpp` (META frontend),
+  `targets/pico8/host/p8_host.c` (harness). Rule: the screen must equal
+  femto8's (`tests/test_pico8_e2e.py` holds a recorded hash; compare Celeste
+  against a femto8 built with scripted input and no sleeping when touching the
+  runtime), also with `-DP8_GC_STRESS`. Notes: `docs/PICO8.fr.md`.
 - `recompiler/`: `gbrecomp`, from gb-recompiled. The M0 backend is
   `recompiler/src/codegen/meta_emitter.cpp` (`--target meta`, `--target pokitto`).
 - `targets/meta/runtime/`: the `gbl` runtime shared by both consoles; every
@@ -74,7 +82,11 @@ ctest --test-dir build --output-on-failure
   when a change alters what that console's firmwares do.
 
 To try firmwares without a console, use [gm0](https://github.com/r043v/gm0),
-the META/Pokitto emulator kept in its own repository.
+the META/Pokitto/ESPboy emulator kept in its own repository. For the ESPboy it
+executes the firmware's own Xtensa code and emulates the chip's ROM and the
+Espressif SDK by function: time there is an estimate. `ESPBOY_GM0=/path/to/gm0`
+makes `tests/test_espboy_target.py` and `tests/test_sega_espboy.py` run each
+built firmware in it (`ESPBOY_PIO` for the build).
 
 ## Hygiene
 

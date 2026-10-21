@@ -14,7 +14,10 @@
 #   et EXPLORERS explorations (voir plus bas).
 #   Game Gear : même chaîne (projets out/gg/<cible>/<jeu>/), parties 9 fois plus longues (les jeux sont plus
 #   longs à atteindre) ; une grosse ROM laisse des pages sur la carte (<NOM>.GG copié à côté du .bin), avec
-#   les secteurs les plus lus gardés en flash ; la RAM de cartouche vit dans <NOM>.SAV.  Les parties
+#   les secteurs les plus lus gardés en flash ; la RAM de cartouche vit dans <NOM>.SAV.
+#   Le cache carte (META) part à 3 secteurs en blocs de 128 et grossit d un
+#   secteur tant que le rapport RAM du build laisse ~2000 octets à la pile.
+#   Les parties
 #   enregistrées par une version qui ne comptait pas les exécutions (sans « # frames ») ou sans exploration
 #   sont refaites.  Parties GG/SMS : bouton 1 maintenu, sans touche, SG_SEEDS parties aléatoires et
 #   EXPLORERS explorations.
@@ -133,8 +136,18 @@
 #                 l'exécution ; POKITTO_HC est l'ancien nom)
 #   SG_SYNC_CYCLES=N  (SG-1000/GG/SMS) le code natif regarde aussi les
 #                 interruptions dès que N cycles Z80 ont passé depuis la
-#                 dernière fois (défaut 40 ; 0 : en tête de boucle seulement,
-#                 comme avant la 0.10.26)
+#                 dernière fois (défaut 0 : en tête de boucle seulement ;
+#                 40 bornait la latence de l'eau de la démo de Ristar, seul
+#                 bug visible)
+#   RELEASE=1     (META) firmware sans port USB (meta_usb.c, -420 octets de
+#                 RAM) : ni meta-usb.py, ni l'entrée du bootloader par le
+#                 toucher 1200 bauds — reflasher demande le bootloader
+#                 autrement (double appui sur reset, à vérifier sur la
+#                 console).  La garde du cache carte passe de 2000 à 2400
+#                 octets libres : quatre secteurs, 16 blocs de 128 au lieu de
+#                 12 (le plus profond mesuré au filigrane est de 1640 octets,
+#                 +128 non peints sous main, USB comprise donc majorée pour un
+#                 firmware sans USB ; marge ~620 octets).
 #   AUDIO_DMA=0|1 son de la META par interruption (0, défaut pour toutes les
 #                 consoles : moins de RAM, laissée au cache carte) ou par DMA
 #                 (1).  Un jeu déjà à jour n'est pas refait : FORCE=1 après
@@ -187,6 +200,11 @@ fi
 OVERCLOCK="${OVERCLOCK:-1}"
 export OVERCLOCK POKITTO_HC="$OVERCLOCK"
 export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=$OVERCLOCK${AUDIO_DMA:+ -DMETA_AUDIO_DMA=$AUDIO_DMA}"
+RELEASE="${RELEASE:-0}"
+export RELEASE
+RELEASE_FLAG=""
+[ "$RELEASE" = 1 ] && RELEASE_FLAG="-DMETA_USB=0"
+export RELEASE_FLAG
 if [ "$TARGET" = both ] || [ "$TARGET" = all ]; then
   # Une exécution par console.  La sélection des jeux et la confirmation des
   # mises à jour sont demandées une seule fois (pass de capture ci-dessous,
@@ -263,6 +281,11 @@ NO_ICONS="${NO_ICONS:-0}"
 OVERCLOCK="${OVERCLOCK:-${POKITTO_HC:-1}}"
 export OVERCLOCK POKITTO_HC="$OVERCLOCK"
 export OVERCLOCK_FLAG="-DMETA_OVERCLOCK=$OVERCLOCK${AUDIO_DMA:+ -DMETA_AUDIO_DMA=$AUDIO_DMA}"
+RELEASE="${RELEASE:-0}"
+export RELEASE
+RELEASE_FLAG=""
+[ "$RELEASE" = 1 ] && RELEASE_FLAG="-DMETA_USB=0"
+export RELEASE_FLAG
 if [ "$TARGET" = espboy ]; then
   PACK=0
   FIRMWARE_COMPILER=gcc
@@ -664,20 +687,32 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     [ -x "$sg_player" ] || { echo "[x] Lecteur gm0 absent : construire gm0 ou définir SG_PLAYER."; return 1; }
     "$sg_player" "$rom_path" || return 1
   fi
+  auto_frames="${SG_AUTO_FRAMES:-$((AUTO_SECONDS * 60))}"
+  [ "$sys" != sg1000 ] && auto_frames="${SG_AUTO_FRAMES:-$((AUTO_SECONDS * 540))}"
+  local seeds="${SG_SEEDS:-8}" explorers="$EXPLORERS" explore_frames="${EXPLORE_FRAMES:-$((AUTO_SECONDS * 6000))}" seed pids=()
+  [ "$explore_frames" -gt 0 ] || explorers=0
+  [ "$explorers" -gt 0 ] || explore_frames=0
+  # Revision 2 preserves even seeds and checkpoints discoveries. Rebuild old
+  # automatic sessions once, and honour changes to their count or duration.
+  # Manual recordings are not touched. Publish the stamp only after success.
+  local profile_config="v2 $auto_frames $seeds $explorers $explore_frames"
   # GG/SMS : un profil sans « # frames » (ancien format) ne dit pas combien de fois chaque instruction
   # s'exécute : le générateur ne peut pas arbitrer code compilé et secteurs gardés en flash, on le refait ;
   # de même, toutes plateformes, un profil sans exploration (coverage-explore*.cov, voir plus bas).
   local stale=0
+  [ "$(cat "$store/.auto-profile-config" 2>/dev/null)" != "$profile_config" ] && stale=1
+  [ -f "$store/coverage-idle.cov" ] || stale=1
+  for ((seed = 1; seed <= seeds; seed++)); do
+    [ -f "$store/coverage-rand$seed.cov" ] || stale=1
+  done
+  for ((seed = 1; seed <= explorers; seed++)); do
+    [ -f "$store/coverage-explore$seed.cov" ] || stale=1
+  done
   [ "$sys" != sg1000 ] && [ -f "$store/coverage-auto.cov" ] && ! grep -q '^# frames ' "$store/coverage-auto.cov" && stale=1
-  [ "$EXPLORERS" -gt 0 ] && [ -f "$store/coverage-auto.cov" ] && [ ! -f "$store/coverage-explore1.cov" ] && stale=1
   if [ "$AUTO" = 1 ] && { [ "$AUTO_REDO" = 1 ] || [ "$stale" = 1 ] || [ ! -f "$store/coverage-auto.cov" ]; }; then
     [ -x "$host" ] || { echo "[x] Construire $(basename "$host") avec CMake/Ninja."; return 1; }
-    auto_frames="${SG_AUTO_FRAMES:-$((AUTO_SECONDS * 60))}"
-    [ "$sys" != sg1000 ] && auto_frames="${SG_AUTO_FRAMES:-$((AUTO_SECONDS * 540))}" # longer games: 9x
     case "$auto_frames" in ''|*[!0-9]*|0) echo "[x] SG_AUTO_FRAMES doit être un entier positif."; return 1 ;; esac
-    local seeds="${SG_SEEDS:-8}" explorers="$EXPLORERS" explore_frames="${EXPLORE_FRAMES:-$((AUTO_SECONDS * 6000))}" seed pids=()
     # Explorations guidées par la couverture (--explore) : le profil est celui de toutes les images jouées.
-    [ "$explore_frames" -gt 0 ] || explorers=0
     local more=""
     [ "$explorers" -gt 0 ] && more=", $explorers explorations de $explore_frames images"
     echo "[i] Profil $label : $auto_frames images NTSC, bouton 1 pour démarrer et tirer, sans touche, $seeds parties aléatoires$more"
@@ -707,6 +742,8 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     for ((seed = 1; seed <= seeds; seed++)); do
       mv "$store/coverage-rand$seed.tmp" "$store/coverage-rand$seed.cov" || return 1
     done
+    printf '%s\n' "$profile_config" > "$store/.auto-profile-config.tmp" || return 1
+    mv "$store/.auto-profile-config.tmp" "$store/.auto-profile-config" || return 1
   fi
   for cov in "$store"/*.cov "$PROFILES_DIR/$rom_sha"/*.cov; do
     [ -f "$cov" ] || continue
@@ -720,7 +757,8 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   local sg_build="$out_dir/build" gen_log build_log bpi="" tries=0 rc text compiled
   [ "$FIRMWARE_COMPILER" = clang ] && sg_build="$out_dir/build-clang"
   local size_bin
-  size_bin=$(command -v arm-none-eabi-size || echo "$HOME/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size")
+  if [ "$TARGET" = espboy ]; then size_bin="$HOME/.platformio/packages/toolchain-xtensa/bin/xtensa-lx106-elf-size"
+  else size_bin=$(command -v arm-none-eabi-size || echo "$HOME/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size"); fi
   sg_build_once() { # 0 ok, 1 flash full, 2 error
     gen_log=$("$GBRECOMP" "$rom_path" --system "$sys" --target "$TARGET" --output-prefix "$prefix" --sd-name "$sd_name" \
       --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} \
@@ -732,16 +770,16 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
         -DSG_COMPILER="$FIRMWARE_COMPILER" ${hc_flags} > /dev/null || return 2
       build_log=$(ninja -C "$sg_build" -j"$NPROC" 2>&1) && return 0
     else
-      build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0
+      build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG}" pio run -d "$out_dir" 2>&1) && return 0
     fi
-    echo "$build_log" | grep -q -E "overflowed|will not fit|greater than maximum allowed|exceeds 256 KiB" && return 1
+    echo "$build_log" | grep -q -E "overflowed|will not fit|greater than maximum allowed|exceeds 1 MiB" && return 1
     echo "$build_log" | tail -20
     return 2
   }
   sg_code_bpi() { # measured flash per compiled instruction, rounded up
     local obj
     if [ "$TARGET" = pokitto ]; then obj=$(ls "$sg_build"/CMakeFiles/firmware.dir/src/sg_gen.c.o* 2>/dev/null | head -n1)
-    else obj="$out_dir/.pio/build/meta/src/sg_gen.o"; fi
+    else obj=$(ls "$out_dir/.pio/build/$PIO_ENV/src/sg_gen.o" "$out_dir/.pio/build/$PIO_ENV/src/sg_gen.c.o" 2>/dev/null | head -n1); fi
     compiled=$(echo "$gen_log" | sed -n 's/.*instructions: *\([0-9]*\) compiled.*/\1/p')
     [ -f "$obj" ] && [ -n "$compiled" ] && [ "$compiled" -gt 0 ] || return 1
     text=$("$size_bin" "$obj" 2>/dev/null | tail -n1 | awk '{print $1}')
@@ -761,6 +799,27 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   elif [ $rc -ne 0 ]; then
     echo "[x] Le firmware ne tient pas en flash."; return 1
   fi
+  # Le cache carte grossit tant que le rapport RAM du build laisse la pile
+  # large.  Le plus profond mesuré au filigrane (SG_STACK_PAINT, démo et menu
+  # exercés, USB comprise donc majorée) est de 1640 octets, +128 non peints
+  # sous main ; chaque secteur coûte 528 octets de .bss.  En release sans USB
+  # (420 octets rendus), la garde passe à 2400 : quatre secteurs, 16 blocs de
+  # 128, ~620 octets de marge sur le pire mesuré.  L'anneau audio, lui, ne
+  # descend pas : le producteur écrit une image émulée entière (plancher 512
+  # échantillons, meta_audio.cpp).
+  if [ "$TARGET" = meta ] && { [ "$sys" = gg ] || [ "$sys" = sms ]; } \
+     && grep -q "GG_CACHE_BLOCK" "$out_dir/src/sg_config.h"; then
+    local sectors=3 used
+    while :; do
+      used=$(echo "$build_log" | sed -n 's/.*(\(used [0-9]*\) bytes from 32768.*/\1/p'); used=${used#used }
+      local guard=2000; [ "$RELEASE" = 1 ] && guard=2400
+      { [ -n "$used" ] && [ $((32768 - used)) -gt $guard ]; } || break
+      sectors=$((sectors + 1)); [ $sectors -le 8 ] || break
+      build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG} -DGG_STREAM_SECTORS=$sectors" \
+        pio run -d "$out_dir" 2>&1) || break
+      echo "[i] Cache carte : $sectors secteurs"
+    done
+  fi
   echo "$gen_log"
   echo "$build_log" | grep -E "^(RAM|Flash):" || true
   [ -n "$bpi" ] && echo "[i] Code généré : $bpi octets de flash par instruction"
@@ -769,6 +828,17 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   if [ "$TARGET" = pokitto ]; then
     firmware="$sg_build/firmware.bin"
     cp "$firmware" "$game_dir/$game_name.bin" || return 1
+  elif [ "$TARGET" = espboy ]; then
+    firmware="$out_dir/.pio/build/$PIO_ENV/firmware.bin"
+    cp "$firmware" "$game_dir/firmware.bin" || return 1
+    cp "${firmware%.bin}.sym" "$game_dir/firmware.sym" || return 1 # symboles pour gm0
+    cp "$out_dir/README.md" "$game_dir/README.md" || return 1
+    if [ -f "$out_dir/rom.bin" ]; then # ROM above 256 KiB: pages 1 and up, read from the flash
+      cp "$out_dir/rom.bin" "$game_dir/rom.bin" || return 1
+      printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin 0x100000 rom.bin\n' > "$game_dir/FLASH.txt"
+    else
+      printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin\n' > "$game_dir/FLASH.txt"
+    fi
   else
     firmware="$out_dir/.pio/build/$PIO_ENV/firmware.bin"
     cp "$firmware" "$game_dir/$sd_name.BIN" || return 1
@@ -779,6 +849,13 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   if [ -n "$save_name" ]; then # cartridge RAM: created once, never overwritten
     [ -f "$game_dir/$save_name" ] || head -c 32768 /dev/zero | tr '\0' '\377' > "$game_dir/$save_name"
     echo "[i] Sauvegarde : $game_name/$save_name (déjà sur la carte : ne plus y toucher)"
+  fi
+  local state_name state_sectors
+  state_name=$(sed -n 's/^#define GG_STATE_NAME "\(.*\)"$/\1/p' "$out_dir/src/sg_config.h")
+  if [ -n "$state_name" ]; then # save states: created once, never overwritten
+    state_sectors=$(sed -n 's/^#define GG_STATE_SLOT_SECTORS \(.*\)$/\1/p' "$out_dir/src/sg_config.h")
+    [ -f "$game_dir/$state_name" ] || head -c $((10 * state_sectors * 512)) /dev/zero | tr '\0' '\377' > "$game_dir/$state_name"
+    echo "[i] Etats : $game_name/$state_name (déjà sur la carte : ne plus y toucher)"
   fi
   if [ -n "$stream_name" ]; then
     if [ $(( $(stat -c %s "$rom_path") % 16384 )) -eq 512 ]; then # copier header (same rule as m0boy/sg1000.h and targets/common/host/m0_host_util.h): the card holds the ROM itself
@@ -1059,7 +1136,7 @@ PY
     else
       build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0
     fi
-    echo "$build_log" | grep -q -E "overflowed|will not fit|greater than maximum allowed|exceeds 256 KiB" && return 1
+    echo "$build_log" | grep -q -E "overflowed|will not fit|greater than maximum allowed|exceeds 640 KiB" && return 1
     echo "$build_log" | tail -20
     return 2
   }
@@ -1109,9 +1186,14 @@ PY
     # premier .bin du dossier, le firmware retrouve son dossier par lui.
     if [ "$TARGET" = espboy ]; then
       cp "$out_dir/.pio/build/$PIO_ENV/firmware.bin" "$game_dir/firmware.bin" || return 1
-      cp "$out_dir/rom.bin" "$game_dir/rom.bin" || return 1
+      cp "$out_dir/.pio/build/$PIO_ENV/firmware.sym" "$game_dir/firmware.sym" || return 1 # symboles pour gm0
       cp "$out_dir/README.md" "$game_dir/README.md" || return 1
-      printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin 0x40000 rom.bin\n' > "$game_dir/FLASH.txt"
+      if [ -f "$out_dir/rom.bin" ]; then
+        cp "$out_dir/rom.bin" "$game_dir/rom.bin" || return 1
+        printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin 0x100000 rom.bin\n' > "$game_dir/FLASH.txt"
+      else
+        printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin\n' > "$game_dir/FLASH.txt"
+      fi
     else
       cp "$out_dir/.pio/build/$PIO_ENV/firmware.bin" "$game_dir/$sd_name.BIN"
     fi
@@ -1416,7 +1498,7 @@ echo "------------------------------------------"
 echo "Réussis : $n_ok   Échecs : $n_fail   Déjà à jour : $n_skip   Conservés : ${#KEPT[@]}"
 for f in "$STATUS_DIR"/fail.*; do [ -f "$f" ] && echo "  échec : $(cat "$f")"; done
 if [ "$TARGET" = espboy ]; then
-  echo "Jeux dans : $DEST_DIR/gb/<Jeu>.zip (firmware.bin + rom.bin, offsets dans FLASH.txt)"
+  echo "Jeux dans : $DEST_DIR/<gb|sg|gg|sms>/<Jeu>.zip (firmware.bin, + rom.bin au-delà de 256 Kio ; offsets dans FLASH.txt)"
 else
   echo "Jeux dans : $DEST_DIR/<gb|sg|gg|sms>/<Jeu>.zip  (le zip contient le répertoire du jeu, à déposer sur la carte SD)"
 fi

@@ -22,7 +22,16 @@ extern char __StackTop;
  * comparison stays the signed one the frontends had. */
 #define SG_STALL_US 100128
 
-#if META_TARGET_POKITTO
+#if META_TARGET_ESPBOY
+/* ESPboy: the Arduino core has started the chip; the emulation runs in
+ * setup() (espboy_hw.cpp). */
+#define SG_PLATFORM_INIT() do { \
+        meta_clock_init(); \
+        meta_clock_set(META_CLOCK_DEFAULT); \
+        meta_lcd_init(); \
+        meta_lcd_fill(0); \
+    } while (0)
+#elif META_TARGET_POKITTO
 #define SG_PLATFORM_INIT() do { \
         pokitto_buttons_init(); \
         meta_clock_init(); \
@@ -59,7 +68,11 @@ extern char __StackTop;
 /* Pad: the library's bit order on the META (META_BUTTONS_SPI_HZ), the
  * Pokitto's own bits through its driver; the META's watchdog is fed while
  * the pad is clocked. */
-#if META_TARGET_POKITTO
+#if META_TARGET_ESPBOY
+/* META_MB_* bits, the library's order: what the frontends decode */
+#define SG_PAD_RAW() espboy_buttons()
+#define SG_PAD_WDT() do { } while (0)
+#elif META_TARGET_POKITTO
 #define SG_PAD_RAW() pokitto_buttons()
 #define SG_PAD_WDT() do { } while (0)
 #else
@@ -70,10 +83,23 @@ extern char __StackTop;
     } while (0)
 #endif
 
+/* The option menu's "Vitesse" (sg_menu.h): no frame limit, the emulation
+ * runs as fast as the console allows — video skipped but for one frame in
+ * thirty, which is what makes it faster than the paced mode (drawing every
+ * frame adds the LCD bus to every frame). */
+static uint8_t sg_menu_fast, sg_fast_draw;
+
 /* Frame pacing: the game itself keeps its speed, a presentation late by less
  * than a frame is skipped (at most max_skip in a row) and the deadline stays
  * put, so the debt is paid back. */
 #define SG_PACE_FRAME(deadline, skip_video, skipped_run, max_skip) do { \
+        if (sg_menu_fast) { \
+            (deadline) = meta_micros(); \
+            (skip_video) = ++sg_fast_draw < 30; \
+            if (!(skip_video)) sg_fast_draw = 0; \
+            (skipped_run) = 0; \
+            break; \
+        } \
         (deadline) += SG_FRAME_US; \
         (skip_video) = (int32_t)(meta_micros() - (deadline)) > 0 && (skipped_run) < (max_skip); \
         (skipped_run) = (skip_video) ? (skipped_run) + 1 : 0; \
@@ -85,6 +111,10 @@ extern char __StackTop;
  * frame, as the Game Boy frontend does: the words never written since show
  * the deepest stack reached (read over USB, tools/meta-usb.py). */
 #define SG_STACK_PAINT_WORD 0xC5AC5AC5u
+#if META_TARGET_ESPBOY
+#define SG_STACK_PAINT() do { } while (0)
+#define SG_STACK_GUARD() do { sg_stack_limit = espboy_stack_floor() + 2560; } while (0)
+#else
 #define SG_STACK_PAINT() do { \
         char here_; \
         uint32_t *p_ = (uint32_t *)(((uintptr_t)&end + 3u) & ~(uintptr_t)3u); \
@@ -101,5 +131,6 @@ extern char __StackTop;
         if (stack < reserve + 1024) reserve = stack > 2048 ? stack - 1024 : stack / 2; \
         sg_stack_limit = (uintptr_t)&end + reserve; \
     } while (0)
+#endif
 
 #endif

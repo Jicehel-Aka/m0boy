@@ -29,7 +29,7 @@ extern const uint8_t sg_rom[];
 /* Paged ROM through the slot pointers; the first KiB is fixed. */
 static inline __attribute__((always_inline)) uint8_t RD(uint16_t a) {
     if (a >= 0xc000) return machine.ram[a & 8191];
-    if (a < 0x400 && !GG_CODEMASTERS) return machine.rom[a];
+    if (a < 0x400 && !GG_CODEMASTERS) return m0_load_u8(machine.rom + a);
 #if SG_CART_RAM
     if (a >= 0x8000 && (machine.ram_ctl & 8)) return gg_cart_byte(a);
 #endif
@@ -43,9 +43,9 @@ static inline __attribute__((always_inline)) uint8_t RD(uint16_t a) {
     if (a >= 0x8000) return machine.cart_ram[a & (SG_CART_RAM_SIZE - 1)];
 #endif
 #if SG_ROM_MASK
-    return sg_rom[a & SG_ROM_MASK];
+    return m0_load_u8(sg_rom + (a & SG_ROM_MASK));
 #else
-    return a < SG_ROM_SIZE ? sg_rom[a] : 0xff;
+    return a < SG_ROM_SIZE ? m0_load_u8(sg_rom + a) : 0xff;
 #endif
 }
 static inline __attribute__((always_inline)) void WR(uint16_t a, uint8_t v) {

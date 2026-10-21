@@ -11,7 +11,7 @@ static unsigned capacity, calls, sends;
 static unsigned ticks;
 extern "C" void meta_watchdog_feed(void) {}
 extern "C" uint32_t meta_micros(void) { return ++ticks * 1000; }
-extern "C" uint16_t *meta_display_scratch(unsigned *rows) { *rows = capacity; return scratch + 16; }
+extern "C" uint16_t *meta_menu_scratch(unsigned *rows) { *rows = capacity; return scratch + 16; }
 extern "C" void meta_lcd_wait(void) {}
 extern "C" void meta_lcd_end_frame(void) {}
 extern "C" uint32_t meta_lcd_send_rows(const void *buf, uint8_t row, uint8_t rows) {

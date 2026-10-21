@@ -6,6 +6,7 @@
 #include "m0boy/system.h"
 #include "m0boy/sg1000.h"
 #include "m0boy/sg1000_generator.h"
+#include "m0boy/pico8_generator.h"
 #include "m0boy/cpu/z80/decoder.h"
 #include "recompiler/rom.h"
 #include "recompiler/decoder.h"
@@ -151,13 +152,13 @@ void print_usage(const char* program) {
     std::cout << "  --trace               Trace execution analysis (very verbose)\n";
     std::cout << "  --limit <n>           Limit analysis to n instructions\n";
     std::cout << "  -j, --jobs <n>        Parallel workers for codegen and batch generation (0=auto)\n";
-    std::cout << "  --system auto|gameboy|sg1000|gg|sms  Source console (default auto; legacy GB fallback)\n";
+    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8  Source console (default auto; legacy GB fallback)\n";
     std::cout << "  --cpu sm83|z80       Check the CPU required by the source console\n";
     std::cout << "  --list-systems       List source consoles, CPUs and available pipelines\n";
     std::cout << "  --info               Inspect a cartridge without generating code\n";
     std::cout << "  --target meta         Emit a compact gbl project for the Gamebuino META\n";
     std::cout << "                        (coverage-driven; see targets/meta/README.md)\n";
-    std::cout << "  --target espboy       ESP8266, 128x128 LCD, no SD, 256 KiB firmware / 1 MiB flash\n";
+    std::cout << "  --target espboy       ESP8266, 128x128 LCD, no SD, 4 MiB flash (1 MiB firmware, ROM above 256 KiB beside it)\n";
     std::cout << "  --target pokitto      Same gbl project for the Pokitto (bare-metal Makefile build;\n";
     std::cout << "                        every --meta-* option applies)\n";
     std::cout << "  --coverage <file>     gbl coverage profile for --target meta (repeatable)\n";
@@ -180,7 +181,8 @@ void print_usage(const char* program) {
     std::cout << "  --no-comments         Don't include disassembly comments\n";
     std::cout << "  --bank <n>            Only process bank n\n";
     std::cout << "  --add-entry-point b:a Add manual entry point (e.g. 1:4000)\n";
-    std::cout << "  --no-scan             Disable aggressive code scanning (enabled by default)\n";
+    std::cout << "  --no-scan             Disable speculative code seeding (enabled by default)\n";
+    std::cout << "  --no-infer-data       Disable the static code/data sweep (enabled by default)\n";
     std::cout << "  --reachable-only      Analyze only reachable and explicitly annotated entry points\n";
     std::cout << "  --symbols <file>      Load a .sym symbol file and use names for generated functions and labels\n";
     std::cout << "  --symbol-policy <p>   Symbol analyzer policy: infer-boundaries (default) or names-only\n";
@@ -322,6 +324,7 @@ struct GenerationOptions {
     bool single_function = false;
     bool emit_comments = true;
     bool aggressive_scan = true;
+    bool infer_data_zones = true;
     bool analyze_all_banks = true;
     std::vector<uint32_t> manual_entry_points;
     std::string trace_file_path;
@@ -1690,6 +1693,7 @@ static bool generate_multi_rom_module(const fs::path& rom_path,
     analyze_opts.entry_points = options.manual_entry_points;
     analyze_opts.analyze_all_banks = options.analyze_all_banks;
     analyze_opts.aggressive_scan = options.aggressive_scan;
+    analyze_opts.infer_data_zones = options.infer_data_zones;
     analyze_opts.trace_file_path = options.trace_file_path;
     analyze_opts.annotations = gbrecomp::build_analysis_annotations(
         symbol_table, options.symbol_analysis_policy);
@@ -1969,6 +1973,7 @@ int main(int argc, char* argv[]) {
     bool single_function = false;
     bool emit_comments = true;
     bool aggressive_scan = true;
+    bool infer_data_zones = true;
     bool analyze_all_banks = true;
     int specific_bank = -1;
     std::vector<uint32_t> manual_entry_points;
@@ -2077,6 +2082,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--no-scan") {
             aggressive_scan = false;
+        } else if (arg == "--no-infer-data") {
+            infer_data_zones = false;
         } else if (arg == "--reachable-only") {
             analyze_all_banks = false;
         } else if (arg == "--use-trace") {
@@ -2195,8 +2202,8 @@ int main(int argc, char* argv[]) {
                       << " inspect=yes disasm="
                       << (m0boy::cpu_descriptor(system.cpu).decoder_available ? "yes" : "no")
                       << " codegen="
-                      << (system.supports(m0boy::TargetId::desktop) ? "desktop,meta,pokitto" : "unavailable")
-                      << (system.supports(m0boy::TargetId::espboy) ? ",espboy" : "")
+                      << (system.id == m0boy::SystemId::pico8 ? "desktop,meta" : system.supports(m0boy::TargetId::desktop) ? "desktop,meta,pokitto" : "unavailable")
+                      << (system.id != m0boy::SystemId::pico8 && system.supports(m0boy::TargetId::espboy) ? ",espboy" : "")
                       << "\n";
         }
         return 0;
@@ -2219,10 +2226,6 @@ int main(int argc, char* argv[]) {
     if (requested_cpu && *requested_cpu != source.cpu) {
         std::cerr << "Error: source system " << source.name << " requires CPU "
                   << m0boy::cpu_descriptor(source.cpu).name << "\n";
-        return 1;
-    }
-    if (target == "espboy" && source.id != m0boy::SystemId::gameboy && !info_only && !disasm_only) {
-        std::cerr << "Error: ESPboy currently supports Game Boy cartridges only\n";
         return 1;
     }
     if (info_only) {
@@ -2282,6 +2285,30 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
+    if (source.id == m0boy::SystemId::pico8) {
+        if (disasm_only || analyze_only || meta_thumb || g_meta_pack || !coverage_paths.empty() || meta_precise ||
+            emit_android_project || !native_patch_manifest_path.empty() || specific_bank > 0) {
+            std::cerr << "Error: unsupported PICO-8 option; a cartridge is compiled to C, use --target and --meta-compiler\n";
+            return 1;
+        }
+        m0boy::pico8::GenerateOptions options;
+        options.target = *m0boy::parse_target(target);
+        options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().stem().string()) : output_prefix;
+        if (options.name.empty() || sanitize_prefix(options.name) != options.name) {
+            std::cerr << "Error: invalid PICO-8 output prefix\n";
+            return 1;
+        }
+        options.output = output_dir.empty() ? fs::path(options.name + "_pico8_" + target) : fs::path(output_dir);
+        options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
+        options.compiler = meta_compiler;
+        std::string error;
+        if (!m0boy::pico8::generate(rom_path, options, error)) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        std::cout << "Generated PICO-8 project for " << target << ": " << options.output << "\n";
+        return 0;
+    }
     if (source.id == m0boy::SystemId::sg1000 || source.id == m0boy::SystemId::gamegear ||
         source.id == m0boy::SystemId::mastersystem) {
         const bool mastersystem = source.id == m0boy::SystemId::mastersystem;
@@ -2311,6 +2338,8 @@ int main(int argc, char* argv[]) {
         options.code_budget_bytes = g_meta_code_budget;
         if (meta_bpi_set) options.bytes_per_instruction = meta_bpi;
         options.precise = meta_precise;
+        options.aggressive_scan = aggressive_scan;
+        options.infer_data_zones = infer_data_zones;
         if (g_meta_sync_cycles >= 0) options.sync_cycles = static_cast<unsigned>(g_meta_sync_cycles);
         options.compiler = meta_compiler;
         std::string error;
@@ -2321,12 +2350,14 @@ int main(int argc, char* argv[]) {
         }
         std::cout << "Generated " << system_label << " project for " << target << ": " << options.output << "\n"
                   << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played, "
-                  << stats.speculative << " reached statically)\n"
+                  << stats.speculative << " reached statically, " << stats.swept << " swept)\n"
+                  << "  static sweep:       " << stats.data_zones << " data zone(s), " << stats.data_bytes << " ROM byte(s)\n"
                   << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
                   << (stats.cart_ram ? (gamegear ? (target == "desktop" ? "  cartridge RAM:      32 KiB, 16 KiB window at 8000-BFFF\n"
+                                                                            : target == "espboy" ? "  cartridge RAM:      8 KiB in RAM, saved in flash\n"
                                                                             : "  cartridge RAM:      32 KiB in the save file on the SD card\n")
                                                  : "  cartridge RAM:      8 KiB at 8000-BFFF\n") : "")
-                  << (stats.streamed_pages && !stats.packed ? "  ROM streaming:      " + std::to_string(stats.streamed_pages) + " pages of 16 KiB read from the SD card"
+                  << (stats.streamed_pages && !stats.packed ? "  ROM streaming:      " + std::to_string(stats.streamed_pages) + (target == "espboy" ? " pages of 16 KiB read from the flash (rom.bin)" : " pages of 16 KiB read from the SD card")
                                                  + (stats.pool_sectors ? ", " + std::to_string(stats.pool_sectors) + " hot sectors of them kept in flash" : std::string()) + "\n" : std::string())
                   << (stats.pool_sectors ? "  ROM flash pool:     " + std::to_string(stats.pool_sectors) + " sectors, " +
                        std::to_string(stats.packed_sectors) + " LZSS, " + std::to_string(stats.pool_bytes) + " bytes" +
@@ -2375,6 +2406,7 @@ int main(int argc, char* argv[]) {
     generation_opts.single_function = single_function;
     generation_opts.emit_comments = emit_comments;
     generation_opts.aggressive_scan = aggressive_scan;
+    generation_opts.infer_data_zones = infer_data_zones;
     generation_opts.analyze_all_banks = analyze_all_banks;
     generation_opts.manual_entry_points = manual_entry_points;
     generation_opts.trace_file_path = trace_file_path;
@@ -2645,6 +2677,7 @@ int main(int argc, char* argv[]) {
     analyze_opts.entry_points = manual_entry_points;
     analyze_opts.analyze_all_banks = analyze_all_banks;
     analyze_opts.aggressive_scan = aggressive_scan;
+    analyze_opts.infer_data_zones = infer_data_zones;
     analyze_opts.trace_file_path = trace_file_path;
     analyze_opts.annotations = gbrecomp::build_analysis_annotations(
         symbol_table, symbol_analysis_policy);

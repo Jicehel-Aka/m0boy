@@ -1,27 +1,32 @@
 /*
- * Gamebuino META audio: gbl APU samples played through the DAC (PA02).
+ * Gamebuino META audio: samples played through the DAC (PA02).
  *
  * TC4 runs from generator 4, 48 MHz at either CPU clock (meta_clock.cpp),
  * and wraps at 48 MHz / 2177 (about 22049 Hz).  The ring is refilled once
  * per emulated frame.
  *
- * META_AUDIO_DMA=1 (gbl_profile.h): each wrap triggers one DMAC beat (channel 0, meta_dma.h)
- * that copies the next ring entry, already a DAC value, to the DAC, with no
- * CPU work.  The interrupt it replaces cost about 65 cycles per sample,
- * some 3% of the CPU.  Each frame's samples are one block (two at the
- * ring's wrap), queued; the channel's transfer-complete interrupt starts
- * the next one, about once a frame: no linked descriptors (SAM D21 erratum
- * 1.7.2, meta_dma.cpp).  When emulation falls behind, the queue runs dry
- * and the DAC holds the last sample, as the interrupt did; the next frame
- * sees the channel idle and restarts it after LATENCY samples.  The DMAC
- * position is not readable reliably, so the samples played while the
- * channel runs are derived from meta_micros() and only bound how much can
- * be queued.
+ * One ring (META_AUDIO_RING samples of 2 bytes, each a DAC value) feeds the
+ * output path; META_AUDIO_DMA (gbl_profile.h) selects it at build time, 0
+ * (the default) the interrupt, 1 the DMA — no run-time switching since
+ * 0.10.29: the DMA path's restart logic and its history of descriptor
+ * troubles (erratum 1.7.2) are not worth its 0.5 % of CPU.
  *
- * META_AUDIO_DMA=0: the TC4 interrupt writes the next sample to the DAC
- * (META_AUDIO_IRQ_RING samples of one byte: less RAM than the DMA ring).
- * On underrun the last sample is held; on overrun the newest samples are
- * dropped.
+ * 1: each wrap triggers one DMAC beat (channel 0, meta_dma.h) that copies
+ *    the next ring entry to the DAC, with no CPU work.  Each frame's samples
+ *    are one block (two at the ring's wrap), queued; the channel's
+ *    transfer-complete interrupt starts the next one, about once a frame: no
+ *    linked descriptors (SAM D21 erratum 1.7.2, meta_dma.cpp).  When
+ *    emulation falls behind, the queue runs dry and the DAC holds the last
+ *    sample; the next frame sees the channel idle and restarts it after
+ *    LATENCY samples.  The DMAC position is not readable reliably, so the
+ *    samples played while the channel runs are derived from meta_micros()
+ *    and only bound how much can be queued.
+ *
+ * 0: the TC4 interrupt writes the next ring entry to the DAC.  On underrun
+ *    the last sample is held; on overrun the newest samples are dropped.
+ *
+ * The write cursor is shared: switching keeps what is queued, the other
+ * path's position restarts from it (within a frame the sound continues).
  */
 #include "meta_audio.h"
 #include "meta_clock.h"
@@ -39,7 +44,7 @@ extern "C" {
 #define AUDIO_TOP 2177u
 #define AUDIO_RATE (48000000u / AUDIO_TOP)
 #define DAC_MID 512u
-/* 8-bit APU sample (128 = silence) to DAC value around mid: volume 4 (the
+/* 8-bit sample (128 = silence) to DAC value around mid: volume 4 (the
  * default) is half scale, 8 the DAC's whole range, 0 silence. */
 static uint8_t volume = 4;
 #define DAC_VALUE(s) ((uint16_t)(DAC_MID + ((((int32_t)(s) - 128) * (int32_t)volume) >> 1)))
@@ -51,8 +56,8 @@ static uint32_t frac;
 
 static unsigned frame_samples(void) { return meta_audio_frame_samples(AUDIO_RATE, &frac); }
 
-/* Still advance the APU when there is no room (output stalled) so length
- * counters and envelopes keep time. */
+/* Still advance the sound generator when there is no room (output stalled)
+ * so length counters and envelopes keep time. */
 static void drop_samples(unsigned n) {
     uint8_t scratch[64];
     while (n) {
@@ -100,28 +105,37 @@ static void timer_stop(void) {
     while (TC4->COUNT16.STATUS.bit.SYNCBUSY) {}
 }
 
-#if META_AUDIO_DMA
-
-/* Samples in the ring (META_AUDIO_RING, 2 bytes each): 768 (1.5 KiB, about
- * two frames) by default.  The latency after a restart and the shortest
- * chunk queued are a third of it each. */
+/* Samples in the ring (META_AUDIO_RING, 2 bytes each): 512 (1 KiB, about
+ * 1.4 frames), lowered to leave the RAM to the card cache.  With DMA the
+ * latency after a restart and the shortest chunk queued are a third of it
+ * each. */
 #ifndef META_AUDIO_RING
-#define META_AUDIO_RING 768u
+#define META_AUDIO_RING 512u
 #endif
 #define RING ((unsigned)(META_AUDIO_RING))
+#if META_AUDIO_RING < 512
+#error "META_AUDIO_RING: at least 512 samples (one emulated frame does not fit)"
+#endif
 #define LATENCY ((RING / 3u) & ~1u) /* samples queued before the first one after a restart */
 #define GUARD 8u     /* margin around the estimated DMA position */
 #define MIN_CHUNK ((RING / 3u) & ~1u) /* fewer samples than this are dropped, not queued */
-#if META_AUDIO_RING < 192
-#error "META_AUDIO_RING: at least 192 samples"
+#define QUEUE 8u /* blocks waiting: at most three chunks of MIN_CHUNK are
+                  * queued, two blocks each (the ring's wrap) */
+#ifndef META_AUDIO_DMA
+#define META_AUDIO_DMA 0
 #endif
-#define QUEUE 8u      /* blocks waiting: at most three chunks of MIN_CHUNK
-                       * are queued, two blocks each (the ring's wrap) */
 
 static uint16_t ring[RING] __attribute__((aligned(4)));
-static uint32_t written, played; /* samples, counted from the start */
-static unsigned head;            /* written % RING, kept without dividing */
+/* The path, chosen at build time: the branches on it fold away. */
+#define audio_dma_mode META_AUDIO_DMA
+
+/* Write cursor, shared by the paths: head = written % RING, kept without
+ * dividing.  DMA accounting: written/played, counted from the start. */
+static uint32_t written, played;
+static unsigned head;
 static uint32_t last_us, cycles;
+/* Interrupt path: what TC4 has played. */
+static volatile uint16_t ring_tail;
 
 /* Blocks of the ring still to play, after the one the channel plays: the
  * transfer-complete interrupt starts the next (a software link, no linked
@@ -129,6 +143,17 @@ static uint32_t last_us, cycles;
  * block; between two blocks it holds one sample at most. */
 static struct { uint16_t start, count; } queue[QUEUE];
 static volatile uint8_t q_head, q_tail, busy;
+
+/* The interrupt path: the next ring entry to the DAC (a DAC value already,
+ * the conversion happened at fill time).  On underrun the last one holds. */
+extern "C" void TC4_Handler(void) {
+    TC4->COUNT16.INTFLAG.reg = TC_INTFLAG_MC0;
+    uint16_t t = ring_tail;
+    if (t != head) {
+        DAC->DATA.reg = ring[t];
+        ring_tail = (uint16_t)(t + 1u == RING ? 0u : t + 1u);
+    }
+}
 
 /* With interrupts off, or from DMAC_Handler (which restores CHID).
  * VALID is written last. */
@@ -156,6 +181,7 @@ extern "C" void meta_dma_audio_irq(void) {
     block_start(queue[h].start, queue[h].count);
 }
 
+#if META_AUDIO_DMA
 /* The channel off and nothing queued; trigger and interrupt set up again. */
 static void channel_reset(void) {
     __disable_irq();
@@ -185,14 +211,37 @@ static void enqueue(unsigned start, unsigned count) {
     q_tail = (uint8_t)next;
 }
 
+#endif /* META_AUDIO_DMA */
+
+/* The interrupt path off (channel_reset's sibling); the timer keeps running. */
+static void irq_output_off(void) {
+    NVIC_DisableIRQ(TC4_IRQn);
+    TC4->COUNT16.INTENCLR.reg = TC_INTENCLR_MC0;
+}
+
+/* The interrupt path on, from the write cursor (the DAC holds what is there). */
+static void irq_output_on(void) {
+    ring_tail = (uint16_t)head;
+    TC4->COUNT16.INTENSET.reg = TC_INTENSET_MC0;
+    NVIC_SetPriority(TC4_IRQn, 0);
+    NVIC_EnableIRQ(TC4_IRQn);
+}
+
 void meta_audio_init(void) {
     dac_start();
     for (unsigned i = 0; i < RING; i++) ring[i] = DAC_MID;
     gbl_apu_set_rate(AUDIO_RATE);
+    written = played = 0;
+    head = 0;
+    ring_tail = 0;
+#if META_AUDIO_DMA
     meta_dma_init();
     channel_reset();
     NVIC_EnableIRQ(DMAC_IRQn);
-    timer_start(false); /* the channel starts with the first frame */
+#else
+    irq_output_on();
+#endif
+    timer_start(false); /* both paths run from TC4's wrap */
     last_us = meta_micros();
 }
 
@@ -201,30 +250,43 @@ void meta_audio_frame(void) {
     uint32_t now = meta_micros(), dt = now - last_us;
     last_us = now;
     unsigned prefix = 0;
-    if (!busy) {
-        /* Not started, or everything queued was played (the DAC holds the
-         * last sample): restart after LATENCY samples of it. */
-        played = written;
-        cycles = 0;
-        prefix = LATENCY;
-    } else {
-        /* Samples taken since the last call (TC4 counts 48 MHz). */
-        if (dt > 1000000u) dt = 1000000u;
-        cycles += dt * 48u;
-        played += cycles / AUDIO_TOP;
-        cycles %= AUDIO_TOP;
-        if ((int32_t)(written - played) < 0) played = written;
+#if META_AUDIO_DMA
+    if (audio_dma_mode) {
+        if (!busy) {
+            /* Not started, or everything queued was played (the DAC holds the
+             * last sample): restart after LATENCY samples of it. */
+            played = written;
+            cycles = 0;
+            prefix = LATENCY;
+        } else {
+            /* Samples taken since the last call (TC4 counts 48 MHz). */
+            if (dt > 1000000u) dt = 1000000u;
+            cycles += dt * 48u;
+            played += cycles / AUDIO_TOP;
+            cycles %= AUDIO_TOP;
+            if ((int32_t)(written - played) < 0) played = written;
+        }
+        unsigned queued = written - played;
+        unsigned room = queued < RING - GUARD ? RING - GUARD - queued : 0;
+        if (room < prefix + MIN_CHUNK) { /* nearly full: catching up */
+            drop_samples(n);
+            return;
+        }
+        if (n > room - prefix) {
+            drop_samples(n - (room - prefix));
+            n = room - prefix;
+        }
+#else
+    {
+        uint16_t tail = ring_tail;
+        unsigned used = head >= tail ? head - tail : head + RING - tail;
+        unsigned room = RING - 1u - used;
+        if (n > room) {
+            drop_samples(n - room);
+            n = room;
+        }
     }
-    unsigned queued = written - played;
-    unsigned room = queued < RING - GUARD ? RING - GUARD - queued : 0;
-    if (room < prefix + MIN_CHUNK) { /* nearly full: catching up */
-        drop_samples(n);
-        return;
-    }
-    if (n > room - prefix) {
-        drop_samples(n - (room - prefix));
-        n = room - prefix;
-    }
+#endif
     unsigned total = prefix + n;
 
     unsigned start = head;
@@ -245,6 +307,7 @@ void meta_audio_frame(void) {
     }
     written += total;
 
+#if META_AUDIO_DMA
     /* One block, two at the ring's wrap. */
     unsigned part = RING - start;
     __disable_irq();
@@ -255,12 +318,17 @@ void meta_audio_frame(void) {
         enqueue(start, total);
     }
     __enable_irq();
+#endif
 }
 
 void meta_audio_idle(void) {}
 
 void meta_audio_stop(void) {
+#if META_AUDIO_DMA
     channel_reset();
+#else
+    irq_output_off();
+#endif
     timer_stop();
     DAC->DATA.reg = DAC_MID; /* mid-scale: no click */
 }
@@ -270,77 +338,11 @@ void meta_audio_pause(int on) {
     if (on == paused) return;
     paused = on;
     if (on) {
-        meta_audio_stop(); /* channel off: the next frame restarts it */
+        meta_audio_stop(); /* the next frame restarts the path */
         return;
     }
-    timer_start(false); /* the channel restarts at the next frame */
-}
-
-#else /* META_AUDIO_DMA */
-
-/* Samples in the ring (META_AUDIO_IRQ_RING, 1 byte each, a power of two):
- * 1024 by default, about 2.8 frames; the Game Gear's profile takes 512. */
-#ifndef META_AUDIO_IRQ_RING
-#define META_AUDIO_IRQ_RING 1024u
+    timer_start(false);
+#if !META_AUDIO_DMA
+    irq_output_on(); /* INTENSET and NVIC back on */
 #endif
-#define RING ((unsigned)(META_AUDIO_IRQ_RING))
-#if META_AUDIO_IRQ_RING < 256 || (META_AUDIO_IRQ_RING & (META_AUDIO_IRQ_RING - 1))
-#error "META_AUDIO_IRQ_RING: a power of two, at least 256 samples"
-#endif
-
-static uint8_t ring[RING];
-static volatile uint16_t ring_tail;
-static uint16_t ring_head;
-
-extern "C" void TC4_Handler(void) {
-    TC4->COUNT16.INTFLAG.reg = TC_INTFLAG_MC0;
-    uint16_t t = ring_tail;
-    if (t != ring_head) {
-        DAC->DATA.reg = DAC_VALUE(ring[t]);
-        ring_tail = (uint16_t)((t + 1) & (RING - 1));
-    }
 }
-
-void meta_audio_init(void) {
-    dac_start();
-    memset(ring, 128, sizeof(ring));
-    gbl_apu_set_rate(AUDIO_RATE);
-    timer_start(true);
-}
-
-void meta_audio_frame(void) {
-    unsigned n = frame_samples();
-    uint16_t tail = ring_tail;
-    unsigned used = (unsigned)((ring_head - tail) & (RING - 1));
-    unsigned room = RING - 1u - used;
-    if (n > room) {
-        drop_samples(n - room);
-        n = room;
-    }
-    while (n) {
-        unsigned chunk = RING - ring_head;
-        if (chunk > n) chunk = n;
-        gbl_apu_render(&ring[ring_head], chunk);
-        ring_head = (uint16_t)((ring_head + chunk) & (RING - 1));
-        n -= chunk;
-    }
-}
-
-void meta_audio_idle(void) {}
-
-void meta_audio_stop(void) {
-    NVIC_DisableIRQ(TC4_IRQn);
-    TC4->COUNT16.INTENCLR.reg = TC_INTENCLR_MC0;
-    timer_stop();
-    DAC->DATA.reg = DAC_MID; /* mid-scale: no click */
-}
-
-void meta_audio_pause(int on) {
-    static bool paused;
-    if (on == paused) return;
-    paused = on;
-    if (on) meta_audio_stop();
-    else timer_start(true); /* INTENSET and NVIC back on */
-}
-
-#endif /* META_AUDIO_DMA */

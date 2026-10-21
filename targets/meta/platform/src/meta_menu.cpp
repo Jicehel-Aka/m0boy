@@ -15,7 +15,6 @@
 #endif
 
 #include "meta_clock.h"
-#include "meta_display.h"
 #include "meta_font.h"
 #include "meta_lcd.h"
 
@@ -43,32 +42,40 @@ static uint16_t font_colour[3];
 
 /* A vertical glyph slice (2 bits a pixel, 0 transparent) at buffer row 0. */
 static void draw_glyph(uint16_t *band, int x, unsigned c, unsigned first, unsigned rows) {
+    const uint8_t *src = meta_font_rows + meta_font_off[c];
+    const unsigned w = meta_font_w[c];
+    const unsigned stride = (w + 3) / 4;
     for (unsigned r = first; r < first + rows; r++) {
-        uint32_t bits = meta_font_rows[c][r];
-        uint16_t *d = band + (r - first) * 160 + x;
-        for (int i = 0; bits; i++, bits = (bits << 2) & 0xFFFFu) {
-            unsigned v = bits >> 14;
-            if (v && x + i >= 0 && x + i < 160) d[i] = font_colour[v - 1];
+        const uint8_t *row = src + r * stride;
+        uint16_t *d = band + (r - first) * 160 + x; /* l'espacement est sur un seul côté (l'advance) */
+        for (unsigned i = 0; i < w && x + (int)i < 160; i++) {
+            unsigned v = (row[i >> 2] >> (6 - 2 * (i & 3))) & 3;
+            if (v) d[i] = font_colour[v - 1];
         }
     }
 }
 
 static unsigned glyph(char ch) {
     unsigned c = (uint8_t)ch - META_FONT_FIRST;
-    return c < META_FONT_COUNT ? c : (unsigned)('*' - META_FONT_FIRST);
+    return c < 96 ? meta_font_map[c] : 0xff;
 }
 
 static int text_width(const char *s) {
     int w = 0;
-    for (; *s; s++) w += meta_font_width[glyph(*s)];
+    for (; *s; s++) {
+        unsigned c = glyph(*s);
+        if (c != 0xff) w += meta_font_advance[c];
+    }
     return w;
 }
 
 static void draw_text(uint16_t *band, int x, const char *s, unsigned first, unsigned rows) {
     for (; *s; s++) {
         unsigned c = glyph(*s);
-        draw_glyph(band, x, c, first, rows);
-        x += meta_font_width[c];
+        if (c != 0xff) {
+            draw_glyph(band, x, c, first, rows);
+            x += meta_font_advance[c];
+        } else x += 4; /* not in the font */
     }
 }
 
@@ -111,7 +118,7 @@ int meta_menu_run(const char *title, const meta_menu_item *items, unsigned n,
                   uint8_t (*buttons)(void), const char *info) {
     unsigned rows;
     for (unsigned i = 0; i < 3; i++) font_colour[i] = to565(meta_font_colours[i]);
-    uint16_t *buf = meta_display_scratch(&rows);
+    uint16_t *buf = meta_menu_scratch(&rows);
     meta_lcd_wait();
     if (!rows) return -1;
     unsigned sel = 0;
