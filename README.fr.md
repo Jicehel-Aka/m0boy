@@ -9,7 +9,8 @@ Pokitto.**
 m0boy transforme une ROM Game Boy (DMG) en un dossier à copier sur la carte
 SD de la console. Le code du jeu est traduit en C puis compilé pour le
 processeur de la console : ce n'est ni un émulateur ni un JIT. Le code vu
-pendant des parties automatiques est recompilé, et un petit interpréteur
+pendant des parties automatiques, plus les courses d'instructions qu'un
+balayage statique code/data valide, est recompilé, et un petit interpréteur
 exécute le reste. Le PPU, l'APU, les timers et les mappers MBC sont
 réimplémentés dans un runtime compact dont les parties chaudes sont en
 assembleur Thumb-1.
@@ -37,7 +38,8 @@ même chaîne : le code Z80 est recompilé, pas émulé.
 
 - **Recompilateur** (`--system sg1000`) : le code joué pendant les parties
   automatiques (bouton 1 maintenu, aucune touche pour les logos et les
-  démos, parties aléatoires), puis celui qu'il atteint statiquement,
+  démos, parties aléatoires), puis celui qu'il atteint statiquement, puis
+  les courses que le balayage statique valide,
   devient des régions de C comme avec l'émetteur Game Boy : `goto`
   internes, `CALL` en appel C, drapeaux calculés seulement quand une
   instruction suivante les lit (cas courants en ligne), cycles ajoutés par
@@ -149,6 +151,15 @@ build/bin/m0recomp celeste.p8.png --target meta -o out/celeste && (cd out/celest
 - Tout le reste, y compris le code copié en RAM, passe par l'interpréteur
   `gbl`. Code compilé et interpréteur se relaient à n'importe quelle
   instruction.
+- Un balayage statique code/data complète les parties. Un driver commun aux
+  deux CPU classe chaque octet de la ROM (padding, motifs répétés, tables de
+  pointeurs) puis tente des courses d'instructions spéculatives : une course
+  ne compte comme code que si elle atteint un terminateur inconditionnel
+  sans opcode illégal ni accès à une zone inexistante (un accès au matériel
+  connu compte dans l'autre sens, comme preuve de code). Ce qui survit sans
+  avoir été joué est compilé quand le budget de flash le permet ; le reste
+  s'empile en zones de data signalées dans le log de compilation.
+  `--no-scan` coupe les semis spéculatifs, `--no-infer-data` le balayage.
 - Le générateur reconnaît les boucles d'attente (lecture de LY, de STAT,
   du joypad ou d'un drapeau posé par une interruption, boucles de délai)
   et saute des itérations entières jusqu'au prochain événement. Registres,

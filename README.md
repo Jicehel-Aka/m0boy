@@ -9,8 +9,8 @@ Pokitto.**
 m0boy turns a Game Boy (DMG) ROM into a folder that you copy to the
 console's SD card. The game's code is translated to C and compiled for the
 console's processor: it is neither an emulator nor a JIT. Code seen during
-automatic play sessions is recompiled, and a small interpreter runs the
-rest. The PPU, APU, timers and MBC mappers are reimplemented in a compact
+automatic play sessions, plus the instruction courses a static code/data
+sweep validates, is recompiled, and a small interpreter runs the rest. The PPU, APU, timers and MBC mappers are reimplemented in a compact
 runtime whose hot paths are written in Thumb-1 assembly.
 
 It started as a port of [gb-recompiled](https://github.com/arcanite24/gb-recompiled)
@@ -36,7 +36,8 @@ pipeline: the Z80 code is recompiled, not emulated.
 
 - **Recompiler** (`--system sg1000`): code played during automatic sessions
   (button 1 held, no input at all for logos and demos, random games), then
-  the code it reaches statically, becomes C regions like the Game Boy
+  the code it reaches statically, then the courses the static sweep
+  validates, becomes C regions like the Game Boy
   backend's: gotos inside, `CALL` as a C call, flags computed only where a
   later instruction reads them (common cases inline), cycles added in
   batches, device sync at loop heads. Targets of `RET` and `JP (HL)` seen
@@ -159,6 +160,15 @@ build/bin/m0recomp celeste.p8.png --target meta -o out/celeste && (cd out/celest
 - Everything else, including code copied to RAM, runs in the `gbl`
   interpreter. Compiled code and interpreter hand over to each other at any
   instruction.
+- A static code/data sweep completes the sessions. One shared driver for
+  both CPUs classifies every byte of the ROM (padding, repeated patterns,
+  pointer tables) and then tries speculative courses of instructions: a
+  course only counts as code when it reaches an unconditional terminator
+  without an illegal opcode or an access to a nonexistent area (an access
+  to known hardware counts the other way, as evidence of code). What
+  survives but the sessions never played is compiled when the flash budget
+  allows; the rest piles up into data zones reported in the build log.
+  `--no-scan` drops the speculative seeding, `--no-infer-data` the sweep.
 - The generator recognises wait loops (polling LY, STAT, the joypad or a
   flag set by an interrupt, delay loops) and skips whole iterations up to
   the next event. Registers, flags and cycle counts stay identical to
