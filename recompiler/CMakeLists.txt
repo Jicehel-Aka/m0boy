@@ -26,6 +26,7 @@ set_target_properties(m0boy_frontends PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # Existing Game Boy analysis, IR and emitters retain their public API.
 add_library(gbrecomp_core STATIC
+    src/code_scan.cpp
     src/system/gameboy/analyzer.cpp
     src/system/gameboy/bank_tracker.cpp
     src/system/gameboy/decode_bank.cpp

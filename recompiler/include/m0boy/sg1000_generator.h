@@ -20,10 +20,15 @@ struct GenerateOptions {
     std::string compiler = "gcc";  ///< firmware compiler: gcc or clang
     size_t code_budget_bytes = 0;  ///< 0: the flash left by the runtime and the ROM
     size_t bytes_per_instruction = 0; ///< flash per compiled instruction; 0: the default estimate
+    bool aggressive_scan = true;   ///< seed sweep-validated unreached courses
+    bool infer_data_zones = true;  ///< static code/data sweep of the ROM
 };
 
 struct GenerateStats {
     size_t covered = 0, compiled = 0, speculative = 0, regions = 0, entries = 0;
+    size_t swept = 0;          ///< instructions added by the speculative sweep
+    size_t data_zones = 0;     ///< inferred data zones (>= 512 bytes)
+    size_t data_bytes = 0;     ///< ROM bytes inside those zones
     bool cart_ram = false;
     size_t streamed_pages = 0; ///< Game Gear pages left on the SD card
     size_t pool_sectors = 0;   ///< Game Gear sectors of those pages kept in flash

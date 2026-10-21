@@ -233,6 +233,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         eo.precise = o.precise;
         eo.sync_cycles = o.sync_cycles;
         eo.cart_ram = cart_ram;
+        eo.mastersystem = o.mastersystem;
+        eo.aggressive_scan = o.aggressive_scan;
+        eo.infer_data_zones = o.infer_data_zones;
         eo.entries.assign(entries.begin(), entries.end());
         /* Codemasters boards: checksum and its complement at 7FE6/7FE8 */
         bool codemasters = false;
@@ -426,6 +429,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         stats.covered = es.covered;
         stats.compiled = es.compiled;
         stats.speculative = es.speculative;
+        stats.swept = es.swept;
+        stats.data_zones = es.data_zones;
+        stats.data_bytes = es.data_bytes;
         stats.regions = es.regions;
         stats.entries = es.entries;
         stats.cart_ram = cart_ram;
@@ -745,7 +751,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         write(o.output / "README.md",
               "# " + system_name + " project: " + o.name + "\n\nRecompiled Z80 code (regions of C) with interpreter fallback.\n\n" +
               "Source: " + system_name + ". Destination: " + target + ". Compiled instructions: " + std::to_string(es.compiled) +
-              " (" + std::to_string(es.covered) + " played), regions: " + std::to_string(es.regions) + ".\n\n" +
+              " (" + std::to_string(es.covered) + " played, " + std::to_string(es.swept) +
+              " from the speculative sweep), regions: " + std::to_string(es.regions) + ".\n" +
+              "Static sweep: " + std::to_string(es.data_zones) + " data zone(s), " +
+              std::to_string(es.data_bytes) + " ROM byte(s) never decoded as code.\n\n" +
               "Host: cmake -G Ninja -S host -B host/build && ninja -C host/build\n" +
               "Run: host/build/" + o.name + "_host --frames 300 [--interp] [--shot image.ppm]\n\n" +
               (o.target == TargetId::pokitto ? "Firmware: cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake && ninja -C build\n"

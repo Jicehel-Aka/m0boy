@@ -181,7 +181,8 @@ void print_usage(const char* program) {
     std::cout << "  --no-comments         Don't include disassembly comments\n";
     std::cout << "  --bank <n>            Only process bank n\n";
     std::cout << "  --add-entry-point b:a Add manual entry point (e.g. 1:4000)\n";
-    std::cout << "  --no-scan             Disable aggressive code scanning (enabled by default)\n";
+    std::cout << "  --no-scan             Disable speculative code seeding (enabled by default)\n";
+    std::cout << "  --no-infer-data       Disable the static code/data sweep (enabled by default)\n";
     std::cout << "  --reachable-only      Analyze only reachable and explicitly annotated entry points\n";
     std::cout << "  --symbols <file>      Load a .sym symbol file and use names for generated functions and labels\n";
     std::cout << "  --symbol-policy <p>   Symbol analyzer policy: infer-boundaries (default) or names-only\n";
@@ -323,6 +324,7 @@ struct GenerationOptions {
     bool single_function = false;
     bool emit_comments = true;
     bool aggressive_scan = true;
+    bool infer_data_zones = true;
     bool analyze_all_banks = true;
     std::vector<uint32_t> manual_entry_points;
     std::string trace_file_path;
@@ -1691,6 +1693,7 @@ static bool generate_multi_rom_module(const fs::path& rom_path,
     analyze_opts.entry_points = options.manual_entry_points;
     analyze_opts.analyze_all_banks = options.analyze_all_banks;
     analyze_opts.aggressive_scan = options.aggressive_scan;
+    analyze_opts.infer_data_zones = options.infer_data_zones;
     analyze_opts.trace_file_path = options.trace_file_path;
     analyze_opts.annotations = gbrecomp::build_analysis_annotations(
         symbol_table, options.symbol_analysis_policy);
@@ -1970,6 +1973,7 @@ int main(int argc, char* argv[]) {
     bool single_function = false;
     bool emit_comments = true;
     bool aggressive_scan = true;
+    bool infer_data_zones = true;
     bool analyze_all_banks = true;
     int specific_bank = -1;
     std::vector<uint32_t> manual_entry_points;
@@ -2078,6 +2082,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--no-scan") {
             aggressive_scan = false;
+        } else if (arg == "--no-infer-data") {
+            infer_data_zones = false;
         } else if (arg == "--reachable-only") {
             analyze_all_banks = false;
         } else if (arg == "--use-trace") {
@@ -2332,6 +2338,8 @@ int main(int argc, char* argv[]) {
         options.code_budget_bytes = g_meta_code_budget;
         if (meta_bpi_set) options.bytes_per_instruction = meta_bpi;
         options.precise = meta_precise;
+        options.aggressive_scan = aggressive_scan;
+        options.infer_data_zones = infer_data_zones;
         if (g_meta_sync_cycles >= 0) options.sync_cycles = static_cast<unsigned>(g_meta_sync_cycles);
         options.compiler = meta_compiler;
         std::string error;
@@ -2342,7 +2350,8 @@ int main(int argc, char* argv[]) {
         }
         std::cout << "Generated " << system_label << " project for " << target << ": " << options.output << "\n"
                   << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played, "
-                  << stats.speculative << " reached statically)\n"
+                  << stats.speculative << " reached statically, " << stats.swept << " swept)\n"
+                  << "  static sweep:       " << stats.data_zones << " data zone(s), " << stats.data_bytes << " ROM byte(s)\n"
                   << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
                   << (stats.cart_ram ? (gamegear ? (target == "desktop" ? "  cartridge RAM:      32 KiB, 16 KiB window at 8000-BFFF\n"
                                                                             : target == "espboy" ? "  cartridge RAM:      8 KiB in RAM, saved in flash\n"
@@ -2397,6 +2406,7 @@ int main(int argc, char* argv[]) {
     generation_opts.single_function = single_function;
     generation_opts.emit_comments = emit_comments;
     generation_opts.aggressive_scan = aggressive_scan;
+    generation_opts.infer_data_zones = infer_data_zones;
     generation_opts.analyze_all_banks = analyze_all_banks;
     generation_opts.manual_entry_points = manual_entry_points;
     generation_opts.trace_file_path = trace_file_path;
@@ -2667,6 +2677,7 @@ int main(int argc, char* argv[]) {
     analyze_opts.entry_points = manual_entry_points;
     analyze_opts.analyze_all_banks = analyze_all_banks;
     analyze_opts.aggressive_scan = aggressive_scan;
+    analyze_opts.infer_data_zones = infer_data_zones;
     analyze_opts.trace_file_path = trace_file_path;
     analyze_opts.annotations = gbrecomp::build_analysis_annotations(
         symbol_table, symbol_analysis_policy);

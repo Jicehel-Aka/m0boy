@@ -31,15 +31,21 @@ struct EmitOptions {
     /// by FFFD-FFFF, 8 KiB of RAM at C000-FFFF.
     bool banked = false;
     bool fixed_kib = true; ///< banked: 0000-03FF always page 0 (Sega); false: Codemasters
+    bool mastersystem = false; ///< ports 3E/3F instead of the Game Gear 00-06 registers
     std::string io_out = "sg1000_out", io_in = "sg1000_in";
     size_t max_instructions = 6000; ///< flash budget, in instructions
     size_t max_region_instructions = 200;
     std::vector<Loc> entries; ///< dynamic jump targets seen by profiling
+    bool aggressive_scan = true;  ///< seed sweep-validated unreached courses (GB aggressive scan)
+    bool infer_data_zones = true; ///< static code/data sweep of the ROM before seeding
 };
 
 struct EmitStats {
     size_t covered = 0, compiled = 0, speculative = 0, regions = 0, entries = 0;
     size_t native = 0, generic = 0;
+    size_t swept = 0;      ///< instructions added by the speculative sweep
+    size_t data_zones = 0; ///< inferred data zones (>= 512 bytes)
+    size_t data_bytes = 0; ///< ROM bytes inside those zones
 };
 
 /// Z80 -> C for the Sega Z80 runtimes (sg_gen.h): regions of native code
