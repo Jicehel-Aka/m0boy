@@ -256,6 +256,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         std::vector<size_t> pool;    /* ROM sectors kept in flash outside whole pages */
         std::vector<rom::Block> pool_blocks;
         std::vector<rom::Block> packed_rom;
+        size_t fill_sectors = 0; /* pool sectors added by o.fill_bytes, outside the code budget */
         bool packed_all = false;
         const size_t pages = rom_size / 0x4000;
         const size_t per_instruction = o.bytes_per_instruction ? o.bytes_per_instruction
@@ -387,6 +388,24 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                     for (size_t sector = 0; sector < code_rate.size(); sector++) code_rate[sector] = 1.0 - miss[sector];
                     pool_bytes = free - 0x4000 - room - compiled * per_instruction;
                 }
+                /* Flash the measured build left over (--meta-fill-bytes): more
+                 * ROM sectors, raw, the most read first then in ROM order. The
+                 * code budget is untouched, so the compiled code is the same. */
+                if (o.fill_bytes) {
+                    std::vector<size_t> spare;
+                    std::vector<bool> kept(pages * 32, false);
+                    for (size_t s : pool) kept[s] = true;
+                    for (size_t s = 32; s < pages * 32; s++) if (!kept[s]) spare.push_back(s);
+                    std::stable_sort(spare.begin(), spare.end(), [&](size_t a, size_t b) {
+                        return data_rate[a] + code_rate[a] > data_rate[b] + code_rate[b];
+                    });
+                    size_t left = o.fill_bytes;
+                    for (size_t s : spare) {
+                        if (pool.size() >= gg_pool_max || left < 512 + 4) break;
+                        pool.push_back(s); left -= 512 + 4;
+                        fill_sectors++;
+                    }
+                }
                 page_index.assign(pages, -1);
                 page_index[0] = 0;
                 std::sort(pool.begin(), pool.end());
@@ -415,7 +434,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 budget = free - static_cast<size_t>(next) * 0x4000;
             } else budget = free > rom_size ? free - rom_size : 0;
             if (!pool.empty() && std::none_of(pool_blocks.begin(), pool_blocks.end(), [](const auto& b) { return b.codec != rom::Codec::raw; }))
-                budget = free - 0x4000 - pool.size() * 512 - pages * 32;
+                budget = free - 0x4000 - (pool.size() - fill_sectors) * 512 - pages * 32;
         }
         const bool pool_packed = std::any_of(pool_blocks.begin(), pool_blocks.end(), [](const auto& b) { return b.codec != rom::Codec::raw; });
         if (o.code_budget_bytes) budget = o.target == TargetId::desktop ? o.code_budget_bytes : std::min(budget, o.code_budget_bytes);

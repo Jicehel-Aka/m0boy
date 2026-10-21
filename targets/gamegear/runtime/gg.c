@@ -452,7 +452,10 @@ void sg_halt(void) {
 
 /* ---- dispatch ------------------------------------------------------------- */
 
-#define SG_EXEC_HEADROOM 768u
+/* Room above the limit for the frames between here and the first ENTER().
+ * The limit already holds the runtime's reserve; 768 here refused every
+ * native entry once the stack was under ~1.4 KiB (Master System, 2026-10-21). */
+#define SG_EXEC_HEADROOM 384u
 
 static void dispatch_one(int compiled) {
     gg_t *m = &machine;

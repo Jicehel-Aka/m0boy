@@ -20,7 +20,8 @@ struct GenerateOptions {
     std::string compiler = "gcc";  ///< firmware compiler: gcc or clang
     size_t code_budget_bytes = 0;  ///< 0: the flash left by the runtime and the ROM
     size_t bytes_per_instruction = 0; ///< flash per compiled instruction; 0: the default estimate
-    bool aggressive_scan = true;   ///< seed sweep-validated unreached courses
+    size_t fill_bytes = 0;         ///< Game Gear: flash left by a measured build, spent on more ROM sectors
+    bool aggressive_scan = true;  ///< seed sweep-validated unreached courses
     bool infer_data_zones = true;  ///< static code/data sweep of the ROM
 };
 

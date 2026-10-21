@@ -168,6 +168,7 @@ void print_usage(const char* program) {
     std::cout << "  --meta-sync-cycles <n>  SG-1000/GG/SMS: also poll once n T-states ran since the last poll (default 40, 0: loop heads only)\n";
     std::cout << "  --meta-static         Add the code found by static analysis (no play session needed)\n";
     std::cout << "  --meta-bytes-per-instruction <n>  Flash estimate per compiled instruction (default 20)\n";
+    std::cout << "  --meta-fill-bytes <n>  Game Gear/SMS: spend n more bytes of flash on ROM sectors (code unchanged)\n";
     std::cout << "  --meta-code-budget <bytes>        Flash for generated code (default: 240 KiB - runtime - ROM)\n";
     std::cout << "  --meta-stream auto|on|off         Read the ROM from the SD card (auto: ROMs of 256 KiB or more)\n";
     std::cout << "  --rom-profile <file>              ROM data reads recorded by the host (--rom-profile-out)\n";
@@ -1997,6 +1998,7 @@ int main(int argc, char* argv[]) {
     bool meta_static = false;
     size_t meta_bpi = 20;
     bool meta_bpi_set = false;
+    size_t meta_fill = 0;
     fs::path meta_dir;
     
     for (int i = 1; i < argc; i++) {
@@ -2167,6 +2169,8 @@ int main(int argc, char* argv[]) {
                 meta_bpi = std::stoul(argv[++i]);
                 meta_bpi_set = true;
             }
+        } else if (arg == "--meta-fill-bytes") {
+            if (i + 1 < argc) meta_fill = std::stoul(argv[++i]);
         } else if (arg == "--meta-pack") {
             g_meta_pack = true;
         } else if (arg == "--meta-stream") {
@@ -2337,6 +2341,7 @@ int main(int argc, char* argv[]) {
         options.coverage = coverage_paths;
         options.code_budget_bytes = g_meta_code_budget;
         if (meta_bpi_set) options.bytes_per_instruction = meta_bpi;
+        options.fill_bytes = meta_fill;
         options.precise = meta_precise;
         options.aggressive_scan = aggressive_scan;
         options.infer_data_zones = infer_data_zones;

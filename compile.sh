@@ -754,14 +754,14 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   # Firmware filling the flash: a first build measures the generated code
   # per instruction (sg_gen.o), the second generates with that measure;
   # when it overflows, a few bytes more per instruction until it fits.
-  local sg_build="$out_dir/build" gen_log build_log bpi="" tries=0 rc text compiled
+  local sg_build="$out_dir/build" gen_log build_log bpi="" fill="" tries=0 rc text compiled
   [ "$FIRMWARE_COMPILER" = clang ] && sg_build="$out_dir/build-clang"
   local size_bin
   if [ "$TARGET" = espboy ]; then size_bin="$HOME/.platformio/packages/toolchain-xtensa/bin/xtensa-lx106-elf-size"
   else size_bin=$(command -v arm-none-eabi-size || echo "$HOME/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size"); fi
   sg_build_once() { # 0 ok, 1 flash full, 2 error
     gen_log=$("$GBRECOMP" "$rom_path" --system "$sys" --target "$TARGET" --output-prefix "$prefix" --sd-name "$sd_name" \
-      --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} \
+      --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} ${fill:+--meta-fill-bytes "$fill"} \
       ${SG_SYNC_CYCLES:+--meta-sync-cycles "$SG_SYNC_CYCLES"} -o "$out_dir") || return 2
     if [ "$TARGET" = pokitto ]; then
       local hc_flags=""
@@ -799,6 +799,24 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   elif [ $rc -ne 0 ]; then
     echo "[x] Le firmware ne tient pas en flash."; return 1
   fi
+  # Flash saturée : le build mesuré laisse quelques Kio (bpi arrondi au-dessus,
+  # secteurs de pool entiers) ; ils vont à des secteurs de ROM de plus, sans
+  # toucher au code compilé.  Un dépassement retire un secteur et recommence.
+  if [ "$TARGET" = meta ] && { [ "$sys" = gg ] || [ "$sys" = sms ]; } && echo "$gen_log" | grep -q 'ROM flash pool'; then
+    local f_used f_max f_try f_ok="" f_log f_build
+    f_used=$(echo "$build_log" | sed -n 's/^Flash:.*(used \([0-9]*\) bytes from \([0-9]*\) bytes).*/\1/p')
+    f_max=$(echo "$build_log" | sed -n 's/^Flash:.*(used \([0-9]*\) bytes from \([0-9]*\) bytes).*/\2/p')
+    if [ -n "$f_used" ] && [ -n "$f_max" ] && [ $((f_max - f_used)) -ge 516 ]; then
+      f_try=$((f_max - f_used))
+      while [ $f_try -ge 516 ] && [ $tries -le 12 ]; do
+        fill=$f_try; sg_build_once; rc=$?
+        if [ $rc -eq 0 ]; then f_ok=1; break; fi
+        [ $rc -eq 2 ] && return 1
+        tries=$((tries + 1)); f_try=$((f_try - 1024))
+      done
+      if [ -z "$f_ok" ]; then fill=""; sg_build_once || return 1; fi
+    fi
+  fi
   # Le cache carte grossit tant que le rapport RAM du build laisse la pile
   # large.  Le plus profond mesuré au filigrane (SG_STACK_PAINT, démo et menu
   # exercés, USB comprise donc majorée) est de 1640 octets, +128 non peints
@@ -810,10 +828,19 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   if [ "$TARGET" = meta ] && { [ "$sys" = gg ] || [ "$sys" = sms ]; } \
      && grep -q "GG_CACHE_BLOCK" "$out_dir/src/sg_config.h"; then
     local sectors=3 used
-    while :; do
+    used=$(echo "$build_log" | sed -n 's/.*(\(used [0-9]*\) bytes from 32768.*/\1/p'); used=${used#used }
+    # Pile trop courte avec 3 secteurs (Master System : machine de 25 Kio) :
+    # 2 secteurs, le minimum du cache, plutôt que du code natif refusé.
+    if [ -n "$used" ] && [ $((32768 - used)) -lt 1800 ]; then
+      sectors=2
+      build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG} -DGG_STREAM_SECTORS=2" \
+        pio run -d "$out_dir" 2>&1) || return 1
+      echo "[i] Cache carte : 2 secteurs (pile courte)"
+    fi
+    while [ $sectors -ge 3 ]; do
       used=$(echo "$build_log" | sed -n 's/.*(\(used [0-9]*\) bytes from 32768.*/\1/p'); used=${used#used }
       local guard=2000; [ "$RELEASE" = 1 ] && guard=2400
-      { [ -n "$used" ] && [ $((32768 - used)) -gt $guard ]; } || break
+      { [ -n "$used" ] && [ $((32768 - used - 528)) -ge $guard ]; } || break
       sectors=$((sectors + 1)); [ $sectors -le 8 ] || break
       build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG} -DGG_STREAM_SECTORS=$sectors" \
         pio run -d "$out_dir" 2>&1) || break
