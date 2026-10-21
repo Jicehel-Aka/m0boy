@@ -1,6 +1,7 @@
 /* PICO-8 sound, see p8_audio.h. */
 #include "p8_audio.h"
 #include "p8gfx.h"
+#include "p8rt.h"
 #include <string.h>
 
 #define CHANNELS 4
@@ -233,4 +234,12 @@ void p8_audio_render(uint8_t *buffer, unsigned n) {
         buffer += block;
         n -= block;
     }
+}
+
+/* The channels at this driver's rate: a state loads into the firmware that
+ * wrote it, on the same console. */
+void p8_audio_state_io(p8_state_fn io, void *ctx) {
+    io(chan, sizeof chan, ctx);
+    io(&music_pattern, sizeof music_pattern, ctx);
+    io(&noise_state, sizeof noise_state, ctx);
 }

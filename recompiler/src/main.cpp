@@ -2305,6 +2305,7 @@ int main(int argc, char* argv[]) {
         options.output = output_dir.empty() ? fs::path(options.name + "_pico8_" + target) : fs::path(output_dir);
         options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
         options.compiler = meta_compiler;
+        options.sd_name = g_sd_name;
         std::string error;
         if (!m0boy::pico8::generate(rom_path, options, error)) {
             std::cerr << "Error: " << error << "\n";

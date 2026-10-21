@@ -8,6 +8,7 @@ namespace m0boy::pico8 {
 struct GenerateOptions {
     std::filesystem::path output, meta_templates;
     std::string name;
+    std::string sd_name;          ///< 8.3 base of NAME.BIN and NAME.ST8; empty: derived from name
     TargetId target;
     unsigned heap_bytes = 0;      ///< 0: the runtime's default
     std::string compiler = "gcc"; ///< firmware compiler: gcc or clang

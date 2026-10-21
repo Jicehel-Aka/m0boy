@@ -118,6 +118,15 @@ extern uint32_t p8_gc_count;
 
 /* The generated code's own roots (its globals): called by the collector. */
 void p8_gen_mark_roots(void (*mark)(const Val *v));
+/* Every global the cartridge can change (save states). */
+void p8_gen_state_globals(void (*visit)(Val *v));
+/* Save states: each part of the runtime streams its state (the heap holds
+ * absolute pointers: a state only loads into the firmware that wrote it). */
+typedef void (*p8_state_fn)(void *data, uint32_t bytes, void *ctx);
+void p8_rt_state_io(p8_state_fn io, void *ctx);
+void p8_gfx_state_io(p8_state_fn io, void *ctx);   /* drawing state, screen, input */
+void p8_lib_state_io(p8_state_fn io, void *ctx);   /* random numbers */
+void p8_audio_state_io(p8_state_fn io, void *ctx); /* channels and music */
 
 /* Fatal error: shows the message and stops the cartridge; never returns. */
 void p8_error(const char *msg, const char *what) __attribute__((noreturn));

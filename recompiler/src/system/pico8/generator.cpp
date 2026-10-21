@@ -2,6 +2,8 @@
  * runtime and, for the META, the console drivers shared with the other
  * frontends come along. */
 #include "m0boy/pico8_generator.h"
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -33,6 +35,20 @@ std::string replace(std::string s, const std::string& what, const std::string& v
         pos += value.size();
     }
     return s;
+}
+/* 8.3 base of the game's files on the card (the Sega generator's rule). */
+std::string sd_base(const std::string& project) {
+    std::string n;
+    for (char c : project) {
+        if (std::isalnum(static_cast<unsigned char>(c))) n += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        if (n.size() == 8) break;
+    }
+    return n.empty() ? "CART" : n;
+}
+std::string name83(std::string base, std::string ext) {
+    base.resize(8, ' ');
+    ext.resize(3, ' ');
+    return base + ext;
 }
 
 } // namespace
@@ -78,7 +94,29 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
         config << "#pragma once\n";
         /* what the 32 KiB of the SAMD21 leave once the screen (8 KiB), the drivers and a few KiB of C stack
          * are counted; the heap's block headers limit it to 32 KiB */
-        config << "#define P8_HEAP_BYTES " << (o.heap_bytes ? o.heap_bytes : esp ? 28672u : 18432u) << "\n";
+        /* ESPboy: 6 KiB of continuation stack in .bss (the PICO-8 code needs about 1 KiB of C
+         * stack, measured on the META) and 4 KiB left to the SDK's heap */
+        const unsigned heap = o.heap_bytes ? o.heap_bytes : esp ? 22528u : 18432u;
+        config << "#ifndef P8_HEAP_BYTES /* the host harness takes more: its values are twice as large */\n#define P8_HEAP_BYTES " << heap << "\n#endif\n";
+        /* Save states (p8_state_io): the heap, the screen, the cartridge's globals (8 bytes each on the
+         * consoles) and under 1 KiB of the rest; on the card next to the .BIN (NAME.ST8, made by
+         * compile.sh), in the flash on the ESPboy (after nothing: no cartridge RAM). */
+        if (o.target == TargetId::meta || esp) {
+            const std::string gen = read(src / "p8_gen.c");
+            size_t globals = 0;
+            for (size_t at = 0; (at = gen.find("visit(&G", at)) != std::string::npos; at++) globals++;
+            const size_t state_bytes = heap + 8192 + 8 * globals + 1024;
+            const size_t sectors = 1 + (state_bytes + 511) / 512;
+            const std::string sd = o.sd_name.empty() ? sd_base(o.name) : o.sd_name;
+            if (esp) {
+                const size_t slots = std::min<size_t>(10, (0x03B000 / 4096) / ((sectors + 7) / 8));
+                config << "#define P8_STATE_SLOTS " << slots << " /* in flash */\n";
+            } else {
+                config << "#define P8_BIN_NAME83 \"" << name83(sd, "BIN") << "\"\n#define P8_STATE_NAME \"" << sd
+                       << ".ST8\"\n#define P8_STATE_NAME83 \"" << name83(sd, "ST8") << "\"\n#define P8_STATE_SLOTS 10\n";
+            }
+            config << "#define P8_STATE_SLOT_SECTORS " << sectors << "\n";
+        }
         write(src / "p8_config.h", config.str());
 
         copy_template(tpl / "host" / "p8_host.c", o.output / "host" / "p8_host.c");
@@ -91,7 +129,12 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
               "    ${SRC}/p8_gen.c ${SRC}/p8_cart.c)\n"
               "target_include_directories(" + o.name + "_host PRIVATE ${SRC})\n"
               "target_compile_definitions(" + o.name + "_host PRIVATE P8_HEAP_BYTES=65536)\n"
-              "target_compile_options(" + o.name + "_host PRIVATE -w)\ntarget_link_libraries(" + o.name + "_host PRIVATE m)\n");
+              "target_compile_options(" + o.name + "_host PRIVATE -w)\ntarget_link_libraries(" + o.name + "_host PRIVATE m)\n"
+              "# --save-state / --load-state: the heap holds absolute pointers, so every run at the same addresses\n"
+              "if(CMAKE_SYSTEM_NAME STREQUAL \"Linux\")\n"
+              "    target_compile_options(" + o.name + "_host PRIVATE -fno-pie)\n"
+              "    target_link_options(" + o.name + "_host PRIVATE -no-pie)\n"
+              "endif()\n");
 
         if (o.target == TargetId::meta || esp) {
             copy_template(tpl / "platform" / "p8_main.cpp", src / "p8_main.cpp");
@@ -105,6 +148,15 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             copy_template(o.meta_templates / "platform" / "src" / "meta_font.h", src / "meta_font.h");
             copy_template(o.meta_templates / "platform" / "src" / "meta_menu.cpp", src / "meta_menu.cpp");
             copy_template(o.meta_templates / "runtime" / "gbl_board.h", src / "gbl_board.h");
+            /* save states: the card's state file in the game's folder on the META, the flash on the ESPboy */
+            copy_template(o.meta_templates / "platform" / "src" / "meta_state.h", src / "meta_state.h");
+            if (esp) {
+                copy_template(platform / "espboy_flash.cpp", src / "espboy_flash.cpp");
+            } else {
+                for (const char* name : { "meta_state.cpp", "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h" })
+                    copy_template(o.meta_templates / "platform" / "src" / name, src / name);
+                copy_template(platform / "meta_sd_bus.cpp", src / "meta_sd_bus.cpp");
+            }
             /* the audio driver counts frames of 1/30 s */
             auto audio_header = read(o.meta_templates / "platform/src/meta_audio.h");
             audio_header = replace(replace(audio_header, "70224u", "1u"), "4194304u", "30u");
@@ -130,12 +182,16 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 const std::string row = "line[x] = p[(x * 5u + 2u) / 4u];", frame = "uint8_t samples[192];";
                 if (hw.find(row) == std::string::npos || hw.find(frame) == std::string::npos)
                     throw std::runtime_error("espboy_hw.cpp changed: the PICO-8 patch no longer applies");
-                hw = replace(hw, row, "line[x] = p[x + 16]; /* the picture is 128 columns at 16 in a 160-wide row */");
+                /* the picture is 128 columns at 16 in a 160-wide row; the option menu's rows are
+                 * 160 wide, narrowed as on the Sega cores while it is open (p8_main.cpp) */
+                hw = replace(hw, row, "line[x] = p8_menu_wide ? p[(x * 5u + 2u) / 4u] : p[x + 16];");
+                hw = "extern \"C\" unsigned char p8_menu_wide;\n" + hw;
                 hw = replace(hw, frame, "uint8_t samples[400]; /* a 30 Hz frame at 11025 Hz */");
                 write(src / "espboy_hw.cpp", hw);
                 copy_template(o.meta_templates / "runtime" / "gbl_espboy.h", src / "gbl_espboy.h");
                 for (const char* name : { "platformio.ini", "espboy.ld", "espboy_build.py", "espboy_size.py" })
-                    write(o.output / name, replace(read(platform / (std::string(name) + ".in")), "@NAME@", o.name));
+                    write(o.output / name, replace(replace(read(platform / (std::string(name) + ".in")), "@NAME@", o.name),
+                                                   "-DCONT_STACKSIZE=12288", "-DCONT_STACKSIZE=6144"));
             } else {
                 for (const char* name : { "meta_startup.c", "meta_clock.cpp", "meta_lcd_pack.h", "meta_lcd_queue.h",
                                           "meta_dma.h", "meta_dma.cpp", "meta_spi.c", "meta_hw.h", "meta_usb.c", "meta_usb.h" })

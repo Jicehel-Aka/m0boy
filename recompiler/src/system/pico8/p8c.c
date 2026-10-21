@@ -479,6 +479,14 @@ int p8c_main(int argc, char **argv) {
         if (g->native < 0 && g->constant < 0) E("    mark(&G%d);\n", i);
     }
     E("}\n\n");
+    /* every global the cartridge can change, natives it reassigns included: save states */
+    E("void p8_gen_state_globals(void (*visit)(Val *v)) {\n");
+    for (int i = 0; i < n_globals; i++) {
+        const Global *g = &globals[i];
+        if ((g->native >= 0 || g->constant >= 0) && !g->set) continue;
+        E("    visit(&G%d);\n", i);
+    }
+    E("}\n\n");
     for (int i = 0; i < n_protos; i++) emit_proto(protos[i], i);
     const char *cbs[] = { "_init", "_update", "_update60", "_draw" };
     E("static Val nil_cb;\n");

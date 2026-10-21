@@ -28,6 +28,29 @@ runtime (`targets/pico8/runtime/`).
   affichée 1:1 au milieu de l'écran (fenêtre de colonnes du panneau réduite à
   128, 256 octets par ligne), D-pad, A = O, B = X, MENU relance la cartouche.
   Une erreur d'exécution arrête la cartouche et s'affiche à l'écran.
+- **Save states** (0.10.34, META et ESPboy) : lignes Etat / Sauver / Charger
+  du menu, entre deux images. `p8_state_io` sérialise le tas et ses index,
+  l'état du dessin et l'écran, les boutons, le générateur aléatoire, les
+  canaux audio et toutes les globales que la cartouche peut changer
+  (`p8_gen_state_globals`, émise par p8c). Le tas contient des pointeurs
+  absolus : un état ne se recharge que dans le firmware qui l'a écrit,
+  reconnu par une empreinte de son code (`p8_state_identity`, FNV-1a de
+  0x4000 à `__etext` sur la META, de la zone irom0 sur l'ESPboy) qui entre
+  dans le format. Fichier `<NOM>.ST8` sur la carte (créé par `compile.sh`,
+  10 emplacements), dans la flash sur l'ESPboy (6 emplacements pour
+  Celeste). **Vérifié** : sur le harnais (sans PIE, mêmes adresses à chaque
+  lancement), un état sauvé à l'image 300 puis rechargé finit à l'image 600
+  sur l'empreinte de femto8, ramasse-miettes forcé compris
+  (`tests/test_pico8_e2e.py`). **Mesuré dans gm0** : Celeste sur META et
+  ESPboy, sauver, jouer, charger, « Etat charge » et l'image de la
+  sauvegarde ; pile C au pire 930 octets sur 1 840 libres (META).
+- Le menu (META) dessine une ligne de 160 pixels à la fois dans les tampons
+  de l'image (640 octets rendus à la pile) et rouvre les 160 colonnes du
+  panneau le temps de s'afficher (il était brouillé depuis 0.10.28) ; sur
+  l'ESPboy ses lignes sont réduites à 128 colonnes (il était coupé).
+- **ESPboy** : tas de 22 Kio et pile de continuation de 6 Kio en `.bss` (le
+  code PICO-8 demande environ 1 Kio de pile C). `compile.sh` traite les
+  cartouches (META et ESPboy ; pas encore de Pokitto).
 
 ## Vérifié
 

@@ -1,6 +1,7 @@
 /* Drawing, after femto8's p8_lua_helper.h (same pixels), on a screen that is
  * 8 KiB of RAM and a cartridge image that stays in flash. */
 #include "p8gfx.h"
+#include "p8rt.h"
 #include <string.h>
 
 P8Gfx p8g;
@@ -341,4 +342,15 @@ void p8_input_update(uint16_t mask) {
             first_repeat &= (uint8_t)~(1u << i);
         }
     }
+}
+
+void p8_gfx_state_io(p8_state_fn io, void *ctx) {
+    io(&p8g, sizeof p8g, ctx);
+    io(p8_screen, sizeof p8_screen, ctx);
+    io(&p8_buttons, sizeof p8_buttons, ctx);
+    io(&p8_btnp, sizeof p8_btnp, ctx);
+    io(&p8_frames, sizeof p8_frames, ctx);
+    io(&p8_fps, sizeof p8_fps, ctx);
+    io(down_time, sizeof down_time, ctx);
+    io(&first_repeat, sizeof first_repeat, ctx);
 }

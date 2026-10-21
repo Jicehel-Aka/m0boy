@@ -33,3 +33,32 @@ void p8_frame(uint16_t buttons) {
     p8_input_update(buttons);
     p8_frames++;
 }
+
+static p8_state_fn state_fn;
+static void *state_ctx;
+static void state_global(Val *v) { state_fn(v, sizeof *v, state_ctx); }
+
+void p8_state_io(p8_state_fn io, void *ctx, int load) {
+    p8_rt_state_io(io, ctx);
+    p8_gfx_state_io(io, ctx);
+    p8_lib_state_io(io, ctx);
+    p8_audio_state_io(io, ctx);
+    state_fn = io;
+    state_ctx = ctx;
+    p8_gen_state_globals(state_global);
+    if (load) {
+        p8_top = p8_stack;
+        p8_gfx_pal_changed();
+    }
+}
+
+static void count_bytes(void *data, uint32_t bytes, void *ctx) {
+    (void)data;
+    *(uint32_t *)ctx += bytes;
+}
+uint32_t p8_state_bytes(void) {
+    uint32_t n = 0;
+    p8_state_io(count_bytes, &n, 0);
+    return n;
+}
+uint32_t p8_state_frame(void) { return p8_frames; }

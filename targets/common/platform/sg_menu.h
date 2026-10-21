@@ -32,6 +32,9 @@
  *                    state file on the card), 512 bytes of scratch for the
  *                    card sectors, and what the frame loop re-synchronises
  *                    after a load
+ *   SG_MENU_SCREEN_ENTER(), SG_MENU_SCREEN_LEAVE()
+ *                    statements around the menu's drawing (the PICO-8 on
+ *                    the META narrows the panel's columns to its picture)
  * and implements meta_menu_scratch (meta_menu.h) over its own buffers.
  */
 #ifndef SG_MENU_H
@@ -228,7 +231,13 @@ static void sg_option_menu(void) {
         *p = 0;
     }
     meta_audio_pause(1); /* the game's sound stops while the menu is open */
+#ifdef SG_MENU_SCREEN_ENTER
+    SG_MENU_SCREEN_ENTER();
+#endif
     int line = meta_menu_run(SG_MENU_TITLE, items, n, sg_menu_buttons, info);
+#ifdef SG_MENU_SCREEN_LEAVE
+    SG_MENU_SCREEN_LEAVE();
+#endif
     meta_audio_pause(0);
     int action = line >= 0 ? ids[line] : -1;
     meta_audio_set_volume(vol);

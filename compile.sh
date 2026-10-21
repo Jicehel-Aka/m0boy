@@ -8,6 +8,10 @@
 #   (sys = plateforme source : gb, sg, gg ou sms ; deux consoles peuvent ainsi
 #   porter le même nom de jeu sans se distraire).
 #   Un dossier explicite accepte .gb/.gbc/.sg/.gg (ou ses sous-dossiers gb/, sg/ et gg/).
+#   PICO-8 (META, ESPboy ; SRC_SYSTEM=pico8 pour eux seuls) : .p8 et .p8.png,
+#   à la racine, sous pico8/ ou dans un dossier par cartouche sous pico8/
+#   (le jeu prend le nom du dossier) ; tout le Lua est compilé, fichier
+#   d'états <NOM>.ST8 à côté du .bin (ESPboy : dans la flash).
 #   SG-1000 : code Z80 recompilé (projets out/sg1000/<cible>/<jeu>/), GCC ou Clang, couverture NTSC automatique
 #   de AUTO_SECONDS secondes émulées (SG_AUTO_FRAMES pour choisir les images) :
 #   bouton 1 maintenu, une partie sans touche (logos, démo), plus SG_SEEDS parties aléatoires (défaut 8)
@@ -416,7 +420,7 @@ json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 # Version de gbrecomp embarquée dans un firmware (voir meta_main.cpp) :
 # « gbrecomp-meta x.y.z » ou « gbrecomp-pokitto x.y.z ».
 firmware_version() {
-  grep -aoE "(gbrecomp-$TARGET|m0boy-sg1000-$TARGET|m0boy-gg-$TARGET) [0-9A-Za-z._+-]{1,32}" "$1" 2>/dev/null \
+  grep -aoE "(gbrecomp-$TARGET|m0boy-sg1000-$TARGET|m0boy-gg-$TARGET|m0boy-pico8-$TARGET) [0-9A-Za-z._+-]{1,32}" "$1" 2>/dev/null \
     | head -n1 | cut -d' ' -f2
 }
 
@@ -962,7 +966,55 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   echo "[i] $([ "$SOURCE" = 1 ] && echo "Source" || echo "Firmware") $label $TARGET v$CUR_VERSION : $game_dir.zip"
 }
 
+# PICO-8 : p8c compile le Lua de la cartouche en C (pas de partie à jouer :
+# tout est compilé) ; META et ESPboy.  Fichier d'états <NOM>.ST8 sur la
+# carte (META), dans la flash sur l'ESPboy.
+build_p8_game() { # $1 cartouche (.p8, .p8.png), $2 préfixe, $3 dossier du jeu, $4 sha1
+  local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
+  local out_dir="out/pico8/$TARGET/$prefix" game_dir="$DEST_DIR/pico8/$game_name"
+  local sd_name gen_log build_log esp_stack="" flags firmware
+  [ "$TARGET" = pokitto ] && { echo "[x] PICO-8 : pas encore de cible Pokitto (META et ESPboy)."; return 1; }
+  sd_name=$(sd_name_of "$game_name" "$rom_sha")
+  mkdir -p "$out_dir" "$game_dir" || return 1
+  gen_log=$("$GBRECOMP" "$rom_path" --system pico8 --target "$TARGET" --output-prefix "$prefix" --sd-name "$sd_name" \
+    --meta-compiler "$FIRMWARE_COMPILER" -o "$out_dir" 2>&1) || { echo "$gen_log"; return 1; }
+  flags="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG}"
+  if [ "$TARGET" = espboy ]; then
+    espboy_pio_run "$out_dir" "$flags" || { echo "$build_log" | tail -20; return 1; }
+  else
+    build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" PLATFORMIO_BUILD_FLAGS="$flags" pio run -d "$out_dir" 2>&1) \
+      || { echo "$build_log" | tail -20; return 1; }
+  fi
+  echo "$gen_log"
+  echo "$build_log" | grep -E "^(RAM|Flash):" || true
+  firmware="$out_dir/.pio/build/$PIO_ENV/firmware.bin"
+  if [ "$TARGET" = espboy ]; then
+    cp "$firmware" "$game_dir/firmware.bin" || return 1
+    [ -f "${firmware%.bin}.sym" ] && cp "${firmware%.bin}.sym" "$game_dir/firmware.sym" # symboles pour gm0
+    cp "$out_dir/README.md" "$game_dir/README.md" || return 1
+    printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin\n' > "$game_dir/FLASH.txt"
+  else
+    cp "$firmware" "$game_dir/$sd_name.BIN" || return 1
+  fi
+  local state_name state_sectors
+  state_name=$(sed -n 's/^#define P8_STATE_NAME "\(.*\)"$/\1/p' "$out_dir/src/p8_config.h")
+  if [ -n "$state_name" ]; then # save states: created once, never overwritten
+    state_sectors=$(sed -n 's/^#define P8_STATE_SLOT_SECTORS \([0-9]*\)$/\1/p' "$out_dir/src/p8_config.h")
+    [ -f "$game_dir/$state_name" ] || head -c $((10 * state_sectors * 512)) /dev/zero | tr '\0' '\377' > "$game_dir/$state_name"
+    echo "[i] Etats : $game_name/$state_name (déjà sur la carte : ne plus y toucher)"
+  fi
+  printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "system": "pico8",\n  "pack": 0,\n  "hc": %s,\n  "compiler": "%s"\n}\n' \
+    "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$([ "$OVERCLOCK" = 1 ] && echo 1 || echo 0)" "$FIRMWARE_COMPILER" > "$game_dir/.gbrmeta.json"
+  if [ "$SOURCE" = 1 ]; then
+    export_source "$out_dir" "$game_dir" "$flags" "$([ "$TARGET" = espboy ] || echo "FIRMWARE_COMPILER=$FIRMWARE_COMPILER ")pio run -d ." || return 1
+  fi
+  zip_game "$game_dir" "$game_dir.zip" || { echo "[x] Zip impossible : le jeu reste en dossier."; return 1; }
+  rm -rf "$game_dir"
+  echo "[i] $([ "$SOURCE" = 1 ] && echo "Source" || echo "Firmware") PICO-8 $TARGET v$CUR_VERSION : $game_dir.zip"
+}
+
 build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 sha1
+  case "$1" in *.p8|*.P8|*.p8.png|*.P8.PNG|*.p8.PNG) build_p8_game "$@"; return $? ;; esac
   case "${1##*.}" in sg|SG|sG|Sg|gg|GG|gG|Gg|sms|SMS) build_sg_game "$@"; return $? ;; esac
   local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
   local SRC_DIR="$(dirname "$rom_path")"
@@ -1361,16 +1413,20 @@ if [ -n "${SRC_SYSTEM:-}" ]; then
     sg)  roms=("$SRC_DIR"/*.sg "$SRC_DIR"/sg/*.sg) ;;
     gg)  roms=("$SRC_DIR"/*.gg "$SRC_DIR"/gg/*.gg) ;;
     sms) roms=("$SRC_DIR"/*.sms "$SRC_DIR"/sms/*.sms) ;;
-    *)   echo "SRC_SYSTEM='$SRC_SYSTEM' inconnu (gb, sg, gg ou sms)."; exit 1 ;;
+    pico8) roms=("$SRC_DIR"/*.p8 "$SRC_DIR"/*.p8.png "$SRC_DIR"/pico8/*.p8 "$SRC_DIR"/pico8/*.p8.png "$SRC_DIR"/pico8/*/*.p8 "$SRC_DIR"/pico8/*/*.p8.png) ;;
+    *)   echo "SRC_SYSTEM='$SRC_SYSTEM' inconnu (gb, sg, gg, sms ou pico8)."; exit 1 ;;
   esac
 else
   roms=("$SRC_DIR"/*.gb "$SRC_DIR"/*.gbc "$SRC_DIR"/*.sg "$SRC_DIR"/*.gg "$SRC_DIR"/*.sms
         "$SRC_DIR"/gb/*.gb "$SRC_DIR"/gb/*.gbc "$SRC_DIR"/sg/*.sg "$SRC_DIR"/gg/*.gg "$SRC_DIR"/sms/*.sms)
+  # PICO-8 (META, ESPboy) : une cartouche par fichier, ou par dossier sous pico8/
+  [ "$TARGET" = pokitto ] || roms+=("$SRC_DIR"/*.p8 "$SRC_DIR"/*.p8.png "$SRC_DIR"/pico8/*.p8 "$SRC_DIR"/pico8/*.p8.png
+                                    "$SRC_DIR"/pico8/*/*.p8 "$SRC_DIR"/pico8/*/*.p8.png)
 fi
 shopt -u nullglob nocaseglob
 
 if [ ${#roms[@]} -eq 0 ]; then
-  echo "Aucun fichier .gb, .gbc, .sg, .gg ou .sms trouvé dans '$SRC_DIR'."
+  echo "Aucun fichier .gb, .gbc, .sg, .gg, .sms ou .p8 trouvé dans '$SRC_DIR'."
   exit 0
 fi
 
@@ -1383,6 +1439,7 @@ n_dup=0
 for rom_path in "${roms[@]}"; do
   system=gameboy
   case "${rom_path##*.}" in sg|SG|sG|Sg) system=sg1000 ;; gg|GG|gG|Gg) system=gg ;; sms|SMS) system=sms ;; esac
+  case "$rom_path" in *.p8|*.P8|*.p8.png|*.P8.PNG|*.p8.PNG) system=pico8 ;; esac
   sha=$(sha1_of "$rom_path")
   dup=0
   for ((i = 0; i < n; i++)); do
@@ -1396,6 +1453,11 @@ for rom_path in "${roms[@]}"; do
 
   long=$(sd_safe "$(clean_name "$(basename "$rom_path")")")
   [ -n "$long" ] || long=$(sd_safe "$(basename "$rom_path")")
+  if [ "$system" = pico8 ]; then # celeste.p8.png -> celeste ; dans son dossier : le nom du dossier
+    long=$(sd_safe "$(clean_name "$(basename "${rom_path%.[pP][nN][gG]}")")")
+    parent=$(basename "$(dirname "$rom_path")")
+    case "$parent" in pico8|PICO8|.) ;; *) [ "$(dirname "$rom_path")" != "$SRC_DIR" ] && long=$(sd_safe "$parent") ;; esac
+  fi
   clean=$(loader_name "$long")
   sysdir=$(sys_dir "$system")
   dir="$clean"
@@ -1544,6 +1606,11 @@ for index in ${SEL[@]+"${SEL[@]}"}; do
       sms) gbc=sms ;;
     esac
     sysdir=$(sys_dir "${R_system[i]}")
+    if [ "${R_system[i]}" = pico8 ]; then # pas d'icônes libretro
+      echo "[=] ${R_clean[i]} : déjà à jour (v$CUR_VERSION), ignoré"
+      echo "${R_clean[i]}" > "$STATUS_DIR/skip.$i"
+      continue
+    fi
     skip_zip="$DEST_DIR/$sysdir/${R_clean[i]}.zip"
     skip_tmp=$(mktemp -d)
     unzip_game "$skip_zip" "$skip_tmp"
@@ -1574,6 +1641,7 @@ for index in ${SEL[@]+"${SEL[@]}"}; do
     [ "${R_system[i]}" = sg1000 ] && log_dir="out/sg1000/$TARGET/$prefix"
     [ "${R_system[i]}" = gg ] && log_dir="out/gg/$TARGET/$prefix"
     [ "${R_system[i]}" = sms ] && log_dir="out/sms/$TARGET/$prefix"
+    [ "${R_system[i]}" = pico8 ] && log_dir="out/pico8/$TARGET/$prefix"
     mkdir -p "$log_dir"
     (
       if run_one "$rom_path" "$prefix" "$dir" "${R_sha[i]}" "$i" > "$log_dir/compile.log" 2>&1; then

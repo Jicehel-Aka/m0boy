@@ -16,6 +16,9 @@
 #include "meta_hw.h"
 #endif
 #include "sg_frontend.h"
+#if defined(P8_STATE_NAME83)
+#include "meta_card.h"
+#endif
 #include <string.h>
 
 /* the META sends rows of the picture's 128 columns (narrowed window); the ESPboy's adapter takes 160-wide rows and the picture is at column 16 */
@@ -38,25 +41,48 @@ static uint32_t deadline;
 static unsigned menu_was_down, audio_phase;
 static const char version[] __attribute__((used)) = "m0boy-pico8-" META_TARGET_NAME " " GBL_GEN_VERSION;
 
+#if defined(P8_STATE_SLOTS)
+/* Save states hold the heap's absolute pointers: they load only into this
+ * very firmware, known by a hash of its code (computed once, then kept). */
+#if META_TARGET_ESPBOY
+extern "C" const uint32_t _irom0_text_start[], _irom0_text_end[];
+#else
+extern "C" const uint32_t __etext[];
+#endif
+extern "C" uint32_t p8_state_identity(void) {
+    static uint32_t id;
+    if (id) return id;
+#if META_TARGET_ESPBOY
+    const uint32_t *p = _irom0_text_start, *e = _irom0_text_end; /* word loads: the mapped flash takes no other */
+#else
+    const uint32_t *p = (const uint32_t *)META_APP_START, *e = __etext;
+#endif
+    uint32_t h = 2166136261u;
+    for (; p < e; p++) h = (h ^ *p) * 16777619u;
+    return id = h | 1u;
+}
+#endif
+
 #if !META_TARGET_POKITTO
 /* ---- option menu (sg_menu.h): HOME held half a second, MENU restarts ----- */
-#if !META_TARGET_ESPBOY
-static uint16_t menu_rows[2][160]; /* the picture's buffers are 128 wide */
-#endif
 extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
 #if META_TARGET_ESPBOY
     *rows = 2u * P8_BATCH; /* the ESPboy's rows take the whole 160 columns */
-    return line_buffers[0][0];
 #else
-    *rows = 2;
-    return menu_rows[0];
+    *rows = 1; /* the picture's two 128-pixel buffers hold one 160-pixel row (RAM is short) */
 #endif
+    return line_buffers[0][0];
 }
 #define SG_MENU_TAP() do { } while (0)
 #define SG_MENU_RESTART() do { \
         p8_start(); /* the cartridge again */ \
         deadline = meta_micros(); \
     } while (0)
+#if defined(P8_STATE_NAME83)
+#define P8_MENU_SD_DESELECT() meta_sd_deselect()
+#else
+#define P8_MENU_SD_DESELECT() do { } while (0)
+#endif
 #if META_TARGET_ESPBOY
 #define SG_MENU_QUIT() do { espboy_restart(); } while (0)
 #else
@@ -65,8 +91,18 @@ extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
 #else
 #define SG_MENU_USB_STOP() do { } while (0)
 #endif
+/* The USB bootloader (sam-ba) directly, as the Game Gear frontend does. */
+#define SG_MENU_BOOTLOADER() do { \
+        meta_audio_stop(); \
+        NVIC_DisableIRQ(DMAC_IRQn); \
+        meta_watchdog_stop(); \
+        SG_MENU_USB_STOP(); \
+        P8_MENU_SD_DESELECT(); \
+        *(volatile uint32_t *)0x20007FFC = 0x3aecfd88u; \
+        NVIC_SystemReset(); \
+    } while (0)
 /* Hand the console back to the Gamebuino loader (the Game Boy frontend's
- * enter_loader; the PICO-8 builds touch no SD card). */
+ * enter_loader). */
 #define SG_MENU_QUIT() do { \
         meta_lcd_end_frame(); \
         meta_clock_set_lcd_spi(24); /* the loader expects the core's clocks */ \
@@ -75,10 +111,45 @@ extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
         NVIC_DisableIRQ(DMAC_IRQn); \
         meta_watchdog_stop(); \
         SG_MENU_USB_STOP(); \
+        P8_MENU_SD_DESELECT(); \
         ((void (*)(void))(*((uint32_t *)0x3FF4)))(); \
     } while (0)
 #endif
 #define SG_MENU_RESUME() do { deadline = meta_micros(); } while (0)
+#if META_TARGET_ESPBOY
+/* the adapter takes the picture's 128 columns at 16 of each row, and the
+ * menu's 160 narrowed while it is open (the generator's espboy_hw.cpp) */
+extern "C" { unsigned char p8_menu_wide; }
+#define SG_MENU_SCREEN_ENTER() do { p8_menu_wide = 1; } while (0)
+#define SG_MENU_SCREEN_LEAVE() do { p8_menu_wide = 0; } while (0)
+#else
+/* the menu is 160 columns wide: the whole panel while it is open, then
+ * the margins cleared and the picture's columns again */
+#define SG_MENU_SCREEN_ENTER() do { \
+        meta_lcd_end_frame(); \
+        meta_lcd_set_columns(0, 159); \
+    } while (0)
+#define SG_MENU_SCREEN_LEAVE() do { \
+        meta_lcd_end_frame(); \
+        meta_lcd_fill(0); \
+        meta_lcd_set_columns(P8_MARGIN, P8_MARGIN + P8_PIXELS - 1); \
+    } while (0)
+#endif
+#if defined(P8_STATE_SLOTS)
+/* Save states (sg_menu.h's Etat lines), between two frames: the card's
+ * state file in the game's folder (ESPboy: the flash, espboy_flash.cpp),
+ * the menu's rows as the sector scratch. */
+#define SG_MENU_STATE_BUF() ((uint8_t *)line_buffers) /* 512 bytes and more */
+#define SG_MENU_STATE_SLOTS P8_STATE_SLOTS
+#define SG_MENU_STATE_LOADED() do { deadline = meta_micros(); } while (0)
+#endif
+#if defined(P8_STATE_NAME83)
+static int p8_card_open(void) {
+    if (!meta_sd_init()) return 0;
+    meta_fat_dir = meta_fat_game_dir(meta_card_sector, SG_MENU_STATE_BUF(), P8_BIN_NAME83, META_APP_START);
+    return 1;
+}
+#endif
 #include "sg_menu.h"
 #endif /* !META_TARGET_POKITTO */
 
@@ -187,6 +258,11 @@ int main() {
     meta_lcd_fill(0); /* the margins, once */
 #if !META_TARGET_ESPBOY
     meta_lcd_set_columns(P8_MARGIN, P8_MARGIN + P8_PIXELS - 1);
+#endif
+#if defined(P8_STATE_NAME83)
+    meta_state_init(p8_card_open(), SG_MENU_STATE_BUF());
+#elif defined(P8_STATE_SLOTS)
+    meta_state_init(1, SG_MENU_STATE_BUF());
 #endif
     p8_start();
     meta_audio_init();

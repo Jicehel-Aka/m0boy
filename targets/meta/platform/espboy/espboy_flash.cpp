@@ -11,8 +11,9 @@
  *    sector comes last, with the checksum the load checks first.
  * Nothing here masks interrupts: the audio interrupt runs from IRAM.
  *
- * Built for the Game Boy frontend (gbl.h: meta_save_*) and for the Sega ones
- * (no gbl.h: espboy_ram_load / espboy_ram_tick); both get meta_state_*. */
+ * Built for the Game Boy frontend (gbl.h: meta_save_*), the PICO-8 one
+ * (p8main.h) and the Sega ones (espboy_ram_load / espboy_ram_tick); all get
+ * meta_state_*. */
 #include <Arduino.h>
 #include <string.h>
 #if __has_include("gbl.h")
@@ -23,8 +24,16 @@ extern "C" {
 }
 #include "meta_save.h"
 #include "meta_state.h"
+#define ESPBOY_P8 0
+#elif __has_include("p8main.h")
+#define ESPBOY_GB 0
+#define ESPBOY_P8 1
+#include "p8main.h"
+#include "gbl_config.h" /* GBL_GEN_VERSION */
+#include "meta_state.h"
 #else
 #define ESPBOY_GB 0
+#define ESPBOY_P8 0
 #include "sg_config.h"
 #include "gbl_config.h" /* GBL_GEN_VERSION */
 #if defined(GG_STATE_SLOTS)
@@ -231,6 +240,19 @@ uint32_t SEGA_STATE(frame)(void);
 #define STATE_TITLE (SG_SYSTEM_GG ? "m0boy gg" : "m0boy sg1000")
 #define STATE_ERROR() (++errors)
 #define STATE_OFF state_off /* after the cartridge RAM's copies, espboy_ram_load first */
+#elif ESPBOY_P8 && defined(P8_STATE_SLOTS)
+#define ESPBOY_STATES 1
+extern "C" uint32_t p8_state_identity(void); /* the heap's pointers are absolute */
+#define STATE_SLOTS P8_STATE_SLOTS
+#define STATE_SLOT_SECTORS P8_STATE_SLOT_SECTORS
+#define STATE_BYTES() p8_state_bytes()
+#define STATE_IO(fn, ctx, load) p8_state_io(fn, ctx, load)
+#define STATE_FRAME p8_state_frame()
+#define STATE_GAME p8_state_identity()
+#define STATE_TITLE "m0boy pico8"
+#define STATE_ERROR() (++errors)
+#define STATE_OFF ((uint32_t)ESPBOY_SAVE_OFF)
+#define STATE_IDENTITY() p8_state_identity()
 #else
 #define ESPBOY_STATES 0
 #endif
@@ -253,7 +275,13 @@ static uint32_t format_tag(void) {
     const char *v = GBL_GEN_VERSION;
     uint32_t h = fnv(2166136261u, (const uint8_t *)v, (uint32_t)strlen(v));
     uint32_t n = STATE_BYTES();
-    return fnv(h, (const uint8_t *)&n, sizeof(n));
+    h = fnv(h, (const uint8_t *)&n, sizeof(n));
+#ifdef STATE_IDENTITY
+    static uint32_t id; /* computed once: a hash of the firmware's code */
+    if (!id) id = STATE_IDENTITY() | 1u;
+    h = fnv(h, (const uint8_t *)&id, sizeof(id));
+#endif
+    return h;
 }
 static int header_ok(const state_header *h) {
     return !memcmp(h->magic, "GBLSTATE", 8) && h->format == format_tag() && h->bytes == STATE_BYTES() &&
@@ -385,7 +413,7 @@ int meta_state_load(unsigned, uint8_t *) { return 0; }
  * sector `sector` of the ROM (m0_cache.h reads 512-byte sectors) is at
  * sector * 512 - 0x4000.  Cartridge RAM stays in RAM; espboy_ram_tick writes
  * it back two seconds after it stopped changing. */
-#if !ESPBOY_GB
+#if !ESPBOY_GB && !ESPBOY_P8
 extern "C" int gg_platform_rom_read(uint32_t sector, uint8_t *dst) {
     if (sector < 32) return 0;
     return espboy_rom_read(sector * 512u - 0x4000u, dst, 512);

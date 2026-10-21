@@ -117,6 +117,12 @@ def main():
         result = run(output / 'host/build/synthetic_host', '--frames', FRAMES, '--input', INPUT)
         found = re.search(r'screen_hash=([0-9a-f]+)', result).group(1)
         assert found == EXPECTED_HASH, 'screen hash %s, femto8 gives %s' % (found, EXPECTED_HASH)
+        # a save state at frame 300, loaded by another run, ends on the same picture
+        state = root / 'half.p8state'
+        run(output / 'host/build/synthetic_host', '--frames', FRAMES // 2, '--input', INPUT, '--save-state', state)
+        result = run(output / 'host/build/synthetic_host', '--frames', FRAMES // 2, '--input', INPUT, '--load-state', state)
+        found = re.search(r'screen_hash=([0-9a-f]+)', result).group(1)
+        assert found == EXPECTED_HASH, 'screen hash %s after a save state' % found
         # a collection of the garbage collector under stress gives the same picture
         stress = root / 'stress'
         run('cmake', '-G', 'Ninja', '-S', output / 'host', '-B', stress, '-DCMAKE_C_FLAGS=-DP8_GC_STRESS')
@@ -124,6 +130,11 @@ def main():
         result = run(stress / 'synthetic_host', '--frames', FRAMES, '--input', INPUT)
         found = re.search(r'screen_hash=([0-9a-f]+)', result).group(1)
         assert found == EXPECTED_HASH, 'screen hash %s with a collection at every allocation' % found
+        state = root / 'stress.p8state'
+        run(stress / 'synthetic_host', '--frames', FRAMES // 2, '--input', INPUT, '--save-state', state)
+        result = run(stress / 'synthetic_host', '--frames', FRAMES // 2, '--input', INPUT, '--load-state', state)
+        found = re.search(r'screen_hash=([0-9a-f]+)', result).group(1)
+        assert found == EXPECTED_HASH, 'screen hash %s after a save state, collector under stress' % found
         # the console project is complete
         meta = root / 'meta'
         run(args.recompiler, cart, '--target', 'meta', '-o', meta)

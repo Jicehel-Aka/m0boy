@@ -16,11 +16,15 @@
 #include "meta_fat.h"
 #include "meta_sd.h"
 
-/* Sega projects name their state file in sg_config.h; without it this file
- * built its empty stubs on the consoles and the menu never showed Etat (the
- * host harness, which includes sg_config.h itself, had states). */
+/* Sega projects name their state file in sg_config.h, PICO-8 ones in
+ * p8_config.h; without it this file built its empty stubs on the consoles
+ * and the menu never showed Etat (the host harness, which includes
+ * sg_config.h itself, had states). */
 #if __has_include("sg_config.h")
 #include "sg_config.h"
+#endif
+#if __has_include("p8_config.h")
+#include "p8_config.h"
 #endif
 
 /* The machine behind the slots: the Game Boy's runtime (gbl_state_io), or
@@ -68,6 +72,22 @@ uint32_t SEGA_STATE(frame)(void);
 #define STATE_IO(fn, ctx, load) SEGA_STATE(io)(fn, ctx, load)
 #define STATE_FRAME SEGA_STATE(frame)()
 
+#elif defined(P8_STATE_NAME83)
+
+#include "gbl_config.h" /* GBL_GEN_VERSION */
+#include "p8main.h"
+
+/* the heap's pointers are absolute: the firmware's code joins the format */
+extern "C" uint32_t p8_state_identity(void);
+#define STATE_NAME83 P8_STATE_NAME83
+#define STATE_SLOTS P8_STATE_SLOTS
+#define STATE_SLOT_SECTORS P8_STATE_SLOT_SECTORS
+#define STATE_TITLE P8_STATE_NAME
+#define STATE_BYTES() p8_state_bytes()
+#define STATE_IO(fn, ctx, load) p8_state_io(fn, ctx, load)
+#define STATE_FRAME p8_state_frame()
+#define STATE_IDENTITY() p8_state_identity()
+
 #endif
 
 #if defined(STATE_NAME83)
@@ -99,7 +119,13 @@ static uint32_t format_tag(void) {
     const char *v = GBL_GEN_VERSION;
     uint32_t h = fnv(2166136261u, (const uint8_t *)v, (uint32_t)strlen(v));
     uint32_t n = STATE_BYTES();
-    return fnv(h, (const uint8_t *)&n, sizeof(n));
+    h = fnv(h, (const uint8_t *)&n, sizeof(n));
+#ifdef STATE_IDENTITY
+    static uint32_t id; /* computed once: a hash of the firmware's code */
+    if (!id) id = STATE_IDENTITY() | 1u;
+    h = fnv(h, (const uint8_t *)&id, sizeof(id));
+#endif
+    return h;
 }
 
 static uint32_t slot_lba(unsigned slot, uint32_t sector) {

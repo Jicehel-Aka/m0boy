@@ -19,6 +19,11 @@ void p8_heap_stats(size_t out[8][2]);
 void p8_node_usage(size_t *used, size_t *total);
 static uint32_t screen_hash(void) { return m0_hash_bytes(M0_RUN_HASH_INIT, p8_screen, sizeof p8_screen); }
 
+static void state_read(void *data, uint32_t bytes, void *ctx) {
+    if (fread(data, 1, bytes, (FILE *)ctx) != bytes) { fprintf(stderr, "state file too short\n"); exit(1); }
+}
+static void state_write(void *data, uint32_t bytes, void *ctx) { fwrite(data, 1, bytes, (FILE *)ctx); }
+
 static void write_ppm(const char *path) {
     FILE *f = fopen(path, "wb");
     if (!f) { perror(path); return; }
@@ -35,7 +40,7 @@ static void write_ppm(const char *path) {
 
 int main(int argc, char **argv) {
     unsigned frames = 60, held = 0;
-    const char *shot = 0, *script = 0, *every = 0, *wav_path = 0;
+    const char *shot = 0, *script = 0, *every = 0, *wav_path = 0, *save_state = 0, *load_state = 0;
     FILE *wav = 0;
     uint32_t wav_samples = 0, wav_frac = 0;
     for (int i = 1; i < argc; i++) {
@@ -45,6 +50,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav_path = argv[++i];
         else if (!strcmp(argv[i], "--buttons") && i + 1 < argc) held = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) script = argv[++i];
+        else if (!strcmp(argv[i], "--save-state") && i + 1 < argc) save_state = argv[++i]; /* after the last frame */
+        else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) load_state = argv[++i]; /* before the first */
         else { fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]); return 1; }
     }
     if (setjmp(failure)) {
@@ -61,8 +68,15 @@ int main(int argc, char **argv) {
         m0_wav_header(wav, 0);
     }
     p8_start();
+    if (load_state) {
+        FILE *in = fopen(load_state, "rb");
+        if (!in) { perror(load_state); return 1; }
+        p8_state_io(state_read, in, 1);
+        fclose(in);
+    }
     for (unsigned f = 0; f < frames; f++) {
-        p8_frame((uint16_t)(held | m0_scripted(script, f)));
+        /* the script by frame of the cartridge: a loaded state goes on from its frame */
+        p8_frame((uint16_t)(held | m0_scripted(script, p8_frames)));
         if (wav) { /* the audio of this frame, 22050 Hz */
             uint8_t buffer[1024];
             wav_frac += 22050;
@@ -100,6 +114,13 @@ int main(int argc, char **argv) {
         for (int k = 0; k < 8; k++) fprintf(stderr, "%-8s blocks %4zu bytes %6zu\n", kinds[k], st[k][0], st[k][1]);
     }
     if (wav && m0_wav_finish(wav, wav_samples)) perror("wav");
+    if (save_state) {
+        FILE *out = fopen(save_state, "wb");
+        if (!out) { perror(save_state); return 1; }
+        p8_state_io(state_write, out, 0);
+        fclose(out);
+        fprintf(stderr, "state: %u bytes\n", p8_state_bytes());
+    }
     if (shot) write_ppm(shot);
     printf("frames=%u gc=%u peak_live=%zu screen_hash=%08x\n", p8_frames, p8_gc_count, peak_live, screen_hash());
     return 0;

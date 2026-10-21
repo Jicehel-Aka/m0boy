@@ -871,3 +871,14 @@ void p8_newtab_p(Val *d, unsigned narr, unsigned nhash) { *d = V_TAB(p8_tab_new(
 int p8_eq_p(const Val *a, const Val *b) { return p8_eq(*a, *b); }
 int p8_lt_p(const Val *a, const Val *b) { return p8_lt(*a, *b); }
 int p8_le_p(const Val *a, const Val *b) { return p8_le(*a, *b); }
+
+/* Between two frames: the heap and its indexes (no frame on the value
+ * stack, the gray list empty). */
+void p8_rt_state_io(p8_state_fn io, void *ctx) {
+    io(heap, sizeof heap, ctx);
+    io(&buf_hi, sizeof buf_hi, ctx);
+    io(&imm_lo, sizeof imm_lo, ctx);
+    io(&imm_free, sizeof imm_free, ctx);
+    io(&p8_gc_count, sizeof p8_gc_count, ctx);
+    io(&p8_open_upvals, sizeof p8_open_upvals, ctx);
+}

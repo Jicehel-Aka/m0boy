@@ -535,3 +535,8 @@ int n_music(Val *base, int nargs, Clo *cl) {
 }
 
 int n_stat(Val *base, int nargs, Clo *cl) { (void)cl; RET_INT(p8_audio_stat(INT(0, 0))); }
+
+void p8_lib_state_io(p8_state_fn io, void *ctx) {
+    io(&rng_hi, sizeof rng_hi, ctx);
+    io(&rng_lo, sizeof rng_lo, ctx);
+}
