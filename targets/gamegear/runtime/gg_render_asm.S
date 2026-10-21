@@ -193,15 +193,21 @@ gg_bg_tiles:
  * tile k - 1 and the start of tile k when finely scrolled) gives five
  * pixels: four from the pair table of its palette, one mean of two spread
  * colours.  Groups across two palettes are returned (bit g) for the C path.
- * args: 0 names row, 4 locked names row, 8 tr, 12 locked tr, 16 first
- * locked tile, 20 tx0, 24 sh (4 * fine), 28 vram, 32 planes, 36 pairs (palette
- * 1 at +512), 40 spal (palette 1 at +64).
- * r8 previous fields, r9 previous palette, r10 slow groups, r11 group bit,
- * r12 args, lr tile.  Stack: [sp] fields and [sp, #4] palette of the last
- * group drawn here (palette 2: none, its pixels are not at out - 10), and
- * [sp, #8] name entry | tr << 16 of the previous tile.  A tile repeating the
- * previous one reuses its fields; a group equal to the last one copies its
- * five pixels. */
+ * args (gg_sms_args): 0 names row, 4 locked names row, 8 vram + tr * 4,
+ * 12 the same for the locked row, 16 / 20 the same for a flipped tile,
+ * 24 tiles drawn from the first row (33: no lock), 28 2 * first tile column,
+ * 32 sh (4 * fine), 36 32 - sh, 40 planes, 44 pairs (palette 1 at +512),
+ * 48 spal (palette 1 at +64).
+ * Two phases (the lock splits the line), the loop itself has no per-tile
+ * test but its counter: r4 names row, r6 offset in it (wraps at 64),
+ * r8 previous fields, r9 previous palette (2: no tile yet), r10 slow groups,
+ * r11 vram + tr * 4, r12 previous name entry, lr tiles left.
+ * Stack: [0] fields and [4] palette of the last group drawn here (palette
+ * 2: none, its pixels are not at out - 10), 8 args, 12 out, 16 phase,
+ * 20 flipped row, 24 planes, 28 sh, 32 32 - sh, 36 pairs, 40 spal, 44 the
+ * previous tile was a repeat too (its group is already drawn).
+ * A tile repeating the previous one reuses its fields; a group equal to the
+ * last one copies its five pixels. */
     GG_RAMFUNC(gg_sms_bg)
     .align 2
     .global gg_sms_bg
@@ -214,113 +220,190 @@ gg_sms_bg:
     mov r6, r10
     mov r7, r11
     push {r4-r7}
-    movs r5, #2
-    mvns r6, r5
-    push {r4-r6}               /* no group drawn, no previous tile */
-    mov r12, r1
-    movs r4, #0
-    mov r8, r4
-    mov r9, r4
-    mov r10, r4
-    mov lr, r4
-    movs r4, #1
-    mov r11, r4
-10: mov r1, r12
-    mov r2, lr
-    ldr r3, [r1, #16]
-    cmp r2, r3
-    bhs 11f
+    sub sp, #48
+    str r1, [sp, #8]
+    str r0, [sp, #12]
+    movs r2, #2
+    str r2, [sp, #4]           /* no group drawn */
+    mov r9, r2                 /* no previous tile */
+    movs r2, #0
+    str r2, [sp, #16]          /* phase 0 */
+    str r2, [sp, #44]          /* no repeated tile yet */
+    mov r8, r2
+    mov r10, r2
+    mvns r2, r2
+    mov r12, r2                /* no previous entry */
+    ldr r2, [r1, #16]
+    str r2, [sp, #20]
+    ldr r2, [r1, #40]
+    str r2, [sp, #24]
+    ldr r2, [r1, #32]
+    str r2, [sp, #28]
+    ldr r2, [r1, #36]
+    str r2, [sp, #32]
+    ldr r2, [r1, #44]
+    str r2, [sp, #36]
+    ldr r2, [r1, #48]
+    str r2, [sp, #40]
     ldr r4, [r1, #0]
-    ldr r5, [r1, #8]
-    b 12f
-11: ldr r4, [r1, #4]
-    ldr r5, [r1, #12]
-12: ldr r3, [r1, #20]
-    adds r3, r3, r2
-    movs r6, #31
-    ands r3, r6
-    lsls r3, r3, #1
-    ldrh r3, [r4, r3]          /* name entry */
-    lsls r6, r5, #16
-    orrs r6, r3
-    ldr r4, [sp, #8]
-    cmp r4, r6
-    bne 25f
-    mov r7, r8                 /* the previous tile again: its fields */
-    b 24f
-25: str r6, [sp, #8]
-    lsls r6, r3, #21           /* V flip */
-    bpl 13f
-    movs r6, #7
-    subs r5, r6, r5
-13: lsls r4, r3, #23
-    lsrs r4, r4, #18           /* tile * 32 */
-    lsls r5, r5, #2
-    adds r4, r4, r5
-    ldr r5, [r1, #28]
-    adds r4, r4, r5            /* row bytes */
-    ldr r5, [r1, #32]
-    lsls r6, r3, #22           /* H flip: the other table */
-    bpl 14f
-    movs r6, #1
-    lsls r6, r6, #10
-    adds r5, r5, r6
-14: ldrb r6, [r4, #0]
-    lsls r6, r6, #2
-    ldr r7, [r5, r6]
-    ldrb r6, [r4, #1]
-    lsls r6, r6, #2
-    ldr r6, [r5, r6]
-    lsls r6, r6, #1
-    orrs r7, r6
-    ldrb r6, [r4, #2]
-    lsls r6, r6, #2
-    ldr r6, [r5, r6]
-    lsls r6, r6, #2
-    orrs r7, r6
-    ldrb r6, [r4, #3]
-    lsls r6, r6, #2
-    ldr r6, [r5, r6]
-    lsls r6, r6, #3
-    orrs r7, r6                /* fields of tile k */
-24: lsls r3, r3, #20
-    lsrs r3, r3, #31           /* its palette */
-    cmp r2, #0
-    beq 19f
-    ldr r4, [r1, #24]          /* sh */
-    mov r5, r8
-    cmp r4, #0
-    beq 15f
-    mov r6, r9
-    cmp r6, r3
-    bne 17f                    /* two palettes: C path */
-    lsrs r5, r4
-    movs r6, #32
-    subs r6, r6, r4
-    mov r4, r7
-    lsls r4, r6
-    orrs r5, r4                /* group fields */
-15: ldr r4, [sp, #0]
-    cmp r4, r5
-    bne 21f
-    ldr r4, [sp, #4]
-    cmp r4, r9
-    beq 22f                    /* the last group again: copy it */
-21: str r5, [sp, #0]
-    mov r4, r9
-    str r4, [sp, #4]
-    ldr r4, [r1, #36]          /* pairs, spal of the group's palette */
-    ldr r6, [r1, #40]
-    mov r2, r9
-    cmp r2, #0
-    beq 16f
+    ldr r6, [r1, #28]
+    ldr r2, [r1, #8]
+    mov r11, r2
+    ldr r2, [r1, #24]
+    mov lr, r2
+    b 1f
+30: ldr r1, [sp, #44]          /* the previous tile again */
+    cmp r1, #0
+    bne 35f                    /* the second time: the group repeats too */
+    movs r1, #1
+    str r1, [sp, #44]
+    mov r7, r8                 /* its fields and palette */
+    mov r3, r9
+    b 5f
+35: mov r7, r0                 /* a run of the same tile: its group, five pixels */
+    subs r7, #10               /* from out - 10, kept in registers */
+    ldrh r1, [r7, #0]
+    ldrh r2, [r7, #2]
+    lsls r2, r2, #16
+    orrs r1, r2
+    ldrh r5, [r7, #4]
+    ldrh r2, [r7, #6]
+    lsls r2, r2, #16
+    orrs r5, r2
+    ldrh r7, [r7, #8]
+    b 37f
+36: ldrh r3, [r4, r6]          /* the next name entry */
+    adds r6, #2
+    movs r2, #63
+    ands r6, r2
+    cmp r3, r12
+    bne 50f                    /* another tile: back to the loop */
+37: strh r1, [r0, #0]
+    lsrs r2, r1, #16
+    strh r2, [r0, #2]
+    strh r5, [r0, #4]
+    lsrs r2, r5, #16
+    strh r2, [r0, #6]
+    strh r7, [r0, #8]
+    adds r0, #10
+    mov r2, lr
+    subs r2, #1
+    mov lr, r2
+    bne 36b
+    b 51f                      /* the row is done */
+31: mov r1, r11                /* a flipped tile: the row from the bottom */
+    subs r2, r2, r1
+    ldr r1, [sp, #20]
+    adds r2, r2, r1
+    b 2f
+32: movs r1, #1
+    lsls r1, r1, #10
+    adds r5, r5, r1
+    b 3f
+33: mov r1, r9                 /* two palettes */
+    cmp r1, #2
+    beq 34f                    /* the first tile: no group */
+    ldr r1, [sp, #28]
+    cmp r1, #0
+    beq 5f                     /* not scrolled: the group is the tile */
+    ldr r1, [sp, #12]          /* its group number: (out - first) / 10 */
+    subs r1, r0, r1
+    ldr r2, =3277
+    muls r1, r2
+    lsrs r1, r1, #15
     movs r2, #1
-    lsls r2, r2, #9
-    adds r4, r4, r2
-    adds r6, #64
-16: lsls r1, r5, #24
+    lsls r2, r1
+    mov r1, r10
+    orrs r1, r2
+    mov r10, r1
+    movs r1, #2
+    str r1, [sp, #4]           /* its pixels come later, from C */
+    mov r8, r7
+    mov r9, r3
+    b 7f
+34: mov r8, r7
+    mov r9, r3
+    b 8f
+22: mov r7, r0                 /* the last group's pixels */
+    subs r7, #10
+    ldrh r1, [r7, #0]
+    strh r1, [r0, #0]
+    ldrh r1, [r7, #2]
+    strh r1, [r0, #2]
+    ldrh r1, [r7, #4]
+    strh r1, [r0, #4]
+    ldrh r1, [r7, #6]
+    strh r1, [r0, #6]
+    ldrh r1, [r7, #8]
+    strh r1, [r0, #8]
+    b 7f
+1:  ldrh r3, [r4, r6]          /* name entry */
+    adds r6, #2
+    movs r1, #63
+    ands r6, r1                /* the row wraps */
+    cmp r3, r12
+    beq 30b                    /* the previous tile again: its fields */
+50: mov r12, r3
+    movs r1, #0
+    str r1, [sp, #44]          /* not a repeat */
+    lsls r2, r3, #23
+    lsrs r2, r2, #18           /* tile * 32 */
+    add r2, r11                /* row bytes */
+    lsls r1, r3, #21           /* V flip */
+    bmi 31b
+2:  ldr r5, [sp, #24]
+    lsls r1, r3, #22           /* H flip: the other table */
+    bmi 32b
+3:  ldrb r1, [r2, #0]
+    lsls r1, r1, #2
+    ldr r7, [r5, r1]
+    ldrb r1, [r2, #1]
+    lsls r1, r1, #2
+    ldr r1, [r5, r1]
+    lsls r1, r1, #1
+    orrs r7, r1
+    ldrb r1, [r2, #2]
+    lsls r1, r1, #2
+    ldr r1, [r5, r1]
+    lsls r1, r1, #2
+    orrs r7, r1
+    ldrb r1, [r2, #3]
+    lsls r1, r1, #2
+    ldr r1, [r5, r1]
+    lsls r1, r1, #3
+    orrs r7, r1                /* fields of tile k */
+4:  lsls r3, r3, #20
+    lsrs r3, r3, #31           /* its palette */
+    cmp r9, r3
+    bne 33b
+5:  ldr r1, [sp, #28]          /* the group: end of the previous tile, */
+    mov r5, r8
+    lsrs r5, r1
+    ldr r1, [sp, #32]
+    mov r2, r7
+    lsls r2, r1                /* start of this one (sh 0: 32 gives 0) */
+    orrs r5, r2
+    mov r2, r9                 /* the group's palette */
+    mov r8, r7
+    mov r9, r3
+    ldr r1, [sp, #0]
+    cmp r1, r5
+    bne 6f
+    ldr r1, [sp, #4]
+    cmp r1, r2
+    bne 6f
+    b 22b                      /* the last group again: copy it */
+6:  str r5, [sp, #0]
+    str r2, [sp, #4]
+    lsls r7, r2, #9
+    ldr r1, [sp, #36]
+    adds r7, r7, r1            /* pairs of its palette */
+    lsls r3, r2, #6
+    ldr r1, [sp, #40]
+    adds r3, r3, r1            /* spal of its palette */
+    lsls r1, r5, #24
     lsrs r1, r1, #23
-    ldrh r1, [r4, r1]
+    ldrh r1, [r7, r1]
     strh r1, [r0, #0]
     lsls r1, r5, #20
     lsrs r1, r1, #28
@@ -329,16 +412,16 @@ gg_sms_bg:
     lsrs r2, r2, #28
     lsls r2, r2, #5
     orrs r1, r2
-    ldrh r1, [r4, r1]
+    ldrh r1, [r7, r1]
     strh r1, [r0, #2]
     lsls r1, r5, #16
     lsrs r1, r1, #28
     lsls r1, r1, #2
-    ldr r1, [r6, r1]
+    ldr r1, [r3, r1]
     lsls r2, r5, #12
     lsrs r2, r2, #28
     lsls r2, r2, #2
-    ldr r2, [r6, r2]
+    ldr r2, [r3, r2]
     adds r1, r1, r2
     lsrs r1, r1, #1
     ldr r2, =0x07e0f81f
@@ -352,7 +435,7 @@ gg_sms_bg:
     lsls r1, r5, #4
     lsrs r1, r1, #24
     lsls r1, r1, #1
-    ldrh r1, [r4, r1]
+    ldrh r1, [r7, r1]
     strh r1, [r0, #6]
     lsrs r1, r5, #28
     lsls r1, r1, #1
@@ -360,48 +443,41 @@ gg_sms_bg:
     lsrs r2, r2, #28
     lsls r2, r2, #5
     orrs r1, r2
-    ldrh r1, [r4, r1]
+    ldrh r1, [r7, r1]
     strh r1, [r0, #8]
-    b 18f
-17: mov r4, r10
-    mov r5, r11
-    orrs r4, r5
-    mov r10, r4
-    movs r4, #2
-    str r4, [sp, #4]           /* its pixels come later, from C */
-18: adds r0, #10
-    mov r4, r11
-    lsls r4, r4, #1
-    mov r11, r4
-19: mov r8, r7
-    mov r9, r3
-    mov r2, lr
-    adds r2, r2, #1
-    mov lr, r2
-    cmp r2, #33
-    beq 20f
-    b 10b
+7:  adds r0, #10
+8:  mov r1, lr
+    subs r1, #1
+    mov lr, r1
+    bne 1b
+51: ldr r1, [sp, #16]          /* the first row done: the locked one */
+    cmp r1, #0
+    bne 20f
+    movs r1, #1
+    str r1, [sp, #16]
+    ldr r1, [sp, #8]
+    ldr r2, [r1, #24]
+    movs r3, #33
+    subs r3, r3, r2
+    beq 20f                    /* no lock: all tiles drawn */
+    mov lr, r3
+    ldr r4, [r1, #4]
+    ldr r2, [r1, #12]
+    mov r11, r2
+    ldr r2, [r1, #20]
+    str r2, [sp, #20]
+    movs r2, #0
+    mvns r2, r2
+    mov r12, r2                /* another row: no previous entry */
+    b 1b
 20: mov r0, r10
-    add sp, #12
+    add sp, #48
     pop {r4-r7}
     mov r8, r4
     mov r9, r5
     mov r10, r6
     mov r11, r7
     pop {r4-r7, pc}
-22: mov r4, r0
-    subs r4, #10
-    ldrh r1, [r4, #0]
-    strh r1, [r0, #0]
-    ldrh r1, [r4, #2]
-    strh r1, [r0, #2]
-    ldrh r1, [r4, #4]
-    strh r1, [r0, #4]
-    ldrh r1, [r4, #6]
-    strh r1, [r0, #6]
-    ldrh r1, [r4, #8]
-    strh r1, [r0, #8]
-    b 18b
     .pool
     .size gg_sms_bg, . - gg_sms_bg
 

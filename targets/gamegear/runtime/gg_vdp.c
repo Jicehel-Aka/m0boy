@@ -388,9 +388,10 @@ static void sms_bg_indices(unsigned y, uint8_t *line, uint64_t tiles) {
  * left to the indexed path (two palettes across a tile boundary).  The
  * Thumb-1 gg_sms_bg (gg_render_asm.S) does the same from these. */
 typedef struct {
-    const uint8_t *names, *lock_names;
-    uint32_t tr, lock_tr, lock, tx0, sh;
-    const uint8_t *vram;
+    const uint8_t *names, *lock_names;  /* the name rows (64 bytes each) */
+    const uint8_t *tr, *lock_tr;        /* vram + the row in the tile * 4 */
+    const uint8_t *tr_flip, *lock_tr_flip; /* the same for a flipped tile */
+    uint32_t lock, tx0x2, sh, sh2;      /* tiles in the first row, 2 * first column, 4 * fine, 32 - that */
     const uint32_t *planes;
     const uint16_t *pairs;
     const uint32_t *spal;
@@ -743,9 +744,13 @@ static uint32_t sms_bg_fast(unsigned y, uint16_t *out) {
     const unsigned first = (0u - hs) & 255, fine = first & 7;
     unsigned row = y + m->vscroll;
     if (row >= 224) row -= 224;
-    const gg_sms_args a = { m->vram + names + (row >> 3) * 64, m->vram + names + (y >> 3) * 64, row & 7, y & 7,
-                            (m->vdp[0] & 0x80) ? 24u + (fine ? 1u : 0u) : 33u, first >> 3, 4 * fine,
-                            m->vram, &gg_planes_tab[0][0], &pair53[0][0], spal };
+    const uint8_t *const vram = m->vram;
+    const unsigned lock = (m->vdp[0] & 0x80) ? 24u + (fine ? 1u : 0u) : 33u;
+    const gg_sms_args a = { vram + names + (row >> 3) * 64, vram + names + (y >> 3) * 64,
+                            vram + (row & 7) * 4, vram + (y & 7) * 4,
+                            vram + (7 - (row & 7)) * 4, vram + (7 - (y & 7)) * 4,
+                            lock, (first >> 3) * 2, 4 * fine, 32 - 4 * fine,
+                            &gg_planes_tab[0][0], &pair53[0][0], spal };
     return gg_sms_bg(out, &a);
 #else
     return sms_bg_fast_c(y, out);
