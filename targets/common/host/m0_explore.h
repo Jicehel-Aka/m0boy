@@ -108,7 +108,7 @@ static void m0x_segment(m0x_t *x, uint32_t novelty) {
 /* 0: no memory for the first snapshot. */
 static int m0x_begin(m0x_t *x, const m0x_machine_t *m, uint32_t seed, uint32_t total) {
     *x = (m0x_t){ .m = *m, .total = total };
-    x->rng = (seed ? seed * 2654435761u : 0x9e3779b9u) | 1u; /* odd and even seeds apart */
+    x->rng = seed ? seed * 2654435761u : 0x9e3779b9u; /* nonzero, distinct for every nonzero seed */
     if (!(x->pool[0] = m0x_alloc(x))) return 0;
     m0x_take(x, x->pool[0]);
     x->pool_size = 1;

@@ -41,6 +41,10 @@ amélioration de compatibilité. Aucun résultat matériel n'est revendiqué.
 Les profils bruts et journaux restent dans `logs/profile-check/`, ignoré
 par Git ; les exécutables de comparaison sont dans `out/profile-check/`.
 
+La [comparaison du nombre et de la durée des sessions](PROFILING_SCALING_2026-10-21.fr.md)
+documente une correction ultérieure des graines aléatoires. La présente
+mesure correspond au comportement des graines avant cette correction.
+
 ## Vérification
 
 - Construction complète avec CMake/Ninja ; `ctest --test-dir build

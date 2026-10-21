@@ -48,6 +48,10 @@ def exercise(args, root, system):
     text = explored.read_text()
     assert run(*explore_args) == explore_result
     assert explored.read_text() == text
+    # Adjacent seeds used to alias because the CLI forced every seed odd.
+    random2 = run(args.host, rom, '--frames', 64, '--random', 2)
+    random3 = run(args.host, rom, '--frames', 64, '--random', 3)
+    assert fingerprint(random2) != fingerprint(random3)
     played = re.search(r'^# frames (\d+)$', text, re.M)  # a whole segment: 1920 + up to 3840 frames
     assert played and 1500 <= int(played.group(1)) < 1920 + 3840 and '# read ' in text
     assert re.search(r'^[0-9a-f]{6} \d+$', text, re.M)

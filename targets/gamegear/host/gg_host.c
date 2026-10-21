@@ -181,7 +181,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--start-frame") && i + 1 < argc) start_frame = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_script = argv[++i];
         else if (!strcmp(argv[i], "--explore") && i + 1 < argc) explore_frames = (unsigned)strtoul(argv[++i], 0, 0);
-        else if (!strcmp(argv[i], "--random") && i + 1 < argc) random_state = (uint32_t)strtoul(argv[++i], 0, 0) | 1u;
+        else if (!strcmp(argv[i], "--random") && i + 1 < argc) random_state = m0_random_seed(argv[++i]);
         else if (argv[i][0] != '-' && !rom_path) rom_path = argv[i];
         else { fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]); return 1; }
     }

@@ -83,6 +83,10 @@ static inline unsigned m0_scripted(const char *script, unsigned frame) {
 
 /* --random seed: buttons redrawn every 16 frames; extra_mask may add the
  * console's START, which the SG-1000 pad has not. */
+static inline uint32_t m0_random_seed(const char *text) {
+    const uint32_t seed = (uint32_t)strtoul(text, 0, 0);
+    return seed ? seed : 1u; /* zero means disabled internally; preserve even seeds */
+}
 static unsigned m0_random_keys;
 static inline unsigned m0_randomized(uint32_t *state, unsigned frame, unsigned extra_mask) {
     if (!*state) return 0;
