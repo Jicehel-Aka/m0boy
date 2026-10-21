@@ -92,7 +92,10 @@ banked code:
   explorer (`targets/common/host/m0_explore.h`) is shared by the Game Boy,
   SG-1000 and Game Gear/Master System harnesses (`EXPLORERS`,
   `EXPLORE_FRAMES`); on the Game Boy it plays from save states, 400 000
-  frames by default. Older
+  frames by default. On Game Boy and Game Gear/Master System, discoveries
+  are checkpointed at safe frame boundaries; each segment retains its latest
+  discovery instead of always keeping the segment-end state, which may
+  follow a death. Older
   sessions, without the execution counts or the explorations, are redone. The
   sectors the interpreter fetches the code of, for what is not compiled, count
   like the sectors read as data.

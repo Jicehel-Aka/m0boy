@@ -643,6 +643,7 @@ static void explore_vblank(void) {
         gbl_safe_request = 1;
         return;
     }
+    if (coverage_count + explore_new_pages > explorer.novelty) gbl_safe_request = 1;
     gbl_set_buttons((uint8_t)((k & M0X_B1 ? 0x01 : 0) | (k & M0X_B2 ? 0x02 : 0) | (k & M0X_START ? 0x08 : 0) |
                               (k & M0X_RIGHT ? 0x10 : 0) | (k & M0X_LEFT ? 0x20 : 0) |
                               (k & M0X_UP ? 0x40 : 0) | (k & M0X_DOWN ? 0x80 : 0)));
@@ -651,6 +652,7 @@ static void explore_vblank(void) {
 
 void gbl_platform_safe_point(void) {
 #ifdef GBL_COVERAGE
+    if (explore_on) m0x_observe(&explorer, coverage_count + explore_new_pages);
     if (explore_pending) {
         explore_pending = 0;
         if (!m0x_next(&explorer, coverage_count + explore_new_pages)) finish();

@@ -382,6 +382,15 @@ def main() -> int:
                        "--coverage", str(cov), "--wram-hash-bytes", str(RESULT_BYTES),
                        "--dump-wram", str(wram)])
         ref = parse(ref_out)
+        # Checkpointing discoveries at CPU safe points must be deterministic,
+        # and the profile must count all played frames across restored states.
+        explored = tmp / "explored.cov"
+        explore_args = [str(bb / "e2e_profile"), "--interp", "--explore", "1500",
+                        "--random", "3", "--coverage", str(explored)]
+        first = parse(run(explore_args))
+        first_cov = explored.read_bytes()
+        assert parse(run(explore_args)) == first
+        assert explored.read_bytes() == first_cov
         data = wram.read_bytes()
         if data[0x7FF] != 0xAA or "sp dff0" not in ref_out:
             print(ref_out)

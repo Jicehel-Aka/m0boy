@@ -89,10 +89,13 @@ static void explore(unsigned total) {
     machine.row = 0; /* nothing is drawn: the game does not need it */
     if (!m0x_begin(&explorer, &m, random_state, total)) return;
     explore_on = 1;
-    do {
+    for (;;) {
         machine.stop = 0;
         gg_run();
-    } while (m0x_next(&explorer, gg_new_locations + new_sectors));
+        m0x_observe(&explorer, gg_new_locations + new_sectors);
+        if (explorer.segment_left && !machine.cpu.fault) continue; /* discovery */
+        if (!m0x_next(&explorer, gg_new_locations + new_sectors)) break;
+    }
     fprintf(stderr, "explore: %u frames, %u segments, %u snapshots, %u locations\n", explorer.frames,
             explorer.segments, explorer.pool_size, gg_new_locations);
 }
@@ -105,6 +108,7 @@ static void frame(void *ctx) {
         const unsigned k = m0x_keys(&explorer);
         if (k == M0X_END) machine.stop = 1;
         else explore_inputs(k);
+        if (gg_new_locations + new_sectors > explorer.novelty) machine.stop = 1;
         return;
     }
 #endif

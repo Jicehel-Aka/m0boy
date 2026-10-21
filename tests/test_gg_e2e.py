@@ -43,8 +43,11 @@ def exercise(args, root, system):
     assert re.search(r'^02[0-9a-f]{4} \d+$', text, re.M) and re.search(r'^03[0-9a-f]{4} \d+$', text, re.M)  # pages 2 and 3
     # The coverage-guided explorer: segments from snapshots, a profile with rates
     explored = root / 'explored.cov'
-    run(args.host, rom, '--explore', 1500, '--random', 3, '--coverage', explored)
+    explore_args = (args.host, rom, '--explore', 1500, '--random', 3, '--coverage', explored)
+    explore_result = run(*explore_args)
     text = explored.read_text()
+    assert run(*explore_args) == explore_result
+    assert explored.read_text() == text
     played = re.search(r'^# frames (\d+)$', text, re.M)  # a whole segment: 1920 + up to 3840 frames
     assert played and 1500 <= int(played.group(1)) < 1920 + 3840 and '# read ' in text
     assert re.search(r'^[0-9a-f]{6} \d+$', text, re.M)

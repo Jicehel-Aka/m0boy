@@ -4,9 +4,10 @@
  * Play segments of a few seconds with a random but plausible hand (a
  * direction held for a while, buttons held or tapped, START now and then),
  * from the start or from a snapshot of the machine kept because an earlier
- * segment reached code or data never seen; a segment that reaches more
- * leaves a snapshot.  The profile is that of all the frames played: logos,
- * menus and every level the player got to, not what a blind player reaches.
+ * segment reached code or data never seen; checkpoint discoveries at safe
+ * frame boundaries, before later play can lose that progress. The profile
+ * is that of all the frames played: logos, menus and every level the player
+ * got to, not what a blind player reaches.
  *
  * The console stays with the harness: keys are generic (M0X_*, mapped to
  * the pad by the caller), snapshots are opaque bytes written and read by
@@ -14,11 +15,12 @@
  * something new is reached (code locations, ROM data sectors...).
  *
  *   m0x_begin(&x, &machine, seed, frames);   keeps the start, loads it
- *   per frame:   k = m0x_keys(&x);  M0X_END: stop running, then
+ *   per frame, at a safe point: m0x_observe(&x, novelty)
+ *   k = m0x_keys(&x);  M0X_END: stop running, then
  *   m0x_next(&x, novelty)                    0 once every frame is played
  *
- * m0x_begin and m0x_next call save and load; run them where the machine
- * can be copied (between frames, or at an instruction boundary). */
+ * m0x_begin, m0x_observe and m0x_next call save or load; run them where the
+ * machine can be copied (between frames, or at an instruction boundary). */
 #ifndef M0_EXPLORE_H
 #define M0_EXPLORE_H
 
@@ -69,7 +71,8 @@ typedef struct {
 typedef struct {
     m0x_machine_t m;
     m0x_snapshot_t *pool[M0X_POOL];
-    unsigned pool_size, segment_left, move_left, move_keys, tap_left;
+    m0x_snapshot_t *pending; /* latest discovery in this segment */
+    unsigned pool_size, segment_left, move_left, move_keys, tap_left, discovered;
     uint32_t rng, frames, total, segments, novelty;
 } m0x_t;
 
@@ -138,18 +141,34 @@ static unsigned m0x_keys(m0x_t *x) {
     return keys;
 }
 
-/* After M0X_END: keep where the segment ended if it reached something new,
- * then load the start of the next one.  0 once every frame is played. */
+/* The counter is global across restored states. Only copy on discoveries;
+ * one pending state is enough, however many frames discover new locations.
+ * Call after the CPU/device event has finished, not inside its callback. */
+static void m0x_observe(m0x_t *x, uint32_t novelty) {
+    if (novelty <= x->novelty) return;
+    if (!x->pending) x->pending = m0x_alloc(x);
+    if (!x->pending) return;
+    m0x_take(x, x->pending);
+    x->novelty = novelty;
+    x->discovered = 1;
+}
+
+/* After M0X_END: keep the latest discovery (or the end for callers that
+ * only observe between segments), then load the start of the next one.
+ * 0 once every frame is played. */
 static int m0x_next(m0x_t *x, uint32_t novelty) {
     x->segments++;
-    if (novelty > x->novelty) {
+    m0x_observe(x, novelty);
+    if (x->discovered) {
         unsigned slot = x->pool_size;
         if (x->pool_size == M0X_POOL) { /* replace the most chosen, never the start */
             slot = 1;
             for (unsigned i = 2; i < x->pool_size; i++) if (x->pool[i]->chosen > x->pool[slot]->chosen) slot = i;
-        } else if ((x->pool[x->pool_size] = m0x_alloc(x))) x->pool_size++;
-        else slot = 0;
-        if (slot) m0x_take(x, x->pool[slot]);
+        } else { x->pool_size++; x->pool[slot] = NULL; }
+        m0x_snapshot_t *old = x->pool[slot];
+        x->pool[slot] = x->pending;
+        x->pending = old;
+        x->discovered = 0;
     }
     if (x->frames >= x->total) return 0;
     m0x_segment(x, novelty);
