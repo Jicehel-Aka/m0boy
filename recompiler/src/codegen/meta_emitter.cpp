@@ -620,6 +620,29 @@ bool Generator::plan_stream(MetaTargetStats& stats, std::string& error) {
             if (page / 16 < chunks) chunk_weight_[page / 16] += count;
         }
     }
+    /* --rom-plan: what each block saves when kept, from the card cache
+     * simulated on the sessions' traces (m0romsim, as for the Game Gear),
+     * instead of read counts: a chunk read often but still cached costs
+     * nothing.  Weights in millionths of an SD read per frame. */
+    if (!opt_.rom_plan.empty()) {
+        std::ifstream in(opt_.rom_plan);
+        if (!in) {
+            error = "cannot read ROM plan " + opt_.rom_plan.string();
+            return false;
+        }
+        std::fill(chunk_weight_.begin(), chunk_weight_.end(), 0);
+        for (std::string line; std::getline(in, line);) {
+            if (line.empty() || line[0] == '#') continue;
+            unsigned offset = 0, size = 0;
+            char codec[16];
+            unsigned long bytes = 0;
+            double saved = 0;
+            if (std::sscanf(line.c_str(), "%x %u %15s %lu %lf", &offset, &size, codec, &bytes, &saved) != 5 || !size) continue;
+            const size_t first = offset / 4096, last = (offset + size - 1) / 4096;
+            for (size_t c = first; c <= last && c < chunks; c++)
+                chunk_weight_[c] += static_cast<uint64_t>(saved * 1e6 / static_cast<double>(last - first + 1) + 0.5);
+        }
+    }
     size_t touched = 0;
     for (size_t c = 4; c < chunks; c++)
         if (chunk_weight_[c]) touched += 4096;
@@ -710,7 +733,7 @@ void Generator::choose_resident(MetaTargetStats& stats) {
         std::vector<size_t> sizes;
         for (const auto& sector : packed_sector_) sizes.push_back(sector.size());
         std::vector<double> weights(chunk_weight_.begin(), chunk_weight_.end());
-        auto selected = m0boy::rom::select_units(sizes, weights, 8, 4, flash_data_budget_, resident_budget_, 50000);
+        auto selected = m0boy::rom::select_units(sizes, weights, 8, 4, flash_data_budget_, resident_budget_, m0boy::rom::sd_cycles);
         int slot = 0;
         for (size_t c : selected.raw) resident_index_[c] = slot++;
         for (size_t c : selected.packed)
@@ -2255,7 +2278,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     fs::copy_file(tpl.parent_path() / "common/runtime/m0_rom_lzss.inc", src / "m0_rom_lzss.inc",
                   fs::copy_options::overwrite_existing, ec);
     if (ec) { error = "cannot copy shared ROM assembler: " + ec.message(); return false; }
-    for (const char* name : { "m0_cache.h", "m0_cache.inc", "m0_stack_pool.h" }) {
+    for (const char* name : { "m0_cache.h", "m0_cache.inc", "m0_stack_pool.h", "m0_copy.h", "m0_copy.inc" }) {
         fs::copy_file(tpl.parent_path() / "common/runtime" / name, src / name, fs::copy_options::overwrite_existing, ec);
         if (ec) { error = std::string("cannot copy the shared card cache: ") + ec.message(); return false; }
     }
@@ -2280,9 +2303,12 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     if (!ec)
         fs::copy_file(tpl / "host" / "prefer_compiler.cmake", out / "host" / "prefer_compiler.cmake",
                       fs::copy_options::overwrite_existing, ec);
-    /* The explorer shared with the SG-1000 and Game Gear harnesses. */
+    /* The explorer and the ROM trace shared with the SG-1000 and Game Gear harnesses. */
     if (!ec)
         fs::copy_file(tpl.parent_path() / "common" / "host" / "m0_explore.h", out / "host" / "m0_explore.h",
+                      fs::copy_options::overwrite_existing, ec);
+    if (!ec)
+        fs::copy_file(tpl.parent_path() / "common" / "host" / "m0_rom_trace.h", out / "host" / "m0_rom_trace.h",
                       fs::copy_options::overwrite_existing, ec);
     if (ec) {
         error = "cannot copy host harness: " + ec.message();

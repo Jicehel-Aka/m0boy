@@ -138,6 +138,13 @@
 #                 pour le SAMD21, 50 pour le LPC11U68 ; SPI carte redivisé à
 #                 18 MHz sur la Pokitto ; le menu « Processeur » bascule à
 #                 l'exécution ; POKITTO_HC est l'ancien nom)
+#   STORAGE=0     (GG/SMS plus grands que la flash) ne pas simuler le cache
+#                 carte : les secteurs gardés en flash sont alors choisis par
+#                 fréquence de lecture.  Par défaut, les parties enregistrées
+#                 sont rejouées en trace d'accès ROM (out/romtrace/), le cache
+#                 du firmware est simulé dessus et la taille des blocs gardés
+#                 en flash validée sur des parties tenues à l'écart
+#                 (profiles/<src>/<Jeu>/storage.json, rom.rank).
 #   SG_SYNC_CYCLES=N  (SG-1000/GG/SMS) le code natif regarde aussi les
 #                 interruptions dès que N cycles Z80 ont passé depuis la
 #                 dernière fois (défaut 0 : en tête de boucle seulement ;
@@ -171,11 +178,27 @@
 # Jeux à pile (sauvegarde) ou à grande RAM de cartouche : le fichier .SAV
 # (ex. ZERDNODE.SAV) est créé une fois ; la console y garde la progression.
 #
-# Chaque partie (aléatoire ou à la main) est sauvée dans
-# <dossier_roms>/profiles/<sha1>/ : entrées (.input), code exécuté (.cov) et
-# lectures de données (.prof).  Les lancements suivants les réutilisent au
-# lieu de rejouer, et toutes sont cumulées : rejouer un jeu à la main étend
-# le code compilé.
+# Profils : un dossier par ROM, commun à toutes les consoles cibles,
+# profiles/<source>/<Jeu>/ dans le dépôt (PROFILES_DIR pour un autre
+# endroit ; les anciens <dossier_roms>/profiles/<sha1>/ y sont déplacés au
+# premier passage).  Chaque partie (aléatoire, exploration ou à la main) y
+# est sauvée : entrées (.input), code exécuté (.cov) et lectures de données
+# (.prof).  Les lancements suivants les réutilisent au lieu de rejouer, et
+# toutes sont cumulées : rejouer un jeu à la main étend le code compilé.
+# Après chaque firmware, le dossier reçoit aussi :
+#   profile.json  parties (images, instructions, apport propre de chacune),
+#                 carte de la ROM (code / données lues, par blocs de 256
+#                 octets), instructions les plus chaudes, derniers builds de
+#                 chaque console, cycles par fonction des runs gm0
+#   play.sh       une session dans gm0 (./play.sh [meta|pokitto|espboy]) :
+#                 gm0 enregistre les boutons que reçoit le jeu, la session
+#                 devient coverage-gm0-<date>.input, rejouée dans le harnais
+#                 PC (code exécuté) ; le lancement suivant la compile (le jeu
+#                 passe « profil enrichi ») et la rejoue chaque fois que le
+#                 profil est refait (REPLAY=1 : toutes) ; profil de cycles
+#                 EMU_PROF ; ./play.sh record (GB) : une partie dans la
+#                 fenêtre du harnais ; ./play.sh -h
+# Ils sont faits par tools/profile/m0profile.py et tools/profile/play.sh.
 # Une ROM en échec n'arrête pas le lot ; le bilan est affiché à la fin.
 set -uo pipefail
 
@@ -310,13 +333,13 @@ PIO_ENV="$TARGET"
 # m0recomp is the console-neutral CLI; keep the historical binary as fallback.
 GBRECOMP="./build/bin/gbrecomp"
 [ -x ./build/bin/m0recomp ] && GBRECOMP="./build/bin/m0recomp"
-# Profils fournis (couverture jouée, lectures de données), rangés par SHA-1
-# de la ROM : un dump identique en profite sans rejouer.
-PROFILES_DIR="${PROFILES_DIR:-$(dirname "$0")/profiles}"
-# Parties enregistrées par ce script (aléatoires et à la main), gardées d'un
-# lancement à l'autre : <dossier_roms>/profiles/<sha1>/.
-SESSIONS_CUSTOM="${SESSIONS_DIR:-}"
-SESSIONS_DIR="${SESSIONS_DIR:-$SRC_DIR/profiles}"
+# Profils (parties enregistrées, carte de la ROM, builds, runs gm0) : un
+# dossier par ROM, commun à toutes les consoles cibles,
+# <PROFILES_DIR>/<source>/<Jeu>/ (voir profile_store).  SESSIONS_DIR : ancien nom.
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROFILES_DIR="${PROFILES_DIR:-${SESSIONS_DIR:-$REPO_DIR/profiles}}"
+mkdir -p "$PROFILES_DIR" && PROFILES_DIR="$(cd "$PROFILES_DIR" && pwd)"
+PROFILE_TOOL="$REPO_DIR/tools/profile/m0profile.py"
 ICON_CACHE="$DEST_DIR/.cache/icons"
 THUMB_BASE="https://thumbnails.libretro.com"
 
@@ -416,6 +439,75 @@ url_quote() {
 }
 
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+sh_quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
+# ---- Profils ---------------------------------------------------------------
+# Un dossier par ROM, partagé par la META, la Pokitto et l'ESPboy :
+# <PROFILES_DIR>/<source>/<Jeu>/ (source : gb, sg, gg ou sms ; une autre ROM
+# du même nom y prend « <Jeu> [<sha1 court>] »).  Il contient :
+#   rom.env                  ROM, SHA-1, système, nom (lu par play.sh)
+#   coverage-<id>.cov/.input parties (code exécuté, touches), romdata-<id>.prof
+#                            lectures de données (GB) ; <id> : auto<n>, rand<n>,
+#                            explore<n>, idle, demo, ai<n>, ou la date d'une
+#                            partie à la main
+#   build-<console>.txt      dernier firmware de chaque console (zip, journal)
+#   <console>.syms.tsv       symboles de ce firmware (profil de cycles gm0)
+#   gm0/                     runs gm0 (<console>-<date>.cyc) et leur carte SD
+#   play.sh                  le jeu dans gm0, ou une partie à la main (record)
+#   profile.json             statistiques des parties, carte de la ROM, builds
+#                            et cycles gm0 (tools/profile/m0profile.py)
+
+profile_set() { # $1 dossier, $2 clé, $3 valeur : rom.env
+  { grep -v "^$2=" "$1/rom.env" 2>/dev/null; printf '%s=%s\n' "$2" "$(sh_quote "$3")"; } > "$1/rom.env.tmp" &&
+    mv "$1/rom.env.tmp" "$1/rom.env"
+}
+
+# Anciens rangements, repris une fois (déplacés, jamais écrasés) :
+# <dossier_roms>/profiles/<sha1>/[<système>/] et <PROFILES_DIR>/<sha1>/.
+profile_import() { # $1 dossier, $2 système, $3 sha1, $4 dossier de la ROM
+  local src f n=0
+  for src in "$4/profiles/$3/$2" "$4/profiles/$3" "$PROFILES_DIR/$3"; do
+    [ -d "$src" ] || continue
+    for f in "$src"/coverage-* "$src"/romdata-* "$src"/.auto-profile-config; do
+      [ -f "$f" ] && [ ! -e "$1/${f##*/}" ] && mv "$f" "$1/" && n=$((n + 1))
+    done
+    [ -z "$(ls -A "$src" | grep -vx JEU.txt)" ] && rm -f "$src/JEU.txt" && rmdir "$src"
+  done
+  rmdir "$4/profiles" 2> /dev/null
+  [ $n -eq 0 ] || echo "[i] Profil : $n fichier(s) repris de l'ancien rangement -> $1"
+  return 0
+}
+
+# Dossier du profil d'une ROM, créé : variable store de l'appelant.
+profile_store() { # $1 système, $2 nom du jeu, $3 sha1, $4 ROM
+  local base="$PROFILES_DIR/$(sys_dir "$1")" old
+  store="$base/$2"
+  old=$(sed -n "s/^SHA1='\(.*\)'$/\1/p" "$store/rom.env" 2>/dev/null)
+  [ -n "$old" ] && [ "$old" != "$3" ] && store="$base/$2 [${3:0:8}]"
+  mkdir -p "$store" || return 1
+  profile_import "$store" "$1" "$3" "$(dirname "$4")"
+  profile_set "$store" NAME "$2" && profile_set "$store" SYSTEM "$1" && profile_set "$store" SHA1 "$3" &&
+    profile_set "$store" ROM "$(readlink -f "$4")" || return 1
+  printf '#!/usr/bin/env bash\n# %s (%s), écrit par compile.sh : ./play.sh -h\nexec %s "$(cd "$(dirname "$0")" && pwd)" "$@"\n' \
+    "$2" "$(basename "$4")" "$(sh_quote "$REPO_DIR/tools/profile/play.sh")" > "$store/play.sh" && chmod +x "$store/play.sh"
+}
+
+# Firmware d'une console terminé : build-<console>.txt, symboles, profile.json.
+profile_build() { # $1 dossier, $2 zip, $3 ELF ou "", $4 journal, $5... clé=valeur
+  local store="$1" zip="$2" elf="$3" log="$4"; shift 4
+  [ "$SOURCE" = 1 ] && return 0 # pas de firmware dans le zip
+  zip="$(cd "$(dirname "$zip")" && pwd)/$(basename "$zip")"
+  { printf 'zip=%s\nversion=%s\ndate=%s\ncompiler=%s\noverclock=%s\n' "$zip" "$CUR_VERSION" "$(date '+%Y-%m-%d %H:%M')" \
+      "$FIRMWARE_COMPILER" "$OVERCLOCK"
+    [ $# -eq 0 ] || printf '%s\n' "$@"
+    echo ---
+    printf '%s\n' "$log"; } > "$store/build-$TARGET.txt"
+  [ -f "$PROFILE_TOOL" ] || return 0
+  rm -f "$store/$TARGET.syms.tsv"
+  [ -n "$elf" ] && [ -f "$elf" ] && python3 "$PROFILE_TOOL" syms "$elf" "$store/$TARGET.syms.tsv"
+  python3 "$PROFILE_TOOL" report "$store" || true
+  echo "[i] Jouer dans gm0 / enrichir le profil : $store/play.sh"
+}
 
 # Version de gbrecomp embarquée dans un firmware (voir meta_main.cpp) :
 # « gbrecomp-meta x.y.z » ou « gbrecomp-pokitto x.y.z ».
@@ -714,6 +806,15 @@ assess() {
     else
       S_tag="v$ver -> v$CUR_VERSION"; S_todo=2
     fi
+    # Partie ajoutée au profil depuis ce firmware (play.sh record) : le
+    # code qu'elle a trouvé n'est pas encore compilé.
+    local st
+    for st in "$PROFILES_DIR/$dir" "$PROFILES_DIR/$dir [${sha:0:8}]"; do
+      [ "$(sed -n "s/^SHA1='\(.*\)'$/\1/p" "$st/rom.env" 2>/dev/null)" = "$sha" ] || continue
+      if [ "$S_todo" = 0 ] && [ -n "$(find "$st" -maxdepth 1 -name 'coverage-*.cov' -newer "$zip" 2>/dev/null | head -n1)" ]; then
+        S_tag="profil enrichi"; S_todo=1
+      fi
+    done
   fi
   return 0
 }
@@ -729,7 +830,6 @@ in_array() { # $1 valeur, $2... tableau
 build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and build system.
   local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
   local SRC_DIR="$(dirname "$rom_path")"
-  local SESSIONS_DIR="${SESSIONS_CUSTOM:-$SRC_DIR/profiles}"
   local sys=sg1000 host=./build/bin/sg1000_host label=SG-1000 icons=sg
   case "${rom_path##*.}" in
     gg|GG|gG|Gg) sys=gg host=./build/bin/gg_host label="Game Gear" icons=gg ;;
@@ -737,9 +837,10 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   esac
   local out_dir="out/$sys/$TARGET/$prefix" game_dir="$DEST_DIR/$(sys_dir "$sys")/$game_name"
   local sd_name; sd_name=$(sd_name_of "$game_name" "$rom_sha")
-  local store="$SESSIONS_DIR/$rom_sha/$sys" cov auto_frames
+  local store cov auto_frames
   local cov_args=() firmware
-  mkdir -p "$out_dir" "$store" "$game_dir" || return 1
+  profile_store "$sys" "$game_name" "$rom_sha" "$rom_path" || return 1
+  mkdir -p "$out_dir" "$game_dir" || return 1
   if [ "$PLAY" = 1 ]; then
     local sg_player="${SG_PLAYER:-../gm0/build/bin/gm0}"
     [ -x "$sg_player" ] || { echo "[x] Lecteur gm0 absent : construire gm0 ou définir SG_PLAYER."; return 1; }
@@ -803,7 +904,41 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     printf '%s\n' "$profile_config" > "$store/.auto-profile-config.tmp" || return 1
     mv "$store/.auto-profile-config.tmp" "$store/.auto-profile-config" || return 1
   fi
-  for cov in "$store"/*.cov "$PROFILES_DIR/$rom_sha"/*.cov; do
+  # Parties jouées (sessions gm0, coverage-<id>.input) : rejouées quand leur
+  # couverture manque, quand le profil automatique est refait, ou REPLAY=1.
+  local inp id
+  for inp in "$store"/coverage-*.input; do
+    [ -f "$inp" ] || continue
+    id=$(basename "$inp" .input); id=${id#coverage-}
+    if [ -f "$store/coverage-$id.cov" ] && [ "$REPLAY" != 1 ] &&
+       ! { [ "$AUTO" = 1 ] && { [ "$AUTO_REDO" = 1 ] || [ "$stale" = 1 ]; }; }; then continue; fi
+    [ -x "$host" ] || { echo "[x] Construire $(basename "$host") avec CMake/Ninja."; return 1; }
+    echo "[i] Partie $id rejouée"
+    "$host" "$rom_path" --frames "$(awk 'END { print $1 + 60 }' "$inp")" --input "$inp" \
+      --coverage "$store/coverage-$id.tmp" > /dev/null && mv "$store/coverage-$id.tmp" "$store/coverage-$id.cov"
+    rm -f "$store/coverage-$id.tmp"
+  done
+  [ -x "$host" ] && profile_set "$store" HOST "$(cd "$(dirname "$host")" && pwd)/$(basename "$host")" # sessions gm0 rejouées
+  # Game Gear/SMS plus grands que la flash : ce qui reste en flash vient du
+  # cache carte du firmware simulé sur les traces des parties (m0romsim,
+  # tools/profile/m0profile.py storage), refait quand une partie change.
+  local rom_plan=() plan_lock=()
+  if [ "$sys" != sg1000 ] && [ "${STORAGE:-1}" = 1 ] && [ "$(stat -L -c %s "$rom_path")" -gt 229376 ] &&
+     { [ "$TARGET" = meta ] || [ "$TARGET" = pokitto ]; } &&
+     [ -f "$PROFILE_TOOL" ] && [ -x ./build/bin/m0romsim ]; then
+    if [ ! -f "$store/rom.rank" ] || [ -n "$(find "$store" -maxdepth 1 \( -name 'coverage-*.cov' -o -name "calibration-$TARGET.json" \) -newer "$store/rom.rank" | head -n1)" ]; then
+      echo "[i] Plan de stockage de la ROM : cache carte simulé sur les parties enregistrées"
+      command -v flock > /dev/null && plan_lock=(flock "$DEST_DIR/.gbrecomp-auto.lock")
+      # le projet généré du build précédent rejoue les parties avec son propre
+      # code compilé : le trafic ROM de ce firmware (gm0 : identique)
+      local plan_project=()
+      [ -f "$out_dir/host/CMakeLists.txt" ] && plan_project=(--project "$out_dir")
+      "${plan_lock[@]}" python3 "$PROFILE_TOOL" storage "$store" --quick --target "$TARGET" "${plan_project[@]}" ||
+        echo "[!] Plan de stockage impossible : secteurs choisis par fréquence de lecture"
+    fi
+    [ -f "$store/rom.rank" ] && rom_plan=(--rom-plan "$store/rom.rank")
+  fi
+  for cov in "$store"/*.cov; do
     [ -f "$cov" ] || continue
     case "$(head -n1 "$cov")" in
       "# m0boy.$sys.coverage.v1"|"# m0boy.$sys.coverage.v2") cov_args+=(--coverage "$cov") ;;
@@ -819,7 +954,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   else size_bin=$(command -v arm-none-eabi-size || echo "$HOME/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size"); fi
   sg_build_once() { # 0 ok, 1 flash full, 2 error
     gen_log=$("$GBRECOMP" "$rom_path" --system "$sys" --target "$TARGET" --output-prefix "$prefix" --sd-name "$sd_name" \
-      --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} ${fill:+--meta-fill-bytes "$fill"} \
+      --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" "${rom_plan[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} ${fill:+--meta-fill-bytes "$fill"} \
       ${SG_SYNC_CYCLES:+--meta-sync-cycles "$SG_SYNC_CYCLES"} -o "$out_dir") || return 2
     if [ "$TARGET" = pokitto ]; then
       local hc_flags=""
@@ -947,7 +1082,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     echo "[i] Etats : $game_name/$state_name (déjà sur la carte : ne plus y toucher)"
   fi
   if [ -n "$stream_name" ]; then
-    if [ $(( $(stat -c %s "$rom_path") % 16384 )) -eq 512 ]; then # copier header (same rule as m0boy/sg1000.h and targets/common/host/m0_host_util.h): the card holds the ROM itself
+    if [ $(( $(stat -L -c %s "$rom_path") % 16384 )) -eq 512 ]; then # copier header (same rule as m0boy/sg1000.h and targets/common/host/m0_host_util.h): the card holds the ROM itself
       tail -c +513 "$rom_path" > "$game_dir/$stream_name" || return 1
     else cp "$rom_path" "$game_dir/$stream_name" || return 1; fi
     echo "[i] Pages de ROM lues depuis la carte SD : $game_name/$stream_name (dans le dossier du jeu)"
@@ -964,6 +1099,12 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   zip_game "$game_dir" "$game_dir.zip" || { echo "[x] Zip impossible : le jeu reste en dossier."; return 1; }
   rm -rf "$game_dir"
   echo "[i] $([ "$SOURCE" = 1 ] && echo "Source" || echo "Firmware") $label $TARGET v$CUR_VERSION : $game_dir.zip"
+  local elf="$out_dir/.pio/build/$PIO_ENV/firmware.elf"
+  [ "$TARGET" = pokitto ] && elf="$sg_build/firmware.elf"
+  # what this firmware compiled: the plan's traces leave out those fetches
+  [ -f "$out_dir/compiled.txt" ] && cp "$out_dir/compiled.txt" "$store/compiled-$TARGET.txt"
+  profile_build "$store" "$game_dir.zip" "$elf" "$(echo "$gen_log"; echo "$build_log" | grep -E "^(RAM|Flash|flash):")" \
+    ${bpi:+"bpi=$bpi"} ${sg_extra:+"flags=$sg_extra"}
 }
 
 # PICO-8 : p8c compile le Lua de la cartouche en C (pas de partie à jouer :
@@ -1018,20 +1159,17 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   case "${1##*.}" in sg|SG|sG|Sg|gg|GG|gG|Gg|sms|SMS) build_sg_game "$@"; return $? ;; esac
   local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
   local SRC_DIR="$(dirname "$rom_path")"
-  local SESSIONS_DIR="${SESSIONS_CUSTOM:-$SRC_DIR/profiles}"
   local game_dir="$DEST_DIR/gb/$game_name"
   local sd_name; sd_name=$(sd_name_of "$game_name" "$rom_sha")
   local out_dir="$OUT_ROOT/$prefix"
   local flags_file="$DEST_DIR/gb/$game_name.flags" extra_flags=""
 
-  # a0) Parties enregistrées pour cette ROM exacte (par SHA-1) : celles du
-  #     dossier profiles/ fourni, puis celles sauvées par les lancements
-  #     précédents dans $SESSIONS_DIR/<sha1>/ (source de vérité).
+  # a0) Parties enregistrées pour cette ROM, dans son dossier de profil
+  #     (profile_store, source de vérité, commun aux consoles cibles).
   local f store gbc=""
   case "${rom_path##*.}" in gbc|GBC) gbc=gbc ;; esac
-  store="$SESSIONS_DIR/$rom_sha"
-  mkdir -p "$out_dir" "$store" "$game_dir"
-  [ -f "$store/JEU.txt" ] || basename "$rom_path" > "$store/JEU.txt"
+  profile_store gameboy "$game_name" "$rom_sha" "$rom_path" || return 1
+  mkdir -p "$out_dir" "$game_dir"
   save_sessions() { # out/<jeu> -> dossier des parties (sans écraser)
     for f in "$out_dir"/coverage-*.cov "$out_dir"/coverage-*.input "$out_dir"/romdata-*.prof; do
       [ -f "$f" ] && [ ! -f "$store/$(basename "$f")" ] && cp "$f" "$store/"
@@ -1040,12 +1178,6 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
     return 0
   }
   save_sessions # parties laissées dans out/ par une version précédente du script
-  if [ -d "$PROFILES_DIR/$rom_sha" ]; then
-    for f in "$PROFILES_DIR/$rom_sha"/*.cov "$PROFILES_DIR/$rom_sha"/*.prof; do
-      [ -f "$f" ] && [ ! -f "$out_dir/$(basename "$f")" ] && cp "$f" "$out_dir/"
-    done
-    echo "[i] Profils fournis utilisés : $(cat "$PROFILES_DIR/$rom_sha/JEU.txt" 2>/dev/null || echo "$rom_sha")"
-  fi
   for f in "$store"/coverage-*.cov "$store"/romdata-*.prof; do
     [ -f "$f" ] && cp "$f" "$out_dir/"
   done
@@ -1059,23 +1191,26 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   "$GBRECOMP" "$rom_path" --target "$TARGET" --meta-compiler "$FIRMWARE_COMPILER" --output-prefix "$prefix" --sd-name "$sd_name" "${pack_args[@]}" -o "$out_dir" || return 1
   cmake -G Ninja -S "$out_dir/host" -B "$out_dir/host/build" > /dev/null || return 1
   ninja -C "$out_dir/host/build" || return 1
+  profile_set "$store" HOST_PLAY "$(cd "$out_dir/host/build" && pwd)/${prefix}_play" # play.sh record
+  profile_set "$store" HOST "$(cd "$out_dir/host/build" && pwd)/${prefix}_profile" # sessions gm0 rejouées
 
-  # a2) REPLAY=1 : rejoue les parties à la main enregistrées (utile après une
-  #     mise à jour du runtime ou pour ajouter le profil de lectures SD).
-  if [ "$REPLAY" = "1" ]; then
-    local inp id last
-    for inp in "$store"/coverage-*.input; do
+  # a2) Parties à la main enregistrées (fenêtre du harnais, sessions gm0) :
+  #     rejouées quand leur couverture manque, toutes avec REPLAY=1 (utile
+  #     après une mise à jour du runtime ou pour ajouter le profil de
+  #     lectures SD).
+  local inp id last
+  for inp in "$store"/coverage-*.input; do
       [ -f "$inp" ] || continue
       id=$(basename "$inp" .input); id=${id#coverage-}
       case "$id" in auto*|ai*) continue ;; esac
+      [ "$REPLAY" = "1" ] || [ ! -f "$store/coverage-$id.cov" ] || continue
       last=$(awk 'END { print $1 + 120 }' "$inp")
       echo "[i] Partie $id rejouée ($last frames)"
       "$out_dir/host/build/${prefix}_profile" --interp --frames "$last" --input "$inp" \
         --coverage "$store/coverage-$id.cov" --rom-profile-out "$store/romdata-$id.prof" > /dev/null || true
       cp "$store/coverage-$id.cov" "$out_dir/"
       [ -f "$store/romdata-$id.prof" ] && cp "$store/romdata-$id.prof" "$out_dir/"
-    done
-  fi
+  done
 
   # b) Partie interactive : enregistre une couverture de plus
   if [ "$PLAY" = "1" ]; then
@@ -1098,7 +1233,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   #     général : Faceball 2000 -10 % par frame sur une partie inédite).
   local seed n_auto=0
   for seed in $(seq 1 "$AUTO_SEEDS"); do
-    if [ -f "$store/coverage-auto$seed.cov" ] || [ -f "$PROFILES_DIR/$rom_sha/coverage-auto$seed.cov" ]; then
+    if [ -f "$store/coverage-auto$seed.cov" ]; then
       n_auto=$((n_auto + 1))
     fi
   done
@@ -1115,7 +1250,6 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
     command -v flock > /dev/null && lock=(flock "$DEST_DIR/.gbrecomp-auto.lock")
     for seed in $(seq 1 "$AUTO_SEEDS"); do
       [ -f "$store/coverage-auto$seed.cov" ] && continue
-      [ -f "$PROFILES_DIR/$rom_sha/coverage-auto$seed.cov" ] && continue
       awk -v frames="$frames" -v seed=$((41 + seed)) 'BEGIN { srand(seed); split("right left up down a b", n, " ");
         for (f = 30; f < frames; f += 20) {
           if (f % 600 < 20) { print f, "start"; continue }
@@ -1145,7 +1279,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   #     et profil de lectures enregistrés directement.
   [ "$AUTO_REDO" = "1" ] && rm -f "$store"/coverage-demo.cov "$store"/romdata-demo.prof "$out_dir"/coverage-demo.cov "$out_dir"/romdata-demo.prof
   if [ "$AUTO" = "1" ] && [ "$DEMO" = "1" ] && [ "$DEMO_SECONDS" -gt 0 ] &&
-     [ ! -f "$store/coverage-demo.cov" ] && [ ! -f "$PROFILES_DIR/$rom_sha/coverage-demo.cov" ]; then
+     [ ! -f "$store/coverage-demo.cov" ]; then
     echo "[i] Démo : ${DEMO_SECONDS} s sans touche"
     local guard=()
     command -v timeout > /dev/null && guard=(timeout $((DEMO_SECONDS + 30)))
@@ -1166,7 +1300,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   if [ "$AUTO" = "1" ] && [ "$EXPLORERS" -gt 0 ] && [ "$explore_frames" -gt 0 ]; then
     [ "$AUTO_REDO" = "1" ] && rm -f "$store"/coverage-explore* "$store"/romdata-explore* "$out_dir"/coverage-explore* "$out_dir"/romdata-explore*
     for seed in $(seq 1 "$EXPLORERS"); do
-      [ -f "$store/coverage-explore$seed.cov" ] || [ -f "$PROFILES_DIR/$rom_sha/coverage-explore$seed.cov" ] || todo+=("$seed")
+      [ -f "$store/coverage-explore$seed.cov" ] || todo+=("$seed")
     done
   fi
   if [ ${#todo[@]} -gt 0 ]; then
@@ -1211,7 +1345,7 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   if compgen -G "$out_dir/host/*_romfull.c" > /dev/null && ! compgen -G "$out_dir/romdata-*.prof" > /dev/null; then
     local inp id last guard=()
     command -v timeout > /dev/null && guard=(timeout $((AUTO_SECONDS + 30)))
-    for inp in "$store"/coverage-*.input "$PROFILES_DIR/$rom_sha"/coverage-*.input; do
+    for inp in "$store"/coverage-*.input; do
       [ -f "$inp" ] || continue
       id=$(basename "$inp" .input); id=${id#coverage-}
       [ -f "$out_dir/romdata-$id.prof" ] && continue
@@ -1238,6 +1372,19 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   for prof in "$out_dir"/romdata-*.prof; do
     [ -f "$prof" ] && cov_args+=(--rom-profile "$prof")
   done
+  # Plan de stockage simulé, comme pour le Game Gear : le cache carte du
+  # firmware (m0_cache, partagé) rejoué sur les traces des parties
+  # enregistrées ; le générateur en tire le poids de chaque bloc de 4 Kio.
+  if [ "${STORAGE:-1}" = 1 ] && [ "$(stat -L -c %s "$rom_path")" -gt 229376 ] &&
+     { [ "$TARGET" = meta ] || [ "$TARGET" = pokitto ]; } &&
+     [ -f "$PROFILE_TOOL" ] && [ -x ./build/bin/m0romsim ] && ls "$store"/coverage-*.input > /dev/null 2>&1; then
+    if [ ! -f "$store/rom.rank" ] || [ -n "$(find "$store" -maxdepth 1 -name 'coverage-*.cov' -newer "$store/rom.rank" | head -n1)" ]; then
+      echo "[i] Plan de stockage de la ROM : cache carte simulé sur les parties enregistrées"
+      python3 "$PROFILE_TOOL" storage "$store" --quick --target "$TARGET" ||
+        echo "[!] Plan de stockage impossible : blocs choisis par nombre de lectures"
+    fi
+    [ -f "$store/rom.rank" ] && cov_args+=(--rom-plan "$store/rom.rank")
+  fi
   local static_args=()
   [ "$STATIC" = "1" ] && static_args=(--meta-static)
   if [ ${#cov_args[@]} -eq 0 ] && [ ${#static_args[@]} -eq 0 ]; then
@@ -1403,6 +1550,11 @@ PY
   zip_game "$game_dir" "$game_dir.zip" || { echo "[x] Zip impossible : le jeu reste en dossier."; return 1; }
   rm -rf "$game_dir"
   echo "[i] Jeu : $game_dir.zip"
+  local elf="$out_dir/.pio/build/$PIO_ENV/firmware.elf"
+  [ "$TARGET" = pokitto ] && elf="$out_dir/$firmware_build/firmware.elf"
+  profile_build "$store" "$game_dir.zip" "$elf" \
+    "$(echo "$gen_log" | grep -E "compiled:|interpreter only:|wait loops:|ROM streaming:|ROM packed:|--meta-pack:"
+       echo "$build_log" | grep -E "^(RAM|Flash|flash):")" "bpi=$best" "pack=$PACK"
 }
 
 

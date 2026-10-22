@@ -816,9 +816,17 @@ current ones; current ones only get missing icons).
 - Several ROMs run in parallel (`JOBS`, default cores / 4), each with its
   log in `out/<game>/compile.log`. One ROM takes about 45 s on 16 cores;
   a batch takes at least 20 s per ROM (the random runs go one ROM at a time).
-- Every run, random or played (`PLAY=1`), is kept in
-  `<rom dir>/profiles/<sha1>/` (`.input`, `.cov`, `.prof`) and reused by
-  later runs. A store with fewer seeded runs than `AUTO_SEEDS` (ROMs from
+- Every run, random or played (`PLAY=1`), is kept in the ROM's profile
+  store, `profiles/<gb|sg|gg|sms>/<game>/` at the repository root, shared by
+  every target console (`.input`, `.cov`, `.prof`; old
+  `<rom dir>/profiles/<sha1>/` stores are moved there), and reused by
+  later runs. The store also holds `profile.json` (sessions, ROM map,
+  builds, gm0 cycle profiles) and `play.sh`: a recorded gm0 session
+  (`gm0 --record-input` reads the buttons the game receives through the
+  firmware's `m0input` descriptor in `gbl_core.c`, `sg1000.c`, `gg.c`),
+  converted to `coverage-gm0-<date>.input` and replayed by the host harness
+  (Sega harnesses read the same `--input` file format as the Game Boy one);
+  `compile.sh` replays any session whose coverage is missing. A store with fewer seeded runs than `AUTO_SEEDS` (ROMs from
   the single-run version) gets the missing ones; the old run is kept.
   `AUTO_REDO=1` redoes the random runs, and `REPLAY=1` replays the played
   ones.

@@ -238,6 +238,12 @@ static uint32_t trace_age[256], trace_clock;
 static uint64_t trace_reads, trace_cold_reads, trace_misses, trace_seq_misses;
 static int32_t trace_last_miss = -2;
 static uint32_t trace_frame_misses, *trace_hist, trace_hist_n, trace_hist_cap;
+/* --rom-trace-out FILE: every banked read in order, the format the Game
+ * Gear's harness writes (tools/profile/m0romsim; bank 0 stays in flash) */
+#include "m0_rom_trace.h"
+static m0_rom_trace_t rom_trace;
+static const char *rom_trace_path;
+void gbl_eram_trace(uint32_t off, unsigned write) { m0_rom_trace_cart(&rom_trace, off, write); }
 
 #if GBL_ROM_STREAM
 extern const uint8_t gbl_rom_full[];
@@ -250,6 +256,7 @@ extern uint8_t gbl_rom_fetch;
 uint8_t gbl_rom_trace_read(uint32_t bank, uint16_t a) {
     uint32_t abs = bank * 0x4000u + (uint32_t)(a - 0x4000u);
     trace_reads++;
+    m0_rom_trace_access(&rom_trace, abs, gbl_rom_fetch ? 1u : 0u);
     /* The profile counts data reads: compiled code does not fetch opcodes
      * (the generator adds the fetches of code it leaves interpreted). */
     if (!gbl_rom_fetch && !trace_page_reads[abs >> 8]++) {
@@ -278,6 +285,7 @@ hit:
 }
 
 static void trace_frame(void) {
+    m0_rom_trace_frame(&rom_trace);
     if (trace_hist_n == trace_hist_cap) {
         trace_hist_cap = trace_hist_cap ? trace_hist_cap * 2 : 4096;
         trace_hist = realloc(trace_hist, trace_hist_cap * sizeof(*trace_hist));
@@ -432,6 +440,7 @@ static void finish(void) {
     write_coverage();
 #ifdef GBL_ROM_TRACE
     trace_report();
+    if (m0_rom_trace_close(&rom_trace)) perror(rom_trace_path);
 #endif
     if (wav) { wav_header(); fclose(wav); }
     printf("frames %u run_hash %016llx interp_instrs %u\n", f,
@@ -838,6 +847,10 @@ int main(int argc, char **argv) {
 #endif
 #ifdef GBL_ROM_TRACE
         else if (!strcmp(argv[i], "--rom-profile-out") && i + 1 < argc) trace_profile_out = argv[++i];
+        else if (!strcmp(argv[i], "--rom-trace-out") && i + 1 < argc) {
+            rom_trace_path = argv[++i];
+            if (!m0_rom_trace_open(&rom_trace, rom_trace_path, gbl_rom_size, GBL_ERAM_SIZE)) { perror(rom_trace_path); return 2; }
+        }
 #else
         else if (!strcmp(argv[i], "--rom-profile-out") && i + 1 < argc) i++; /* nothing to record */
 #endif

@@ -164,7 +164,7 @@ constexpr size_t runtime_bytes = 30 * 1024; /* drivers, runtime and, since 0.10.
 constexpr size_t bytes_per_instruction = 32; /* measured 13-27 with GCC 7.2 -O2 */
 constexpr size_t gg_bytes_per_instruction = 36; /* Game Gear: paged reads, measured 28-33 */
 constexpr double gg_interpreted_cycles = 300;   /* an interpreted instruction costs about this much more than a compiled one (gm0 profiles) */
-constexpr double gg_sector_miss_cycles = 50000; /* a ROM sector read from the SD card, assumed 0.7 ms at 72 MHz (not measured on a console) */
+constexpr double gg_sector_miss_cycles = rom::sd_cycles; /* a ROM sector read from the SD card (gm0 estimate, rom_storage.h) */
 constexpr size_t gg_pool_max = 254;             /* the pool's index is a byte, 255 meaning "not in flash" */
 /* ESPboy (4 MiB flash, targets/meta/runtime/gbl_espboy.h): the application
  * is the 1 MiB the CPU maps; a Game Gear / Master System ROM above esp_embed
@@ -325,10 +325,34 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                     return offset / 512 < pages * 32 ? static_cast<int64_t>(offset / 512) : -1;
                 };
                 std::vector<double> data_rate(pages * 32, 0.0), code_rate(pages * 32, 0.0);
+                /* --rom-plan: the SD reads per frame each sector saves when
+                 * kept, from the card cache simulated on the sessions' ROM
+                 * traces (m0romsim; a block's saving shared by its sectors,
+                 * a smaller block's given to its sector) instead of the odds
+                 * that a frame reads it: a sector read once a frame but
+                 * still cached costs nothing, one read in bursts costs more. */
+                const bool planned = !o.rom_plan.empty();
+                if (planned) {
+                    std::ifstream in(o.rom_plan);
+                    if (!in) { error = "Cannot read ROM plan: " + o.rom_plan.string(); return false; }
+                    for (std::string line; std::getline(in, line);) {
+                        if (line.empty() || line[0] == '#') continue;
+                        std::istringstream row(line);
+                        uint32_t offset = 0, size = 0;
+                        std::string codec;
+                        size_t bytes = 0;
+                        double saved = 0;
+                        if (!(row >> std::hex >> offset >> std::dec >> size >> codec >> bytes >> saved) || !size) continue;
+                        const size_t first = offset / 512, last = (offset + size - 1) / 512;
+                        for (size_t sector = first; sector <= last && sector < data_rate.size(); sector++)
+                            data_rate[sector] += saved / static_cast<double>(last - first + 1);
+                    }
+                }
                 auto& packed = packed_rom;
                 std::vector<bool> compressed(pages * 32, false);
                 size_t pool_bytes = 0;
-                for (const auto& [sector, rate] : profile.sector_rate) if (sector < data_rate.size()) data_rate[sector] = std::min(rate, 1.0);
+                if (!planned)
+                    for (const auto& [sector, rate] : profile.sector_rate) if (sector < data_rate.size()) data_rate[sector] = std::min(rate, 1.0);
                 size_t compiled = 0;
                 for (int pass = 0; pass < 3; pass++) {
                     struct Candidate { double density; bool sector; size_t id; bool packed = false; };
@@ -336,7 +360,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                     for (size_t k = 0; k < hot.size(); k++)
                         candidates.push_back({ profile.rate.at(hot[k]) * gg_interpreted_cycles / static_cast<double>(per_instruction), false, k });
                     for (size_t sector = 32; sector < data_rate.size(); sector++) {
-                        const double rate = 1.0 - (1.0 - data_rate[sector]) * (1.0 - code_rate[sector]);
+                        const double rate = planned ? data_rate[sector] + code_rate[sector]
+                                                    : 1.0 - (1.0 - data_rate[sector]) * (1.0 - code_rate[sector]);
                         if (rate > 0) {
                             candidates.push_back({ rom::density(rate, gg_sector_miss_cycles, rom::Codec::raw, 516), true, sector });
                             if (packed[sector].codec != rom::Codec::raw)
@@ -445,6 +470,13 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         hot_counts.reserve(hot.size());
         for (Loc loc : hot) hot_counts.push_back({ loc, profile.hits.at(loc) });
         write(src / "sg_gen.c", emit_code(rom, hot_counts, eo, es));
+        { /* the instructions the firmware runs natively: their fetches never
+           * reach the ROM (tools/profile traces the others, --rom-trace-skip) */
+            std::ostringstream list;
+            list << "# m0boy compiled locations (page << 16 | address), hex\n" << std::hex;
+            for (uint32_t loc : es.locations) list << loc << "\n";
+            write(o.output / "compiled.txt", list.str());
+        }
         stats.covered = es.covered;
         stats.compiled = es.compiled;
         stats.speculative = es.speculative;
@@ -609,6 +641,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         copy_template(common_dir / "runtime/m0_rom_codec.h", src / "m0_rom_codec.h");
         copy_template(common_dir / "runtime/m0_rom_lzss.inc", src / "m0_rom_lzss.inc");
         if (gg) copy_template(common_dir / "runtime/m0_rom_lzss.S", src / "m0_rom_lzss.S");
+        if (gg) /* the cache's and the pool's fixed-size copies */
+            for (const char* name : { "m0_copy.h", "m0_copy.inc", "m0_copy.S" }) copy_template(common_dir / "runtime" / name, src / name);
         if (gg) { /* the card cache shared with the Game Boy */
             copy_template(common_dir / "runtime/m0_cache.h", src / "m0_cache.h");
             copy_template(common_dir / "runtime/m0_cache.inc", src / "m0_cache.inc");
@@ -628,7 +662,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const std::string generated_sources = "${SRC}/sg_gen.c ${SRC}/sg_rom.c";
         const std::string render_asm = gg ? "gg_render_asm.S" : "sg_render_asm.S";
         const std::string firmware_sources = core_sources + " " + generated_sources + " ${SRC}/" + main_cpp +
-                                              " ${SRC}/" + render_asm + (gg ? " ${SRC}/m0_rom_lzss.S" : "") +
+                                              " ${SRC}/" + render_asm + (gg ? " ${SRC}/m0_rom_lzss.S ${SRC}/m0_copy.S" : "") +
                                               " ${SRC}/meta_menu.cpp" +
                                               (states ? " ${SRC}/meta_state.cpp" : "");
         std::string host_sources = host_c + " " + core_sources + " " + generated_sources;
@@ -663,6 +697,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             /* shared host helpers (the copier-header rule, m0boy/sg1000.h
              * states it for the recompiler) */
             copy_template(common_dir / "host" / "m0_host_util.h", o.output / "host" / "m0_host_util.h");
+            copy_template(common_dir / "host" / "m0_rom_trace.h", o.output / "host" / "m0_rom_trace.h");
+            copy_template(common_dir / "host" / "m0_explore.h", o.output / "host" / "m0_explore.h"); /* -DM0_ROM_TRACE=ON */
         }
 
         if (o.target != TargetId::desktop) {

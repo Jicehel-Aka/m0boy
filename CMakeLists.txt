@@ -37,6 +37,9 @@ target_compile_definitions(m0boy_gg_runtime PUBLIC GG_ROM_TRACE=1) # host profil
 add_executable(gg_host targets/gamegear/host/gg_host.c)
 target_include_directories(gg_host PRIVATE targets/common/host) # m0_explore.h
 target_link_libraries(gg_host PRIVATE m0boy_gg_runtime)
+# Card cache and flash residency simulated on host ROM traces (tools/profile).
+add_executable(m0romsim tools/profile/m0romsim.cpp)
+target_link_libraries(m0romsim PRIVATE m0boy_rom_storage)
 # Desktop play is optional; firmware and the reference harness remain headless.
 find_package(SDL2 QUIET)
 if(TARGET SDL2::SDL2)
@@ -98,6 +101,14 @@ if(BUILD_TESTS)
         add_test(NAME sg1000_desktop_player
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_sg1000_player.py"
                     "$<TARGET_FILE:sg1000_play>" "$<TARGET_FILE:sg1000_host>")
+    endif()
+    add_test(NAME profile_rom_cache_simulation
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_romsim.py"
+                "$<TARGET_FILE:m0romsim>" "$<TARGET_FILE:gg_host>")
+    if(TARGET sg1000_host)
+        add_test(NAME profile_gm0_sessions
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_profile_sessions.py"
+                    "$<TARGET_FILE:sg1000_host>")
     endif()
     if(TARGET p8c)
         add_test(NAME pico8_native_end_to_end
@@ -233,7 +244,7 @@ if(BUILD_TESTS)
     endforeach()
 
     # One pool for the streamed ROM and the cartridge RAM, per block size.
-    foreach(block 64 128 256 512)
+    foreach(block 16 32 64 128 256 512)
         add_executable(test_meta_cache_unified_${block} "${GBL_META_DIR}/tests/cache_unified.c" ${GBL_META_RUNTIME_SOURCES})
         target_include_directories(test_meta_cache_unified_${block} PRIVATE "${GBL_META_DIR}/tests/config_stream"
             "${GBL_META_DIR}/runtime")

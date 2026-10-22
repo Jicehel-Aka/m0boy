@@ -120,6 +120,7 @@ int gbl_cache_shrink(void) {
 
 #if GBL_ROM_PACKED
 #include "m0_rom_codec.h"
+#include "m0_copy.h"
 /* Compressed flash source: sector k of the ROM is gbl_rom_packed
  * [off[k], off[k + 1]), LZSS-coded, or stored as is when that is 512
  * bytes.  Only sectors outside bank 0 and the resident chunks are used. */
@@ -161,7 +162,7 @@ static int rom_unpack(uint32_t sector, uint8_t *dst) {
     if (n == 512) memcpy(dst, packed, 512);
     else unpack512(packed, dst);
 #else
-    if (n == 512) memcpy(dst, gbl_rom_packed + a, 512);
+    if (n == 512) M0_COPY(512, dst, gbl_rom_packed + a); /* m0_copy.h: any alignment */
     else unpack512(gbl_rom_packed + a, dst);
 #endif
     gbl_stream_unpacked++;
@@ -1212,6 +1213,13 @@ void gbl_set_buttons(uint8_t pressed) {
     joypad_update();
 }
 
+/* Read by gm0 --record-input, which finds it by its tag in the firmware:
+ * the frame counter and the buttons the game receives, so that a session
+ * played in gm0 replays in the host harness (--input).  gbl_reset
+ * references it: --gc-sections would drop it otherwise. */
+static const struct { char tag[8]; uint32_t version; const volatile void *frame, *buttons, *extra; }
+    gbl_input_probe __attribute__((used, aligned(4))) = { "m0input", 1, &gbl_frame, &buttons, 0 };
+
 /* ---- IO ----------------------------------------------------------------- */
 
 /* LY and STAT (0x44, 0x41), polled in wait loops, are read by the
@@ -1317,6 +1325,15 @@ void gbl_io_wr(uint8_t n, uint8_t v) {
 #ifdef GBL_ROM_TRACE
 uint8_t gbl_rom_trace_read(uint32_t bank, uint16_t a); /* host harness */
 uint8_t gbl_rom_fetch; /* set by the interpreter while fetching opcodes */
+/* host harness: a cartridge RAM access (offset in the save), write only
+ * when the byte changes (what the card cache sees, m0romsim) */
+void gbl_eram_trace(uint32_t off, unsigned write);
+#if GBL_ERAM_SIZE > 0
+#define GBL_ERAM_TRACE(a, write) do { if ((a) - 0xA000u < 0x2000u && mbc.ram_enable) gbl_eram_trace(eram_offset(a), (write)); } while (0)
+#endif
+#endif
+#ifndef GBL_ERAM_TRACE
+#define GBL_ERAM_TRACE(a, write) ((void)0)
 #endif
 
 /* Unmapped pages (IO, OAM, HRAM, MBC registers, streamed ROM...); also the
@@ -1344,6 +1361,7 @@ uint8_t gbl_rd_slow(uint16_t a) {
 
 #if !(GBL_CORE_ASM && defined(__ARM_ARCH_6M__)) /* else gbl_core_asm.S */
 uint8_t gbl_rd(uint16_t a) {
+    GBL_ERAM_TRACE(a, 0);
     const uint8_t *p = gbl_rmap[a >> 12];
     if (p) return gbl_load_u8(p + a);
 #if GBL_ERAM_ON_SD
@@ -1370,6 +1388,7 @@ void gbl_vram_wr(uint16_t off, uint8_t v) {
 
 #if !(GBL_CORE_ASM && defined(__ARM_ARCH_6M__)) /* else gbl_core_asm.S */
 void gbl_wr(uint16_t a, uint8_t v) {
+    GBL_ERAM_TRACE(a, eram_load(eram_offset(a)) != v);
     uint8_t *p = gbl_wmap[a >> 12];
     if (p) { p[a] = v; return; }
 #if GBL_ERAM_ON_SD
@@ -1750,6 +1769,7 @@ static void map_pages(void) {
 }
 
 void gbl_reset(void) {
+    __asm__ volatile("" : : "r"(&gbl_input_probe));
     memset(&gbr, 0, sizeof(gbr));
     memset(gbl_wram, 0, sizeof(gbl_wram));
     memset(gbl_vram, 0, sizeof(gbl_vram));

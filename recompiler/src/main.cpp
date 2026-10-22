@@ -169,6 +169,7 @@ void print_usage(const char* program) {
     std::cout << "  --meta-static         Add the code found by static analysis (no play session needed)\n";
     std::cout << "  --meta-bytes-per-instruction <n>  Flash estimate per compiled instruction (default 20)\n";
     std::cout << "  --meta-fill-bytes <n>  Game Gear/SMS: spend n more bytes of flash on ROM sectors (code unchanged)\n";
+    std::cout << "  --rom-plan <file>      Game Gear/SMS: SD reads saved per ROM block, from the simulated card cache\n";
     std::cout << "  --meta-code-budget <bytes>        Flash for generated code (default: 240 KiB - runtime - ROM)\n";
     std::cout << "  --meta-stream auto|on|off         Read the ROM from the SD card (auto: ROMs of 256 KiB or more)\n";
     std::cout << "  --rom-profile <file>              ROM data reads recorded by the host (--rom-profile-out)\n";
@@ -1797,6 +1798,7 @@ static size_t g_meta_code_budget = 0;
 static long g_meta_sync_cycles = -1; /* SG/GG fast mode; -1: the emitter's default */
 static int g_meta_stream = -1;                  /* --meta-stream auto|on|off */
 static std::vector<fs::path> g_rom_profiles;    /* --rom-profile FILE */
+static fs::path g_rom_plan;                     /* --rom-plan FILE (Game Boy too) */
 static size_t g_meta_resident = 0;              /* --meta-rom-resident-kib */
 static bool g_meta_pack = false;                /* --meta-pack */
 static std::string g_sd_name;                   /* --sd-name */
@@ -1833,6 +1835,7 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
     options.code_budget_bytes = g_meta_code_budget;
     options.stream = g_meta_stream;
     options.rom_profile_files = g_rom_profiles;
+    options.rom_plan = g_rom_plan;
     options.rom_resident_bytes = g_meta_resident;
     options.pack = g_meta_pack;
     if (static_coverage) {
@@ -1999,6 +2002,7 @@ int main(int argc, char* argv[]) {
     size_t meta_bpi = 20;
     bool meta_bpi_set = false;
     size_t meta_fill = 0;
+    fs::path rom_plan;
     fs::path meta_dir;
     
     for (int i = 1; i < argc; i++) {
@@ -2171,6 +2175,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--meta-fill-bytes") {
             if (i + 1 < argc) meta_fill = std::stoul(argv[++i]);
+        } else if (arg == "--rom-plan") {
+            if (i + 1 < argc) g_rom_plan = rom_plan = argv[++i];
         } else if (arg == "--meta-pack") {
             g_meta_pack = true;
         } else if (arg == "--meta-stream") {
@@ -2343,6 +2349,7 @@ int main(int argc, char* argv[]) {
         options.code_budget_bytes = g_meta_code_budget;
         if (meta_bpi_set) options.bytes_per_instruction = meta_bpi;
         options.fill_bytes = meta_fill;
+        options.rom_plan = rom_plan;
         options.precise = meta_precise;
         options.aggressive_scan = aggressive_scan;
         options.infer_data_zones = infer_data_zones;
@@ -2368,6 +2375,7 @@ int main(int argc, char* argv[]) {
                   << (stats.pool_sectors ? "  ROM flash pool:     " + std::to_string(stats.pool_sectors) + " sectors, " +
                        std::to_string(stats.packed_sectors) + " LZSS, " + std::to_string(stats.pool_bytes) + " bytes" +
                        (stats.packed ? " (whole ROM in flash)\n" : " (SD fallback raw)\n") : std::string())
+                  << (stats.pool_sectors && !rom_plan.empty() ? "  ROM plan:           " + rom_plan.string() + " (simulated card cache)\n" : std::string())
                   << (meta_precise ? "  mode:               precise (sync per instruction)\n" : "");
         return 0;
     }

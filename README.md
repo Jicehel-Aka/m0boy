@@ -21,7 +21,7 @@ on the ESPboy, an image to flash).
 | Memory | 32 KiB RAM, 240 KiB flash for the game | 36 KiB RAM, 228 KiB flash | 80 KiB RAM, 4 MiB flash |
 | Screen | 160×128 | 220×176 | 128×128 |
 | Storage | SD card | SD card | flash only |
-| Runtime version | 0.10.34 | 0.10.28 | 0.3.4 |
+| Runtime version | 0.10.36 | 0.10.30 | 0.3.6 |
 
 ## What runs where
 
@@ -109,8 +109,16 @@ Before compiling a game, `compile.sh` plays it by itself on the host: random
 sessions, a session without input (logos, attract mode), and coverage-guided
 explorations that keep a snapshot of every state where new code or data showed
 up and play on from there. The sessions record what code ran, how often, and
-which ROM sectors were read. They are kept per ROM (`profiles/<sha1>/`), so a
-later conversion reuses them and a session you play yourself extends them.
+which ROM sectors were read. They are kept per ROM in one store shared by
+every target console (`profiles/<gb|sg|gg|sms>/<game>/`), so a later
+conversion reuses them and a session you play yourself extends them. Each
+store also gets `profile.json` (sessions, a map of the ROM's code and data,
+the last build of each console, gm0 cycle profiles) and `play.sh`, which runs
+the built firmware in [gm0](https://github.com/r043v/gm0). Every gm0 session
+is recorded: gm0 notes the buttons the emulated game receives, frame by
+frame, the session is replayed in the host harness, and its code joins the
+profile for the next conversion; gm0 also gives a per-function cycle profile
+(emulator estimates).
 
 A static sweep completes them. It classifies every byte of the ROM (padding,
 repeated patterns, pointer tables), then tries speculative runs of
@@ -146,6 +154,19 @@ block is taken again only after several seconds without pressure and with a
 margin. With 64-byte blocks, Super Mario Land 2's demo ran 13,326 frames in
 150 s against 10,985 with the former fixed cache of 128-byte blocks
 (**device**), and Ristar's card reads dropped from 9,001 to 4,131 (**device**).
+
+What goes to flash, raw or packed, is chosen from the cost of each access,
+not only from how often a sector is read: the host replays every recorded
+session through a model of the console's cache (`tools/profile/m0romsim`,
+ROM and cartridge RAM, code and data, every access counted) with costs
+measured in gm0 (a card sector about 17,250 cycles, an LZSS decode about
+11,400; estimates). Cache block copies are fixed-size unrolled Thumb-1 (16 to
+512 bytes, every source alignment). Ristar on the META, the same 5,500 frames
+replayed unpaced: 133.37 s → 130.82 s, frames over 25 ms 1,657 → 1,149, LZSS
+decodes 2,119 → 21 (**device**, 0.10.34 → 0.10.36). On that run the simulated
+plan does no better than ranking sectors by read count (130.84 s); the gain
+comes from the access path and the measured costs. Details:
+`docs/PROFILING_STOCKAGE_2026-10-22.fr.md`.
 
 ### Runtime
 

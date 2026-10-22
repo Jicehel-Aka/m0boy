@@ -28,13 +28,16 @@ static uint32_t coverage_order[65536];
 /* --input / --random: parsing and RNG live in m0_host_util.h, these are the
  * harness's own knobs */
 static const char *input_script;
+static m0_input_t input_file; /* --input file: bits as sg1000_buttons, 64 = pause */
+static const char *const input_names[] = { "up", "down", "left", "right", "1", "2", "pause" };
 static uint32_t random_state;
 static void inputs(void) {
-    unsigned keys = buttons | m0_scripted(input_script, machine.frames) |
+    const unsigned played = m0_input_keys(&input_file, machine.frames);
+    unsigned keys = buttons | m0_scripted(input_script, machine.frames) | (played & 63) |
                     m0_randomized(&random_state, machine.frames, 0);
     if (machine.frames >= start_frame && machine.frames < start_frame + 10) keys |= 16;
     sg1000_buttons(0, (uint8_t)keys);
-    sg1000_pause(machine.frames == pause_frame);
+    sg1000_pause(machine.frames == pause_frame || (played & 64));
 }
 #ifndef SG_GENERATED
 /* --explore frames: the coverage-guided player of m0_explore.h, from the
@@ -147,7 +150,10 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--buttons") && i + 1 < argc) buttons = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--start-frame") && i + 1 < argc) start_frame = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--pause-frame") && i + 1 < argc) pause_frame = (unsigned)strtoul(argv[++i], 0, 0);
-        else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_script = argv[++i];
+        else if (!strcmp(argv[i], "--input") && i + 1 < argc) {
+            if (strchr(argv[++i], ':')) input_script = argv[i];
+            else if (!m0_input_load(&input_file, argv[i], input_names, 7)) { perror(argv[i]); return 2; }
+        }
         else if (!strcmp(argv[i], "--random") && i + 1 < argc) random_state = m0_random_seed(argv[++i]);
 #ifndef SG_GENERATED
         else if (!strcmp(argv[i], "--explore") && i + 1 < argc) explore_frames = (unsigned)strtoul(argv[++i], 0, 0);

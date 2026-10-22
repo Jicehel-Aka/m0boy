@@ -38,6 +38,7 @@ extern const uint8_t sg_rom[];
 /* Paged ROM through the slot pointers; the first KiB is fixed. */
 static inline __attribute__((always_inline)) uint8_t RD(uint16_t a) {
     if (a >= 0xc000) return machine.ram[a & 8191];
+    gg_trace_read(a);
     if (a < 0x400 && !GG_CODEMASTERS) return m0_load_u8(machine.rom + a);
 #if SG_CART_RAM
     if (a >= 0x8000 && (machine.ram_ctl & 8)) return gg_cart_byte(a);

@@ -3,6 +3,7 @@
  * and sound. */
 #include "gg.h"
 #include "m0_host_util.h"
+#include "m0_rom_trace.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +29,34 @@ static uint32_t *coverage_order;
 /* Profiling: frames in which each 512-byte ROM sector was read as data
  * (the generator keeps the most read pages in flash). */
 static uint32_t *read_frames, *read_last, rom_sectors, trace_clock, new_sectors; /* trace_clock: frames run (the explorer rewinds machine.frames) */
+static m0_rom_trace_t rom_trace; /* --rom-trace-out: every access, in order */
+static const char *rom_trace_path, *rom_trace_skip_path;
+/* --rom-trace-skip FILE: instructions a firmware compiled (the generator's
+ * compiled.txt), by ROM offset: their fetches never reach its ROM cache. */
+static uint8_t *rom_trace_skip, fetch_skipped;
+void gg_rom_trace_insn(uint32_t offset) {
+    fetch_skipped = rom_trace_skip && offset < rom_sectors * 512u && rom_trace_skip[offset];
+}
+void gg_rom_trace_fetch(uint32_t offset) {
+    if (!fetch_skipped) m0_rom_trace_access(&rom_trace, offset, 1);
+}
+void gg_cart_trace(uint32_t offset, unsigned write) { m0_rom_trace_cart(&rom_trace, offset, write); }
+static int rom_trace_skip_load(const char *path, uint32_t size) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    rom_trace_skip = calloc(size, 1);
+    char line[64];
+    while (rom_trace_skip && fgets(line, sizeof line, f)) {
+        unsigned loc;
+        if (line[0] == '#' || sscanf(line, "%x", &loc) != 1) continue;
+        const uint32_t pc = loc & 0xffff, offset = (loc >> 16) * 0x4000u + (pc & 0x3fff);
+        if (pc < 0xc000 && offset < size) rom_trace_skip[offset] = 1;
+    }
+    fclose(f);
+    return rom_trace_skip != 0;
+}
 void gg_rom_trace(uint32_t offset) {
+    m0_rom_trace_access(&rom_trace, offset, 0);
     const uint32_t s = offset >> 9;
     if (!read_frames || s >= rom_sectors || read_last[s] == trace_clock + 1) return;
     read_last[s] = trace_clock + 1;
@@ -40,6 +68,8 @@ void gg_rom_trace(uint32_t offset) {
  * harness's own knobs.  START joins the random pad on Game Gear only (bits:
  * up, down, left, right, 1, 2, START). */
 static const char *input_script;
+static m0_input_t input_file; /* --input file: bits as gg_buttons */
+static const char *const input_names[] = { "up", "down", "left", "right", "1", "2", "start", "pause" };
 static uint32_t random_state;
 /* --save-state / --load-state: the machine's stream (gg_state_io) through a
  * file, the byte count first. */
@@ -68,7 +98,7 @@ static void state_file(const char *path, int load) {
 
 
 static void inputs(void) {
-    unsigned keys = buttons | m0_scripted(input_script, machine.frames) |
+    unsigned keys = buttons | m0_scripted(input_script, machine.frames) | m0_input_keys(&input_file, machine.frames) |
                     m0_randomized(&random_state, machine.frames, GG_IS_SMS ? 0u : (unsigned)GG_START);
     if (machine.frames >= start_frame && machine.frames < start_frame + 10) keys |= GG_IS_SMS ? GG_B1 : GG_START;
     gg_buttons((uint8_t)keys);
@@ -131,6 +161,7 @@ static void frame(void *ctx) {
     (void)ctx;
 #ifdef GG_ROM_TRACE
     trace_clock++;
+    m0_rom_trace_frame(&rom_trace);
     if (explore_on) {
         const unsigned k = m0x_keys(&explorer);
         if (k == M0X_END) machine.stop = 1;
@@ -204,9 +235,16 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--shot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav_path = argv[++i];
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) cov_path = argv[++i];
+#ifdef GG_ROM_TRACE
+        else if (!strcmp(argv[i], "--rom-trace-out") && i + 1 < argc) rom_trace_path = argv[++i];
+        else if (!strcmp(argv[i], "--rom-trace-skip") && i + 1 < argc) rom_trace_skip_path = argv[++i];
+#endif
         else if (!strcmp(argv[i], "--buttons") && i + 1 < argc) buttons = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--start-frame") && i + 1 < argc) start_frame = (unsigned)strtoul(argv[++i], 0, 0);
-        else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_script = argv[++i];
+        else if (!strcmp(argv[i], "--input") && i + 1 < argc) {
+            if (strchr(argv[++i], ':')) input_script = argv[i];
+            else if (!m0_input_load(&input_file, argv[i], input_names, 8)) { perror(argv[i]); return 2; }
+        }
         else if (!strcmp(argv[i], "--explore") && i + 1 < argc) explore_frames = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--save-state") && i + 1 < argc) save_state_file = argv[++i];
         else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) load_state_file = argv[++i];
@@ -249,8 +287,17 @@ int main(int argc, char **argv) {
         rom_sectors = (uint32_t)((size + 511) / 512);
         read_frames = calloc(rom_sectors, sizeof *read_frames);
         read_last = calloc(rom_sectors, sizeof *read_last);
+        if (rom_trace_path && !m0_rom_trace_open(&rom_trace, rom_trace_path, (uint32_t)size, GG_CART_RAM_SIZE)) {
+            perror(rom_trace_path); free(loaded); return 1;
+        }
+        if (rom_trace_skip_path && !rom_trace_skip_load(rom_trace_skip_path, rom_sectors * 512u)) {
+            perror(rom_trace_skip_path); free(loaded); return 1;
+        }
 #endif
     }
+#ifdef GG_ROM_TRACE
+    if (rom_trace_path && !cov_path) { fprintf(stderr, "--rom-trace-out needs --coverage\n"); free(loaded); return 2; }
+#endif
 #ifdef SG_GENERATED
     gg_init(rom, size, cart);
 #else
@@ -295,6 +342,13 @@ int main(int argc, char **argv) {
         }
         free(coverage_order);
         if (fclose(coverage)) { perror("coverage"); free(loaded); return 1; }
+#ifdef GG_ROM_TRACE
+        if (rom_trace.f) {
+            fprintf(stderr, "rom_trace: %llu accesses, %llu written, %llu frames\n", (unsigned long long)rom_trace.events,
+                    (unsigned long long)rom_trace.written, (unsigned long long)rom_trace.frames);
+            if (m0_rom_trace_close(&rom_trace)) { perror(rom_trace_path); free(loaded); return 1; }
+        }
+#endif
     }
     if (shot) {
         FILE *f = fopen(shot, "wb");

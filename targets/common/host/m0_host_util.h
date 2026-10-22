@@ -81,6 +81,45 @@ static inline unsigned m0_scripted(const char *script, unsigned frame) {
     return keys;
 }
 
+/* --input file: "frame buttons" lines, as the Game Boy harness reads them
+ * (gm0 sessions, tools/profile): buttons are names[] joined by '+', or
+ * "none", held from that frame on; bit i of the mask is names[i].  Frames
+ * only grow, so m0_input_keys keeps a cursor.  A script ("frame:mask:len")
+ * holds a ':' and is no file. */
+typedef struct { unsigned count, pos, held; unsigned *frame, *keys; } m0_input_t;
+static inline int m0_input_load(m0_input_t *in, const char *path, const char *const *names, unsigned n_names) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[256];
+    unsigned cap = 0;
+    while (fgets(line, sizeof line, f)) {
+        char buttons[200];
+        unsigned at, keys = 0;
+        if (line[0] == '#' || sscanf(line, "%u %199s", &at, buttons) != 2) continue;
+        for (char *tok = strtok(buttons, "+"); tok; tok = strtok(0, "+")) {
+            unsigned i = 0;
+            while (i < n_names && strcmp(tok, names[i])) i++;
+            if (i == n_names && strcmp(tok, "none")) { fprintf(stderr, "%s: unknown button '%s'\n", path, tok); fclose(f); return 0; }
+            if (i < n_names) keys |= 1u << i;
+        }
+        if (in->count == cap) {
+            cap = cap ? cap * 2 : 256;
+            unsigned *fr = realloc(in->frame, cap * sizeof *fr), *ks = fr ? realloc(in->keys, cap * sizeof *ks) : 0;
+            if (fr) in->frame = fr;
+            if (!fr || !ks) { fclose(f); return 0; }
+            in->keys = ks;
+        }
+        in->frame[in->count] = at;
+        in->keys[in->count++] = keys;
+    }
+    fclose(f);
+    return 1;
+}
+static inline unsigned m0_input_keys(m0_input_t *in, unsigned frame) {
+    while (in->pos < in->count && in->frame[in->pos] <= frame) in->held = in->keys[in->pos++];
+    return in->held;
+}
+
 /* --random seed: buttons redrawn every 16 frames; extra_mask may add the
  * console's START, which the SG-1000 pad has not. */
 static inline uint32_t m0_random_seed(const char *text) {

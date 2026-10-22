@@ -596,3 +596,8 @@ gbl_oam_dma_asm:
 #define M0_ROM_RAMFUNC GBL_PPU_RAMFUNC
 #include "m0_rom_lzss.inc"
 #endif
+
+#if defined(__ARM_ARCH_6M__) /* the card cache's fixed-size copies (m0_copy.h) */
+#define M0_COPY_RAMFUNC GBL_PPU_RAMFUNC
+#include "m0_copy.inc"
+#endif

@@ -11,6 +11,9 @@ static uint8_t rom[0x4000];
 static uint32_t random_state = 12345;
 static uint32_t random_word(void) { return random_state = random_state * 1664525u + 1013904223u; }
 void gg_rom_trace(uint32_t offset) { (void)offset; }
+void gg_rom_trace_fetch(uint32_t offset) { (void)offset; }
+void gg_rom_trace_insn(uint32_t offset) { (void)offset; }
+void gg_cart_trace(uint32_t offset, unsigned write) { (void)offset; (void)write; }
 
 static void reference_counter(void) {
     while (machine.lc_line < GG_LINES &&

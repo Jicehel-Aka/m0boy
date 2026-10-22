@@ -10,6 +10,14 @@ static inline void sg_native_write(z80_t *c, uint16_t a, uint8_t v) { (void)c; s
 #include <string.h>
 
 sg1000_t machine;
+
+/* Read by gm0 --record-input, which finds it by its tag in the firmware:
+ * the frame counter and the buttons the game receives (player 1, pause),
+ * so that a session played in gm0 replays in the host harness (--input).
+ * sg1000_reset references it: --gc-sections would drop it otherwise. */
+static const struct { char tag[8]; uint32_t version; const volatile void *frame, *buttons, *extra; }
+    sg_input_probe __attribute__((used, aligned(4))) = { "m0input", 1, &machine.frames, &machine.buttons[0], &machine.pause };
+
 uintptr_t sg_stack_limit;
 
 const uint32_t sg1000_palette[16] = {
@@ -136,6 +144,7 @@ void sg1000_init(const uint8_t *rom, size_t size, uint8_t *cart_ram) {
 }
 
 void sg1000_reset(void) {
+    __asm__ volatile("" : : "r"(&sg_input_probe));
     sg1000_t *m = &machine;
     z80_t keep = m->cpu;
     z80_reset(&m->cpu);

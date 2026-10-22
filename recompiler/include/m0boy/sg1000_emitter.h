@@ -46,6 +46,7 @@ struct EmitStats {
     size_t swept = 0;      ///< instructions added by the speculative sweep
     size_t data_zones = 0; ///< inferred data zones (>= 512 bytes)
     size_t data_bytes = 0; ///< ROM bytes inside those zones
+    std::vector<uint32_t> locations; ///< every compiled instruction (Loc), ascending
 };
 
 /// Z80 -> C for the Sega Z80 runtimes (sg_gen.h): regions of native code

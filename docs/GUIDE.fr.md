@@ -235,10 +235,83 @@ script enchaîne les étapes a) à d) :
 ### Parties enregistrées et réutilisées
 
 Chaque partie, automatique ou jouée à la main (`PLAY=1`), est sauvée dans
-`roms/gb/profiles/<sha1 de la ROM>/` : touches (`.input`), code exécuté (`.cov`)
-et lectures de données (`.prof`). Les lancements suivants les réutilisent
-sans rejouer, et chaque partie à la main s'ajoute aux précédentes. Garde
-ce dossier : il vaut toutes tes parties.
+le dossier de profil de la ROM, `profiles/<gb|sg|gg|sms>/<Jeu>/` à la racine
+du dépôt, commun à la META, la Pokitto et l'ESPboy : touches (`.input`), code
+exécuté (`.cov`) et lectures de données (`.prof`). Les lancements suivants
+les réutilisent sans rejouer, et chaque partie à la main s'ajoute aux
+précédentes. Garde ce dossier : il vaut toutes tes parties. Les anciens
+dossiers `roms/<sys>/profiles/<sha1>/` y sont déplacés au premier passage.
+
+Le même dossier contient :
+
+- `profile.json` : chaque partie (images, instructions, instructions que
+  seule cette partie a trouvées), la carte de la ROM (par blocs de 256
+  octets : `C` code exécuté, `D` données lues, `B` les deux), les
+  instructions les plus exécutées, le dernier build de chaque console
+  (version, code compilé, RAM, flash) et les runs gm0 ;
+- `play.sh` : `./play.sh` lance une session de jeu dans
+  [gm0](https://github.com/r043v/gm0) avec le dernier firmware construit
+  (`./play.sh pokitto` ou `espboy` pour une autre console ; `GM0=` si gm0
+  n'est pas dans `../gm0/build/bin/`). Chaque session est enregistrée pour
+  l'entraînement :
+  - la carte est neuve (sauvegarde vierge, pas d'états), pour que la partie
+    se rejoue depuis l'allumage ;
+  - gm0 note les boutons que reçoit le jeu, avec le numéro d'image du jeu
+    (`gm0 --record-input` ; le firmware porte un petit descripteur
+    `m0input` qui dit où les lire) ;
+  - la session devient `coverage-gm0-<date>.input`, rejouée aussitôt dans
+    le harnais PC : son code exécuté entre dans le profil, le `./compile.sh`
+    suivant voit le jeu « profil enrichi » et le compile, puis la rejoue
+    chaque fois que le profil est refait (`REPLAY=1` : toutes) ;
+  - à la sortie, les fonctions du firmware qui ont pris le plus de cycles
+    (`EMU_PROF` : des estimations de gm0, pas des mesures sur la console).
+
+  F2 prend un instantané, F4 y revient : gm0 repart à froid et rejoue en
+  avance rapide les touches jusque-là, la partie reste rejouable depuis
+  l'allumage. `./play.sh reprendre [<date>]` reprend une session à son
+  dernier instantané (ou à sa fin) un autre jour. Redémarrer (F5) ou
+  recharger un état du menu du firmware coupe en revanche la partie
+  rejouable à cet endroit. `./play.sh rejouer [<date>]` rejoue une session
+  dans gm0, touche pour touche ; `./play.sh --carte` joue librement sur une
+  carte gardée (sauvegardes, états), sans enregistrement. `./play.sh record`
+  (Game Boy) ouvre la fenêtre du harnais PC pour une partie à la main.
+  `./play.sh report` refait `profile.json`.
+
+### Ce qui reste en flash (Game Gear, Master System, Game Boy)
+
+Une ROM plus grande que la flash laisse des pages sur la carte SD. Ce que
+le firmware garde en flash vient d'une simulation de son cache carte sur
+toutes les parties enregistrées (`tools/profile/m0profile.py storage`,
+lancé par `compile.sh`, `STORAGE=0` pour s'en passer) :
+
+- chaque partie (dix minutes au plus) est rejouée en trace d'accès, dans
+  l'ordre, au grain de 16 octets : chaque lecture du jeu, répétitions
+  comprises, octets d'instructions interprétées, RAM de cartouche ; le
+  harnais du projet généré au build précédent la rejoue avec son propre
+  code compilé, donc le trafic de ce firmware (gm0 donne les mêmes lectures
+  SD, décodages et blocs chargés) ;
+- `m0romsim` rejoue ces traces dans une copie exacte du cache partagé
+  (blocs de 64 octets, secteur de 512 en attente, CLOCK, RAM de cartouche)
+  et compte le coût de chaque accès : octet du pool en flash, bloc lu en
+  dernier, secteur en attente, balayage des voies, défaut (copie), lecture
+  SD, décodage (coûts mesurés dans gm0) ;
+- les blocs sont choisis par cycles économisés par octet de flash, de 512
+  octets à 16 Kio, bruts ou LZSS (Game Boy : blocs de 4 Kio bruts,
+  secteurs LZSS) ; la taille minimale est validée en apprenant sans une
+  partie et en testant sur elle ;
+- les coûts d'une lecture SD et d'un décodage et la taille réelle du cache
+  viennent de runs gm0 (`calibration-<console>.json`, plusieurs longueurs
+  d'une session : régression ; cycles comptés par gm0, des estimations, pas
+  des mesures sur console).
+
+Blocs plus petits, petits blocs compressés ou sans leurs zéros, cache
+séparé code/données : comparés dans
+`docs/PROFILING_STOCKAGE_2026-10-22.fr.md`, tous moins bons sur Ristar.
+
+`storage.json` (et la section `storage` de `profile.json`) donne la
+validation croisée, le plan retenu, la sensibilité au nombre de voies et au
+budget. Le générateur reçoit `rom.rank` et arbitre lui-même entre code
+compilé et secteurs gardés.
 
 ### Sauvegardes
 
@@ -258,11 +331,11 @@ Si le `.SAV` manque :
 
 ### Profils fournis
 
-Le dossier `profiles/` contient des parties déjà enregistrées (adresses du
-code exécuté, lectures de données ; aucun contenu de jeu), rangées par SHA-1
-de la ROM. Si ton dump est identique, `compile.sh` les reprend
-automatiquement (« Profils fournis utilisés ») et produit le même firmware
-que celui testé par l'auteur :
+Des parties déjà enregistrées (adresses du code exécuté, lectures de
+données ; aucun contenu de jeu) peuvent être déposées dans `profiles/`, à
+l'ancien format, rangées par SHA-1 de la ROM (`profiles/<sha1>/`). Si ton
+dump est identique, `compile.sh` les déplace dans le dossier de profil du jeu
+et produit le même firmware que celui testé par l'auteur :
 
 | Jeu | SHA-1 |
 |---|---|

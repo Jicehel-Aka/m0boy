@@ -10,6 +10,7 @@ SOURCE = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='m0_batch_') as temporary:
     root = Path(temporary)
     shutil.copy2(SOURCE / 'compile.sh', root / 'compile.sh')
+    shutil.copytree(SOURCE / 'tools/profile', root / 'tools/profile')
     (root / 'build/bin').mkdir(parents=True)
     commands = root / 'commands'
     commands.mkdir()
@@ -48,6 +49,11 @@ elif name=='nproc':print('4')
     (root / 'roms/sg/Same.SG').write_bytes(b'synthetic')
     (root / 'roms/sg/Duplicate.sg').write_bytes(b'synthetic')
     (root / 'roms/sg/Second game.sg').write_bytes(b'other synthetic')
+    # Old layout (<rom dir>/profiles/<sha1>/<system>/): moved into the shared store.
+    import hashlib
+    legacy = root / 'roms/sg/profiles' / hashlib.sha1(b'other synthetic').hexdigest() / 'sg1000'
+    legacy.mkdir(parents=True)
+    (legacy / 'coverage-legacy.cov').write_text('# m0boy.sg1000.coverage.v2\n0010 5\n')
     env = dict(os.environ, PATH=str(commands)+':'+os.environ['PATH'], TARGET='both',
                ALL='1', AUTO='0', STATIC='0', PACK='0', NO_ICONS='1', JOBS='1', PLAY='0')
     def run(*args, **overrides):
@@ -57,6 +63,32 @@ elif name=='nproc':print('4')
         return result.stdout
     run()
     calls = [json.loads(line) for line in (root/'calls.jsonl').read_text().splitlines()]
+    # One profile per ROM, shared by both consoles, under profiles/<source>/<game>/.
+    assert not (root/'roms/sg/profiles').exists()
+    second = root/'profiles/sg/Second game'
+    assert (second/'coverage-legacy.cov').exists()
+    assert sorted(p.name for p in (root/'profiles').iterdir()) == ['gb', 'sg'], list((root/'profiles').iterdir())
+    stores = sorted(p for p in (root/'profiles').glob('*/*') if p.is_dir())
+    assert [p.relative_to(root/'profiles').as_posix() for p in stores] == ['gb/Same', 'sg/Duplicate', 'sg/Second game'], stores
+    sizes = {'Same': 9, 'Duplicate': 9, 'Second game': 15}
+    for store in stores:
+        assert (store/'build-meta.txt').exists() and (store/'build-pokitto.txt').exists(), sorted(os.listdir(store))
+        assert os.access(store/'play.sh', os.X_OK)
+        report = json.loads((store/'profile.json').read_text())
+        assert report['format'] == 'm0boy.profile.v1' and report['rom']['size'] == sizes[store.name], report['rom']
+        assert set(report['builds']) == {'meta', 'pokitto'}
+    report = json.loads((second/'profile.json').read_text())
+    assert report['totals']['instructions'] == 1 and report['sessions'][0]['kind'] == 'other'
+    assert report['rom_map']['banks'][0]['map'].startswith('C')
+    help_text = subprocess.run([str(second/'play.sh'), '-h'], text=True, capture_output=True, timeout=30).stdout
+    assert 'record' in help_text and 'gm0' in help_text, help_text
+    # A session added to the profile after the firmware makes the game due again.
+    import time
+    time.sleep(1.1)
+    (second/'coverage-20261022-120000.cov').write_text('# m0boy.sg1000.coverage.v2\n0020 1\n')
+    rebuilt = run('roms/sg', TARGET='meta')
+    assert 'Réussis : 1' in rebuilt and 'Déjà à jour : 1' in rebuilt, rebuilt
+    (second/'coverage-20261022-120000.cov').unlink()
     generations = [args for name,args in calls if name=='gbrecomp' and '-o' in args]
     sg = [args for args in generations if '--system' in args]
     assert len(sg)==4, sg  # two SG cartridges, both destinations
@@ -99,12 +131,12 @@ elif name=='nproc':print('4')
     assert len(profiles)==8 and all(args[args.index('--frames')+1]=='120' for args in profiles)
     # and EXPLORERS (4) coverage-guided explorations of AUTO_SECONDS x 6000 frames
     assert len(explorations)==8 and all(args[args.index('--explore')+1]=='12000' for args in explorations)
-    assert len(list((root/'roms/sg/profiles').glob('*/sg1000/coverage-explore*.cov')))==8
+    assert len(list((root/'profiles/sg').glob('*/coverage-explore*.cov')))==8
     assert sum('--random' in args for args in profiles)==4
     assert sum('--buttons' not in args and '--random' not in args for args in profiles)==2
-    assert len(list((root/'roms/sg/profiles').glob('*/sg1000/coverage-auto.cov')))==2
-    assert len(list((root/'roms/sg/profiles').glob('*/sg1000/coverage-idle.cov')))==2
-    assert len(list((root/'roms/sg/profiles').glob('*/sg1000/coverage-rand*.cov')))==4
+    assert len(list((root/'profiles/sg').glob('*/coverage-auto.cov')))==2
+    assert len(list((root/'profiles/sg').glob('*/coverage-idle.cov')))==2
+    assert len(list((root/'profiles/sg').glob('*/coverage-rand*.cov')))==4
     assert len(list((root/'output/sg card').glob('sg/*.zip')))==2
     # games nested by source platform under each destination
     assert len(list((root/'roms/meta/gb').glob('*.zip')))==1
@@ -113,7 +145,7 @@ elif name=='nproc':print('4')
     assert all('--coverage' in args for name,args in calls if name=='gbrecomp' and '--system' in args)
     # Corrected automatic profiles are cached only for the same revision and
     # requested counts/durations. Hand-recorded profiles must survive refresh.
-    stores=list((root/'roms/sg/profiles').glob('*/sg1000'))
+    stores=list((root/'profiles/sg').glob('*'))
     for store in stores:
         assert (store/'.auto-profile-config').read_text().strip()=='v2 120 2 4 12000'
         (store/'coverage-manual.cov').write_text('# m0boy.sg1000.coverage.v1\n1234\n')

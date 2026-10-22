@@ -180,8 +180,12 @@
 #define GBL_CACHE_SHIFT 8
 #elif GBL_CACHE_BLOCK == 512
 #define GBL_CACHE_SHIFT 9
+#elif GBL_CACHE_BLOCK == 32 /* m0_cache.h takes 16 to 512 (studies, host-tested; cartridge RAM tables of 8 KiB / block) */
+#define GBL_CACHE_SHIFT 5
+#elif GBL_CACHE_BLOCK == 16
+#define GBL_CACHE_SHIFT 4
 #else
-#error "GBL_CACHE_BLOCK: 64, 128, 256 or 512"
+#error "GBL_CACHE_BLOCK: 16, 32, 64, 128, 256 or 512"
 #endif
 
 /* Stack gbl_exec / gbl_run want above gbl_stack_limit (gbl_core.c); the

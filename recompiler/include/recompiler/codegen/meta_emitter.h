@@ -52,6 +52,7 @@ struct MetaTargetOptions {
      * rest is read from <stream name>.GB on the card through a small cache. */
     int stream = -1;
     std::vector<std::filesystem::path> rom_profile_files; ///< host --rom-profile-out
+    std::filesystem::path rom_plan; ///< m0romsim's ranking (tools/profile): SD reads' worth saved per block, per frame
     size_t rom_resident_bytes = 0; ///< 0 = automatic (at most half the free flash)
     /* Streamed part of the ROM kept in flash, LZSS-compressed per 512-byte
      * sector, instead of on the SD card (GBL_ROM_PACKED).  Falls back to SD

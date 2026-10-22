@@ -6,7 +6,8 @@
  * This file declares the pool and its state; m0_cache.inc, included once
  * the console's hooks are defined, the functions (static: each console
  * exports its own names).  The including file defines first:
- *   M0C_BLOCK, M0C_SHIFT  block size (64, 128, 256 or 512 bytes) and its log2
+ *   M0C_BLOCK, M0C_SHIFT  block size (16, 32, 64, 128, 256 or 512 bytes) and
+ *                         its log2
  *   M0C_WAYS              blocks in the pool (2 to 255)
  *   M0C_BUF, M0C_TAG, M0C_ROM_LAST, M0C_MISSES
  *                         global names of the pool, its tags, the way of
@@ -31,9 +32,10 @@
 
 #include <stdint.h>
 #include <string.h>
+#include "m0_copy.h"
 
-#if M0C_BLOCK != (1 << M0C_SHIFT) || (M0C_BLOCK != 64 && M0C_BLOCK != 128 && M0C_BLOCK != 256 && M0C_BLOCK != 512)
-#error "M0C_BLOCK: 64, 128, 256 or 512, M0C_SHIFT its log2"
+#if M0C_BLOCK != (1 << M0C_SHIFT) || M0C_BLOCK < 16 || M0C_BLOCK > 512
+#error "M0C_BLOCK: 16, 32, 64, 128, 256 or 512, M0C_SHIFT its log2"
 #endif
 #if M0C_WAYS < 2 || M0C_WAYS > 255
 #error "M0C_WAYS: 2 to 255 blocks"

@@ -1,22 +1,45 @@
 #include "gg.h"
-#ifdef GG_ROM_TRACE /* host analysis: ROM bytes read as data, by offset */
+#ifdef GG_ROM_TRACE /* host analysis: ROM bytes read as data, interpreted instruction bytes, cartridge RAM */
 void gg_rom_trace(uint32_t offset);
-static inline uint8_t gg_native_read(z80_t *c, uint16_t a) {
-    (void)c;
-    if (a < 0x400) gg_rom_trace(a);
-    else if (a < 0xc000 && !(a >= 0x8000 && (machine.ram_ctl & 8))) gg_rom_trace((uint32_t)machine.page[a >> 14] * 0x4000 + (a & 0x3fff));
-    return gg_read(a);
+void gg_rom_trace_fetch(uint32_t offset);
+void gg_rom_trace_insn(uint32_t offset); /* an instruction starts: its bytes are traced unless compiled */
+void gg_cart_trace(uint32_t offset, unsigned write);
+static inline int gg_rom_offset(uint16_t a, uint32_t *offset) {
+    if (a < 0x400) *offset = a;
+    else if (a < 0xc000 && !(a >= 0x8000 && (machine.ram_ctl & 8))) *offset = (uint32_t)machine.page[a >> 14] * 0x4000 + (a & 0x3fff);
+    else return 0;
+    return 1;
+}
+/* gg_read and RD trace each read (gg_trace_read): an instruction byte while
+ * the interpreter fetches, a data read otherwise. */
+static unsigned trace_fetching;
+void gg_trace_read(uint16_t a) {
+    if (!machine.coverage) return;
+    uint32_t offset;
+    if (gg_rom_offset(a, &offset)) {
+        if (trace_fetching) gg_rom_trace_fetch(offset);
+        else gg_rom_trace(offset);
+    } else if (a >= 0x8000) gg_cart_trace(gg_cart_offset(a, machine.ram_ctl), 0);
+}
+/* Each opcode and operand byte the interpreter fetches: one firmware read
+ * each (gg_read). */
+static inline uint8_t gg_fetch(uint16_t a) {
+    trace_fetching = 1;
+    const uint8_t v = gg_read(a);
+    trace_fetching = 0;
+    return v;
 }
 #else
-static inline uint8_t gg_native_read(z80_t *c, uint16_t a) { (void)c; return gg_read(a); }
+#define gg_fetch gg_read
 #endif
+static inline uint8_t gg_native_read(z80_t *c, uint16_t a) { (void)c; return gg_read(a); }
 static inline void gg_native_write(z80_t *c, uint16_t a, uint8_t v) { (void)c; gg_write(a, v); }
 #define Z80_NATIVE_READ gg_native_read
 #define Z80_NATIVE_WRITE gg_native_write
 #include "z80_ops.h"
 /* Opcode fetch as the generic decoder sees it (bus_read): mapped by the
  * mapper, never traced as a data read (gg_rom_trace). */
-#define Z80_FAST_FETCH(a) gg_read((a))
+#define Z80_FAST_FETCH(a) gg_fetch((a))
 #include "z80_fast.h"
 #include <string.h>
 #ifdef GG_POOL_PACKED
@@ -24,11 +47,19 @@ static inline void gg_native_write(z80_t *c, uint16_t a, uint8_t v) { (void)c; g
 #endif
 
 gg_t machine;
+
+/* Read by gm0 --record-input, which finds it by its tag in the firmware:
+ * the frame counter and the buttons the game receives, so that a session
+ * played in gm0 replays in the host harness (--input).  gg_reset
+ * references it: --gc-sections would drop it otherwise. */
+static const struct { char tag[8]; uint32_t version; const volatile void *frame, *buttons, *extra; }
+    gg_input_probe __attribute__((used, aligned(4))) = { "m0input", 1, &machine.frames, &machine.buttons, 0 };
+
 uintptr_t sg_stack_limit;
 
 /* ---- bus ------------------------------------------------------------------ */
 
-static uint8_t bus_read(void *u, uint16_t a) { (void)u; return gg_read(a); }
+static uint8_t bus_read(void *u, uint16_t a) { (void)u; return gg_fetch(a); }
 static void bus_write(void *u, uint16_t a, uint8_t v) { (void)u; gg_write(a, v); }
 static uint8_t bus_in(void *u, uint16_t p) { (void)u; return gg_in((uint8_t)p); }
 static void bus_out(void *u, uint16_t p, uint8_t v) { (void)u; gg_out((uint8_t)p, v); }
@@ -74,7 +105,7 @@ void gg_remap(void) {
  * are not mapped directly (on the card, or LZSS-coded in the pool) and the
  * cartridge RAM's save file, written back when dirty. */
 #define M0C_BLOCK GG_CACHE_BLOCK
-#define M0C_SHIFT (GG_CACHE_BLOCK == 64 ? 6 : GG_CACHE_BLOCK == 128 ? 7 : GG_CACHE_BLOCK == 256 ? 8 : 9)
+#define M0C_SHIFT (GG_CACHE_BLOCK == 16 ? 4 : GG_CACHE_BLOCK == 32 ? 5 : GG_CACHE_BLOCK == 64 ? 6 : GG_CACHE_BLOCK == 128 ? 7 : GG_CACHE_BLOCK == 256 ? 8 : 9)
 #define M0C_WAYS (GG_CACHE_BYTES / GG_CACHE_BLOCK)
 #if GG_CACHE_DYN
 #define M0C_DYN 1
@@ -106,11 +137,11 @@ static int rom_sector(uint32_t sec, uint8_t *dst) {
         const uint32_t record = gg_pool_records[gg_pool_index[sec]];
         const uint8_t *src = gg_pool + (record & 0x3fffffffu);
         if (record >> 30) m0_rom_unpack512(src, dst);
-        else memcpy(dst, src, 512);
+        else M0_COPY(512, dst, src); /* records follow packed ones: any alignment */
         gg_stream_unpacked++;
 #else
         /* the pool is raw: a whole sector, copied */
-        memcpy(dst, gg_pool + ((size_t)gg_pool_index[sec] << 9), 512);
+        M0_COPY(512, dst, gg_pool + ((size_t)gg_pool_index[sec] << 9));
 #endif
         return 1;
     }
@@ -156,6 +187,73 @@ void gg_save_tick(void) {
 #endif
 
 #if GG_STREAM
+#if defined(__ARM_ARCH_6M__) && defined(GG_POOL_SECTORS) && defined(GG_POOL_PACKED)
+/* The Cortex-M0+: every read of a page left on the card comes here, about
+ * 240 times a frame on Ristar, so it saves nothing on the stack.  A raw
+ * pool sector's byte, else the cache's block read last, else a tail call
+ * to cache_rom_fill (gg_stream_fill).  Same choices as the C below. */
+uint8_t gg_stream_fill(uint32_t offset) __attribute__((alias("cache_rom_fill"))); /* its global name */
+#if GG_CACHE_BLOCK == 16 /* M0C_SHIFT as the assembler's number */
+#define GG_SHIFT_TXT "4"
+#elif GG_CACHE_BLOCK == 32
+#define GG_SHIFT_TXT "5"
+#elif GG_CACHE_BLOCK == 64
+#define GG_SHIFT_TXT "6"
+#elif GG_CACHE_BLOCK == 128
+#define GG_SHIFT_TXT "7"
+#elif GG_CACHE_BLOCK == 256
+#define GG_SHIFT_TXT "8"
+#else
+#define GG_SHIFT_TXT "9"
+#endif
+__attribute__((naked)) uint8_t gg_stream_read(uint32_t offset) {
+    (void)offset;
+    __asm__ volatile(
+        "   .syntax unified\n"
+        "   ldr   r2, =gg_pool_index\n"
+        "   lsrs  r3, r0, #9\n"
+#ifdef GG_POOL_WIDE
+        "   lsls  r3, r3, #1\n"
+        "   ldrh  r3, [r2, r3]\n"
+        "   ldr   r1, =65535\n"
+        "   cmp   r3, r1\n"
+#else
+        "   ldrb  r3, [r2, r3]\n"
+        "   cmp   r3, #255\n"
+#endif
+        "   beq   2f\n"
+        "   ldr   r2, =gg_pool_records\n"
+        "   lsls  r3, r3, #2\n"
+        "   ldr   r3, [r2, r3]\n"
+        "   lsrs  r2, r3, #30\n"
+        "   bne   2f\n"                   /* packed: decoded into the cache */
+        "   ldr   r2, =gg_pool\n"
+        "   adds  r3, r2\n"
+        "   lsls  r0, r0, #23\n"
+        "   lsrs  r0, r0, #23\n"
+        "   ldrb  r0, [r3, r0]\n"
+        "   bx    lr\n"
+        "2: ldr   r3, =card_rom_last\n"
+        "   ldrb  r3, [r3]\n"
+        "   lsls  r2, r3, #2\n"
+        "   ldr   r1, =card_tag\n"
+        "   ldr   r1, [r1, r2]\n"
+        "   lsrs  r2, r0, #" GG_SHIFT_TXT "\n"
+        "   cmp   r1, r2\n"
+        "   bne   3f\n"
+        "   lsls  r3, r3, #" GG_SHIFT_TXT "\n"
+        "   ldr   r2, =card_buf\n"
+        "   adds  r3, r2\n"
+        "   lsls  r0, r0, #(32 - " GG_SHIFT_TXT ")\n"
+        "   lsrs  r0, r0, #(32 - " GG_SHIFT_TXT ")\n"
+        "   ldrb  r0, [r3, r0]\n"
+        "   bx    lr\n"
+        "3: ldr   r3, =gg_stream_fill\n"
+        "   bx    r3\n"
+        "   .ltorg\n"
+        "   .syntax divided\n");
+}
+#else
 uint8_t gg_stream_read(uint32_t offset) {
 #ifdef GG_POOL_SECTORS
     const unsigned pool = gg_pool_index[offset >> 9];
@@ -170,6 +268,7 @@ uint8_t gg_stream_read(uint32_t offset) {
 #endif
     return cache_rom_byte(offset);
 }
+#endif
 #endif
 #if GG_CART_ON_CARD
 uint8_t gg_cart_read(uint32_t offset) { return cache_ram_load(offset); }
@@ -195,6 +294,9 @@ void gg_mapper_write(uint16_t a, uint8_t v) {
 }
 
 void gg_write_cart(uint16_t a, uint8_t v) {
+#ifdef GG_ROM_TRACE /* a write only when the byte changes: the firmware's cache_ram_store */
+    gg_cart_trace(gg_cart_offset(a, machine.ram_ctl), machine.cart_ram && machine.cart_ram[gg_cart_offset(a, machine.ram_ctl)] != v);
+#endif
 #if GG_CART_ON_CARD
     gg_cart_store(gg_cart_offset(a, machine.ram_ctl), v);
 #else
@@ -319,6 +421,7 @@ void gg_init_system(const uint8_t *rom, size_t size, uint8_t *cart_ram, int sms)
 }
 
 void gg_reset(void) {
+    __asm__ volatile("" : : "r"(&gg_input_probe));
     gg_t *m = &machine;
     z80_t keep = m->cpu;
     z80_reset(&m->cpu);
@@ -544,7 +647,14 @@ static int interp_one(void) {
     z80_t *c = &m->cpu;
     if ((int32_t)(m->cyc - m->next_evt) >= 0 && sg_event(c->pc)) return 0;
     uint16_t pc = c->pc;
-    if (m->coverage) { const uint32_t loc = gg_location(pc); if (loc < m->coverage_size) gg_cover(loc); }
+    if (m->coverage) {
+        const uint32_t loc = gg_location(pc);
+        if (loc < m->coverage_size) gg_cover(loc);
+#ifdef GG_ROM_TRACE
+        uint32_t offset;
+        if (gg_rom_offset(pc, &offset)) gg_rom_trace_insn(offset);
+#endif
+    }
     int jumped;
     const int fast = z80_fast(c, &jumped); /* common opcodes without decoding */
     if (fast >= 0) {

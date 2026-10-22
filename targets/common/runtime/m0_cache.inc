@@ -69,7 +69,7 @@ static void cache_writeback(unsigned i) {
     }
     for (unsigned j = 0; j < CACHE_N; j++)
         if (CACHE_IS_ETAG(cache_tag[j]) && cache_dirty[j] && CACHE_ETAG_BLK(cache_tag[j]) >> (9 - M0C_SHIFT) == sec)
-            memcpy(sector_buf + (CACHE_ETAG_BLK(cache_tag[j]) * M0C_BLOCK & 511u), CACHE_BLK(j), M0C_BLOCK);
+            M0_COPY_ALIGNED(M0C_BLOCK, sector_buf + (CACHE_ETAG_BLK(cache_tag[j]) * M0C_BLOCK & 511u), CACHE_BLK(j));
     if (!M0C_SAVE_WRITE(sec, sector_buf)) {
         sector_tag = -1; /* the card may hold either */
         return;
@@ -87,7 +87,10 @@ static unsigned cache_victim(void) {
         i = cache_hand;
         cache_hand = (uint8_t)(i + 1u == CACHE_N ? 0 : i + 1u);
 #if M0C_WAYS > 2 /* two blocks: the referenced bytes alone */
-        if (i == cache_mru || i == cache_rom_last) continue;
+        /* mru guards the newest cartridge RAM block only: on a game without
+         * one it stays on way 0, which a ROM block may then take (that way
+         * was never loaded: one way in 12 lost, tools/profile/m0romsim). */
+        if (i == cache_rom_last || (i == cache_mru && CACHE_IS_ETAG(cache_tag[i]))) continue;
 #endif
 #if M0C_LEND
         if (cache_tag[i] == CACHE_LENT) continue;
@@ -128,7 +131,7 @@ static void cache_load(unsigned i, uint32_t b, int rom) {
         sector_tag = -1;
         if (M0C_SOURCE(sec, sector_buf)) sector_tag = want;
     }
-    if (sector_tag == want) memcpy(CACHE_BLK(i), sector_buf + (b * M0C_BLOCK & 511u), M0C_BLOCK);
+    if (sector_tag == want) M0_COPY_ALIGNED(M0C_BLOCK, CACHE_BLK(i), sector_buf + (b * M0C_BLOCK & 511u));
     else memset(CACHE_BLK(i), 0xFF, M0C_BLOCK);
 #endif
 #undef M0C_SOURCE
@@ -174,10 +177,27 @@ static void cache_ram_store(uint32_t off, uint8_t v) {
 }
 #endif
 
-/* A ROM byte from the pool (off: in the ROM). */
-static M0C_UNUSED uint8_t cache_rom_byte(uint32_t off) {
-    int32_t b = (int32_t)(off >> M0C_SHIFT);
-    if (cache_tag[cache_rom_last] == b) return CACHE_BLK(cache_rom_last)[off & (M0C_BLOCK - 1u)];
+/* A ROM byte from the pool (off: in the ROM): cache_rom_byte, the block
+ * read last, inline; cache_rom_fill the rest, out of line, so that the
+ * fast path saves no register (0.10.35's single function saved r4-r11 on
+ * every read for its miss path: 62 of its 81 cycles a read in gm0). */
+/* A miss: a way for ROM block b, loaded; its index.  Out of line too: the
+ * victim's loop and the load keep many registers live, which would make
+ * every staged or scanned hit save them all (gm0: 64 cycles a staged hit). */
+static __attribute__((noinline)) M0C_UNUSED unsigned cache_rom_miss(int32_t b) {
+    const unsigned i = cache_victim();
+    cache_load(i, (uint32_t)b, 1);
+    cache_tag[i] = b;
+    M0C_MISSES++;
+    if (cache_changed) {
+        cache_changed = 0;
+        M0C_SHOWN();
+    }
+    return i;
+}
+
+static __attribute__((noinline)) M0C_UNUSED uint8_t cache_rom_fill(uint32_t off) {
+    const int32_t b = (int32_t)(off >> M0C_SHIFT);
 #if M0C_BLOCK < 512
     /* the staged sector, still whole from the last miss: the 4×128 accolé
      * served before taking a block from the pool */
@@ -185,19 +205,16 @@ static M0C_UNUSED uint8_t cache_rom_byte(uint32_t off) {
 #endif
     unsigned i = 0;
     while (i < CACHE_N && cache_tag[i] != b) i++;
-    if (i == CACHE_N) {
-        i = cache_victim();
-        cache_load(i, (uint32_t)b, 1);
-        cache_tag[i] = b;
-        M0C_MISSES++;
-        if (cache_changed) {
-            cache_changed = 0;
-            M0C_SHOWN();
-        }
-    }
+    if (i == CACHE_N) i = cache_rom_miss(b);
     cache_ref[i] = 1;
     cache_rom_last = (uint8_t)i;
     return CACHE_BLK(i)[off & (M0C_BLOCK - 1u)];
+}
+
+static inline M0C_UNUSED uint8_t cache_rom_byte(uint32_t off) {
+    const unsigned last = cache_rom_last;
+    if (cache_tag[last] == (int32_t)(off >> M0C_SHIFT)) return CACHE_BLK(last)[off & (M0C_BLOCK - 1u)];
+    return cache_rom_fill(off);
 }
 
 #if M0C_SAVE

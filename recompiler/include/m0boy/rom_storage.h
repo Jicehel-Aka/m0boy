@@ -18,9 +18,13 @@ std::vector<uint8_t> lzss_encode(const uint8_t* data, size_t size);
 std::vector<uint8_t> deflate_encode(const uint8_t* data, size_t size);
 Block encode(const uint8_t* data, size_t size, bool deflate = false);
 
-/* Estimated M0+ costs, not device measurements. Used by every backend when
- * trading directly-addressable ROM for a decoded sector or an SD read. */
-inline constexpr double lzss_cycles = 16000; // shared Thumb-1 decoder, conservative
+/* M0+ costs used by every backend when trading directly-addressable ROM
+ * for a decoded sector or an SD read: gm0 estimates on the META (Ristar,
+ * 2026-10-22: per-instruction profile over several run lengths, boot and
+ * per-frame SPI switches set apart), not device measurements; the Pokitto's
+ * card path was not measured and shares them. */
+inline constexpr double sd_cycles = 17254;   // a 512-byte sector from the card (SPI, card, FAT)
+inline constexpr double lzss_cycles = 11397; // shared Thumb-1 decoder, 512 bytes
 inline constexpr double deflate_cycles = 80000; // prefix-table C decoder, conservative
 inline constexpr size_t lzss_decoder_bytes = 512; // conservative linked-code allowance
 inline constexpr size_t deflate_workspace_bytes = 1032;

@@ -298,8 +298,17 @@ static inline uint8_t gg_cart_byte(uint16_t a) { return gg_cart_read(gg_cart_off
 #define GG_HAS_CART_RAM (machine.cart_ram != 0)
 static inline uint8_t gg_cart_byte(uint16_t a) { return machine.cart_ram[gg_cart_offset(a, machine.ram_ctl)]; }
 #endif
+#ifdef GG_ROM_TRACE
+/* Host profiling (gg_host --rom-trace-out): every read under C000, from the
+ * interpreter or from compiled code (RD, sg_gen.h): the traffic the
+ * firmware's ROM path and cartridge RAM see. */
+void gg_trace_read(uint16_t a);
+#else
+#define gg_trace_read(a) ((void)0)
+#endif
 static inline uint8_t gg_read(uint16_t a) {
     if (a >= 0xc000) return machine.ram[a & 8191];
+    gg_trace_read(a);
     if (a < 0x400 && !GG_CODEMASTERS) return m0_load_u8(machine.rom + a);
     if (a >= 0x8000 && (machine.ram_ctl & 8) && GG_HAS_CART_RAM) return gg_cart_byte(a);
     return gg_slot_read(a);

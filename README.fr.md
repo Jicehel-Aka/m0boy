@@ -21,7 +21,7 @@ l'ESPboy, une image à flasher).
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le jeu | 36 Kio de RAM, 228 Kio de flash | 80 Kio de RAM, 4 Mio de flash |
 | Écran | 160×128 | 220×176 | 128×128 |
 | Stockage | carte SD | carte SD | flash seulement |
-| Version du runtime | 0.10.34 | 0.10.28 | 0.3.4 |
+| Version du runtime | 0.10.36 | 0.10.30 | 0.3.6 |
 
 ## Ce qui tourne où
 
@@ -112,8 +112,16 @@ au hasard, une partie sans touche (logos, démo) et des explorations guidées
 par la couverture, qui gardent l'état de chaque moment où du code ou des
 données nouveaux sont apparus et repartent de là. Les parties notent quel
 code a tourné, combien de fois, et quels secteurs de la ROM ont été lus. Elles
-sont gardées par ROM (`profiles/<sha1>/`) : une conversion suivante les
-réutilise, et une partie jouée à la main les complète.
+sont gardées par ROM, dans un dossier commun à toutes les consoles cibles
+(`profiles/<gb|sg|gg|sms>/<Jeu>/`) : une conversion suivante les réutilise,
+et une partie jouée à la main les complète. Chaque dossier reçoit aussi
+`profile.json` (parties, carte du code et des données de la ROM, dernier
+build de chaque console, profils de cycles gm0) et `play.sh`, qui lance le
+firmware construit dans [gm0](https://github.com/r043v/gm0). Chaque session
+gm0 est enregistrée : gm0 note les boutons que reçoit le jeu émulé, image
+par image, la session est rejouée dans le harnais PC, et son code rejoint le
+profil pour la conversion suivante ; gm0 donne aussi un profil de cycles par
+fonction (estimations de l'émulateur).
 
 Un balayage statique les complète. Il classe chaque octet de la ROM
 (remplissage, motifs répétés, tables de pointeurs), puis essaie des suites
@@ -153,6 +161,20 @@ En blocs de 64 octets, la démo de Super Mario Land 2 a fait 13 326 images en
 150 s contre 10 985 avec l'ancien cache fixe en blocs de 128 (**console**),
 et les lectures de carte de Ristar sont passées de 9 001 à 4 131
 (**console**).
+
+Ce qui va en flash, brut ou compressé, est choisi d'après le coût de chaque
+accès, pas seulement d'après la fréquence de lecture d'un secteur : le PC
+rejoue chaque partie enregistrée dans un modèle du cache de la console
+(`tools/profile/m0romsim`, ROM et RAM de cartouche, code et données, chaque
+accès compté) avec des coûts mesurés dans gm0 (un secteur de carte environ
+17 250 cycles, un décodage LZSS environ 11 400 ; estimations). Les copies de
+blocs du cache sont en Thumb-1 déroulé à taille fixe (16 à 512 octets, tous
+les alignements de source). Ristar sur la META, les mêmes 5 500 images
+rejouées sans rythme : 133,37 s → 130,82 s, images de plus de 25 ms 1 657 →
+1 149, décodages LZSS 2 119 → 21 (**console**, 0.10.34 → 0.10.36). Sur cette
+partie, le plan simulé ne fait pas mieux que le classement des secteurs par
+nombre de lectures (130,84 s) : le gain vient du chemin d'accès et des coûts
+mesurés. Détails : `docs/PROFILING_STOCKAGE_2026-10-22.fr.md`.
 
 ### Runtime
 
