@@ -95,7 +95,7 @@ static void korean150_remap(void) {
     const unsigned count = m->rom_pages * 2u;
     for (unsigned s = 0; s < GG_SLOTS; s++) {
         unsigned page = m0_korean150_page(m->ram_ctl, m->page2, s);
-        page = count ? page % count : 0;
+        if (page >= count) page = count ? page % count : 0; /* no division on Cortex-M0+ in the common case */
         m->page[s] = (uint8_t)page;
 #if GG_STREAM
         const unsigned index = gg_page_index[page >> 1];
