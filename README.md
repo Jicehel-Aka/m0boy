@@ -31,8 +31,13 @@ on the ESPboy, an image to flash).
 | SG-1000 | yes | yes | yes |
 | Game Gear | yes | yes | yes |
 | Master System | yes | yes | yes |
-| MSX1 (ASCII8/16, Konami mappers; experimental) | yes | yes | — |
+| MSX1 (ASCII8/16, Konami and Konami SCC mappers; AY-3-8910 and SCC sound; experimental) | yes | yes | — |
 | PICO-8 | yes | yes | yes |
+
+MSX1 is checked against openMSX (VRAM of the title screens) and against the
+host reference renderer; Gradius 2 (128 KiB, Konami SCC) held 60 game frames
+a second on a META in a 90 s hands-on test (frame counter against the
+firmware's own clock; displayed frames not measured). Notes: `docs/MSX.fr.md`.
 
 Every core has the same option menu (hold HOME; C on the Pokitto): resume,
 restart, **10 save-state slots**, volume, speed, CPU clock, return to the

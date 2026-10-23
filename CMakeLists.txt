@@ -34,7 +34,7 @@ add_library(m0boy_msx_runtime STATIC targets/sg1000/runtime/sg1000.c targets/sg1
     targets/msx/runtime/msx.c targets/msx/runtime/msx_ay.c)
 target_include_directories(m0boy_msx_runtime PUBLIC targets/common/runtime targets/sg1000/runtime)
 target_link_libraries(m0boy_msx_runtime PUBLIC m0boy_z80_runtime)
-target_compile_definitions(m0boy_msx_runtime PUBLIC SG_MSX=1 SG_MSX_RAM=16384 SG_MSX_TRACE=1) # TRACE: the frames that read each ROM sector, for the storage plan
+target_compile_definitions(m0boy_msx_runtime PUBLIC SG_MSX=1 SG_MSX_RAM=16384 SG_MIX_SLOTS=48 SG_MSX_TRACE=1) # TRACE: the frames that read each ROM sector, for the storage plan
 add_executable(msx_host targets/sg1000/host/sg_host.c)
 target_include_directories(msx_host PRIVATE targets/common/host) # m0_explore.h
 target_link_libraries(msx_host PRIVATE m0boy_msx_runtime)

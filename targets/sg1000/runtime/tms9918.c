@@ -29,6 +29,8 @@ typedef struct {
  * backdrop changes).  Both paths compute the same values. */
 #define M0_PANEL_SWAP SG_PANEL_SWAP
 #include "m0_scale.h"
+#include <stddef.h>
+#include <string.h>
 /* five weights of a pattern byte, as byte offsets 2w in 5-bit fields */
 const uint32_t sg_tile_w[256] = {
     0x0000000, 0x0a00000, 0x0620000, 0x1020000, 0x0050000, 0x0a50000,
@@ -130,12 +132,48 @@ static inline void mix_fill(uint16_t *row, unsigned c, const uint16_t *pal, uint
     uint32_t f = m0_spread565((c >> 4) ? pal[c >> 4] : bd), b = m0_spread565((c & 15) ? pal[c & 15] : bd);
     for (unsigned w = 0; w <= 8; w++) row[w] = m0_panel(m0_fold565(w * f + (8 - w) * b));
 }
-#if !SG_LOW_RAM
+#if SG_MIX_SLOTS
+/* A pool of SG_MIX_SLOTS rows filled on demand and an index of 256 byte
+ * offsets (0: the colour byte has no row yet), the asm loops' layout: the
+ * row of colour byte c is at (uint8_t *)&sg_mix + off[c].  A missing row
+ * (sg_mix_miss) takes the slot after the one filled last, first-in first-out;
+ * keep: the offset of a row the caller still uses, never taken. */
+typedef struct {
+    uint16_t off[256];
+    uint16_t row[SG_MIX_SLOTS][9];
+} sg_mix_t;
+sg_mix_t sg_mix __attribute__((aligned(4)));
+static uint16_t mix_owner[SG_MIX_SLOTS]; /* colour byte of each slot, 0xffff: free */
+static uint8_t mix_hand;
+static void mix_reset(const uint16_t *pal, uint16_t bd) {
+    (void)pal; (void)bd;
+    memset(sg_mix.off, 0, sizeof sg_mix.off);
+    memset(mix_owner, 0xff, sizeof mix_owner);
+    mix_hand = 0;
+}
+uint32_t sg_mix_miss(unsigned c, unsigned keep) {
+    unsigned s = mix_hand;
+    if (offsetof(sg_mix_t, row[s]) == keep) s = s + 1 == SG_MIX_SLOTS ? 0 : s + 1;
+    if (mix_owner[s] < 256) sg_mix.off[mix_owner[s]] = 0;
+    mix_fill(sg_mix.row[s], c, machine.palette, machine.palette[machine.vdp[7] & 15]);
+    mix_owner[s] = (uint16_t)c;
+    mix_hand = (uint8_t)(s + 1 == SG_MIX_SLOTS ? 0 : s + 1);
+    return sg_mix.off[c] = (uint16_t)offsetof(sg_mix_t, row[s]);
+}
+static inline const uint8_t *mix_row_keep(unsigned c, const uint8_t *keep) {
+    unsigned o = sg_mix.off[c];
+    if (!o) o = sg_mix_miss(c, keep ? (unsigned)(keep - (const uint8_t *)&sg_mix) : 0);
+    return (const uint8_t *)&sg_mix + o;
+}
+static inline const uint8_t *mix_row(unsigned c) { return mix_row_keep(c, 0); }
+#define SG_MIX_BASE (&sg_mix)
+#elif !SG_LOW_RAM
 static uint16_t mix[256][9];
 static void mix_reset(const uint16_t *pal, uint16_t bd) {
     for (unsigned c = 0; c < 256; c++) mix_fill(mix[c], c, pal, bd);
 }
 static inline const uint8_t *mix_row(unsigned c) { return (const uint8_t *)mix[c]; }
+#define SG_MIX_BASE mix
 #else
 #define SG_MIX_CACHE 16
 static uint16_t mix[SG_MIX_CACHE][9];
@@ -171,7 +209,7 @@ static void mix_prepare(const uint16_t *pal, uint16_t bd) {
 #define tile_wv sg_tile_wv
 
 /* Thumb-1 tile loops (sg_render_asm.S), with the full blend table only. */
-#if defined(__ARM_ARCH_6M__) && !SG_LOW_RAM && !defined(SG_NO_RENDER_ASM)
+#if defined(__ARM_ARCH_6M__) && (!SG_LOW_RAM || SG_MIX_SLOTS) && !defined(SG_NO_RENDER_ASM)
 #define SG_RENDER_ASM 1
 typedef struct {
     uint16_t *out;
@@ -185,6 +223,76 @@ void sg_pair_g1(const sg_tile_args *);
 void sg_pair_g2(const sg_tile_args *);
 #else
 #define SG_RENDER_ASM 0
+#endif
+#if SG_RENDER_ASM
+/* sg_tile_w as bytes, five offsets 2w per pattern byte at a stride of 8 (the pair loop of
+ * sg_render_asm.S: one load a pixel instead of two shifts) */
+const uint8_t sg_tile_w8[256][8] = {
+    {0,0,0,0,0}, {0,0,0,0,10}, {0,0,0,4,6}, {0,0,0,4,16},
+    {0,0,0,10,0}, {0,0,0,10,10}, {0,0,0,14,6}, {0,0,0,14,16},
+    {0,0,8,2,0}, {0,0,8,2,10}, {0,0,8,6,6}, {0,0,8,6,16},
+    {0,0,8,12,0}, {0,0,8,12,10}, {0,0,8,16,6}, {0,0,8,16,16},
+    {0,2,8,0,0}, {0,2,8,0,10}, {0,2,8,4,6}, {0,2,8,4,16},
+    {0,2,8,10,0}, {0,2,8,10,10}, {0,2,8,14,6}, {0,2,8,14,16},
+    {0,2,16,2,0}, {0,2,16,2,10}, {0,2,16,6,6}, {0,2,16,6,16},
+    {0,2,16,12,0}, {0,2,16,12,10}, {0,2,16,16,6}, {0,2,16,16,16},
+    {0,10,0,0,0}, {0,10,0,0,10}, {0,10,0,4,6}, {0,10,0,4,16},
+    {0,10,0,10,0}, {0,10,0,10,10}, {0,10,0,14,6}, {0,10,0,14,16},
+    {0,10,8,2,0}, {0,10,8,2,10}, {0,10,8,6,6}, {0,10,8,6,16},
+    {0,10,8,12,0}, {0,10,8,12,10}, {0,10,8,16,6}, {0,10,8,16,16},
+    {0,12,8,0,0}, {0,12,8,0,10}, {0,12,8,4,6}, {0,12,8,4,16},
+    {0,12,8,10,0}, {0,12,8,10,10}, {0,12,8,14,6}, {0,12,8,14,16},
+    {0,12,16,2,0}, {0,12,16,2,10}, {0,12,16,6,6}, {0,12,16,6,16},
+    {0,12,16,12,0}, {0,12,16,12,10}, {0,12,16,16,6}, {0,12,16,16,16},
+    {6,4,0,0,0}, {6,4,0,0,10}, {6,4,0,4,6}, {6,4,0,4,16},
+    {6,4,0,10,0}, {6,4,0,10,10}, {6,4,0,14,6}, {6,4,0,14,16},
+    {6,4,8,2,0}, {6,4,8,2,10}, {6,4,8,6,6}, {6,4,8,6,16},
+    {6,4,8,12,0}, {6,4,8,12,10}, {6,4,8,16,6}, {6,4,8,16,16},
+    {6,6,8,0,0}, {6,6,8,0,10}, {6,6,8,4,6}, {6,6,8,4,16},
+    {6,6,8,10,0}, {6,6,8,10,10}, {6,6,8,14,6}, {6,6,8,14,16},
+    {6,6,16,2,0}, {6,6,16,2,10}, {6,6,16,6,6}, {6,6,16,6,16},
+    {6,6,16,12,0}, {6,6,16,12,10}, {6,6,16,16,6}, {6,6,16,16,16},
+    {6,14,0,0,0}, {6,14,0,0,10}, {6,14,0,4,6}, {6,14,0,4,16},
+    {6,14,0,10,0}, {6,14,0,10,10}, {6,14,0,14,6}, {6,14,0,14,16},
+    {6,14,8,2,0}, {6,14,8,2,10}, {6,14,8,6,6}, {6,14,8,6,16},
+    {6,14,8,12,0}, {6,14,8,12,10}, {6,14,8,16,6}, {6,14,8,16,16},
+    {6,16,8,0,0}, {6,16,8,0,10}, {6,16,8,4,6}, {6,16,8,4,16},
+    {6,16,8,10,0}, {6,16,8,10,10}, {6,16,8,14,6}, {6,16,8,14,16},
+    {6,16,16,2,0}, {6,16,16,2,10}, {6,16,16,6,6}, {6,16,16,6,16},
+    {6,16,16,12,0}, {6,16,16,12,10}, {6,16,16,16,6}, {6,16,16,16,16},
+    {10,0,0,0,0}, {10,0,0,0,10}, {10,0,0,4,6}, {10,0,0,4,16},
+    {10,0,0,10,0}, {10,0,0,10,10}, {10,0,0,14,6}, {10,0,0,14,16},
+    {10,0,8,2,0}, {10,0,8,2,10}, {10,0,8,6,6}, {10,0,8,6,16},
+    {10,0,8,12,0}, {10,0,8,12,10}, {10,0,8,16,6}, {10,0,8,16,16},
+    {10,2,8,0,0}, {10,2,8,0,10}, {10,2,8,4,6}, {10,2,8,4,16},
+    {10,2,8,10,0}, {10,2,8,10,10}, {10,2,8,14,6}, {10,2,8,14,16},
+    {10,2,16,2,0}, {10,2,16,2,10}, {10,2,16,6,6}, {10,2,16,6,16},
+    {10,2,16,12,0}, {10,2,16,12,10}, {10,2,16,16,6}, {10,2,16,16,16},
+    {10,10,0,0,0}, {10,10,0,0,10}, {10,10,0,4,6}, {10,10,0,4,16},
+    {10,10,0,10,0}, {10,10,0,10,10}, {10,10,0,14,6}, {10,10,0,14,16},
+    {10,10,8,2,0}, {10,10,8,2,10}, {10,10,8,6,6}, {10,10,8,6,16},
+    {10,10,8,12,0}, {10,10,8,12,10}, {10,10,8,16,6}, {10,10,8,16,16},
+    {10,12,8,0,0}, {10,12,8,0,10}, {10,12,8,4,6}, {10,12,8,4,16},
+    {10,12,8,10,0}, {10,12,8,10,10}, {10,12,8,14,6}, {10,12,8,14,16},
+    {10,12,16,2,0}, {10,12,16,2,10}, {10,12,16,6,6}, {10,12,16,6,16},
+    {10,12,16,12,0}, {10,12,16,12,10}, {10,12,16,16,6}, {10,12,16,16,16},
+    {16,4,0,0,0}, {16,4,0,0,10}, {16,4,0,4,6}, {16,4,0,4,16},
+    {16,4,0,10,0}, {16,4,0,10,10}, {16,4,0,14,6}, {16,4,0,14,16},
+    {16,4,8,2,0}, {16,4,8,2,10}, {16,4,8,6,6}, {16,4,8,6,16},
+    {16,4,8,12,0}, {16,4,8,12,10}, {16,4,8,16,6}, {16,4,8,16,16},
+    {16,6,8,0,0}, {16,6,8,0,10}, {16,6,8,4,6}, {16,6,8,4,16},
+    {16,6,8,10,0}, {16,6,8,10,10}, {16,6,8,14,6}, {16,6,8,14,16},
+    {16,6,16,2,0}, {16,6,16,2,10}, {16,6,16,6,6}, {16,6,16,6,16},
+    {16,6,16,12,0}, {16,6,16,12,10}, {16,6,16,16,6}, {16,6,16,16,16},
+    {16,14,0,0,0}, {16,14,0,0,10}, {16,14,0,4,6}, {16,14,0,4,16},
+    {16,14,0,10,0}, {16,14,0,10,10}, {16,14,0,14,6}, {16,14,0,14,16},
+    {16,14,8,2,0}, {16,14,8,2,10}, {16,14,8,6,6}, {16,14,8,6,16},
+    {16,14,8,12,0}, {16,14,8,12,10}, {16,14,8,16,6}, {16,14,8,16,16},
+    {16,16,8,0,0}, {16,16,8,0,10}, {16,16,8,4,6}, {16,16,8,4,16},
+    {16,16,8,10,0}, {16,16,8,10,10}, {16,16,8,14,6}, {16,16,8,14,16},
+    {16,16,16,2,0}, {16,16,16,2,10}, {16,16,16,6,6}, {16,16,16,6,16},
+    {16,16,16,12,0}, {16,16,16,12,10}, {16,16,16,16,6}, {16,16,16,16,16},
+};
 #endif
 /* SG_SELFTEST: both paths built, chosen at run time (render selftest) */
 #ifdef SG_SELFTEST
@@ -503,7 +611,7 @@ static void out_line(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n)
     const int g2 = (m->vdp[0] & 2) != 0;
 #if SG_RENDER_ASM
     if (!SG_USE_C) {
-        const sg_tile_args args = { out, names, pt, ct, mix, third, pmask, cmask };
+        const sg_tile_args args = { out, names, pt, ct, SG_MIX_BASE, third, pmask, cmask };
         if (g2) sg_tiles_g2(&args); else sg_tiles_g1(&args);
     } else
 #endif
@@ -587,7 +695,9 @@ static void out_pair(unsigned ya, uint16_t *out, const sprite_t *spr_b, unsigned
     uint16_t *o = out;
     /* mean of two weights rounded up: (w_a + w_b + 1) / 2 as the byte offset
      * 2 * that, i.e. (w_a + w_b + 1) with its low bit cleared */
-#if SG_LOW_RAM /* ca's blends copied: with the cache, cb may evict them */
+#if SG_MIX_SLOTS /* cb never takes ca's slot */
+#define SG_ROWS_AB(ca, cb) const uint8_t *ma = mix_row(ca), *mb = mix_row_keep(cb, ma)
+#elif SG_LOW_RAM /* ca's blends copied: with the cache, cb may evict them */
 #define SG_ROWS_AB(ca, cb) uint16_t ra_[9]; const uint8_t *row_ = mix_row(ca); \
     for (unsigned i_ = 0; i_ < 9; i_++) ra_[i_] = ((const uint16_t *)row_)[i_]; \
     const uint8_t *ma = (const uint8_t *)ra_, *mb = mix_row(cb)
@@ -612,7 +722,7 @@ static void out_pair(unsigned ya, uint16_t *out, const sprite_t *spr_b, unsigned
     } while (0)
 #if SG_RENDER_ASM
     if (!SG_USE_C) {
-        const sg_tile_args args = { out, names, pt, ct, mix, third, pmask, cmask };
+        const sg_tile_args args = { out, names, pt, ct, SG_MIX_BASE, third, pmask, cmask };
         if (g2) sg_pair_g2(&args);
         else sg_pair_g1(&args);
     } else

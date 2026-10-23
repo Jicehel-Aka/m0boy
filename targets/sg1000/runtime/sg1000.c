@@ -78,6 +78,22 @@ void sg_irq_update(void) {
 #define sg1000_in msx_vdp_in
 #define sg1000_out msx_vdp_out
 #endif
+/* A write to the VDP's data port: the lines that ended are drawn first (the
+ * call only when one has), then the byte goes in. */
+static inline void vdp_data_write(uint8_t value) {
+    sg1000_t *m = &machine;
+    m->vdp_pending = 0;
+    if (m->render_line < SG_HEIGHT && (int32_t)(m->cyc - m->render_at) >= 0) sg1000_vdp_catchup();
+    const unsigned address = m->vdp_address, entry = (uint16_t)(address - m->sat_base);
+    if (entry < 128 && !(entry & 3)) sg1000_sprite_y(entry >> 2, m->vram[address], value);
+    m->vram[address] = value;
+    m->vdp_buffer = value;
+    m->vdp_address = (uint16_t)((address + 1) & 0x3fff);
+}
+#if SG_MSX
+void msx_vdp_data(uint8_t value) { vdp_data_write(value); } /* msx.c: port 98 without the decoding */
+#endif
+
 uint8_t sg1000_in(uint8_t port) {
     sg1000_t *m = &machine;
     if (port >= 0x80 && port < 0xc0) {
@@ -113,13 +129,7 @@ void sg1000_out(uint8_t port, uint8_t value) {
         else m->psg_tone[ch] = (uint16_t)((m->psg_tone[ch] & 15) | ((value & 63) << 4));
     } else if (port >= 0x80 && port < 0xc0) {
         if (!(port & 1)) {
-            m->vdp_pending = 0;
-            sg1000_vdp_catchup();
-            const unsigned entry = (uint16_t)(m->vdp_address - m->sat_base);
-            if (entry < 128 && !(entry & 3)) sg1000_sprite_y(entry >> 2, m->vram[m->vdp_address], value);
-            m->vram[m->vdp_address] = value;
-            m->vdp_buffer = value;
-            m->vdp_address = (m->vdp_address + 1) & 0x3fff;
+            vdp_data_write(value);
         } else if (!m->vdp_pending) {
             m->vdp_latch = value;
             m->vdp_pending = 1;

@@ -145,3 +145,21 @@ hors les jeux de la Super Game 150, qui tournent sur un autre matériel) ; ni
 l'exécution sur console (META, Pokitto) ni sous gm0 ; le son contre un AY réel
 (niveaux et cadence de l'enveloppe issus de la documentation de la
 communauté) ; la vitesse (aucun relevé de cycles).
+
+## BIOS, son et rendu (0.10.40)
+
+- **Contrat des registres du BIOS** : les jeux s'appuient sur les registres de
+  sortie du vrai BIOS et sur les variables système. INIGRP/INITXT/SETGRP
+  construisent les registres du VDP à partir de `TXTNAM…MLTPAT` (F3B3 + 10·mode),
+  LDIRVM sort avec HL = destination VRAM, DE = source + n, BC = 0x0098, l'ISR
+  sauve IX/IY, NEWKEY/OLDKEY valent 0xFF au repos. Méthode de validation : la
+  VRAM d'openMSX (`debug read_block "VRAM"`) comparée à `--dump-vram`.
+- **Son** : AY-3-8910, SCC (Konami SCC, 5 voix, 32 pas) et clic du PPI mélangés
+  à 22 050 Hz ; MSX-MUSIC non émulé.
+- **Rendu** : le rendu en assembleur du SG-1000 sert aussi au MSX (pool de
+  `SG_MIX_SLOTS` lignes de mélange au lieu de la table de 4,6 Ko).
+- **Mesure** : Gradius 2 sur META, 60 images de jeu par seconde (compteur
+  `machine.frames` contre `ticks`, 90 s de jeu) ; gm0 (48 MHz) donne ~93 %, c'est
+  une estimation, pas une mesure de la console. Les images affichées (saut vidéo
+  du pacing) ne sont pas mesurées.
+- `--msx-pack` : ROM en secteurs LZSS dans la flash ; plus lent sur Gradius 2.

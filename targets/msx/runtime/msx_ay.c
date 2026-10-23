@@ -23,7 +23,7 @@ void sg1000_audio_rate(unsigned rate) {
     m->audio_tick_int = m->audio_div ? AY_TICK_HZ / m->audio_div : 0;
     m->audio_tick_frac = m->audio_div ? AY_TICK_HZ % m->audio_div : 0;
     m->scc_k = m->audio_rate ? (uint32_t)(((uint64_t)3579545 << 16) / m->audio_rate) : 0; /* SCC wave steps per output sample, 16.16 */
-    for (unsigned c = 0; c < 5; c++) m->scc_inc[c] = m->scc_k / ((unsigned)m->scc_period[c] + 1);
+    for (unsigned c = 0; c < 5; c++) m->scc_inc[c] = (m->scc_k / ((unsigned)m->scc_period[c] + 1)) << 11;
     m->audio_phase = m->audio_tick_phase = 0;
     m->audio_cyc = m->cyc;
     m->audio_head = m->audio_tail = 0;
@@ -52,6 +52,30 @@ static void envelope_step(sg1000_t *m) {
  * an audible channel uses them, then each channel over the block.  A silent
  * channel, or one whose tone and noise are both off, is a constant and costs
  * no counting. */
+
+/* The loops of produce, apart so that each keeps its few values in registers. */
+/* a square channel on a fixed volume: +-a at the tone's phase */
+static __attribute__((noinline)) void ay_tone(int16_t *mix, const uint8_t *ticks, unsigned k, int32_t *count_io, unsigned *out_io, int32_t p, int a) {
+    int32_t count = *count_io;
+    unsigned out = *out_io;
+    const int16_t level2[2] = { (int16_t)-a, (int16_t)a };
+    for (unsigned i = 0; i < k; i++) {
+        count -= ticks[i];
+        if (count <= 0) { do { count += p; out ^= 1; } while (count <= 0); }
+        mix[i] = (int16_t)(mix[i] + level2[out]);
+    }
+    *count_io = count;
+    *out_io = out;
+}
+/* one SCC voice: the phase has its 5-bit step in the top bits (32-step wave), so the index is a shift */
+static __attribute__((noinline)) uint32_t scc_voice(int16_t *mix, unsigned k, uint32_t phase, uint32_t inc, const int8_t *w, int vol) {
+    for (unsigned i = 0; i < k; i++) {
+        phase += inc;
+        mix[i] = (int16_t)(mix[i] + ((w[phase >> 27] * vol) >> 6));
+    }
+    return phase;
+}
+
 static void produce(sg1000_t *m, unsigned n) {
     const uint32_t tint = m->audio_tick_int, tfrac = m->audio_tick_frac, div = m->audio_div;
     const uint8_t *r = m->ay_reg;
@@ -121,6 +145,8 @@ static void produce(sg1000_t *m, unsigned n) {
             const int32_t p = (int32_t)period[ch];
             int32_t count = m->ay_count[ch];
             unsigned out = m->ay_out[ch];
+            if (md == 1 && !(vol & 16)) ay_tone(mix, ticks, k, &count, &out, p, amp);
+            else
             for (unsigned i = 0; i < k; i++) {
                 if (md & 1) { /* the tone counter runs even where noise decides the sample */
                     count -= ticks[i];
@@ -136,14 +162,7 @@ static void produce(sg1000_t *m, unsigned n) {
         for (unsigned c = 0; c < 5; c++) { /* the SCC: 32-step waveforms, each voice a phase accumulator */
             const unsigned vol = m->scc_vol[c];
             if (!(m->scc_enable >> c & 1) || !vol) continue;
-            const int8_t *w = m->scc_wave[c < 4 ? c : 3];
-            uint32_t phase = m->scc_phase[c];
-            const uint32_t inc = m->scc_inc[c];
-            for (unsigned i = 0; i < k; i++) {
-                phase += inc;
-                mix[i] = (int16_t)(mix[i] + (((int)w[(phase >> 16) & 31] * (int)vol) >> 6));
-            }
-            m->scc_phase[c] = phase;
+            m->scc_phase[c] = scc_voice(mix, k, m->scc_phase[c], m->scc_inc[c], m->scc_wave[c < 4 ? c : 3], (int)vol);
         }
         unsigned head = m->audio_head;
         const unsigned tail = m->audio_tail;
@@ -164,6 +183,12 @@ void sg1000_audio_catchup(void) {
     uint32_t elapsed = s->cyc - s->audio_cyc;
     s->audio_cyc = s->cyc;
     unsigned n = 0;
+    if (elapsed < 65536) { /* no sample due yet, or a few: no division */
+        uint32_t due = s->audio_phase + elapsed * s->audio_rate;
+        while (due >= SG_CLOCK && n < 4) { due -= SG_CLOCK; n++; }
+        if (due < SG_CLOCK) { s->audio_phase = due; elapsed = 0; }
+        else n = 0; /* the division below */
+    }
     while (elapsed) { /* chunks keep phase + elapsed * rate below 2^32 */
         const uint32_t chunk = elapsed > 65536 ? 65536 : elapsed;
         elapsed -= chunk;
@@ -190,7 +215,7 @@ void msx_scc_write(unsigned reg, uint8_t value) {
     if (reg < 0x8a) {
         const unsigned c = (reg - 0x80) >> 1;
         m->scc_period[c] = (uint16_t)((reg & 1) ? (m->scc_period[c] & 0xff) | (value & 15u) << 8 : (m->scc_period[c] & 0xf00) | value);
-        m->scc_inc[c] = m->scc_k / ((unsigned)m->scc_period[c] + 1);
+        m->scc_inc[c] = (m->scc_k / ((unsigned)m->scc_period[c] + 1)) << 11;
         return;
     }
     if (reg < 0x8f) { m->scc_vol[reg - 0x8a] = value & 15; return; }

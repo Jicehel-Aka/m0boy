@@ -699,6 +699,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                << "#define SG_ROM_MASK 0u\n"
                << "#define SG_CART_RAM 0\n"
                << "#define SG_LOW_RAM " << (o.target == TargetId::desktop ? 0 : 1) << " /* no room for the colour-pair table */\n"
+               << "#define SG_MIX_SLOTS 48 /* colour blends: a pool of rows filled on demand (renderer asm on the META, little RAM) */\n"
                << "#define SG_PRECISE " << (o.precise ? 1 : 0) << "\n"
                << "#define SG_TRACK_R " << (track_r ? 1 : 0) << " /* the ROM reads the refresh counter (LD A,R), or the build is precise */\n"
                << "#define SG_ROM_READS_R " << (reads_r ? 1 : 0) << "\n"

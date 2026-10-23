@@ -575,6 +575,7 @@ static void set_ppi_c(uint8_t v) {
 
 void sg1000_out(uint8_t port, uint8_t v) {
     sg1000_t *m = &machine;
+    if (port == 0x98) { msx_vdp_data(v); return; } /* the most frequent: pattern, name and colour bytes */
     if (port < 0x40) { trap(port); return; }
     switch (port) {
     case 0x98: case 0x99: msx_vdp_out(port, v); break;

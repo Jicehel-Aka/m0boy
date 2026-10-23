@@ -9,11 +9,16 @@
  *
  * Arguments (sg_tile_args, tms9918.c):
  *   0 out   4 names   8 pt   12 ct   16 mix   20 third   24 pmask   28 cmask
- * mix: uint16_t [256][9], row c at mix + 18c, entry w at +2w.
+ * mix: uint16_t [256][9], row c at mix + 18c, entry w at +2w; with
+ * SG_MIX_SLOTS, sg_mix_t of tms9918.c: row c at mix + off[c], filled by
+ * sg_mix_miss when off[c] is 0.
  * sg_tile_w: five 5-bit fields of 2w; sg_tile_wv: the same fields of w. */
 #include "sg_config.h"
 
-#if defined(__ARM_ARCH_6M__) && !SG_LOW_RAM && !defined(SG_NO_RENDER_ASM)
+#ifndef SG_MIX_SLOTS
+#define SG_MIX_SLOTS 0
+#endif
+#if defined(__ARM_ARCH_6M__) && (!SG_LOW_RAM || SG_MIX_SLOTS) && !defined(SG_NO_RENDER_ASM)
 
     .syntax unified
     .thumb
@@ -41,6 +46,42 @@
     lsls \tmp, \tmp, #1
     ldrh \tmp, [\row, \tmp]
     strh \tmp, [r0, #\slot]
+.endm
+
+
+/* the blend row of colour byte c (register c, clobbered; t: scratch) into c.
+ * keep: a register holding a row that must stay (see sg_mix_miss) */
+.macro MIXROW c, t, keep
+#if SG_MIX_SLOTS
+    mov \t, r8
+    lsls \c, \c, #1
+    ldrh \t, [\t, \c]
+    cmp \t, #0
+    bne 8f
+    push {r0-r3}
+    mov r0, lr
+    push {r0}
+    lsrs r0, \c, #1
+.ifnb \keep
+    mov r1, r8
+    subs r1, \keep, r1
+.else
+    movs r1, #0
+.endif
+    ldr r2, =sg_mix_miss
+    blx r2
+    mov r12, r0
+    pop {r0}
+    mov lr, r0
+    pop {r0-r3}
+    mov \t, r12
+8:  mov \c, r8
+    adds \c, \c, \t
+#else
+    movs \t, #18
+    muls \c, \t, \c
+    add \c, r8
+#endif
 .endm
 
 .macro ENTER
@@ -98,9 +139,7 @@ sg_tiles_g1:
     ldrb r4, [r3, r4]          /* colour byte */
     lsls r5, r5, #2
     ldr r5, [r7, r5]           /* weights */
-    movs r6, #18
-    muls r4, r6, r4
-    add r4, r8                 /* blend row */
+    MIXROW r4, r6
     OUT2W r5, r4, r6, 27, 0
     OUT2W r5, r4, r6, 22, 2
     OUT2W r5, r4, r6, 17, 4
@@ -139,9 +178,7 @@ sg_tiles_g2:
     ldrb r4, [r3, r4]          /* colour byte */
     lsls r5, r5, #2
     ldr r5, [r7, r5]
-    movs r6, #18
-    muls r4, r6, r4
-    add r4, r8
+    MIXROW r4, r6
     OUT2W r5, r4, r6, 27, 0
     OUT2W r5, r4, r6, 22, 2
     OUT2W r5, r4, r6, 17, 4
@@ -184,9 +221,7 @@ sg_pair_g1:
     ldr r5, [r7, r5]
     adds r5, r5, r6
     add r5, r9                 /* w_a + w_b + 1 per field */
-    movs r6, #18
-    muls r4, r6, r4
-    add r4, r8
+    MIXROW r4, r6
     OUTMEAN r5, r4, r6, 27, 0
     OUTMEAN r5, r4, r6, 22, 2
     OUTMEAN r5, r4, r6, 17, 4
@@ -199,14 +234,45 @@ sg_pair_g1:
     .pool
     .size sg_pair_g1, . - sg_pair_g1
 
-/* two colour bytes: the two lines' blends averaged per channel (avg565 in
- * tms9918.c), rows in r5/r4, weights in r6/r7, mask 0xf7de in r12 */
-.macro AVG up, slot
-    lsls r1, r6, #\up
-    lsrs r1, r1, #27
+/* two colour bytes: the two lines' blends averaged per channel (m0_avg2_panel
+ * in m0_scale.h), rows in r5 (line a) and r4 (line b), the weights' byte
+ * offsets 2w of each line at r6 and r7 (sg_tile_w8), r12 = 0xf7def7de.  Two
+ * pixels go through each average in one register, 16 bits apiece. */
+.macro AVG2 k, slot
+    ldrb r1, [r6, #\k]
     ldrh r1, [r5, r1]
-    lsls r2, r7, #\up
-    lsrs r2, r2, #27
+    ldrb r2, [r6, #\k + 1]
+    ldrh r2, [r5, r2]
+    lsls r2, r2, #16
+    orrs r1, r2
+    ldrb r2, [r7, #\k]
+    ldrh r2, [r4, r2]
+    ldrb r3, [r7, #\k + 1]
+    ldrh r3, [r4, r3]
+    lsls r3, r3, #16
+    orrs r2, r3
+#if SG_PANEL_SWAP
+    rev16 r1, r1
+    rev16 r2, r2
+#endif
+    movs r3, r1
+    eors r3, r2
+    ands r1, r2
+    mov r2, r12
+    ands r3, r2
+    lsrs r3, r3, #1
+    adds r1, r1, r3
+#if SG_PANEL_SWAP
+    rev16 r1, r1
+#endif
+    strh r1, [r0, #\slot]
+    lsrs r1, r1, #16
+    strh r1, [r0, #\slot + 2]
+.endm
+.macro AVG1 k, slot
+    ldrb r1, [r6, #\k]
+    ldrh r1, [r5, r1]
+    ldrb r2, [r7, #\k]
     ldrh r2, [r4, r2]
 #if SG_PANEL_SWAP
     rev16 r1, r1
@@ -235,8 +301,6 @@ sg_pair_g1:
 sg_pair_g2:
     ENTER
     LOAD_ARGS
-    ldr r4, =0xf7de
-    mov r12, r4
 1:  ldrb r4, [r1]
     adds r1, r1, #1
     lsls r4, r4, #3
@@ -262,9 +326,7 @@ sg_pair_g2:
     adds r6, r6, r7
     ldr r7, =0x0108421
     adds r6, r6, r7            /* w_a + w_b + 1 per field */
-    movs r7, #18
-    muls r5, r7, r5
-    add r5, r8
+    MIXROW r5, r7
     OUTMEAN r6, r5, r7, 27, 0
     OUTMEAN r6, r5, r7, 22, 2
     OUTMEAN r6, r5, r7, 17, 4
@@ -275,21 +337,18 @@ sg_pair_g2:
     bne 1b
     LEAVE
 3:  push {r1-r3}
-    movs r1, #18
-    muls r5, r1, r5
-    muls r4, r1, r4
-    add r5, r8                 /* blend row, line a */
-    add r4, r8                 /* blend row, line b */
-    ldr r1, =sg_tile_w
-    lsls r6, r6, #2
-    ldr r6, [r1, r6]
-    lsls r7, r7, #2
-    ldr r7, [r1, r7]
-    AVG 27, 0
-    AVG 22, 2
-    AVG 17, 4
-    AVG 12, 6
-    AVG 7, 8
+    MIXROW r5, r1              /* blend row, line a */
+    MIXROW r4, r1, r5          /* line b, line a's row kept */
+    ldr r1, =sg_tile_w8
+    lsls r6, r6, #3
+    adds r6, r6, r1
+    lsls r7, r7, #3
+    adds r7, r7, r1
+    ldr r1, =0xf7def7de
+    mov r12, r1
+    AVG2 0, 0
+    AVG2 2, 4
+    AVG1 4, 8
     pop {r1-r3}
     b 2b
     .pool

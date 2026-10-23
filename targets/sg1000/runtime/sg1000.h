@@ -41,6 +41,12 @@
 #ifndef SG_LOW_RAM
 #define SG_LOW_RAM 0
 #endif
+/* SG_MIX_SLOTS: the renderer's colour blends as a pool of that many rows
+ * filled on demand (tms9918.c) instead of the 4.5 KiB table (0), which the
+ * asm loops can then use with little RAM. */
+#ifndef SG_MIX_SLOTS
+#define SG_MIX_SLOTS 0
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -163,6 +169,7 @@ int msx_mapper_forced(void);
 void msx_remap(void);
 uint8_t msx_vdp_in(uint8_t port);        /* the TMS9918A data and status ports */
 void msx_vdp_out(uint8_t port, uint8_t value);
+void msx_vdp_data(uint8_t value);
 void msx_boot(void);                 /* BIOS-simulated start: state the BIOS leaves, jump to INIT */
 void msx_state_loaded(void);
 extern const uint8_t msx_bios[];
