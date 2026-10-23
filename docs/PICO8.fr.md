@@ -108,8 +108,11 @@ runtime (`targets/pico8/runtime/`).
   loader à 0x39000, checksums et vecteurs du LPC vérifiés par le test,
   `tests/test_pico8_e2e.py`), tas de 18 Kio et anneau audio dans la banque
   RAM1 (POKITTO_RAM_BANKS 1 ; 28,7 Kio de RAM principale sur 32 au rapport
-  du build — **estimé**). Pas encore lancé dans gm0 ni essayé sur la console :
-  ni l'écran, ni le son, ni les états sur carte n'y sont vérifiés.
+  du build — **estimé**). **Mesuré dans gm0** : l'image 1:1 centrée, les
+  boutons, le menu d'options (C maintenu), sauver puis charger un état
+  (le `.ST8` à côté du jeu, dans un dossier de premier niveau de la carte —
+  la recherche FAT de la Pokitto ne descend pas plus loin, comme pour les
+  autres cœurs). Pas encore essayé sur la console : ni l'écran, ni le son.
 - ESPboy (`--target espboy`) : construit avec PlatformIO (RAM 73,7 Kio sur 80, flash
   352 Ko) et lancé dans gm0 (Celeste affiche et joue, couleurs justes) ; la
   cartouche, la police et les tables sont en flash, lues par mots alignés
