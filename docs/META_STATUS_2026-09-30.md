@@ -237,7 +237,7 @@ travail de session est commité en petites unités.
   confondre avec un écran noir).
 - **Optimisations mesurées (T6/T7 du rapport, obsolètes)** : Mario Land et
   Zelda tournent à `relances=0 famine=0.0%` sur une minute ; Zelda : CPU
-  libre ≈ 38 % (meta_micros 32,8 %, `gbl_interp_block` 2 %) — la boucle
+  libre ≈ 38 % (m0_micros 32,8 %, `gbl_interp_block` 2 %) — la boucle
   d'attente STAT/LY du rapport est couverte par la couverture complète.
   RING/LATENCY audio inchangés : les agrandir coûterait de la RAM (Zelda
   repasserait sous 2 Ko) sans gain mesurable.
@@ -299,7 +299,7 @@ Mystic Quest, SolarStriker, Zelda).  Trois causes, trois correctifs :
    tampons que le cœur META — accès directs au lieu du grand switch
    (pk_reg_peek/pk_reg_write) à chaque lecture/écriture.  MMIO, banques
    2 Ko et fault d'écriture flash gardent la voie lente (effets de bord).
-2. **`meta_micros` sans division** (runtime pokitto, vaut pour la vraie
+2. **`m0_micros` sans division** (runtime pokitto, vaut pour la vraie
    console) : `(SYST_RVR - val) / clock_mhz` appelait `__udivsi3` à
    chaque tour du limiteur de frames — 47 % du cœur.  Pré-multiplication
    `us_mul` comme le META et son `frac_mul`.
@@ -312,7 +312,7 @@ naturelle si on veut passer au-dessus.
 
 ### 2026-10-06 — pokitto à 48 MHz nominal (datasheet), tempo du son corrigé
 
-Le défaut pokitto était l'overclock 72 MHz (META_CLOCK_DEFAULT = 72,
+Le défaut pokitto était l'overclock 72 MHz (M0_CLOCK_DEFAULT = 72,
 _OSCT=2 de PokittoLib) : hors datasheet (LPC11U6x : 50 MHz max) et — sur
 les machines où l'hôte n'exécute pas 72 M ticks/s — jeu et son au ralenti
 (son « deux fois trop rapide », 6,9 frames GB par frame émulée mesurées
@@ -329,7 +329,7 @@ pilotés CPU/GPIO).  Mesures post-correctif (SML 0.6.1) : RVR 47999,
 ms_count 999,7 Hz, 58,9 fps GB, ~98 % du temps réel sur les cinq jeux
 du lot utilisateur.
 
-VERSION pokitto : 0.6.1 (meta_micros sans division + horloge 48 MHz
+VERSION pokitto : 0.6.1 (m0_micros sans division + horloge 48 MHz
 par défaut changent les firmwares) ; la META reste 0.6.0.  Reconvertir :
 `TARGET=pokitto UPDATE=1 ./compile.sh` — le cache « bpi » et les sessions
 partagées rendent l'opération rapide.

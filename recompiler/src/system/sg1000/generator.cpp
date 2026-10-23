@@ -641,7 +641,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         }
         /* Save states (meta_state.cpp): the file compile.sh creates holds
          * slots of the machine's bytes (gg_t or sg1000_t, the cartridge RAM
-         * when the game has some in RAM).  meta_state_init refuses a machine
+         * when the game has some in RAM).  m0_state_init refuses a machine
          * larger than a slot. */
         const bool states = o.target == TargetId::meta || o.target == TargetId::pokitto;
         if (states) {
@@ -834,8 +834,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const std::string render_asm = gg ? "gg_render_asm.S" : "sg_render_asm.S";
         const std::string firmware_sources = core_sources + " " + generated_sources + " ${SRC}/" + main_cpp +
                                               " ${SRC}/" + render_asm + (gg ? " ${SRC}/m0_rom_lzss.S ${SRC}/m0_copy.S" : msx_packed ? " ${SRC}/m0_rom_lzss.S" : "") +
-                                              " ${SRC}/meta_menu.cpp" +
-                                              (states ? " ${SRC}/meta_state.cpp" : "");
+                                              " ${SRC}/m0_menu.cpp" +
+                                              (states ? " ${SRC}/m0_state.cpp" : "");
         std::string host_sources = host_c + " " + core_sources + " " + generated_sources;
         if (gg && (streamed || cart_on_card)) {
             /* A generated host project must exercise the same storage plan,
@@ -857,8 +857,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         }
         /* The Game Gear streams its ROM: its FAT reader and SD bus join the
          * Pokitto platform files in PLATFORM_C. */
-        const std::string platform_extra = gg ? " ${SRC}/pokitto_*.S ${SRC}/gg_stream.c ${SRC}/meta_sd.c ${SRC}/meta_fat.c"
-                                              : states ? " ${SRC}/meta_sd.c ${SRC}/meta_fat.c" : "";
+        const std::string platform_extra = gg ? " ${SRC}/pokitto_*.S ${SRC}/gg_stream.c ${SRC}/m0_sd.c ${SRC}/m0_fat.c"
+                                              : states ? " ${SRC}/m0_sd.c ${SRC}/m0_fat.c" : "";
         {
             std::string host_cmake = read(cmake_tpl / "host.txt.in");
             host_cmake = replace(host_cmake, "@NAME@", o.name);
@@ -878,36 +878,38 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
              * guard, option menu) */
             copy_template(common_dir / "platform" / "sg_frontend.h", src / "sg_frontend.h");
             copy_template(common_dir / "platform" / "sg_menu.h", src / "sg_menu.h");
+            const auto consoles = o.meta_templates.parent_path() / "consoles";
+            const auto common_platform = o.meta_templates.parent_path() / "common" / "platform";
             /* files of an earlier generation that this one does not use */
-            for (const char* name : { "gg_stream.c", "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h", "meta_sd_bus.cpp", "pokitto_sd.c" })
+            for (const char* name : { "gg_stream.c", "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h", "meta_sd_bus.cpp", "pokitto_sd.c" })
                 fs::remove(src / name);
             if ((streamed || cart_on_card || states || o.target == TargetId::meta) && !esp) {
                 /* Every META firmware offers USB SD mode, even SG-1000 games
                  * which otherwise need no card driver. */
                 if (gg) copy_template(tpl / "platform" / "gg_stream.c", src / "gg_stream.c");
-                for (const char* name : { "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h" })
-                    copy_template(o.meta_templates / "platform" / "src" / name, src / name);
+                for (const char* name : { "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h" })
+                    copy_template(common_platform / name, src / name);
                 const auto bus = o.target == TargetId::pokitto ? fs::path("pokitto/pokitto_sd.c") : fs::path("meta/meta_sd_bus.cpp");
-                copy_template(o.meta_templates / "platform" / bus, src / bus.filename());
+                copy_template(consoles / bus, src / bus.filename());
             }
-            auto platform = o.meta_templates / "platform" / (esp ? "espboy" : o.target == TargetId::pokitto ? "pokitto" : "meta");
-            for (const char* name : { "meta_target.h", "meta_lcd.h", "meta_clock.h", "meta_pad.h" })
-                copy_template(o.meta_templates / "platform" / "src" / name, src / name);
+            const auto platform = consoles / (esp ? "espboy" : o.target == TargetId::pokitto ? "pokitto" : "meta");
+            for (const char* name : { "m0_target.h", "m0_lcd.h", "m0_clock.h", "m0_pad.h" })
+                copy_template(common_platform / name, src / name);
             /* the option menu (sg_menu.h runs it; meta_menu.cpp draws it) */
-            copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");
-            copy_template(o.meta_templates / "platform" / "src" / "meta_font.h", src / "meta_font.h");
-            copy_template(o.meta_templates / "platform" / "src" / "meta_menu.cpp", src / "meta_menu.cpp");
+            copy_template(common_platform / "m0_menu.h", src / "m0_menu.h");
+            copy_template(common_platform / "m0_font.h", src / "m0_font.h");
+            copy_template(common_platform / "m0_menu.cpp", src / "m0_menu.cpp");
             if (states || esp_states) /* ESPboy: espboy_flash.cpp implements it */
-                copy_template(o.meta_templates / "platform" / "src" / "meta_state.h", src / "meta_state.h");
+                copy_template(common_platform / "m0_state.h", src / "m0_state.h");
             if (states)
-                copy_template(o.meta_templates / "platform" / "src" / "meta_state.cpp", src / "meta_state.cpp");
+                copy_template(common_platform / "m0_state.cpp", src / "m0_state.cpp");
             /* The META's board settings (SPI rates, display pipeline): the
              * same file the Game Boy profile includes. */
             copy_template(o.meta_templates / "runtime" / "gbl_board.h", src / "gbl_board.h");
             copy_template(tpl / "platform" / "sg_audio.h", src / "sg_audio.h");
-            auto audio_header = read(o.meta_templates / "platform/src/meta_audio.h");
+            auto audio_header = read(common_platform / "m0_audio.h");
             audio_header = replace(replace(audio_header, "70224u", "59736u"), "4194304u", "3579545u");
-            write(src / "meta_audio.h", audio_header);
+            write(src / "m0_audio.h", audio_header);
             if (!esp) {
                 const std::string audio_name = o.target == TargetId::pokitto ? "pokitto_audio.c" : "meta_audio.cpp";
                 auto audio = read(platform / audio_name);
@@ -917,7 +919,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             }
             /* One version stamp for all three frontends: the target console
              * runtime's version, compiled into gbrecomp from the VERSION
-             * files (targets/meta/VERSION, platform/pokitto/VERSION) by
+             * files (targets/meta/VERSION, consoles/pokitto/VERSION) by
              * CMake.  gbrecomp --meta-version/--pokitto-version print it and
              * compile.sh reads it back from firmware.bin. */
             write(src / "gbl_config.h", "#pragma once\n#define GBL_TARGET_POKITTO " + std::to_string(o.target == TargetId::pokitto) +
@@ -949,7 +951,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 for (const char* name : { "espboy_hw.cpp", "espboy_hw.h", "espboy_flash.cpp" })
                     copy_template(platform / name, src / name);
                 copy_template(o.meta_templates / "runtime" / "gbl_espboy.h", src / "gbl_espboy.h");
-                copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");
+                copy_template(common_platform / "m0_menu.h", src / "m0_menu.h");
                 for (const char* name : { "platformio.ini", "espboy.ld", "espboy_build.py", "espboy_size.py" })
                     write(o.output / name, replace(read(platform / (std::string(name) + ".in")), "@NAME@", o.name));
             } else if (o.target == TargetId::pokitto) {
@@ -966,7 +968,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 copy_template(shared / "checksum.py", o.output / "checksum.py");
                 copy_template(shared / "arm-toolchain.cmake", o.output / "arm-toolchain.cmake");
                 fs::create_directories(o.output / "toolchain");
-                for (const auto& entry : fs::directory_iterator(o.meta_templates / "toolchain"))
+                for (const auto& entry : fs::directory_iterator(o.meta_templates.parent_path() / "common" / "toolchain"))
                     if (entry.is_regular_file()) copy_template(entry.path(), o.output / "toolchain" / entry.path().filename());
                 {
                     std::string firmware_cmake = read(cmake_tpl / "firmware.txt.in");
@@ -987,7 +989,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 fs::create_directories(o.output / "boards");
                 copy_template(platform / "boards" / "gamebuino_meta.json", o.output / "boards" / "gamebuino_meta.json");
                 fs::create_directories(o.output / "toolchain");
-                for (const auto& entry : fs::directory_iterator(o.meta_templates / "toolchain"))
+                for (const auto& entry : fs::directory_iterator(o.meta_templates.parent_path() / "common" / "toolchain"))
                     if (entry.is_regular_file()) copy_template(entry.path(), o.output / "toolchain" / entry.path().filename());
             }
         }

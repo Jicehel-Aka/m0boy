@@ -41,9 +41,12 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
 - `targets/meta/runtime/`: the `gbl` runtime shared by both consoles; every
   optimisation switch, per console, is in `gbl_profile.h` (one switch, one
   define, independent).
-- `targets/meta/platform/src/`: shared frontend (main loop, menu, saves,
-  states, streaming, FAT, SD protocol, palettes); console facts in `meta_target.h`.
-- `targets/meta/platform/meta/`, `targets/meta/platform/pokitto/`: bare-metal
+- `targets/common/platform/`: the frontend every console shares (option
+  menu, save states, FAT, SD protocol, pad decoding); console facts in
+  `m0_target.h`.  Common files are named `m0_*`, never `meta_*`.
+- `targets/meta/platform/`: the Game Boy frontend of its own (`gb_main.cpp`,
+  `gbl_save`, `gbl_stream`, `gbl_display`, `gbl_palettes`).
+- `targets/consoles/meta/`, `targets/consoles/pokitto/`, `targets/consoles/espboy/`: bare-metal
   drivers and project templates of each console.
 - `targets/meta/host/`, `targets/meta/tools/m0bench/`: host harness and the
   Cortex-M0+ cycle estimator.
@@ -84,7 +87,7 @@ ctest --test-dir build --output-on-failure
   `tests/gg_fixture.py`) and, with ROMs, precise native = interpreter on the
   whole collection.
 - Label `m0_estimate.py` numbers as estimates, never as device measurements.
-- Bump `targets/meta/VERSION` (META) or `targets/meta/platform/pokitto/VERSION`
+- Bump `targets/meta/VERSION` (META) or `targets/consoles/pokitto/VERSION`
   when a change alters what that console's firmwares do.
 
 To try firmwares without a console, use [gm0](https://github.com/r043v/gm0),

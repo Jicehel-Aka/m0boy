@@ -1,25 +1,25 @@
 /* Same complete menu with 8/4/3/2/1 scratch rows, with guard words to catch
  * writes past the short buffer. Host only: no peripheral registers. */
-#include "meta_menu.h"
-#include "meta_display.h"
-#include "meta_lcd.h"
+#include "m0_menu.h"
+#include "gbl_display.h"
+#include "m0_lcd.h"
 #include <cassert>
 #include <cstring>
 #include <cstdio>
 static uint16_t scratch[160 * 8 + 32], panel[128][160], reference_panel[128][160];
 static unsigned capacity, calls, sends;
 static unsigned ticks;
-extern "C" void meta_watchdog_feed(void) {}
-extern "C" uint32_t meta_micros(void) { return ++ticks * 1000; }
-extern "C" uint16_t *meta_menu_scratch(unsigned *rows) { *rows = capacity; return scratch + 16; }
-extern "C" void meta_lcd_wait(void) {}
-extern "C" void meta_lcd_end_frame(void) {}
-extern "C" uint32_t meta_lcd_send_rows(const void *buf, uint8_t row, uint8_t rows) {
+extern "C" void m0_watchdog_feed(void) {}
+extern "C" uint32_t m0_micros(void) { return ++ticks * 1000; }
+extern "C" uint16_t *m0_menu_scratch(unsigned *rows) { *rows = capacity; return scratch + 16; }
+extern "C" void m0_lcd_wait(void) {}
+extern "C" void m0_lcd_end_frame(void) {}
+extern "C" uint32_t m0_lcd_send_rows(const void *buf, uint8_t row, uint8_t rows) {
     assert(rows && rows <= capacity && row + rows <= 128);
     memcpy(panel[row], buf, rows * 160 * sizeof(uint16_t));
     ++sends; return sends;
 }
-static uint8_t buttons(void) { return calls++ == 1 ? META_MB_A : 0; }
+static uint8_t buttons(void) { return calls++ == 1 ? M0_MB_A : 0; }
 int main(void) {
     uint8_t value = 1;
     const char *choices[] = {"Zero", "Un", "Deux"};
@@ -33,7 +33,7 @@ int main(void) {
         capacity = rows; calls = sends = 0;
         for (auto &v : scratch) v = 0xBEEF;
         memset(panel, 0, sizeof(panel));
-        assert(meta_menu_run("OPTIONS", items, 3, buttons, "59 ips, 41 vues") == 0);
+        assert(m0_menu_run("OPTIONS", items, 3, buttons, "59 ips, 41 vues") == 0);
         for (unsigned i = 0; i < 16; ++i) assert(scratch[i] == 0xBEEF);
         for (unsigned i = 16 + capacity * 160; i < sizeof(scratch)/sizeof(*scratch); ++i)
             assert(scratch[i] == 0xBEEF);

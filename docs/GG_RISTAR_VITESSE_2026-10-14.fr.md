@@ -165,7 +165,7 @@ longue, images non dessinées) et `gg_bench_window` (16 parts de la plage).
 La vitesse choisie dans le convertisseur vaut désormais pour les deux
 consoles : `OVERCLOCK=1` (ou la question de `compile.sh`, une seule fois ;
 `POKITTO_HC` reste accepté) définit `META_OVERCLOCK`, et chaque firmware
-démarre à 72 MHz (`META_CLOCK_DEFAULT`) ; le menu « Processeur » garde la
+démarre à 72 MHz (`M0_CLOCK_DEFAULT`) ; le menu « Processeur » garde la
 bascule 48 <-> 72 et le loader est toujours rendu à 48 MHz. Sur la META c'est
 le chemin FDPLL96M déjà écrit dans `meta_clock.cpp` (deux états d'attente de
 flash) : le SAMD21 est donné pour 48 MHz et **ce mode n'a jamais tourné sur

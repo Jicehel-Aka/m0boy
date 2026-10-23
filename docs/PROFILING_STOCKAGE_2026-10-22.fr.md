@@ -112,7 +112,7 @@ compile 126 instructions de plus (3 463) et garde 136 secteurs au lieu de
 Firmwares de mesure (`GG_BENCH` : entrée scriptée, la partie gm0 rejouée
 image du jeu par image du jeu, sans rythme ni image sautée, cache fixe de
 12 voies), images 300 à 5 800, temps mesuré par la console
-(`meta_micros`, lu par `tools/meta-usb.py`) :
+(`m0_micros`, lu par `tools/meta-usb.py`) :
 
 | | HEAD (0.10.34) | 0.10.36, plan simulé | 0.10.36, plan par fréquence |
 |---|---:|---:|---:|

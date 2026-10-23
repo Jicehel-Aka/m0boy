@@ -42,7 +42,7 @@ liens ARM GCC 7.2.1 par CMake/Ninja, sources et script de liens générés :
 - Variante `META_TBLEND=0` liée : `end = 0x200079d8`, soit 1 576 octets
   libres et **688 octets gagnés** ; cela reste sous 2 KiB de pile.
 - Relevés `-fstack-usage` (variante sans TBLEND) : `option_menu` 392 o,
-  `meta_menu_run` 72 o, `draw_text` 48 o ; `USB_Handler` 120 o, avant
+  `m0_menu_run` 72 o, `draw_text` 48 o ; `USB_Handler` 120 o, avant
   ses sous-appels et le cadre matériel. Ce sont des tailles de frames,
   pas une mesure de profondeur maximale de la pile.
 - Le linker accepte cette situation : aucune réserve minimale de pile
@@ -83,7 +83,7 @@ d'échec et traiter l'échec d'éviction avant de réutiliser son tampon.
 
 ### Précision sur le « vidage de 2 s »
 
-Le code `meta_save_tick` attend 120 images **après la dernière modification**,
+Le code `gbl_save_tick` attend 120 images **après la dernière modification**,
 et non 120 images après le précédent vidage. Les écritures continues
 repoussent donc ce vidage. Les autres déclencheurs (désactivation de RAM
 cartouche, menu/retour au loader, éviction) restent actifs. Le débit mesuré
@@ -108,8 +108,8 @@ octets après alignement/élimination des sections au lien.
 | `META_USB=0` | **552 o dans l'objet USB** | Perte de l'upload par touch 1200 bauds, du profileur et du diagnostic en direct ; repli de dernier recours. |
 | Profileur USB optionnel seul | **132 o bruts** | Conserver CDC et upload, retirer les 33 mots de PCs et leur collecte SysTick. |
 
-**Piège des bandes courtes :** `meta_display_scratch` retourne toute la
-surface des bandes. `meta_menu_run:110` refuse moins de huit lignes. Avec
+**Piège des bandes courtes :** `gbl_display_scratch` retourne toute la
+surface des bandes. `m0_menu_run:110` refuse moins de huit lignes. Avec
 2 × 2 lignes, le menu se ferme aussitôt. Le découper en bandes de quatre
 lignes, ou partager un tampon existant dont la durée de vie le permet ;
 allouer un nouveau tampon de huit lignes annulerait le gain.

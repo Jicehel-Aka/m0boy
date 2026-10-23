@@ -34,7 +34,7 @@ static volatile uint32_t ticks; /* milliseconds */
 #define META_FAULT_MAGIC 0x46415532u /* layout 2 */
 __attribute__((section(".noinit"))) volatile meta_fault_log meta_fault;
 void USB_Handler(void);
-void meta_watchdog_feed(void);
+void m0_watchdog_feed(void);
 void meta_reset_to_bootloader(void) __attribute__((weak));
 extern volatile uint8_t meta_usb_bootloader_request __attribute__((weak));
 
@@ -58,7 +58,7 @@ void meta_fault_c(uint32_t *frame) {
         uint32_t now = SysTick->VAL;
         if (now > last) ms++; /* counts down: it wrapped */
         last = now;
-        meta_watchdog_feed(); /* not a bare CLEAR write: during a sync it stalls the bus for ms */
+        m0_watchdog_feed(); /* not a bare CLEAR write: during a sync it stalls the bus for ms */
         if (meta_reset_to_bootloader) {
             USB_Handler();
             if (meta_usb_bootloader_request) meta_reset_to_bootloader();
@@ -72,7 +72,7 @@ __attribute__((naked)) static void default_handler(void) {
                      "1: mrs r0, msp\n b meta_fault_c\n");
 }
 
-/* The watchdog: 4 s without meta_watchdog_feed resets the console (the
+/* The watchdog: 4 s without m0_watchdog_feed resets the console (the
  * bootloader then starts the Gamebuino launcher); its early warning at 2 s
  * goes through default_handler first, which logs where the main loop was
  * and restarts the game.  Clock: generator 2, OSCULP32K / 32 = 1024 Hz. */
@@ -95,7 +95,7 @@ void meta_watchdog_start(void) {
     while (WDT->STATUS.reg & WDT_STATUS_SYNCBUSY) {}
 }
 
-void meta_watchdog_stop(void) {
+void m0_watchdog_stop(void) {
     NVIC_DisableIRQ(WDT_IRQn);
     WDT->INTENCLR.reg = WDT_INTENCLR_EW;
     WDT->CTRL.reg = 0;
@@ -103,7 +103,7 @@ void meta_watchdog_stop(void) {
 }
 
 /* Writes during a synchronisation are ignored: no need to wait. */
-void meta_watchdog_feed(void) {
+void m0_watchdog_feed(void) {
     if (!(WDT->STATUS.reg & WDT_STATUS_SYNCBUSY)) WDT->CLEAR.reg = WDT_CLEAR_CLEAR_KEY;
 }
 

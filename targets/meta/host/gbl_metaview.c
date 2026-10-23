@@ -1,6 +1,6 @@
 /*
  * Host view of the META screen: runs the generated game with the real META
- * display pipeline (meta_display.c) and a simulated 160x128 ST7735, and
+ * display pipeline (gbl_display.c) and a simulated 160x128 ST7735, and
  * writes the panel as it would appear on the console.
  *
  *   <name>_metaview [--frames N] [--input FILE] [--mode smooth|tile|tblend|blend|dark|crop|skip]
@@ -8,8 +8,8 @@
  */
 #include "gbl.h"
 #include "gbl_config.h"
-#include "meta_display.h"
-#include "meta_lcd.h"
+#include "gbl_display.h"
+#include "m0_lcd.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,12 +18,12 @@
 static uint16_t panel[128][160];
 static uint32_t sent;
 
-uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
+uint32_t m0_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
     const uint16_t *p = (const uint16_t *)buf;
     for (unsigned r = 0; r < rows && row0 + r < 128; r++) memcpy(panel[row0 + r], p + r * 160, 320);
     return ++sent;
 }
-uint32_t meta_lcd_done_seq(void) { return sent; }
+uint32_t m0_lcd_done_seq(void) { return sent; }
 
 static uint32_t max_frames = 600;
 static struct { uint32_t frame; const char *path; } dumps[256];
@@ -72,7 +72,7 @@ int gbl_platform_save_write(uint32_t sector, const uint8_t *src) {
 #endif
 
 void gbl_platform_vblank(void) {
-    meta_display_flush();
+    gbl_display_flush();
     uint32_t f = gbl_frame;
     for (int i = 0; i < ndumps; i++)
         if (dumps[i].frame == f) write_panel(dumps[i].path);
@@ -123,7 +123,7 @@ int main(int argc, char **argv) {
     char probe;
     gbl_stack_limit = (uintptr_t)&probe - 256u * 1024u;
     gbl_reset();
-    meta_display_set_mode(mode);
+    gbl_display_set_mode(mode);
     gbl_run();
     return 0;
 }

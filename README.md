@@ -265,10 +265,12 @@ card; `EMU_INPUT` scripts buttons (`frame:keys:frames,...`).
 |---|---|
 | `recompiler/` | `m0recomp` (also `gbrecomp`): Game Boy backend, Z80 recompiler (`src/system/sg1000/`), PICO-8 front end (`src/system/pico8/`), ROM storage planning |
 | `targets/meta/runtime/` | the Game Boy runtime shared by the three consoles; per-console switches in `gbl_profile.h` |
-| `targets/meta/platform/` | shared frontend (menu, saves, states, SD card, FAT, display) and each console's drivers |
+| `targets/common/platform/` | the frontend every console shares (`m0_*`: menu, saves, states, SD card, FAT, pad) |
+| `targets/meta/platform/` | the Game Boy frontend (`gb_main.cpp`, saves, streaming, display modes) |
+| `targets/consoles/` | each console's bare-metal drivers and project templates |
 | `targets/sg1000/`, `targets/gamegear/` | SG-1000 and Game Gear/Master System runtimes, frontends, host harnesses |
 | `targets/pico8/` | PICO-8 runtime, frontend, host harness |
-| `targets/common/` | ROM codecs, card cache, stack/cache pool, play explorer, Sega frontend pieces |
+| `targets/common/` | ROM codecs, card cache, stack/cache pool, play explorer, shared platform (`platform/`), build toolchain |
 | `targets/meta/host/`, `targets/meta/tools/` | host harness, cycle estimator |
 | `compile.sh`, `tools/meta-compiler/` | batch conversion (shell, Node) |
 | `tests/`, `targets/meta/tests/` | tests |

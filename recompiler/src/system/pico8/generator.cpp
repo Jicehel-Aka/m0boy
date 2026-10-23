@@ -144,35 +144,36 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             copy_template(tpl / "platform" / "p8_main.cpp", src / "p8_main.cpp");
             copy_template(common_dir / "platform" / "sg_frontend.h", src / "sg_frontend.h");
             copy_template(common_dir / "platform" / "sg_menu.h", src / "sg_menu.h");
-            const auto platform = o.meta_templates / "platform" / (esp ? "espboy" : pokitto ? "pokitto" : "meta");
-            for (const char* name : { "meta_target.h", "meta_lcd.h", "meta_clock.h", "meta_pad.h" })
-                copy_template(o.meta_templates / "platform" / "src" / name, src / name);
-            /* the option menu (sg_menu.h runs it; meta_menu.cpp draws it) */
-            copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");
-            copy_template(o.meta_templates / "platform" / "src" / "meta_font.h", src / "meta_font.h");
-            copy_template(o.meta_templates / "platform" / "src" / "meta_menu.cpp", src / "meta_menu.cpp");
+            const auto platform = o.meta_templates.parent_path() / "consoles" / (esp ? "espboy" : pokitto ? "pokitto" : "meta");
+            const auto shared = o.meta_templates.parent_path() / "common" / "platform";
+            for (const char* name : { "m0_target.h", "m0_lcd.h", "m0_clock.h", "m0_pad.h" })
+                copy_template(shared / name, src / name);
+            /* the option menu (sg_menu.h runs it; m0_menu.cpp draws it) */
+            copy_template(shared / "m0_menu.h", src / "m0_menu.h");
+            copy_template(shared / "m0_font.h", src / "m0_font.h");
+            copy_template(shared / "m0_menu.cpp", src / "m0_menu.cpp");
             copy_template(o.meta_templates / "runtime" / "gbl_board.h", src / "gbl_board.h");
             /* save states: the card's state file in the game's folder on the META (the Pokitto
              * searches the root and the first-level folders), the flash on the ESPboy */
-            copy_template(o.meta_templates / "platform" / "src" / "meta_state.h", src / "meta_state.h");
+            copy_template(shared / "m0_state.h", src / "m0_state.h");
             if (esp) {
                 copy_template(platform / "espboy_flash.cpp", src / "espboy_flash.cpp");
                 copy_template(common_dir / "runtime" / "m0_scale.h", src / "m0_scale.h"); /* espboy_hw.cpp */
             } else {
-                copy_template(o.meta_templates / "platform" / "src" / "meta_state.cpp", src / "meta_state.cpp");
-                for (const char* name : { "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h" })
-                    copy_template(o.meta_templates / "platform" / "src" / name, src / name);
+                copy_template(shared / "m0_state.cpp", src / "m0_state.cpp");
+                for (const char* name : { "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h" })
+                    copy_template(shared / name, src / name);
                 if (pokitto) /* the card's SD bus */
                     copy_template(platform / "pokitto_sd.c", src / "pokitto_sd.c");
                 else {
-                    copy_template(o.meta_templates / "platform" / "src" / "meta_card.h", src / "meta_card.h");
+                    copy_template(shared / "m0_card.h", src / "m0_card.h");
                     copy_template(platform / "meta_sd_bus.cpp", src / "meta_sd_bus.cpp");
                 }
             }
             /* the audio driver counts frames of 1/30 s */
-            auto audio_header = read(o.meta_templates / "platform/src/meta_audio.h");
+            auto audio_header = read(shared / "m0_audio.h");
             audio_header = replace(replace(audio_header, "70224u", "1u"), "4194304u", "30u");
-            write(src / "meta_audio.h", audio_header);
+            write(src / "m0_audio.h", audio_header);
             if (esp) {
                 /* espboy: no console audio driver of its own here */
             } else if (pokitto) {
@@ -230,15 +231,15 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 copy_template(o.meta_templates.parent_path() / "sg1000" / "checksum.py", o.output / "checksum.py");
                 copy_template(o.meta_templates.parent_path() / "sg1000" / "arm-toolchain.cmake", o.output / "arm-toolchain.cmake");
                 fs::create_directories(o.output / "toolchain");
-                for (const auto& entry : fs::directory_iterator(o.meta_templates / "toolchain"))
+                for (const auto& entry : fs::directory_iterator(common_dir / "toolchain"))
                     if (entry.is_regular_file()) copy_template(entry.path(), o.output / "toolchain" / entry.path().filename());
                 std::string firmware_cmake = read(common_dir / "cmake" / "firmware.txt.in");
                 firmware_cmake = replace(firmware_cmake, "@NAME@", o.name);
                 firmware_cmake = replace(firmware_cmake, "@SYSTEM@", "pico8");
                 firmware_cmake = replace(firmware_cmake, "@SOURCES@",
                                          "${SRC}/p8_gen.c ${SRC}/p8_cart.c ${SRC}/p8rt.c ${SRC}/p8gfx.c ${SRC}/p8lib.c ${SRC}/p8main.c"
-                                         " ${SRC}/p8_audio.c ${SRC}/p8_main.cpp ${SRC}/meta_menu.cpp ${SRC}/meta_state.cpp");
-                firmware_cmake = replace(firmware_cmake, "@PLATFORM_EXTRA@", " ${SRC}/meta_sd.c ${SRC}/meta_fat.c");
+                                         " ${SRC}/p8_audio.c ${SRC}/p8_main.cpp ${SRC}/m0_menu.cpp ${SRC}/m0_state.cpp");
+                firmware_cmake = replace(firmware_cmake, "@PLATFORM_EXTRA@", " ${SRC}/m0_sd.c ${SRC}/m0_fat.c");
                 firmware_cmake = replace(firmware_cmake, "@COMPILER@", o.compiler);
                 write(o.output / "CMakeLists.txt", firmware_cmake);
             } else {
@@ -247,7 +248,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                                           "meta_usb_msc.c", "meta_usb_msc.h" })
                     copy_template(platform / name, src / name);
                 /* The picture is 128 pixels wide: the panel's column window is narrowed to it
-                 * (meta_lcd_set_columns) so that a row is 256 bytes on the wire instead of 320. */
+                 * (m0_lcd_set_columns) so that a row is 256 bytes on the wire instead of 320. */
                 {
                     auto lcd = read(platform / "meta_lcd.cpp");
                     const std::string row_bytes = "#define LCD_ROW_BYTES 320u";
@@ -261,7 +262,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                                                "static uint32_t lcd_row_bytes = LCD_ROW_BYTES;\n\n" + anchor);
                     lcd = replace(replace(lcd, "e->rows * LCD_ROW_BYTES", "e->rows * lcd_row_bytes"), "(uint32_t)rows * LCD_ROW_BYTES", "(uint32_t)rows * lcd_row_bytes");
                     lcd += "\n/* The picture's columns x0..x1 (the window is set again for the next strip). */\n"
-                           "extern \"C\" void meta_lcd_set_columns(uint8_t x0, uint8_t x1) {\n"
+                           "extern \"C\" void m0_lcd_set_columns(uint8_t x0, uint8_t x1) {\n"
                            "    lcd_x0 = x0;\n    lcd_x1 = x1;\n"
                            "    lcd_row_bytes = (uint32_t)(x1 - x0 + 1) * (LCD_ROW_BYTES / 160u);\n"
                            "    win_next = 0xFFFFu;\n}\n";
@@ -272,7 +273,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 fs::create_directories(o.output / "boards");
                 copy_template(platform / "boards" / "gamebuino_meta.json", o.output / "boards" / "gamebuino_meta.json");
                 fs::create_directories(o.output / "toolchain");
-                for (const auto& entry : fs::directory_iterator(o.meta_templates / "toolchain"))
+                for (const auto& entry : fs::directory_iterator(common_dir / "toolchain"))
                     if (entry.is_regular_file()) copy_template(entry.path(), o.output / "toolchain" / entry.path().filename());
             }
         }

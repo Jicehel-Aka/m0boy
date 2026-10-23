@@ -59,7 +59,7 @@ sans ROM commerciale ni fichier de firmware ajouté au dépôt.
 
 Même démarrage, mêmes pilotes (`espboy_hw.cpp`) et même carte flash. Les
 façades `sg_main.cpp` / `gg_main.cpp` gardent leur chemin META (lignes
-envoyées par `meta_lcd_send_rows`, 160 → 128 colonnes dans le pilote) ; la
+envoyées par `m0_lcd_send_rows`, 160 → 128 colonnes dans le pilote) ; la
 ROM est lue par des chargements alignés (`m0_load_u8`, z80.h).
 
 - ROM ≤ 256 Kio : dans le firmware (`sg_rom` en PROGMEM). Au-delà (GG/SMS) :

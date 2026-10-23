@@ -32,7 +32,7 @@
 #include <unordered_map>
 
 /* Set by recompiler/CMakeLists.txt from targets/meta/VERSION and
- * targets/meta/platform/pokitto/VERSION; the target console's is emitted into
+ * targets/consoles/pokitto/VERSION; the target console's is emitted into
  * gbl_config.h so a firmware records which gbrecomp produced it. */
 #ifndef GBRECOMP_META_VERSION
 #define GBRECOMP_META_VERSION "unknown"
@@ -2217,15 +2217,19 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     const fs::path src = out / "src";
     const fs::path tpl = options.template_dir;
     std::error_code ec;
-    /* targets/meta/platform: src holds the frontend both consoles share,
-     * meta/ and pokitto/ each console's drivers and project templates (*.in);
-     * the META also has a PlatformIO board directory.  Files the other
-     * console left in this directory (an earlier generation) are removed:
-     * the builds compile every source in src/; so is the Arduino variant
-     * directory of META projects generated before the firmware went bare
-     * metal. */
+    /* The templates: targets/meta (the Game Boy core's runtime and the
+     * frontend in platform/, shared by every console), targets/common (the
+     * console-shared frontend files, m0_*) and targets/consoles/<console>
+     * (each console's drivers and project templates, *.in; the META also has
+     * a PlatformIO board directory).  Files the other console left in this
+     * directory (an earlier generation, or an earlier name: the meta_* ones
+     * before they became m0_*) are removed: the builds compile every source
+     * in src/.  So is the Arduino variant directory of META projects
+     * generated before the firmware went bare metal.  */
     const char* console = options.espboy ? "espboy" : options.pokitto ? "pokitto" : "meta";
-    const fs::path platform_tpl = tpl / "platform" / console;
+    const fs::path consoles = tpl.parent_path() / "consoles";
+    const fs::path common = tpl.parent_path() / "common";
+    const fs::path platform_tpl = consoles / console;
     fs::create_directories(src, ec);
     fs::create_directories(out / "host", ec);
     fs::create_directories(out / "coverage", ec);
@@ -2235,7 +2239,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
     }
     for (const char* other : {"meta", "pokitto", "espboy"}) {
       if (std::string(other) == console) continue;
-      for (const auto& entry : fs::directory_iterator(tpl / "platform" / other, ec)) {
+      for (const auto& entry : fs::directory_iterator(consoles / other, ec)) {
         const fs::path name = entry.path().filename();
         if (entry.is_directory()) fs::remove_all(out / name, ec); /* boards/ */
         else if (name.extension() == ".in" && name.stem() != "README.md") fs::remove(out / name.stem(), ec);
@@ -2245,22 +2249,26 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
      * console's, or renamed since) would be compiled too: remove them. */
     {
         std::set<std::string> fresh;
-        for (const fs::path& dir : {tpl / "runtime", tpl / "platform" / "src", platform_tpl})
+        for (const fs::path& dir : {tpl / "runtime", tpl / "platform", common / "platform", platform_tpl})
             for (const auto& entry : fs::directory_iterator(dir, ec))
                 if (entry.is_regular_file()) fresh.insert(entry.path().filename().string());
         std::vector<fs::path> stale;
         for (const auto& entry : fs::directory_iterator(src, ec)) {
             const std::string n = entry.path().filename().string();
-            const bool templated = n.rfind("gbl_", 0) == 0 || n.rfind("meta_", 0) == 0 ||
+            const bool templated = n.rfind("gbl_", 0) == 0 || n.rfind("meta_", 0) == 0 || n.rfind("m0_", 0) == 0 || n.rfind("gb_", 0) == 0 ||
                                    n.rfind("pokitto_", 0) == 0 || n.rfind("espboy_", 0) == 0 || n == "lpc11u6x.h";
             if (templated && n != "gbl_config.h" && !fresh.count(n)) stale.push_back(entry.path());
         }
         for (const auto& path : stale) fs::remove(path, ec);
     }
     if (!copy_dir_files(tpl / "runtime", src, error) ||
-        !copy_dir_files(tpl / "platform" / "src", src, error) ||
+        !copy_dir_files(tpl / "platform", src, error) ||
+        !copy_dir_files(common / "platform", src, error) ||
         !copy_dir_files(platform_tpl, src, error))
         return false;
+    if (options.pokitto) /* its own display modes (pokitto_display.c): the GB
+                         * scaled modes' C and layout stay out */
+        for (const char* name : {"gbl_display.c", "gbl_display_layout.h"}) fs::remove(src / name, ec);
     if (options.espboy) {
         const auto bytes = gen.espboy_image();
         if (!bytes.empty()) {
@@ -2268,10 +2276,10 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         image.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
         if (!image) { error = "cannot write ESPboy ROM flash image"; return false; }
         }
-        for (const char* name : {"meta_display.c", "meta_display_layout.h"})
-            fs::copy_file(tpl / "platform/meta" / name, src / name, fs::copy_options::overwrite_existing);
+        for (const char* name : {"gbl_display.c", "gbl_display_layout.h"})
+            fs::copy_file(tpl / "platform" / name, src / name, fs::copy_options::overwrite_existing);
     }
-    if (!copy_dir_files(tpl / "toolchain", out / "toolchain", error)) return false;
+    if (!copy_dir_files(common / "toolchain", out / "toolchain", error)) return false;
     fs::copy_file(tpl.parent_path() / "common/runtime/m0_rom_codec.h", src / "m0_rom_codec.h",
                   fs::copy_options::overwrite_existing, ec);
     if (ec) { error = "cannot copy shared ROM codecs: " + ec.message(); return false; }

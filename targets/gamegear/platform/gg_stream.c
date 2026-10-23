@@ -11,8 +11,8 @@
 #include "sg_config.h"
 
 #if GG_CARD
-#include "meta_card.h"
-#include "meta_target.h"
+#include "m0_card.h"
+#include "m0_target.h"
 #include <string.h>
 
 #define MAX_EXTENTS 16
@@ -22,10 +22,10 @@ static meta_extent save_extents[4];
 static int n_save_extents, have_save;
 
 int gg_platform_save_read(uint32_t sector, uint8_t *dst) {
-    return have_save && meta_card_read(save_extents, n_save_extents, sector, dst);
+    return have_save && m0_card_read(save_extents, n_save_extents, sector, dst);
 }
 int gg_platform_save_write(uint32_t sector, const uint8_t *src) {
-    return have_save && meta_card_write(save_extents, n_save_extents, sector, src);
+    return have_save && m0_card_write(save_extents, n_save_extents, sector, src);
 }
 #endif
 
@@ -44,30 +44,30 @@ typedef struct {
 static int rom_matches(uint32_t first_lba, uint32_t size, uint8_t *buf, void *ctx) {
     rom_match *m = (rom_match *)ctx;
     m->seen = 1;
-    return size >= m->rom_size && meta_sd_read(first_lba, buf) && !memcmp(buf, m->rom, 512);
+    return size >= m->rom_size && m0_sd_read(first_lba, buf) && !memcmp(buf, m->rom, 512);
 }
 #endif
 
-/* A META_CARD_ code (meta_card.h): the ROM file when it is on the card,
+/* A M0_CARD_ code (meta_card.h): the ROM file when it is on the card,
  * then the save file, looked up in the folder of the game's .BIN (which
- * meta_fat_dir keeps for the save states' file).  buf: 512 bytes. */
+ * m0_fat_dir keeps for the save states' file).  buf: 512 bytes. */
 int gg_stream_open(const uint8_t *rom, uint32_t rom_size, uint8_t *buf) {
 #if defined(GG_ROM_PACKED) && !GG_CART_ON_CARD && !defined(GG_STATE_NAME83)
     (void)rom; (void)rom_size; (void)buf;
-    return META_CARD_OK;
+    return M0_CARD_OK;
 #else
-    if (!meta_sd_init()) return META_CARD_NO_CARD;
-    uint32_t dir = META_FAT_ANY_DIR;
-#if !META_TARGET_POKITTO
+    if (!m0_sd_init()) return M0_CARD_NO_CARD;
+    uint32_t dir = M0_FAT_ANY_DIR;
+#if !M0_TARGET_POKITTO
     /* The game's files are the ones in the folder of its own .BIN: other
      * games' folders may hold files of the same name. */
-    dir = meta_fat_game_dir(meta_card_sector, buf, GG_BIN_NAME83, META_APP_START);
-    meta_fat_dir = dir;
+    dir = m0_fat_game_dir(m0_card_sector, buf, GG_BIN_NAME83, META_APP_START);
+    m0_fat_dir = dir;
 #endif
 #if GG_STREAM && !defined(GG_ROM_PACKED)
     {
         rom_match m = {rom, rom_size, 0};
-        const int r = meta_card_find_rom(buf, GG_STREAM_NAME83, rom_matches, &m, &m.seen, &dir, extents,
+        const int r = m0_card_find_rom(buf, GG_STREAM_NAME83, rom_matches, &m, &m.seen, &dir, extents,
                                          MAX_EXTENTS, &n_extents);
         if (r) return r;
     }
@@ -78,12 +78,12 @@ int gg_stream_open(const uint8_t *rom, uint32_t rom_size, uint8_t *buf) {
     /* The cartridge RAM lives there: without it the game would lose its
      * own variables, as on the Game Boy. */
     uint32_t save_size = 0;
-    have_save = meta_fat_find_in(meta_card_sector, buf, GG_SAVE_NAME83, 0, 0, &dir, save_extents, 4,
-                                 &n_save_extents, &save_size) == META_FAT_OK &&
+    have_save = m0_fat_find_in(m0_card_sector, buf, GG_SAVE_NAME83, 0, 0, &dir, save_extents, 4,
+                                 &n_save_extents, &save_size) == M0_FAT_OK &&
                 save_size >= GG_CART_RAM_SIZE;
-    if (!have_save) return META_CARD_NO_SAVE;
+    if (!have_save) return M0_CARD_NO_SAVE;
 #endif
-    return META_CARD_OK;
+    return M0_CARD_OK;
 #endif
 }
 
@@ -93,7 +93,7 @@ int gg_platform_rom_read(uint32_t sector, uint8_t *dst) {
     (void)sector; (void)dst;
     return 0;
 #else
-    return meta_card_read(extents, n_extents, sector, dst);
+    return m0_card_read(extents, n_extents, sector, dst);
 #endif
 }
 #endif

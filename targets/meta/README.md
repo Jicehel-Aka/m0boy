@@ -11,12 +11,12 @@ are untouched.
 | Emitter | `recompiler/src/codegen/meta_emitter.cpp` |
 | Runtime (portable C) | `targets/meta/runtime/gbl_*.c` |
 | Optimisation profiles | `targets/meta/runtime/gbl_profile.h` (every switch, per console) |
-| Shared frontend | `targets/meta/platform/src/` (main loop, menu, saves, states, streaming, FAT, SD protocol, palettes; console facts in `meta_target.h`) |
-| META drivers | `targets/meta/platform/meta/` (startup, SPI, display + DMA, audio, SD bus, clock; PlatformIO templates, board) |
+| Shared frontend | `targets/common/platform/` (`m0_*`: menu, states, FAT, SD protocol, pad; console facts in `m0_target.h`) + the Game Boy's own `targets/meta/platform/` (`gb_main.cpp`, `gbl_save/stream/display/palettes`) |
+| META drivers | `targets/consoles/meta/` (startup, SPI, display + DMA, audio, SD bus, clock; PlatformIO templates, board) |
 | Host harness | `targets/meta/host/gbl_host.c` |
 | Cycle estimator | `targets/meta/tools/m0bench/` |
 | Tests | `targets/meta/tests/`, `tests/test_meta_target_e2e.py`, `tests/test_pokitto_target.py` |
-| Pokitto drivers | `targets/meta/platform/pokitto/` (see [Pokitto](#pokitto---target-pokitto)) |
+| Pokitto drivers | `targets/consoles/pokitto/` (see [Pokitto](#pokitto---target-pokitto)) |
 
 ## How it works
 
@@ -138,7 +138,7 @@ On the META:
 The option menu (`meta_menu.cpp`, after the menus of fgb, the GP32 port of
 gnuboy) pauses the game: up/down pick a line, left/right (or A) change its
 value, A runs an action, B or HOME closes it. The game's sound is paused
-too (`meta_audio_pause`, added for 0.7.0: the DAC to mid-scale and the
+too (`m0_audio_pause`, added for 0.7.0: the DAC to mid-scale and the
 sample source stopped while the menu is open). Its text uses dstar's
 greenfont, converted from Gdl's agf format to 2 bits a pixel by
 `tools/font/agf2meta.py` (`meta_font.h`, 1.5 KiB of flash instead of 6.6 KiB
@@ -195,7 +195,7 @@ frame skip renders nothing while a frame or more is owed.
 divides the DFLL48M to 1 MHz, the FDPLL96M multiplies it by 72 and
 generator 0 (CPU) switches to it with two flash wait states;
 TC4/TC5 and the DAC run from generator 4 (DFLL48M) at either clock,
-SysTick is reloaded for 1 ms and `meta_micros()` scales its fraction.
+SysTick is reloaded for 1 ms and `m0_micros()` scales its fraction.
 
 SERCOM4 (the SPI) has generator 6 to itself. A synchronous SPI runs at
 most at half the SERCOM's clock, so the display's rate picks the source:
@@ -227,7 +227,7 @@ Display modes (144 DMG lines on 128 META lines), chosen in the menu:
 
 | Mode | Method |
 | --- | --- |
-| SMOOTH | Area resampling, 9 lines onto 8 rows: row k of each group is (8 − k)/9 of line k plus (k + 1)/9 of line k + 1, nothing dropped. Lines are rendered packed (2-bit shades, `gbl_ppu_packed`, no colour conversion in the PPU) and every row is blended from two of them, two pixels per lookup in 4 KiB of compile-time tables (Thumb-1 loop in `meta_display_asm.S`) |
+| SMOOTH | Area resampling, 9 lines onto 8 rows: row k of each group is (8 − k)/9 of line k plus (k + 1)/9 of line k + 1, nothing dropped. Lines are rendered packed (2-bit shades, `gbl_ppu_packed`, no colour conversion in the PPU) and every row is blended from two of them, two pixels per lookup in 4 KiB of compile-time tables (Thumb-1 loop in `gbl_display_asm.S`) |
 | TILE | Drops the last line of each tile row (8k+7), keeping lines 63 and 95; fonts usually leave that line blank, so text stays intact (taken from gm0) |
 | BLEND | Merges lines 8 and 9 of every 9 with averaged colours (1 KiB table) |
 | DARK | Same merge, keeping the darker shade |
@@ -259,7 +259,7 @@ unchanged (Super Mario Land 29,784 bytes either way), flash +1.4 KiB. A
 first version that rendered the held line every frame through the palette
 switch of BLEND cost as much as SMOOTH (median +15.5%).
 
-`meta_display_panel_matches_reference` runs the real display pipeline
+`gbl_display_panel_matches_reference` runs the real display pipeline
 against a simulated ST7735 (row windows included) and checks every mode
 pixel for pixel over 400 frames of random changes (SMOOTH: on the frames
 after an unchanged one, the late rows being counted), plus the SMOOTH
@@ -269,7 +269,7 @@ host.
 
 Faults and hangs (meta_startup.c): a HardFault, an unhandled interrupt or
 the watchdog's early warning (the main loop fed it last 2 s ago:
-`meta_watchdog_feed`, once per frame, in the menus and on every SD sector)
+`m0_watchdog_feed`, once per frame, in the menus and on every SD sector)
 logs the exception frame in `meta_fault` (`.noinit`, kept across resets),
 answers USB for two seconds, then restarts the game with a software reset.
 Three faults in a row within 5 s of boot stop the restarts (the firmware
@@ -289,7 +289,7 @@ low between strips of a frame), lets the last byte leave the shifter and
 drains the receive FIFO. `meta_spi_init()` sets PA12 (MISO) as an input
 (INEN) and every chip select inactive: without INEN the pad and the card
 read 0. Every frontend then decodes its console's raw bits once through
-`META_PAD` (meta_pad.h) into the menu's `META_MB_*` order — the same
+`META_PAD` (meta_pad.h) into the menu's `M0_MB_*` order — the same
 mapping code everywhere, the Game Boy's A/B swap, the Sega START and the
 PICO-8's C-tap reading the same named bits — and gm0 (EMU_INPUT) drives
 the same roles: H is the m0boy menu key on every console (the META's
@@ -349,7 +349,7 @@ touches the FAT.
   `GBL_DEBUG_RESTART` (`meta-usb.py restart`: RAM switch-off, RETI
   registers, the first interrupt taken at a pc in 0068-014F), `META_DEBUG_TRACE`
   (each frame's pc, sp, hl, stack top in a ring that `meta-usb.py trace`
-  appends to a file), `META_DEBUG_RESET`, `META_DEBUG_BUS`;
+  appends to a file), `META_DEBUG_RESET`, `M0_DEBUG_BUS`;
   `GBL_DEBUG_ERAM_MAPS` and `GBL_DEBUG_ERAM_SUM` need `GBL_CACHE_UNIFIED=0`.
   These records take RAM from the C stack: at 98.6% of RAM the stack ran
   into them. A build that leaves the generated code less than
@@ -410,7 +410,7 @@ touches the FAT.
   the display SPI always runs at the most the clock tree gives —
   `META_LCD_SPI_MHZ` clamped by `meta_clock.cpp`).  The shared part is
   `targets/common/platform/sg_menu.h`; the menu draws through each
-  frontend's line buffers (`meta_menu_scratch`, meta_menu.h).  The
+  frontend's line buffers (`m0_menu_scratch`, meta_menu.h).  The
   streaming Game Gear builds run it on the card cache's blocks, lent out
   (`gg_cache_lend`, the save written back first); its Redemarrer is a power
   cycle: the cartridge RAM is flushed to the card, then cleared.
@@ -685,16 +685,16 @@ the generated code and the frontend are shared, only the drivers differ.
 
 - **Configuration.** `runtime/gbl_profile.h` lists every optimisation
   switch with its value for each console (see [Build options](#build-options));
-  `platform/src/meta_target.h` selects the
+  `targets/common/platform/m0_target.h` selects the
   console from `GBL_TARGET_POKITTO` (written into `gbl_config.h` by the
   generator) and sets the `META_*` switches the shared files test with
-  `#if`: `META_TARGET_POKITTO` (whose drivers, `pokitto_hw.h` or
-  `meta_hw.h`), `META_SCALED_MODES` (the META's 144→128 display modes), `META_SCREEN_ROWS`
-  (menu height), `META_SWAP_AB_DEFAULT`, `META_CLOCK_DEFAULT` and
-  `META_COLOR` (byte-swapped RGB565 on the META's SPI, native on the
+  `#if`: `M0_TARGET_POKITTO` (whose drivers, `pokitto_hw.h` or
+  `meta_hw.h`), `M0_SCALED_MODES` (the META's 144→128 display modes), `M0_SCREEN_ROWS`
+  (menu height), `M0_SWAP_AB_DEFAULT`, `M0_CLOCK_DEFAULT` and
+  `M0_COLOR` (byte-swapped RGB565 on the META's SPI, native on the
   Pokitto's bus). When the Pokitto target was added, the META firmware
   built from these files was byte-identical to the one built before.
-- **Bare metal.** No mbed, no PokittoLib: `platform/pokitto/` holds the
+- **Bare metal.** No mbed, no PokittoLib: `targets/consoles/pokitto/` holds the
   startup (vector table, LPC boot checksum written into word 7 by the
   Makefile), the clock (crystal + PLL, 48/72 MHz from the menu; flash wait
   states left at their reset value, as PokittoLib and gm0 do), the display
@@ -812,7 +812,7 @@ Every firmware embeds the version of the edition that produced it
 (`gbrecomp-meta x.y.z` / `gbrecomp-pokitto x.y.z` string in the .bin). Each
 console has its own version file, bumped independently: the META's lives in
 `targets/meta/VERSION` (the release archive's CMake project and zip name take
-it), the Pokitto's in `targets/meta/platform/pokitto/VERSION`. The recompiler
+it), the Pokitto's in `targets/consoles/pokitto/VERSION`. The recompiler
 stamps the target console's (`GBL_GEN_VERSION`), `gbrecomp --meta-version` and
 `gbrecomp --pokitto-version` print them. Bump a console's version when
 the runtime, the frontend or the generated code change what its firmwares
@@ -933,7 +933,7 @@ run (same picture in Link's Awakening).
 | `GBL_UNPACK_ASM` | 1 on Cortex-M0+ | Thumb-1 decoder for those sectors |
 | `GBL_STACK_GUARD` | 1 | C stack check on entry to every compiled region |
 | `META_SWAP_AB` | 1 | META A = Game Boy B, META B = Game Boy A |
-| `META_SD_SPI_HZ` | 18000000 | SPI clock for SD sector reads (identification stays at 250 kHz): 17.5 MHz with the SERCOM on the PLL at 70. 24 and 35 MHz found no data token on a META. `META_SD_CRC` 1 checks each block's CRC16 (`meta_sd_bus.cpp`; a failed read halves the rate down to 12 MHz and reads again), for trying faster rates or other cards; 17.5 MHz read SML2 without a CRC error. `meta_sd_spi_hz`, `meta_sd_read_errors`, `meta_save_reads` can be read (or the rate set) with `tools/meta-usb.py` |
+| `META_SD_SPI_HZ` | 18000000 | SPI clock for SD sector reads (identification stays at 250 kHz): 17.5 MHz with the SERCOM on the PLL at 70. 24 and 35 MHz found no data token on a META. `META_SD_CRC` 1 checks each block's CRC16 (`meta_sd_bus.cpp`; a failed read halves the rate down to 12 MHz and reads again), for trying faster rates or other cards; 17.5 MHz read SML2 without a CRC error. `meta_sd_spi_hz`, `meta_sd_read_errors`, `gbl_save_reads` can be read (or the rate set) with `tools/meta-usb.py` |
 | `META_BUTTONS_SPI_HZ` | 12000000 | SPI clock for the buttons' shift register, the library's. `META_BUTTONS_PL_US` (1) is the wait after CS low for the register's parallel load |
 | `META_LCD_BGR` | 0 | BGR order in the ST7735's MADCTL; 0 on the META tested (with 1, red and blue were swapped) |
 | `GBL_ERAM_CACHE_SECTORS` (window) | — | With the cartridge RAM on the card, `gbl_rd`/`gbl_wr` (C and assembly) read the newest cached sector directly, and write it once it is dirty, without `gbl_rd_slow` and `eram_sector`. Estimator on Super Mario Land 2 (2,400 frames into level 1, same pixel and state hashes): 593k → 497k cycles a frame, frames over the 60 Hz budget 455 → 27. Host, four sessions (539,000 frames): cartridge RAM writes / reads with 8 sectors 12,899 / 34,330, 9: 7,833 / 27,725, 10: 3,066 / 4,820, 12: 2,450 / 2,882 |
@@ -943,7 +943,7 @@ run (same picture in Link's Awakening).
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND and DARK display modes (1 KiB table, a spare line); TBLEND then blends two pixels per lookup |
 | `META_TBLEND` | 2 with a ROM cache or cartridge RAM on SD, otherwise 1 | TBLEND, the default mode, same picture in 1 and 2. 1 keeps the 15 held lines (600 bytes) so each is rendered only when it changes; 2 keeps one, in SMOOTH's buffers, and renders the 15 held lines on every drawn frame (frames that did not change at all are still skipped): 640 bytes less on Super Mario Land 2 (2,576 → 3,216 bytes free above `.bss`), CPU cost not measured on the device. Without `META_MERGE_MODES`, a 16-colour table (one lookup per pixel) instead of the 1 KiB one. 0 leaves TBLEND out (TILE instead), 64 bytes less than 2 |
 | `META_STACK_RESERVE` | 640 (Pokitto 768) | C stack kept below `gbl_stack_limit`, for what generated code calls there unguarded. Static worst case on the META (frames and call graph of the SML2 firmware): a slow-path read that renders a line, about 390 bytes with the region's frame, plus the USB and DMA interrupts nested, about 220. In streamed builds the option menu (about 590 bytes) runs on the ROM cache's buffers, emptied afterwards: in Super Mario Land 2 every VBlank comes deep in the game's calls. The menu shows the stack never used since boot ("pile", bytes above `.bss`) |
-| `META_LCD_12BPP` | 0 | ST7735 in RGB444 (COLMOD 03h): `META_COLOR` gives 0x0RGB, each row is packed in Thumb-1 as it goes out (`meta_lcd_pack_asm.S`), 240 bytes per row instead of 320. meta-emu-sdl estimate on Super Mario Land: display waits 8.5% → 1.3% of the CPU, audio restarts 7 → 1 per minute |
+| `META_LCD_12BPP` | 0 | ST7735 in RGB444 (COLMOD 03h): `M0_COLOR` gives 0x0RGB, each row is packed in Thumb-1 as it goes out (`meta_lcd_pack_asm.S`), 240 bytes per row instead of 320. meta-emu-sdl estimate on Super Mario Land: display waits 8.5% → 1.3% of the CPU, audio restarts 7 → 1 per minute |
 | `META_AUDIO_DMA` | 0 | The output path, chosen at **build** time since 0.10.29 (the run-time switch of 0.10.28 and the menus' Audio line are gone: 0.5% of the CPU measured on Pokémon Yellow were not worth the DMA path's restart logic and descriptor history): 1 the samples go to the DAC by DMA (TC4-triggered DMAC channel 0, one descriptor per block, the next started by the channel's transfer-complete interrupt) instead of the 22 kHz TC4 interrupt. compile.sh `AUDIO_DMA=1` sets it. No linked descriptors: SAM D21 erratum 1.7.2 (silicon A to F; the META tested is D) — while a channel with linked descriptors runs, enabling another may fetch a wrong descriptor. With the audio chain linked and the display enabled at every Game Gear line, the DMAC wrote audio descriptors over unrelated RAM (HardFaults in Ristar, 4 in 3 minutes); with the channel numbers swapped the display's DMA also stopped mid-strip until the watchdog |
 | `META_AUDIO_RING` | 512 | Samples of the audio ring, 2 bytes each (a DAC value: the DMA reads it directly), at least 512 (one emulated frame). Until 0.10.28 the two paths had rings of their own, chosen at build time: the interrupt's `META_AUDIO_IRQ_RING` (1024 one-byte samples, 512 on the Game Gear) and the DMA's (768 samples of 2 bytes) |
 | `META_LCD_RUNS` | 1 | The display window reaches the last row: strips that follow the previous one go on as data of the same RAMWR, and the window is set again only for a strip that does not follow and after the bus was released (each frame's end, a card or pad access). Ristar (Game Gear, one window per line before), device, 2400 frames unpaced: 55.69 s → 53.15 s (-4.6%), frames over 25 ms 355 → 157. 0: a window per strip |
@@ -1440,7 +1440,7 @@ ctest --test-dir build -R meta --output-on-failure
   - the packed build run with 0 to 1024 bytes of C stack (`--stack-bytes`)
     to finish (60 s timeout, catches the dispatcher livelock) with the
     interpreter's frames and WRAM, and 1 KiB to keep the full machine state.
-- `meta_fat_finds_streamed_rom` builds FAT16 and FAT32 images with
+- `m0_fat_finds_streamed_rom` builds FAT16 and FAT32 images with
   `mkfs.fat` and mtools, in the root and in a directory, behind a partition
   table, with a lower-case name and a file in four pieces. It requires the
   file read through `meta_fat.c` to be byte-identical, and a missing file or

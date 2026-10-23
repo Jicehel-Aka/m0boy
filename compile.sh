@@ -77,7 +77,7 @@
 #
 # Versions : chaque firmware embarque la version de l'édition de sa console
 # (« gbrecomp-meta x.y.z » ou « gbrecomp-pokitto x.y.z » dans le .bin ; une
-# version par console : targets/meta/VERSION, targets/meta/platform/pokitto/VERSION).
+# version par console : targets/meta/VERSION, targets/consoles/pokitto/VERSION).
 # compile.sh la relit : un firmware déjà à jour (même
 # version, même ROM) est conservé tel quel ; un firmware fait par une autre
 # version est proposé à la mise à jour.
@@ -355,7 +355,7 @@ if [ ! -x "$GBRECOMP" ]; then
   exit 1
 fi
 # Version de l'édition de la console (targets/meta/VERSION pour la META,
-# targets/meta/platform/pokitto/VERSION pour la Pokitto), celle inscrite dans
+# targets/consoles/pokitto/VERSION pour la Pokitto), celle inscrite dans
 # les firmwares « gbrecomp-<console> x.y.z » ; un gbrecomp plus ancien ne
 # connaît que --version-json.
 CUR_VERSION=$("$GBRECOMP" --"$TARGET"-version 2>/dev/null | head -n1)
@@ -516,7 +516,7 @@ profile_build() { # $1 dossier, $2 zip, $3 ELF ou "", $4 journal, $5... clé=val
   echo "[i] Jouer dans gm0 / enrichir le profil : $store/play.sh"
 }
 
-# Version de gbrecomp embarquée dans un firmware (voir meta_main.cpp) :
+# Version de gbrecomp embarquée dans un firmware (voir gb_main.cpp) :
 # « gbrecomp-meta x.y.z » ou « gbrecomp-pokitto x.y.z ».
 firmware_version() {
   grep -aoE "(gbrecomp-$TARGET|m0boy-sg1000-$TARGET|m0boy-gg-$TARGET|m0boy-pico8-$TARGET) [0-9A-Za-z._+-]{1,32}" "$1" 2>/dev/null \

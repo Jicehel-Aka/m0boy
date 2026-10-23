@@ -158,7 +158,7 @@ def main():
         run(args.recompiler, cart, '--target', 'pokitto', '-o', pokitto)
         for name in ('CMakeLists.txt', 'pokitto.ld', 'arm-toolchain.cmake', 'checksum.py',
                      'src/p8_main.cpp', 'src/p8_config.h', 'src/pokitto_audio.c', 'src/pokitto_lcd.c',
-                     'src/pokitto_p8lcd.c', 'src/pokitto_sd.c', 'src/meta_state.cpp', 'src/meta_menu.cpp'):
+                     'src/pokitto_p8lcd.c', 'src/pokitto_sd.c', 'src/m0_state.cpp', 'src/m0_menu.cpp'):
             assert (pokitto / name).is_file(), name
         for name in ('meta_lcd.cpp', 'meta_sd_bus.cpp', 'platformio.ini', 'gamebuino_meta.ld'):
             assert not (pokitto / 'src' / name).exists() and not (pokitto / name).exists(), name

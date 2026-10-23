@@ -4,7 +4,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-void meta_watchdog_feed(void);
+void m0_watchdog_feed(void);
 #ifdef __cplusplus
 }
 #endif

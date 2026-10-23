@@ -9,10 +9,10 @@
  * fat_check IMAGE NAME83 EXPECTED_FILE MAX_EXTENTS match [NAME2 EXPECTED2]
  *
  * Several folders hold NAME83: takes the one whose first sector is
- * EXPECTED_FILE's (meta_fat_find_in), then looks NAME2 up in that folder
+ * EXPECTED_FILE's (m0_fat_find_in), then looks NAME2 up in that folder
  * only and compares it with EXPECTED2 (a game's save next to its ROM).
  */
-#include "meta_fat.h"
+#include "m0_fat.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,7 +40,7 @@ static int compare(const char *path, const meta_extent *ext, int n, uint32_t siz
     for (uint32_t s = 0; s * 512u < size; s++) {
         uint8_t exp[512];
         size_t k = fread(exp, 1, 512, ef);
-        uint32_t lba = meta_fat_lba(ext, n, s);
+        uint32_t lba = m0_fat_lba(ext, n, s);
         if (!lba || !rd(lba, buf) || memcmp(buf, exp, k)) { printf("mismatch at sector %u\n", s); return 1; }
     }
     fclose(ef);
@@ -68,22 +68,22 @@ int main(int argc, char **argv) {
         FILE *ef = fopen(argv[3], "rb");
         if (!ef || fread(want_first, 1, 512, ef) != 512) { perror(argv[3]); return 2; }
         fclose(ef);
-        uint32_t dir = META_FAT_ANY_DIR;
-        int r = meta_fat_find_in(rd, buf, name, first_sector_matches, 0, &dir, ext, max_ext, &n, &size);
+        uint32_t dir = M0_FAT_ANY_DIR;
+        int r = m0_fat_find_in(rd, buf, name, first_sector_matches, 0, &dir, ext, max_ext, &n, &size);
         if (r) { printf("lookup failed: %d\n", r); return 1; }
         if (compare(argv[3], ext, n, size, buf)) return 1;
         if (argc > 7) {
             char name2[12];
             memset(name2, ' ', 11);
             memcpy(name2, argv[6], strlen(argv[6]) < 11 ? strlen(argv[6]) : 11);
-            r = meta_fat_find_in(rd, buf, name2, 0, 0, &dir, ext, max_ext, &n, &size);
+            r = m0_fat_find_in(rd, buf, name2, 0, 0, &dir, ext, max_ext, &n, &size);
             if (r) { printf("second lookup failed: %d\n", r); return 1; }
             if (compare(argv[7], ext, n, size, buf)) return 1;
         }
         printf("ok matched size %u\n", size);
         return 0;
     }
-    int r = meta_fat_find(rd, buf, name, ext, max_ext, &n, &size);
+    int r = m0_fat_find(rd, buf, name, ext, max_ext, &n, &size);
     if (!strcmp(argv[3], "-")) { printf("result %d\n", r); return 0; }
     if (r) { printf("lookup failed: %d\n", r); return 1; }
     if (compare(argv[3], ext, n, size, buf)) return 1;

@@ -46,8 +46,8 @@ typedef struct {
 extern volatile meta_fault_log meta_fault;
 /* 4 s without a feed resets the console; the early warning at 2 s logs the
  * PC and restarts the game.  Feed once per frame and in long waits. */
-void meta_watchdog_feed(void);
-void meta_watchdog_stop(void);
+void m0_watchdog_feed(void);
+void m0_watchdog_stop(void);
 
 #ifdef __cplusplus
 }

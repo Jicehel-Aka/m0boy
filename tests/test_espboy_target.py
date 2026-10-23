@@ -70,7 +70,7 @@ def main():
         obj.mkdir()
         src = project / 'src'
         objs = []
-        for c in sorted(src.glob('gbl_*.c')) + [src / 'e2e_gen.c', src / 'e2e_rom.c']:
+        for c in sorted(c for c in src.glob('gbl_*.c') if c.name != 'gbl_display.c') + [src / 'e2e_gen.c', src / 'e2e_rom.c']:
             run(['cc', '-O1', '-w', '-I', str(src), '-c', str(c), '-o', str(obj / (c.name + '.o'))])
             objs.append(str(obj / (c.name + '.o')))
         for c in [src / 'espboy_flash.cpp', tests / 'espboy_flash_check.cpp']:
@@ -113,8 +113,8 @@ def main():
         assert hdr('ESPBOY_ROM_OFF') + hdr('ESPBOY_ROM_BYTES') == hdr('ESPBOY_SAVE_OFF')
         assert hdr('ESPBOY_SAVE_OFF') + hdr('ESPBOY_SAVE_BYTES') == 0x3FB000
         assert hdr('ESPBOY_SAVE_BYTES') == int(re.search(r'kEspSaveBlocks = (0x[0-9A-Fa-f]+) / 4096', emitter).group(1), 16)
-        assert '0x100000' in (Path(__file__).resolve().parents[1] / 'targets/meta/platform/espboy/espboy_build.py.in').read_text()
-        ld = (Path(__file__).resolve().parents[1] / 'targets/meta/platform/espboy/espboy.ld.in').read_text()
+        assert '0x100000' in (Path(__file__).resolve().parents[1] / 'targets/consoles/espboy/espboy_build.py.in').read_text()
+        ld = (Path(__file__).resolve().parents[1] / 'targets/consoles/espboy/espboy.ld.in').read_text()
         assert 'len = 0xfeff0' in ld  # ESPBOY_APP_BYTES - 0x1010
         # Above what the firmware holds: bank 0 in it, the other sectors raw in rom.bin.
         mid = bytearray(rom.read_bytes())

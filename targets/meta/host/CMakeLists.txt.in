@@ -13,6 +13,9 @@ endif()
 
 set(GBL_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 file(GLOB GBL_RUNTIME ${GBL_SRC}/gbl_*.c)
+# gbl_display.c drives the console's LCD (m0_lcd_*): only metaview simulates
+# the panel; the plain harness has no such functions
+list(REMOVE_ITEM GBL_RUNTIME ${GBL_SRC}/gbl_display.c)
 set(GBL_GENERATED ${GBL_SRC}/@NAME@_gen.c ${GBL_SRC}/@NAME@_rom.c)
 # Streaming projects (ROM read from the SD card on the META) link the whole
 # ROM on the host, and their profile builds record ROM data reads
@@ -52,9 +55,9 @@ endif()
 # @NAME@_metaview: the game through the real META display pipeline, written
 # as 160x128 images of the console screen (--mode, --dump N file.ppm).
 # META projects only: a Pokitto project has no scaling pipeline.
-if(EXISTS ${GBL_SRC}/meta_display.c)
-    add_executable(@NAME@_metaview gbl_metaview.c ${GBL_RUNTIME} ${GBL_GENERATED} ${GBL_SRC}/meta_display.c
-                   ${GBL_SRC}/meta_palettes.c)
+if(EXISTS ${GBL_SRC}/gbl_display.c)
+    add_executable(@NAME@_metaview gbl_metaview.c ${GBL_RUNTIME} ${GBL_GENERATED} ${GBL_SRC}/gbl_display.c
+                   ${GBL_SRC}/gbl_palettes.c)
     target_include_directories(@NAME@_metaview PRIVATE ${GBL_SRC})
     target_compile_options(@NAME@_metaview PRIVATE -Wall -Wno-unused-label)
 endif()

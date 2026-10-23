@@ -109,7 +109,7 @@
 
 /* META_LCD_12BPP: the ST7735 in 12-bit colour (RGB444, COLMOD 03h): 25%
  * fewer bytes per row on the SPI (a full frame 10.2 ms instead of 13.7 at
- * 24 MHz).  The pipeline renders 0x0RGB pixels (META_COLOR) and each row
+ * 24 MHz).  The pipeline renders 0x0RGB pixels (M0_COLOR) and each row
  * is packed in Thumb-1 as it goes out (meta_lcd_pack_asm.S, ~5 cycles per
  * pixel).  meta-emu-sdl estimate on Super Mario Land: waits for the display
  * 8.5% -> 1.3% of the CPU, audio restarts 7 -> 1 per minute; colours keep 4

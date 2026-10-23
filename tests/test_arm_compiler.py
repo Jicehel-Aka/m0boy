@@ -8,10 +8,10 @@ import unittest
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('arm_clang', ROOT / 'targets/meta/toolchain/arm_clang.py')
+spec = importlib.util.spec_from_file_location('arm_clang', ROOT / 'targets/common/toolchain/arm_clang.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-compat_spec = importlib.util.spec_from_file_location('cmsis_compat', ROOT / 'targets/meta/toolchain/cmsis_compat.py')
+compat_spec = importlib.util.spec_from_file_location('cmsis_compat', ROOT / 'targets/common/toolchain/cmsis_compat.py')
 compat = importlib.util.module_from_spec(compat_spec)
 compat_spec.loader.exec_module(compat)
 

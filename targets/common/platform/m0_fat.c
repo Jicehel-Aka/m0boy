@@ -1,0 +1,222 @@
+/* Minimal read-only FAT16/FAT32 file lookup (see meta_fat.h). */
+#include "m0_fat.h"
+
+#include <string.h>
+
+#define MAX_SUBDIRS 32
+
+typedef struct {
+    m0_fat_read_fn rd;
+    uint8_t *buf;
+    uint32_t fat_lba, root_lba, root_sectors, data_lba, root_cluster;
+    uint32_t spc; /* sectors per cluster */
+    uint8_t fat32;
+    m0_fat_accept_fn accept;
+    void *ctx;
+} volume;
+
+static uint16_t u16(const uint8_t *p) { return (uint16_t)(p[0] | p[1] << 8); }
+static uint32_t u32(const uint8_t *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+
+static int is_fat_boot(const uint8_t *b) {
+    return (b[0] == 0xEB || b[0] == 0xE9) && u16(b + 0x0B) == 512 && b[0x0D] &&
+           !(b[0x0D] & (b[0x0D] - 1)) && (b[0x10] == 1 || b[0x10] == 2);
+}
+
+static int mount(volume *v) {
+    uint8_t *b = v->buf;
+    if (!v->rd(0, b)) return M0_FAT_IO;
+    if (b[510] != 0x55 || b[511] != 0xAA) return M0_FAT_NO_FS;
+    uint32_t part = 0;
+    if (!is_fat_boot(b)) {
+        /* MBR: first FAT partition. */
+        int found = 0;
+        for (int i = 0; i < 4 && !found; i++) {
+            const uint8_t *e = b + 0x1BE + 16 * i;
+            uint8_t t = e[4];
+            if (t == 0x01 || t == 0x04 || t == 0x06 || t == 0x0B || t == 0x0C || t == 0x0E) {
+                part = u32(e + 8);
+                found = 1;
+            }
+        }
+        if (!found) return M0_FAT_NO_FS;
+        if (!v->rd(part, b)) return M0_FAT_IO;
+        if (!is_fat_boot(b)) return M0_FAT_NO_FS;
+    }
+    uint32_t spc = b[0x0D], rsvd = u16(b + 0x0E), nfats = b[0x10], root_ent = u16(b + 0x11);
+    uint32_t total = u16(b + 0x13) ? u16(b + 0x13) : u32(b + 0x20);
+    uint32_t fatsz = u16(b + 0x16) ? u16(b + 0x16) : u32(b + 0x24);
+    uint32_t root_secs = (root_ent * 32u + 511u) / 512u;
+    v->spc = spc;
+    v->fat_lba = part + rsvd;
+    v->root_lba = v->fat_lba + nfats * fatsz;
+    v->root_sectors = root_secs;
+    v->data_lba = v->root_lba + root_secs;
+    uint32_t meta = rsvd + nfats * fatsz + root_secs;
+    if (total <= meta) return M0_FAT_NO_FS;
+    uint32_t clusters = (total - meta) / spc;
+    if (clusters < 4085) return M0_FAT_NO_FS; /* FAT12 */
+    v->fat32 = clusters >= 65525;
+    v->root_cluster = v->fat32 ? u32(b + 0x2C) : 0;
+    return M0_FAT_OK;
+}
+
+static uint32_t cluster_lba(const volume *v, uint32_t c) { return v->data_lba + (c - 2u) * v->spc; }
+
+/* Next cluster in the chain, 0 at the end, 0xFFFFFFFF on a read error. */
+static uint32_t next_cluster(volume *v, uint32_t c) {
+    uint32_t off = v->fat32 ? c * 4u : c * 2u;
+    if (!v->rd(v->fat_lba + off / 512u, v->buf)) return 0xFFFFFFFFu;
+    if (v->fat32) {
+        uint32_t n = u32(v->buf + off % 512u) & 0x0FFFFFFFu;
+        return (n < 2 || n >= 0x0FFFFFF8u) ? 0 : n;
+    }
+    uint32_t n = u16(v->buf + off % 512u);
+    return (n < 2 || n >= 0xFFF8u) ? 0 : n;
+}
+
+/* Scan one directory (cluster 0 = FAT16 root).  Returns 1 when name83 was
+ * found (cluster and size filled), 0 otherwise, <0 on error; when subdirs
+ * is not NULL, the subdirectories from the skip-th on (at most MAX_SUBDIRS)
+ * are collected into it, and *seen counts them all. */
+static int scan_dir(volume *v, uint32_t cluster, const char *name83, uint32_t *file_cluster,
+                    uint32_t *file_size, uint32_t *subdirs, int *n_subdirs, int skip, int *seen) {
+    uint32_t sector = 0;
+    for (;;) {
+        uint32_t lba;
+        if (cluster == 0) {
+            if (sector >= v->root_sectors) return 0;
+            lba = v->root_lba + sector;
+        } else {
+            if (sector == v->spc) {
+                cluster = next_cluster(v, cluster);
+                if (cluster == 0xFFFFFFFFu) return M0_FAT_IO;
+                if (cluster == 0) return 0;
+                sector = 0;
+            }
+            lba = cluster_lba(v, cluster) + sector;
+        }
+        if (!v->rd(lba, v->buf)) return M0_FAT_IO;
+        for (int i = 0; i < 16; i++) {
+            const uint8_t *e = v->buf + 32 * i;
+            if (e[0] == 0x00) return 0;
+            if (e[0] == 0xE5 || e[11] == 0x0F || (e[11] & 0x08)) continue;
+            uint32_t first = (uint32_t)u16(e + 20) << 16 | u16(e + 26);
+            if (e[11] & 0x10) {
+                if (subdirs && e[0] != '.' && first >= 2 && (*seen)++ >= skip && *n_subdirs < MAX_SUBDIRS)
+                    subdirs[(*n_subdirs)++] = first;
+                continue;
+            }
+            if (!memcmp(e, name83, 11)) {
+                uint32_t size = u32(e + 28);
+                if (v->accept) {
+                    /* The candidate may use the buffer: read the directory
+                     * sector again before going on. */
+                    int take = first >= 2 && v->accept(cluster_lba(v, first), size, v->buf, v->ctx);
+                    if (!v->rd(lba, v->buf)) return M0_FAT_IO;
+                    if (!take) continue;
+                }
+                *file_cluster = first;
+                *file_size = size;
+                return 1;
+            }
+        }
+        sector++;
+    }
+}
+
+uint32_t m0_fat_dir = M0_FAT_ANY_DIR;
+
+int m0_fat_find(m0_fat_read_fn rd, uint8_t *buf, const char *name83, meta_extent *ext,
+                  int max_ext, int *n_ext, uint32_t *size) {
+    uint32_t dir = m0_fat_dir;
+    return m0_fat_find_in(rd, buf, name83, 0, 0, &dir, ext, max_ext, n_ext, size);
+}
+
+int m0_fat_find_in(m0_fat_read_fn rd, uint8_t *buf, const char *name83, m0_fat_accept_fn accept,
+                     void *ctx, uint32_t *dir, meta_extent *ext, int max_ext, int *n_ext, uint32_t *size) {
+    volume v;
+    memset(&v, 0, sizeof(v));
+    v.rd = rd;
+    v.buf = buf;
+    v.accept = accept;
+    v.ctx = ctx;
+    int r = mount(&v);
+    if (r) return r;
+    uint32_t first = 0, where;
+    if (dir && *dir != M0_FAT_ANY_DIR) {
+        where = *dir;
+        r = scan_dir(&v, where, name83, &first, size, 0, 0, 0, 0);
+    } else {
+        /* The root, then its folders MAX_SUBDIRS at a time (the root is read
+         * again for each batch): a card holds more game folders than that
+         * (2026-10-19: a game past the 32nd folder found neither its own
+         * folder nor its ROM, red screen). */
+        uint32_t subdirs[MAX_SUBDIRS];
+        int skip = 0, seen;
+        do {
+            int n_sub = 0;
+            seen = 0;
+            where = v.root_cluster;
+            r = scan_dir(&v, where, name83, &first, size, subdirs, &n_sub, skip, &seen);
+            for (int i = 0; r == 0 && i < n_sub; i++) {
+                where = subdirs[i];
+                r = scan_dir(&v, where, name83, &first, size, 0, 0, 0, 0);
+            }
+            skip += MAX_SUBDIRS;
+        } while (r == 0 && seen > skip);
+    }
+    if (r < 0) return r;
+    if (r == 0) return M0_FAT_NOT_FOUND;
+    if (dir) *dir = where;
+
+    /* Cluster chain -> runs of consecutive sectors. */
+    uint32_t need = (*size + 511u) / 512u, have = 0;
+    int n = 0;
+    uint32_t c = first;
+    while (have < need) {
+        if (c < 2) return M0_FAT_NO_FS; /* chain shorter than the file */
+        uint32_t lba = cluster_lba(&v, c);
+        if (n && ext[n - 1].lba + ext[n - 1].sectors == lba) {
+            ext[n - 1].sectors += v.spc;
+        } else {
+            if (n == max_ext) return M0_FAT_FRAGMENTED;
+            ext[n].lba = lba;
+            ext[n].sectors = v.spc;
+            n++;
+        }
+        have += v.spc;
+        if (have >= need) break;
+        c = next_cluster(&v, c);
+        if (c == 0xFFFFFFFFu) return M0_FAT_IO;
+    }
+    *n_ext = n;
+    return M0_FAT_OK;
+}
+
+uint32_t m0_fat_lba(const meta_extent *ext, int n_ext, uint32_t sector) {
+    for (int i = 0; i < n_ext; i++) {
+        if (sector < ext[i].sectors) return ext[i].lba + sector;
+        sector -= ext[i].sectors;
+    }
+    return 0;
+}
+
+typedef struct {
+    m0_fat_read_fn rd;
+    const uint8_t *app;
+} same_first;
+
+static int same_first_sector(uint32_t first_lba, uint32_t size, uint8_t *buf, void *ctx) {
+    const same_first *m = (const same_first *)ctx;
+    return size >= 512 && m->rd(first_lba, buf) && !memcmp(buf, m->app, 512);
+}
+
+uint32_t m0_fat_game_dir(m0_fat_read_fn rd, uint8_t *buf, const char *bin83, const uint8_t *app) {
+    same_first m = {rd, app};
+    uint32_t dir = M0_FAT_ANY_DIR, size = 0;
+    meta_extent ext[1];
+    int n = 0;
+    int r = m0_fat_find_in(rd, buf, bin83, same_first_sector, &m, &dir, ext, 1, &n, &size);
+    return r == M0_FAT_OK || r == M0_FAT_FRAGMENTED ? dir : M0_FAT_ANY_DIR;
+}

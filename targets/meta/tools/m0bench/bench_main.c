@@ -34,7 +34,7 @@ static void state_mix(const uint8_t *p, uint32_t n) {
  * pokitto_lcd.c and its Thumb-1 pixel pushes, mode BENCH_POKITTO_DISPLAY:
  * 0 1:1, 1 200x176, 2 200x176 entier).  Its GPIO writes go to the region
  * m0_estimate.py maps at 0xA0000000, so every pixel store is counted. */
-#include "meta_display.h"
+#include "gbl_display.h"
 void delay(uint32_t ms) { (void)ms; }
 #define BENCH_OWN_DISPLAY 1
 #elif defined(BENCH_META_DISPLAY)
@@ -43,13 +43,13 @@ void delay(uint32_t ms) { (void)ms; }
  * BENCH_META_DISPLAY: 0 SMOOTH, 1 TILE, ..., 6 TBLEND) with an LCD that takes every
  * strip at once: the rendering, blending and row bookkeeping of the
  * console, without the SPI transfer. */
-#include "meta_display.h"
-#include "meta_lcd.h"
+#include "gbl_display.h"
+#include "m0_lcd.h"
 static uint32_t lcd_seq;
 #ifdef BENCH_PIXEL_HASH
 uint32_t bench_pixel_hash = 2166136261u;
 #endif
-uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
+uint32_t m0_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
 #ifdef BENCH_PIXEL_HASH
     const uint16_t *pixels = (const uint16_t *)buf;
     uint32_t h = (bench_pixel_hash ^ row0) * 16777619u;
@@ -62,7 +62,7 @@ uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
     bench_sink += *(const uint16_t *)buf;
     return ++lcd_seq;
 }
-uint32_t meta_lcd_done_seq(void) { return lcd_seq; }
+uint32_t m0_lcd_done_seq(void) { return lcd_seq; }
 #else
 /* Same row policy as the META SKIP mode: unchanged lines are not rendered. */
 static uint32_t row_sig[144];
@@ -214,7 +214,7 @@ void gbl_platform_vblank(void) {
 #ifndef BENCH_OWN_DISPLAY
     strip_fill = 0;
 #else
-    meta_display_flush();
+    gbl_display_flush();
 #endif
     while (input_pos < sizeof(bench_inputs) / sizeof(bench_inputs[0]) &&
            bench_inputs[input_pos].frame <= f)
@@ -292,9 +292,9 @@ int main(void) {
 #endif
     gbl_reset();
 #if defined(BENCH_POKITTO_DISPLAY)
-    meta_display_set_mode(BENCH_POKITTO_DISPLAY);
+    gbl_display_set_mode(BENCH_POKITTO_DISPLAY);
 #elif defined(BENCH_META_DISPLAY)
-    meta_display_set_mode(BENCH_META_DISPLAY);
+    gbl_display_set_mode(BENCH_META_DISPLAY);
 #endif
 #ifdef BENCH_INTERP_ONLY
     /* Every instruction through the interpreter: compares interpreters

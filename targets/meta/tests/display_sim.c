@@ -1,5 +1,5 @@
 /*
- * Runs the real META display pipeline (platform/src/meta_display.c) against
+ * Runs the real META display pipeline (platform/src/gbl_display.c) against
  * a simulated ST7735 that honours row windows exactly like the panel, and
  * checks the panel after every frame against an independently computed
  * image: the per-pixel DMG reference, mapped from 144 lines to 128 rows by
@@ -10,8 +10,8 @@
 #include "gbl.h"
 #include "gbl_internal.h"
 #include "gbl_options.h"
-#include "meta_display.h"
-#include "meta_lcd.h"
+#include "gbl_display.h"
+#include "m0_lcd.h"
 #include "dmg_reference.h"
 #include "meta_lcd_pack.h"
 
@@ -31,7 +31,7 @@ void gbl_platform_vblank(void) {}
 static uint16_t panel[128][160];
 static uint32_t sent, rows_sent;
 
-uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
+uint32_t m0_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
     const uint16_t *p = (const uint16_t *)buf;
     for (unsigned r = 0; r < rows; r++) {
         if (row0 + r >= 128) { printf("window past the panel: row %u\n", row0 + r); continue; }
@@ -51,7 +51,7 @@ uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
     rows_sent += rows;
     return ++sent;
 }
-uint32_t meta_lcd_done_seq(void) { return sent; }
+uint32_t m0_lcd_done_seq(void) { return sent; }
 
 /* ---- expected picture ------------------------------------------------------ */
 
@@ -150,10 +150,10 @@ int main(void) {
         gbl_io_wr(0x40, 0xE3); /* LCD, BG, sprites, window on */
         gbl_io_wr(0x4A, 90);
         gbl_io_wr(0x4B, 60);
-        meta_display_set_mode(mode);
+        gbl_display_set_mode(mode);
 #if !META_TBLEND
         if (mode == META_MODE_TBLEND) {
-            if (meta_display_mode() != META_MODE_TILE) return 1;
+            if (gbl_display_mode() != META_MODE_TILE) return 1;
             mode = META_MODE_TILE;
         }
 #endif
@@ -178,7 +178,7 @@ int main(void) {
             }
             gbr.cyc += 70224u;
             gbl_sync();
-            meta_display_flush();
+            gbl_display_flush();
             reference(ref);
             int bad_rows = 0, first_bad = -1;
             for (unsigned row = 0; row < 128; row++)
@@ -210,7 +210,7 @@ int main(void) {
                 gbl_io_wr(0x43, (uint8_t)(frame * 3)); /* fine scroll too */
                 gbr.cyc += 70224u;
                 gbl_sync();
-                meta_display_flush();
+                gbl_display_flush();
                 reference(ref);
                 int bad = 0;
                 for (unsigned row = 0; row < 128 && !bad; row++)

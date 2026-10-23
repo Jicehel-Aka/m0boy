@@ -2,7 +2,7 @@
 
 Première session de tests du firmware bare-metal sur une Gamebuino META
 réelle. État de départ : écran OK, **pad mort** sur tous les jeux, **écran
-bleu** (carte illisible, `meta_stream_init` err 1) sur les jeux streamés.
+bleu** (carte illisible, `gbl_stream_init` err 1) sur les jeux streamés.
 Écran, émulation et DMA fonctionnaient : seul le chemin *lecture* du SPI
 (MISO, PA12 partagé par la carte SD et le pad) était en cause, l'écran étant
 en écriture seule.
@@ -48,7 +48,7 @@ les bits hauts ne collent pas à la table (Start/Select permutés, Bas absent)
   bus calme) : aucun effet.
 - **DMA audio** (hypothèse utilisateur) : le canal 1 (TC4→DAC) n'a pas
   d'interruption activée et ne touche pas le SPI ; le padtest v8 tournait
-  avec `meta_audio_init` (DMA jamais démarré, `gbl_apu_set_rate` stubbé) —
+  avec `m0_audio_init` (DMA jamais démarré, `gbl_apu_set_rate` stubbé) —
   différence réelle avec le jeu, mais non mécaniquement reliée au SPI.
 - **La charge (PL) du 74HC165 n'est jamais observée en contexte jeu** : la
   lecture A (driver) et C (pulse PL de 100 µs) donnent le même byte, alors
@@ -132,8 +132,8 @@ fois l'USB du firmware en place, la même commande pendant le jeu.
 | Symptôme | Cause mesurée | Correction |
 | --- | --- | --- |
 | Touches décalées, Bas jamais lu | La lecture de 0.10.12 (redémarrage du récepteur + impulsion CS avant la lecture) rend l'octet décalé d'un bit : Bas sort du registre. La lecture de la bibliothèque (12 MHz, CS bas, 1 µs, un octet) donne les 8 touches dans l'ordre de la bibliothèque (0 bas, 1 gauche, 2 droite, 3 haut, 4 A, 5 B, 6 MENU, 7 HOME), en jeu comme sur l'écran d'erreur, et le second octet d'une lecture 16 bits vaut 0x00 (entrée série du 165 à la masse) | `meta_pad_read` revenu à la lecture de la bibliothèque ; ordre meta-lapinou désactivé par défaut |
-| Crash « au bout d'un court moment » (tous les jeux) | HardFault 400 ms après le démarrage, PC dans `meta_audio_frame` → `channel_start`, sur l'écriture `DMAC->CHCTRLA = SWRST` du canal audio : la chaîne de descripteurs arrivée au bout laisse le canal activé (suspendu), et ce SWRST sur un canal activé fait une faute de bus sur le SAMD21 réel. PAC (protection d'écriture) mesuré non armé, DMAC trouvé éteint au démarrage : pas en cause | Le canal est désactivé (attente de ENABLE = 0) avant le SWRST. Mario 197 s, 11 779 images, aucune faute |
-| Écran bleu des jeux streamés | Carte identifiée (CMD0/8/41 à 250 kHz), mais chaque CMD17 à 24 MHz échouait (`META_FAT_IO`) : le SPI maître du SAMD21 ne lit pas MISO de façon fiable au-delà de ~12 MHz (le noyau Arduino plafonnait tout à 12) | `META_SD_SPI_HZ` = 12 MHz : la FAT se monte et les dossiers se parcourent (vérifié jusqu'au « fichier absent » ; un jeu streamé de bout en bout n'a pas encore tourné, voir ouvert) |
+| Crash « au bout d'un court moment » (tous les jeux) | HardFault 400 ms après le démarrage, PC dans `m0_audio_frame` → `channel_start`, sur l'écriture `DMAC->CHCTRLA = SWRST` du canal audio : la chaîne de descripteurs arrivée au bout laisse le canal activé (suspendu), et ce SWRST sur un canal activé fait une faute de bus sur le SAMD21 réel. PAC (protection d'écriture) mesuré non armé, DMAC trouvé éteint au démarrage : pas en cause | Le canal est désactivé (attente de ENABLE = 0) avant le SWRST. Mario 197 s, 11 779 images, aucune faute |
+| Écran bleu des jeux streamés | Carte identifiée (CMD0/8/41 à 250 kHz), mais chaque CMD17 à 24 MHz échouait (`M0_FAT_IO`) : le SPI maître du SAMD21 ne lit pas MISO de façon fiable au-delà de ~12 MHz (le noyau Arduino plafonnait tout à 12) | `META_SD_SPI_HZ` = 12 MHz : la FAT se monte et les dossiers se parcourent (vérifié jusqu'au « fichier absent » ; un jeu streamé de bout en bout n'a pas encore tourné, voir ouvert) |
 
 Autres corrections, sans symptôme isolé : `meta_spi_rate` attend que le
 dernier octet ait quitté le registre (TXC) avant de couper le SERCOM ;
@@ -172,7 +172,7 @@ cette dalle câblée BGR ; de même l'erreur 1 « bleue » du frontend GB était
 vue rouge). Chaque dossier de jeu de la carte a son `ROM.GG` (convention de
 compile.sh) et la recherche prenait le premier trouvé (celui d'Aladdin,
 256 Kio, relu en direct par USB : une seule extension de 512 secteurs).
-`meta_fat_find_in` (meta_fat.c) appelle désormais un filtre sur chaque
+`m0_fat_find_in` (meta_fat.c) appelle désormais un filtre sur chaque
 candidat : le frontend GG garde le fichier dont le premier secteur est celui
 de la ROM en flash, le frontend GB celui dont l'en-tête de cartouche
 correspond ; la sauvegarde GG (`ROM.SAV`) est cherchée dans le dossier de la
@@ -201,7 +201,7 @@ interprété, d'où la lenteur) démarre et se joue depuis la carte.
   ROM). Le dossier garde son nom long (le loader l'affiche et prend le
   premier `.bin` du dossier). Le firmware retrouve son dossier par son
   `.BIN` (premier secteur identique à la flash en 0x4000,
-  `meta_fat_game_dir`) et y cherche ROM, sauvegarde et états : les
+  `m0_fat_game_dir`) et y cherche ROM, sauvegarde et états : les
   variantes 48/72 d'un même jeu peuvent porter le même nom. Firmware flashé
   par USB, différent de celui de la carte : repli sur la recherche par
   contenu de la ROM. Cartes existantes : renommer `ROM.SAV` / l'ancien
@@ -214,9 +214,9 @@ interprété, d'où la lenteur) démarre et se joue depuis la carte.
 - **Fautes et blocages** : journal `.noinit`, redémarrage automatique
   (mesuré : HardFault -> jeu relancé ; boucle principale bloquée par une
   écriture USB de `pace_owed` -> alerte du watchdog à 2 s, PC dans
-  `meta_micros`, jeu relancé ~4 s après). Piège trouvé : écrire
+  `m0_micros`, jeu relancé ~4 s après). Piège trouvé : écrire
   `WDT->CLEAR` pendant une synchronisation bloque le bus plusieurs ms
-  (`meta_watchdog_feed` teste SYNCBUSY) ; le générateur 2 n'a qu'un
+  (`m0_watchdog_feed` teste SYNCBUSY) ; le générateur 2 n'a qu'un
   diviseur 5 bits (DIVSEL).
 - **72 MHz** : inutilisable sur cette console (suite plus bas : 70 MHz). HardFault dans
   `gbl_ppu_fetch_asm` au premier rendu, sur un pointeur impair que le code

@@ -9,40 +9,40 @@
 #include "p8main.h"
 #include "p8_audio.h"
 #include "p8_config.h"
-#include "meta_target.h"
-#include "meta_clock.h"
-#include "meta_audio.h"
-#include "meta_lcd.h"
-#if META_TARGET_ESPBOY
+#include "m0_target.h"
+#include "m0_clock.h"
+#include "m0_audio.h"
+#include "m0_lcd.h"
+#if M0_TARGET_ESPBOY
 #include "espboy_hw.h"
-#elif META_TARGET_POKITTO
+#elif M0_TARGET_POKITTO
 #include "pokitto_hw.h"
 #else
 #include "meta_hw.h"
 #endif
 #include "sg_frontend.h"
 #if defined(P8_STATE_NAME83)
-#include "meta_sd.h" /* the card's state file (the META reads it in the game's folder: meta_card.h) */
-#if !META_TARGET_POKITTO
-#include "meta_card.h"
+#include "m0_sd.h" /* the card's state file (the META reads it in the game's folder: meta_card.h) */
+#if !M0_TARGET_POKITTO
+#include "m0_card.h"
 #endif
 #endif
 #include <string.h>
 
 /* The META sends rows of the picture's 128 columns (narrowed window); the ESPboy's adapter takes 160-wide rows and the picture is at column 16; the Pokitto's row writer takes the picture's 128 columns. */
-#if META_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY
 #define P8_OUT_WIDTH 160
 #else
 #define P8_OUT_WIDTH 128
 #endif
 #define P8_PIXELS 128
 #define P8_MARGIN 16 /* columns left of the picture (META) */
-#if !META_TARGET_ESPBOY && !META_TARGET_POKITTO
-extern "C" void meta_lcd_set_columns(uint8_t x0, uint8_t x1);
+#if !M0_TARGET_ESPBOY && !M0_TARGET_POKITTO
+extern "C" void m0_lcd_set_columns(uint8_t x0, uint8_t x1);
 #endif
 #define P8_BATCH 1
 
-#if META_TARGET_POKITTO
+#if M0_TARGET_POKITTO
 /* one row: the Pokitto's bus is synchronous, each row is pushed as it is
  * filled; 256 entries span the menu's 160-pixel rows and the states' 512
  * bytes of sector scratch */
@@ -53,18 +53,18 @@ static uint32_t line_sequences[2];
 static unsigned line_slot;
 #endif
 static uint32_t deadline;
-#if !META_TARGET_POKITTO
+#if !M0_TARGET_POKITTO
 static unsigned menu_was_down;
 #endif
 static unsigned audio_phase;
-static const char version[] __attribute__((used)) = "m0boy-pico8-" META_TARGET_NAME " " GBL_GEN_VERSION;
+static const char version[] __attribute__((used)) = "m0boy-pico8-" M0_TARGET_NAME " " GBL_GEN_VERSION;
 
 #if defined(P8_STATE_SLOTS)
 /* Save states hold the heap's absolute pointers: they load only into this
  * very firmware, known by a hash of its code (computed once, then kept). */
-#if META_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY
 extern "C" const uint32_t _irom0_text_start[], _irom0_text_end[];
-#elif META_TARGET_POKITTO
+#elif M0_TARGET_POKITTO
 extern "C" const uint32_t _sidata[]; /* the .data load image: the flash before it is this firmware's code */
 #else
 extern "C" const uint32_t __etext[];
@@ -72,9 +72,9 @@ extern "C" const uint32_t __etext[];
 extern "C" uint32_t p8_state_identity(void) {
     static uint32_t id;
     if (id) return id;
-#if META_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY
     const uint32_t *p = _irom0_text_start, *e = _irom0_text_end; /* word loads: the mapped flash takes no other */
-#elif META_TARGET_POKITTO
+#elif M0_TARGET_POKITTO
     const uint32_t *p = (const uint32_t *)0, *e = _sidata; /* the app runs from 0 */
 #else
     const uint32_t *p = (const uint32_t *)META_APP_START, *e = __etext;
@@ -86,11 +86,11 @@ extern "C" uint32_t p8_state_identity(void) {
 #endif
 
 /* ---- option menu (sg_menu.h): HOME (Pokitto: C) held half a second, MENU (a tap on C) restarts ----- */
-extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
-#if META_TARGET_POKITTO
+extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
+#if M0_TARGET_POKITTO
     *rows = 1; /* the single line buffer: bands sliced to one row */
     return line_buffer;
-#elif META_TARGET_ESPBOY
+#elif M0_TARGET_ESPBOY
     *rows = 2u * P8_BATCH; /* the ESPboy's rows take the whole 160 columns */
     return line_buffers[0][0];
 #else
@@ -98,32 +98,32 @@ extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
     return line_buffers[0][0];
 #endif
 }
-#if META_TARGET_POKITTO
+#if M0_TARGET_POKITTO
 /* a tap on C, the menu's HOME: the cartridge again (the META's MENU tap) */
 #define SG_MENU_TAP() do { \
         p8_start(); \
-        deadline = meta_micros(); \
+        deadline = m0_micros(); \
     } while (0)
 #else
 #define SG_MENU_TAP() do { } while (0)
 #endif
 #define SG_MENU_RESTART() do { \
         p8_start(); /* the cartridge again */ \
-        deadline = meta_micros(); \
+        deadline = m0_micros(); \
     } while (0)
 #if defined(P8_STATE_NAME83)
-#define P8_MENU_SD_DESELECT() meta_sd_deselect()
+#define P8_MENU_SD_DESELECT() m0_sd_deselect()
 #else
 #define P8_MENU_SD_DESELECT() do { } while (0)
 #endif
-#if META_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY
 #define SG_MENU_QUIT() do { espboy_restart(); } while (0)
-#elif META_TARGET_POKITTO
+#elif M0_TARGET_POKITTO
 #define SG_MENU_QUIT() do { \
-        meta_audio_stop(); \
+        m0_audio_stop(); \
         P8_MENU_SD_DESELECT(); \
         pokitto_enter_loader(); \
-        meta_audio_init(); /* the loader may be absent: the cartridge again */ \
+        m0_audio_init(); /* the loader may be absent: the cartridge again */ \
     } while (0)
 #else
 #if META_USB_SERIAL
@@ -133,9 +133,9 @@ extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
 #endif
 /* The USB bootloader (sam-ba) directly, as the Game Gear frontend does. */
 #define SG_MENU_BOOTLOADER() do { \
-        meta_audio_stop(); \
+        m0_audio_stop(); \
         NVIC_DisableIRQ(DMAC_IRQn); \
-        meta_watchdog_stop(); \
+        m0_watchdog_stop(); \
         SG_MENU_USB_STOP(); \
         P8_MENU_SD_DESELECT(); \
         *(volatile uint32_t *)0x20007FFC = 0x3aecfd88u; \
@@ -144,38 +144,38 @@ extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
 #if META_USB_SD
 #include "meta_usb_msc.h"
 #define SG_MENU_USB_SD() do { \
-        meta_lcd_end_frame(); \
-        meta_audio_stop(); \
+        m0_lcd_end_frame(); \
+        m0_audio_stop(); \
         NVIC_DisableIRQ(DMAC_IRQn); \
-        meta_watchdog_stop(); \
+        m0_watchdog_stop(); \
         unsigned rows; \
-        uint8_t *sector = (uint8_t *)meta_menu_scratch(&rows); \
+        uint8_t *sector = (uint8_t *)m0_menu_scratch(&rows); \
         meta_usb_msc_enter(sector); \
     } while (0)
 #endif
 /* Hand the console back to the Gamebuino loader (the Game Boy frontend's
  * enter_loader). */
 #define SG_MENU_QUIT() do { \
-        meta_lcd_end_frame(); \
-        meta_clock_set_lcd_spi(24); /* the loader expects the core's clocks */ \
-        meta_clock_set(48); \
-        meta_audio_stop(); \
+        m0_lcd_end_frame(); \
+        m0_clock_set_lcd_spi(24); /* the loader expects the core's clocks */ \
+        m0_clock_set(48); \
+        m0_audio_stop(); \
         NVIC_DisableIRQ(DMAC_IRQn); \
-        meta_watchdog_stop(); \
+        m0_watchdog_stop(); \
         SG_MENU_USB_STOP(); \
         P8_MENU_SD_DESELECT(); \
         ((void (*)(void))(*((uint32_t *)0x3FF4)))(); \
     } while (0)
 #endif
-#if META_TARGET_POKITTO
+#if M0_TARGET_POKITTO
 #define SG_MENU_RESUME() do { \
-        meta_lcd_fill(0); /* the menu's rows outside the picture */ \
-        deadline = meta_micros(); \
+        m0_lcd_fill(0); /* the menu's rows outside the picture */ \
+        deadline = m0_micros(); \
     } while (0)
 /* the menu's 160-pixel rows go out as they are: no column window here */
 #else
-#define SG_MENU_RESUME() do { deadline = meta_micros(); } while (0)
-#if META_TARGET_ESPBOY
+#define SG_MENU_RESUME() do { deadline = m0_micros(); } while (0)
+#if M0_TARGET_ESPBOY
 /* the adapter takes the picture's 128 columns at 16 of each row, and the
  * menu's 160 narrowed while it is open (the generator's espboy_hw.cpp) */
 extern "C" { unsigned char p8_menu_wide; }
@@ -185,13 +185,13 @@ extern "C" { unsigned char p8_menu_wide; }
 /* the menu is 160 columns wide: the whole panel while it is open, then
  * the margins cleared and the picture's columns again */
 #define SG_MENU_SCREEN_ENTER() do { \
-        meta_lcd_end_frame(); \
-        meta_lcd_set_columns(0, 159); \
+        m0_lcd_end_frame(); \
+        m0_lcd_set_columns(0, 159); \
     } while (0)
 #define SG_MENU_SCREEN_LEAVE() do { \
-        meta_lcd_end_frame(); \
-        meta_lcd_fill(0); \
-        meta_lcd_set_columns(P8_MARGIN, P8_MARGIN + P8_PIXELS - 1); \
+        m0_lcd_end_frame(); \
+        m0_lcd_fill(0); \
+        m0_lcd_set_columns(P8_MARGIN, P8_MARGIN + P8_PIXELS - 1); \
     } while (0)
 #endif
 #endif /* the column window (ESPboy, META) */
@@ -200,19 +200,19 @@ extern "C" { unsigned char p8_menu_wide; }
  * state file in the game's folder (the Pokitto looks it up in the root and
  * the first-level folders; ESPboy: the flash, espboy_flash.cpp), the menu's
  * rows as the sector scratch. */
-#if META_TARGET_POKITTO
+#if M0_TARGET_POKITTO
 #define SG_MENU_STATE_BUF() ((uint8_t *)line_buffer)
 #else
 #define SG_MENU_STATE_BUF() ((uint8_t *)line_buffers) /* 512 bytes and more */
 #endif
 #define SG_MENU_STATE_SLOTS P8_STATE_SLOTS
-#define SG_MENU_STATE_LOADED() do { deadline = meta_micros(); } while (0)
+#define SG_MENU_STATE_LOADED() do { deadline = m0_micros(); } while (0)
 #endif
 #if defined(P8_STATE_NAME83)
 static int p8_card_open(void) {
-    if (!meta_sd_init()) return 0;
-#if !META_TARGET_POKITTO /* the state file is searched in the game's folder, the loader's app start as the clue */
-    meta_fat_dir = meta_fat_game_dir(meta_card_sector, SG_MENU_STATE_BUF(), P8_BIN_NAME83, META_APP_START);
+    if (!m0_sd_init()) return 0;
+#if !M0_TARGET_POKITTO /* the state file is searched in the game's folder, the loader's app start as the clue */
+    m0_fat_dir = m0_fat_game_dir(m0_card_sector, SG_MENU_STATE_BUF(), P8_BIN_NAME83, META_APP_START);
 #endif
     return 1;
 }
@@ -221,13 +221,13 @@ static int p8_card_open(void) {
 
 /* the 16 base colours through the screen palette, as the panel takes them */
 static void colour_table(uint16_t *tab) {
-    for (unsigned i = 0; i < 16; i++) tab[i] = META_COLOR(p8_palette_rgb[p8g.pal_screen[i] & 15]);
+    for (unsigned i = 0; i < 16; i++) tab[i] = M0_COLOR(p8_palette_rgb[p8g.pal_screen[i] & 15]);
 }
 
 static void draw_screen(void) {
     uint16_t tab[16];
     colour_table(tab);
-#if META_TARGET_POKITTO
+#if M0_TARGET_POKITTO
     for (unsigned y = 0; y < P8_H; y++) {
         const uint8_t *in = &p8_screen[y * 64];
         uint16_t *out = line_buffer;
@@ -243,7 +243,7 @@ static void draw_screen(void) {
         uint16_t (*lines)[P8_OUT_WIDTH] = line_buffers[line_slot];
         for (unsigned r = 0; r < P8_BATCH; r++) {
             uint16_t *out = lines[r];
-#if META_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY
             out += P8_MARGIN;
 #endif
             const uint8_t *in = &p8_screen[(y + r) * 64];
@@ -253,9 +253,9 @@ static void draw_screen(void) {
                 *out++ = tab[b >> 4];
             }
         }
-        line_sequences[line_slot] = meta_lcd_send_rows(lines, (uint8_t)y, P8_BATCH);
+        line_sequences[line_slot] = m0_lcd_send_rows(lines, (uint8_t)y, P8_BATCH);
         line_slot ^= 1;
-        while ((int32_t)(meta_lcd_done_seq() - line_sequences[line_slot]) < 0) {}
+        while ((int32_t)(m0_lcd_done_seq() - line_sequences[line_slot]) < 0) {}
     }
 #endif
 }
@@ -303,10 +303,10 @@ extern "C" void p8_error(const char *msg, const char *what) {
     }
 #endif
     draw_screen();
-    meta_lcd_end_frame();
+    m0_lcd_end_frame();
     for (;;) {
-#if !META_TARGET_POKITTO /* no watchdog on the Pokitto: the message just stays */
-        meta_watchdog_feed();
+#if !M0_TARGET_POKITTO /* no watchdog on the Pokitto: the message just stays */
+        m0_watchdog_feed();
 #endif
     }
 }
@@ -314,9 +314,9 @@ extern "C" void p8_error(const char *msg, const char *what) {
 /* the p8 pad from the console's buttons (meta_pad.h): 1 left, 2 right,
  * 4 up, 8 down, 16 O, 32 X */
 static uint16_t game_buttons(uint8_t mb) {
-    return (uint16_t)(((mb & META_MB_LEFT) ? 1u : 0u) | ((mb & META_MB_RIGHT) ? 2u : 0u) |
-                      ((mb & META_MB_UP) ? 4u : 0u) | ((mb & META_MB_DOWN) ? 8u : 0u) |
-                      ((mb & META_MB_A) ? 16u : 0u) | ((mb & META_MB_B) ? 32u : 0u));
+    return (uint16_t)(((mb & M0_MB_LEFT) ? 1u : 0u) | ((mb & M0_MB_RIGHT) ? 2u : 0u) |
+                      ((mb & M0_MB_UP) ? 4u : 0u) | ((mb & M0_MB_DOWN) ? 8u : 0u) |
+                      ((mb & M0_MB_A) ? 16u : 0u) | ((mb & M0_MB_B) ? 32u : 0u));
 }
 
 #ifdef P8_STACK_CHECK /* debug: the deepest the C stack went, drawn in a corner of the picture */
@@ -329,7 +329,7 @@ static void stack_check(void) {
 }
 #endif
 
-#if META_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY
 int espboy_main() {
 #else
 int main() {
@@ -338,21 +338,21 @@ int main() {
     SG_STACK_PAINT();
 #endif
     SG_PLATFORM_INIT();
-    meta_lcd_fill(0); /* the margins, once */
-#if !META_TARGET_ESPBOY && !META_TARGET_POKITTO
-    meta_lcd_set_columns(P8_MARGIN, P8_MARGIN + P8_PIXELS - 1);
+    m0_lcd_fill(0); /* the margins, once */
+#if !M0_TARGET_ESPBOY && !M0_TARGET_POKITTO
+    m0_lcd_set_columns(P8_MARGIN, P8_MARGIN + P8_PIXELS - 1);
 #endif
 #if defined(P8_STATE_NAME83)
-    meta_state_init(p8_card_open(), SG_MENU_STATE_BUF());
+    m0_state_init(p8_card_open(), SG_MENU_STATE_BUF());
 #elif defined(P8_STATE_SLOTS)
-    meta_state_init(1, SG_MENU_STATE_BUF());
+    m0_state_init(1, SG_MENU_STATE_BUF());
 #endif
     p8_start();
-    meta_audio_init();
-    deadline = meta_micros();
+    m0_audio_init();
+    deadline = m0_micros();
     __asm__ volatile("" : : "r"(version));
     for (;;) {
-        const uint8_t mb = META_PAD(SG_PAD_RAW());
+        const uint8_t mb = M0_PAD(SG_PAD_RAW());
         SG_PAD_WDT();
         p8_frame(game_buttons(mb));
 #ifdef P8_STACK_CHECK
@@ -360,26 +360,26 @@ int main() {
 #endif
         draw_screen();
         /* the audio driver counts 30 Hz frames */
-        if (p8_fps == 30 || (audio_phase ^= 1)) meta_audio_frame();
-        meta_lcd_end_frame();
+        if (p8_fps == 30 || (audio_phase ^= 1)) m0_audio_frame();
+        m0_lcd_end_frame();
 #ifdef P8_STOP_AFTER_US /* debug: stop at a time and show the frame count (gm0 profiling) */
-        if (meta_micros() > P8_STOP_AFTER_US) p8_error("stopped", "");
+        if (m0_micros() > P8_STOP_AFTER_US) p8_error("stopped", "");
 #endif
         sg_menu_frame();
         sg_menu_poll(mb);
         sg_menu_tick();
-#if META_TARGET_POKITTO
+#if M0_TARGET_POKITTO
         /* MENU's role is SG_MENU_TAP's: a tap on C, already handled */
 #else
-        if ((mb & META_MB_MENU) && !menu_was_down) p8_start();
-        menu_was_down = mb & META_MB_MENU;
+        if ((mb & M0_MB_MENU) && !menu_was_down) p8_start();
+        menu_was_down = mb & M0_MB_MENU;
 #endif
         if (!sg_menu_fast) {
             deadline += p8_fps == 60 ? 16667u : 33333u;
-            while ((int32_t)(meta_micros() - deadline) < 0) meta_audio_idle();
-            if ((int32_t)(meta_micros() - deadline) > 100000) deadline = meta_micros();
+            while ((int32_t)(m0_micros() - deadline) < 0) m0_audio_idle();
+            if ((int32_t)(m0_micros() - deadline) > 100000) deadline = m0_micros();
         } else {
-            deadline = meta_micros();
+            deadline = m0_micros();
         }
     }
 }

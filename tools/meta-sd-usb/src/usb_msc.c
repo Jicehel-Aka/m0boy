@@ -321,7 +321,7 @@ static void scsi(const uint8_t *b) {
         while (remaining_blocks--) {
             if (!sd_read(current_lba++, sector)) { fail(3, 0x11); return; }
             if (!data_in(sector, 512)) { fail(4, 0x44); return; }
-            meta_watchdog_feed();
+            m0_watchdog_feed();
         }
         csw(0); return;
     }
@@ -379,7 +379,7 @@ void usb_msc_poll(void) {
                     --remaining_blocks;
                     if (!remaining_blocks) csw(0);
                 }
-                meta_watchdog_feed();
+                m0_watchdog_feed();
             }
         }
     }

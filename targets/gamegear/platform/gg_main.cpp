@@ -11,13 +11,13 @@
 #include "gg.h"
 #include "gg_display.h"
 #include "sg_config.h"
-#include "meta_target.h"
-#include "meta_clock.h"
-#include "meta_audio.h"
-#include "meta_lcd.h"
-#if META_TARGET_ESPBOY
+#include "m0_target.h"
+#include "m0_clock.h"
+#include "m0_audio.h"
+#include "m0_lcd.h"
+#if M0_TARGET_ESPBOY
 #include "espboy_hw.h"
-#elif META_TARGET_POKITTO
+#elif M0_TARGET_POKITTO
 #include "pokitto_hw.h"
 #else
 #include "meta_hw.h"
@@ -37,7 +37,7 @@ extern "C" {
 extern const uint8_t sg_rom[];
 extern const size_t sg_rom_size;
 sg_fn sg_gen_lookup(uint16_t pc);
-#if META_TARGET_POKITTO
+#if M0_TARGET_POKITTO
 #if !GG_CARD /* else pokitto_sd.c */
 void pokitto_sd_clock_changed(uint32_t) {}
 #endif
@@ -53,7 +53,7 @@ int gg_stream_open(const uint8_t *rom, uint32_t rom_size, uint8_t *buf);
 #endif
 }
 #if GG_CARD
-#include "meta_card.h"
+#include "m0_card.h"
 #endif
 #if SG_CART_RAM && !GG_CART_ON_CARD
 static uint8_t cart_ram[GG_CART_RAM_SIZE] __attribute__((aligned(4)));
@@ -61,7 +61,7 @@ static uint8_t cart_ram[GG_CART_RAM_SIZE] __attribute__((aligned(4)));
 /* Rows: GG_WIDTH pixels with GG_ROW_PAD writable pixels on each side.  Two
  * buffers: the META sends one by DMA while the other is drawn. */
 static uint16_t line_buffers[2][GG_ROW_STRIDE] __attribute__((aligned(4)));
-#if !META_TARGET_POKITTO
+#if !M0_TARGET_POKITTO
 static uint32_t line_sequences[2];
 static unsigned line_slot;
 #endif
@@ -122,7 +122,7 @@ static void bench_frame() {
 #else
     const uint32_t loaded = 0; /* the whole ROM in flash */
 #endif
-    const uint32_t f = machine.frames, now = meta_micros(), d = loaded - misses;
+    const uint32_t f = machine.frames, now = m0_micros(), d = loaded - misses;
     misses = loaded;
     if (f == GG_BENCH_FROM) t0 = now;
     else if (f > GG_BENCH_FROM && f <= GG_BENCH_TO) {
@@ -140,7 +140,7 @@ static void bench_frame() {
     gg_buttons(bench_keys(f));
 }
 #endif
-static const char version[] __attribute__((used)) = "m0boy-gg-" META_TARGET_NAME " " GBL_GEN_VERSION;
+static const char version[] __attribute__((used)) = "m0boy-gg-" M0_TARGET_NAME " " GBL_GEN_VERSION;
 
 #if GG_SMS
 /* One source line per row (the 256 -> 160 filter is already the costly
@@ -148,15 +148,15 @@ static const char version[] __attribute__((used)) = "m0boy-gg-" META_TARGET_NAME
 static unsigned display_row(unsigned y) { return gg_sms_display_row(y); }
 /* Pokitto: the 120 rows drawn on 150, one in four twice */
 #define GG_PAIRS 0
-#elif !META_TARGET_POKITTO
+#elif !M0_TARGET_POKITTO
 static unsigned display_row(unsigned y) { return gg_meta_display_row(y); }
 #define GG_PAIRS 1
 #else
 #define GG_PAIRS 0
 #endif
-#if !META_TARGET_POKITTO
+#if !M0_TARGET_POKITTO
 static void wait_slot(unsigned slot) {
-    while ((int32_t)(meta_lcd_done_seq() - line_sequences[slot]) < 0) {}
+    while ((int32_t)(m0_lcd_done_seq() - line_sequences[slot]) < 0) {}
 }
 #endif
 
@@ -175,7 +175,7 @@ static int draw_line(void *, unsigned y) {
 #else
     const int mode = gg_meta_draw_mode(y);
     if (mode == 2) {
-#if !META_TARGET_POKITTO
+#if !M0_TARGET_POKITTO
         wait_slot(line_slot ^ 1); /* the other buffer is free once sent */
         machine.row_tmp = line_buffers[line_slot ^ 1] + GG_ROW_PAD;
 #endif
@@ -184,12 +184,12 @@ static int draw_line(void *, unsigned y) {
 #endif
 }
 
-#if META_TARGET_POKITTO && GG_SMS
+#if M0_TARGET_POKITTO && GG_SMS
 static void row(void *, unsigned y, uint16_t *pixels) {
     const unsigned r = display_row(y), first = r * 5 / 4, last = (r + 1) * 5 / 4;
     for (unsigned k = first; k < last; k++) pokitto_lcd_row_zoom(k + 13, pixels); /* 150 rows centred */
 }
-#elif META_TARGET_POKITTO
+#elif M0_TARGET_POKITTO
 static void row(void *, unsigned y, uint16_t *pixels) {
     const unsigned line = y - GG_TOP, last = gg_pokitto_rows[line + 1]; /* 144 -> 176 */
     for (unsigned r = gg_pokitto_rows[line]; r < last; r++) pokitto_lcd_row_zoom(r, pixels);
@@ -200,7 +200,7 @@ static void row(void *, unsigned y, uint16_t *pixels) {
     (void)y; (void)pixels;
     return;
 #endif
-    line_sequences[line_slot] = meta_lcd_send_rows(pixels, (uint8_t)(display_row(y) + (GG_SMS ? 4 : 0)), 1);
+    line_sequences[line_slot] = m0_lcd_send_rows(pixels, (uint8_t)(display_row(y) + (GG_SMS ? 4 : 0)), 1);
     line_slot ^= 1;
     wait_slot(line_slot);
     machine.row_out = line_buffers[line_slot] + GG_ROW_PAD;
@@ -209,13 +209,13 @@ static void row(void *, unsigned y, uint16_t *pixels) {
 
 static void frame(void *);
 /* ---- option menu (sg_menu.h): HOME held half a second, MENU stays Start -- */
-extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
+extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
     /* the two line buffers, contiguous: the menu's bands of 8 rows are
      * sliced to what fits (two rows of 160 pixels) */
     *rows = 2u * GG_ROW_STRIDE / GG_WIDTH;
     return line_buffers[0];
 }
-#if META_TARGET_POKITTO
+#if M0_TARGET_POKITTO
 static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
 #define SG_MENU_TAP() do { start_frames = 6; } while (0)
 #else
@@ -242,23 +242,23 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
         machine.row_out = line_buffers[0] + GG_ROW_PAD; \
         machine.row_tmp = line_buffers[1] + GG_ROW_PAD; \
         machine.frame = frame; \
-        deadline = meta_micros(); \
+        deadline = m0_micros(); \
         skipped_run = 0; \
     } while (0)
 #if GG_CARD
-#define GG_MENU_SD_DESELECT() meta_sd_deselect()
+#define GG_MENU_SD_DESELECT() m0_sd_deselect()
 #else
 #define GG_MENU_SD_DESELECT() do { } while (0)
 #endif
-#if META_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY
 #define SG_MENU_QUIT() do { espboy_restart(); } while (0)
-#elif META_TARGET_POKITTO
+#elif M0_TARGET_POKITTO
 #define SG_MENU_QUIT() do { \
         GG_MENU_SAVE_FLUSH(); \
-        meta_audio_stop(); \
+        m0_audio_stop(); \
         GG_MENU_SD_DESELECT(); \
         pokitto_enter_loader(); \
-        meta_audio_init(); \
+        m0_audio_init(); \
     } while (0)
 #else
 /* Hand the console back to the Gamebuino loader in the state it expects
@@ -273,9 +273,9 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
  * so the console flashes over USB whatever META_USB was. */
 #define SG_MENU_BOOTLOADER() do { \
         GG_MENU_SAVE_FLUSH(); \
-        meta_audio_stop(); \
+        m0_audio_stop(); \
         NVIC_DisableIRQ(DMAC_IRQn); \
-        meta_watchdog_stop(); \
+        m0_watchdog_stop(); \
         SG_MENU_USB_STOP(); \
         GG_MENU_SD_DESELECT(); \
         *(volatile uint32_t *)0x20007FFC = 0x3aecfd88u; \
@@ -284,35 +284,35 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
 #if META_USB_SD
 #include "meta_usb_msc.h"
 #define SG_MENU_USB_SD() do { \
-        meta_lcd_end_frame(); \
+        m0_lcd_end_frame(); \
         GG_MENU_SAVE_FLUSH(); \
-        meta_audio_stop(); \
+        m0_audio_stop(); \
         NVIC_DisableIRQ(DMAC_IRQn); \
-        meta_watchdog_stop(); \
+        m0_watchdog_stop(); \
         unsigned rows; \
-        uint8_t *sector = (uint8_t *)meta_menu_scratch(&rows); \
+        uint8_t *sector = (uint8_t *)m0_menu_scratch(&rows); \
         meta_usb_msc_enter(sector); \
     } while (0)
 #endif
 #define SG_MENU_QUIT() do { \
-        meta_lcd_end_frame(); \
-        meta_clock_set_lcd_spi(24); /* the loader expects the core's clocks */ \
-        meta_clock_set(48); \
+        m0_lcd_end_frame(); \
+        m0_clock_set_lcd_spi(24); /* the loader expects the core's clocks */ \
+        m0_clock_set(48); \
         GG_MENU_SAVE_FLUSH(); \
-        meta_audio_stop(); \
+        m0_audio_stop(); \
         NVIC_DisableIRQ(DMAC_IRQn); \
-        meta_watchdog_stop(); \
+        m0_watchdog_stop(); \
         SG_MENU_USB_STOP(); \
         GG_MENU_SD_DESELECT(); \
         ((void (*)(void))(*((uint32_t *)0x3FF4)))(); \
     } while (0)
 #endif
 #define SG_MENU_RESUME() do { \
-        deadline = meta_micros(); \
+        deadline = m0_micros(); \
         skip_video = 0; \
         skipped_run = 0; \
     } while (0)
-#if (GG_STREAM || GG_CART_ON_CARD) && !META_TARGET_ESPBOY && defined(__ARM_ARCH_6M__)
+#if (GG_STREAM || GG_CART_ON_CARD) && !M0_TARGET_ESPBOY && defined(__ARM_ARCH_6M__)
 /* The menu needs about 600 bytes of stack, and the dispatcher calls frame()
  * deep in the game's calls: it runs on the card cache's blocks instead (the
  * save is written back first, the cache holds nothing until it is given
@@ -329,7 +329,7 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
 #define SG_MENU_STATE_BUF() ((uint8_t *)line_buffers[0])
 #define SG_MENU_STATE_LOADED() \
     do { \
-        deadline = meta_micros(); \
+        deadline = m0_micros(); \
         skip_video = 0; \
         skipped_run = 0; \
     } while (0)
@@ -337,22 +337,22 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
 #include "sg_menu.h"
 
 static void frame(void *) {
-    meta_audio_frame();
-    meta_lcd_end_frame();
+    m0_audio_frame();
+    m0_lcd_end_frame();
 #if defined(GG_BENCH) && !defined(GG_BENCH_PACED)
     SG_PAD_WDT();
     bench_frame();
     return;
 #endif
     uint8_t keys = 0;
-    const uint8_t mb = META_PAD(SG_PAD_RAW());
+    const uint8_t mb = M0_PAD(SG_PAD_RAW());
     /* the Game Gear pad: 1 up, 2 down, 4 left, 8 right, 16 button 1,
      * 32 button 2; MENU is START (the SMS's PAUSE) */
-    keys = ((mb & META_MB_UP) ? GG_UP : 0) | ((mb & META_MB_DOWN) ? GG_DOWN : 0) |
-           ((mb & META_MB_LEFT) ? GG_LEFT_KEY : 0) | ((mb & META_MB_RIGHT) ? GG_RIGHT_KEY : 0) |
-           ((mb & META_MB_A) ? GG_B1 : 0) | ((mb & META_MB_B) ? GG_B2 : 0) |
-           ((mb & META_MB_MENU) ? (GG_SMS ? GG_PAUSE : GG_START) : 0);
-#if META_TARGET_POKITTO
+    keys = ((mb & M0_MB_UP) ? GG_UP : 0) | ((mb & M0_MB_DOWN) ? GG_DOWN : 0) |
+           ((mb & M0_MB_LEFT) ? GG_LEFT_KEY : 0) | ((mb & M0_MB_RIGHT) ? GG_RIGHT_KEY : 0) |
+           ((mb & M0_MB_A) ? GG_B1 : 0) | ((mb & M0_MB_B) ? GG_B2 : 0) |
+           ((mb & M0_MB_MENU) ? (GG_SMS ? GG_PAUSE : GG_START) : 0);
+#if M0_TARGET_POKITTO
     if (start_frames) { keys |= GG_SMS ? GG_PAUSE : GG_START; start_frames--; }
 #else
     SG_PAD_WDT();
@@ -364,7 +364,7 @@ static void frame(void *) {
 #if GG_CART_ON_CARD
     gg_save_tick();
 #endif
-#if META_TARGET_ESPBOY && SG_CART_RAM
+#if M0_TARGET_ESPBOY && SG_CART_RAM
     espboy_ram_tick(cart_ram, GG_CART_RAM_SIZE, machine.frames);
 #endif
     sg_menu_frame();
@@ -376,7 +376,7 @@ static void frame(void *) {
     SG_PACE_FRAME(deadline, skip_video, skipped_run, GG_MAX_SKIP);
 }
 
-#if META_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY
 int espboy_main() {
 #else
 int main() {
@@ -390,24 +390,24 @@ int main() {
      * the game runs without it (no Etat lines). */
     int card_err = gg_stream_open(sg_rom, (uint32_t)sg_rom_size, (uint8_t *)line_buffers);
     if (card_err && GG_CARD_REQUIRED) {
-        static const uint16_t colours[] = META_CARD_COLOURS(META_COLOR);
-        meta_lcd_fill(card_err == META_CARD_NO_SAVE ? META_COLOR(META_CARD_RGB_NO_SAVE) : colours[card_err]);
+        static const uint16_t colours[] = M0_CARD_COLOURS(M0_COLOR);
+        m0_lcd_fill(card_err == M0_CARD_NO_SAVE ? M0_COLOR(M0_CARD_RGB_NO_SAVE) : colours[card_err]);
         for (;;) SG_PAD_WDT(); /* watchdog fed, USB touch served */
     }
 #endif
 #if defined(GG_STATE_NAME83)
-    meta_state_init(card_err == 0, SG_MENU_STATE_BUF());
+    m0_state_init(card_err == 0, SG_MENU_STATE_BUF());
 #endif
 #if SG_CART_RAM && !GG_CART_ON_CARD
     gg_init(sg_rom, sg_rom_size, cart_ram);
-#if META_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY
     espboy_ram_load(cart_ram, GG_CART_RAM_SIZE);
 #endif
 #else
     gg_init(sg_rom, sg_rom_size, 0);
 #endif
-#if META_TARGET_ESPBOY && defined(GG_STATE_SLOTS)
-    meta_state_init(1, SG_MENU_STATE_BUF()); /* the slots follow the cartridge RAM's copies */
+#if M0_TARGET_ESPBOY && defined(GG_STATE_SLOTS)
+    m0_state_init(1, SG_MENU_STATE_BUF()); /* the slots follow the cartridge RAM's copies */
 #endif
     machine.lookup = sg_gen_lookup;
     machine.draw_line = draw_line;
@@ -457,8 +457,8 @@ int main() {
     gg_selftest_result = gg_render_selftest() + 1; /* read back by gm0 or a debugger */
     for (;;) {}
 #endif
-    meta_audio_init();
-    deadline = meta_micros();
+    m0_audio_init();
+    deadline = m0_micros();
     __asm__ volatile("" : : "r"(version));
     for (;;) gg_run();
 }

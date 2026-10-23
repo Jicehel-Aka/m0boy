@@ -32,7 +32,7 @@ lesquelles les firmwares Game Boy s’exécutent.
   SG-1000, recompilation Z80 → C (`emitter.cpp`) et génération des projets.
 - `m0boy_frontends` : chargement et métadonnées des consoles d’origine.
 - `gbrecomp_core` : analyse, IR et générateurs Game Boy existants.
-- `targets/meta/` : runtime Game Boy et pilotes des destinations existantes.
+- `targets/meta/` : cœur Game Boy (runtime `gbl`, frontend `platform/gb_main.cpp`). `targets/common/platform/` : frontend commun à toutes les consoles (`m0_*`). `targets/consoles/<console>/` : pilotes de chaque console.
 - `targets/sg1000/runtime/` : runtime SG-1000 commun au code recompilé et à
   l’interpréteur Z80 de repli (bus, événements, TMS9918A, SN76489,
   `sg_gen.h` pour le code généré). `targets/sg1000/platform/` : frontend des

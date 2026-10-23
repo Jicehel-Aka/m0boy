@@ -73,7 +73,7 @@ def small(args, root, system, data, common, host):
     gbl = (output / 'src/gbl_config.h').read_text()
     assert '#define GBL_TARGET_ESPBOY 1' in gbl
     assert 'SG_ROM_ATTR' in (output / 'src/sg_rom.c').read_text()
-    for name in ('espboy_hw.cpp', 'espboy_flash.cpp', 'gbl_espboy.h', 'meta_menu.h', 'platformio.ini', 'espboy.ld'):
+    for name in ('espboy_hw.cpp', 'espboy_flash.cpp', 'gbl_espboy.h', 'm0_menu.h', 'platformio.ini', 'espboy.ld'):
         assert (output / name).exists() or (output / 'src' / name).exists(), name
     assert not list((output / 'src').glob('pokitto_*')) and not (output / 'src/meta_audio.cpp').exists()
     native, interpreted = host_runs(output, common)
@@ -99,7 +99,7 @@ def streamed(args, root, host):
     assert '#define SG_ROM_STREAM 1' in config and 'GG_STREAM_NAME' not in config and 'GG_CART_SD 1' not in config
     assert '#define GG_STREAM_SECTORS 6' in config
     assert (output / 'rom.bin').read_bytes() == bytes(data[0x4000:])  # pages 1 and up, raw
-    assert not (output / 'src/gg_stream.c').exists() and not (output / 'src/meta_sd.c').exists()
+    assert not (output / 'src/gg_stream.c').exists() and not (output / 'src/m0_sd.c').exists()
     native, interpreted = host_runs(output, common)
     assert fingerprint(native) == fingerprint(interpreted) == baseline
     print('gg: a 320 KiB ROM (page 0 in the firmware, the rest in rom.bin) gives the interpreter\'s run')

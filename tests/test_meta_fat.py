@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FAT lookup used by the META's ROM streaming (targets/meta/platform/src/meta_fat.c).
+"""FAT lookup used by the META's ROM streaming (targets/common/platform/m0_fat.c).
 
 Builds real FAT16 and FAT32 images with mkfs.fat and mtools, with and
 without a partition table, the ROM in the root or in a subdirectory, with a

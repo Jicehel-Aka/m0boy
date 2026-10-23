@@ -48,7 +48,7 @@ exécute le reste.
   reste dans le menu Processeur) ; le tempo du son est corrigé, et la
   mesure du temps n'utilise plus de division (le M0+ n'en a pas en
   matériel). Une version par console
-  (`targets/meta/platform/pokitto/VERSION`).
+  (`targets/consoles/pokitto/VERSION`).
 - `TARGET=both ./compile.sh` convertit pour les deux consoles en une
   seule passe ; un fichier `build_flags` à côté d'un jeu garde ses options
   de compilation d'une conversion à l'autre ; les reconstructions de

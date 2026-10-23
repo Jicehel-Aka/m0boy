@@ -35,15 +35,15 @@
  *   SG_MENU_SCREEN_ENTER(), SG_MENU_SCREEN_LEAVE()
  *                    statements around the menu's drawing (the PICO-8 on
  *                    the META narrows the panel's columns to its picture)
- * and implements meta_menu_scratch (meta_menu.h) over its own buffers.
+ * and implements m0_menu_scratch (meta_menu.h) over its own buffers.
  */
 #ifndef SG_MENU_H
 #define SG_MENU_H
 
-#include "meta_menu.h"
-#include "meta_pad.h"
-#include "meta_audio.h"
-#include "meta_clock.h"
+#include "m0_menu.h"
+#include "m0_pad.h"
+#include "m0_audio.h"
+#include "m0_clock.h"
 
 #include <string.h>
 
@@ -53,9 +53,9 @@
 
 static const char *const sg_volume_names[9] = {"0", "1", "2", "3", "4", "5", "6", "7", "8"};
 static const char *const sg_speed_names[2] = {"Normale", "Rapide"};
-#if META_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY
 static const char *const sg_clock_names[2] = {"80 MHz", "160 MHz"};
-#elif META_TARGET_POKITTO
+#elif M0_TARGET_POKITTO
 static const char *const sg_clock_names[2] = {"48 MHz", "72 MHz"};
 #else
 static const char *const sg_clock_names[2] = {"48 MHz", "70 MHz"}; /* meta_clock.cpp: 72 asked, 70 run */
@@ -64,14 +64,14 @@ static const char *const sg_clock_names[2] = {"48 MHz", "70 MHz"}; /* meta_clock
 static char *sg_put_uint(char *p, unsigned v);
 
 #ifdef SG_MENU_STATE_SLOTS
-#include "meta_state.h"
+#include "m0_state.h"
 /* The slots' names, the used ones without " vide". */
 static char sg_slot_text[SG_MENU_STATE_SLOTS][12];
 static const char *sg_slot_names[SG_MENU_STATE_SLOTS];
 static const char *sg_state_msg; /* the last save state operation's result */
 static uint8_t sg_state_slot;
 static void sg_name_slots(void) {
-    uint16_t used = meta_state_used();
+    uint16_t used = m0_state_used();
     for (unsigned i = 0; i < SG_MENU_STATE_SLOTS; i++) {
         char *p = sg_put_uint(sg_slot_text[i], i + 1u);
         if (!(used >> i & 1u)) memcpy(p, " vide", 6);
@@ -104,7 +104,7 @@ static void sg_menu_frame(void) {
     }
 }
 
-#if !META_TARGET_ESPBOY
+#if !M0_TARGET_ESPBOY
 /* Free RAM painted at boot (sg_frontend.h), as the Game Boy's menu shows it. */
 static unsigned sg_stack_never_used(void) {
     const uint32_t *p = (const uint32_t *)(((uintptr_t)&end + 3u) & ~(uintptr_t)3u);
@@ -117,12 +117,12 @@ static unsigned sg_stack_never_used(void) {
 /* HOME held half a second (alone) asks for the menu; any other key while it
  * is held cancels it (HOME stays exclusive).  On release without the hold,
  * SG_MENU_TAP (the game's key on the Pokitto, whose C is HOME).  The caller
- * passes the pad through META_PAD: the bits are the META_MB_* ones on every
+ * passes the pad through META_PAD: the bits are the M0_MB_* ones on every
  * console. */
 static uint8_t sg_menu_was_down, sg_menu_stage, sg_menu_request;
 static uint32_t sg_menu_since;
 
-#define SG_MENU_HOME_BIT META_MB_HOME
+#define SG_MENU_HOME_BIT M0_MB_HOME
 
 static void sg_menu_poll(uint8_t mb) {
     const uint8_t home = mb & SG_MENU_HOME_BIT, others = mb & (uint8_t)~SG_MENU_HOME_BIT;
@@ -143,13 +143,13 @@ static void sg_menu_poll(uint8_t mb) {
     }
 }
 
-/* The menu's keys as the META_MB_* bits meta_menu_run reads them. */
+/* The menu's keys as the M0_MB_* bits m0_menu_run reads them. */
 static uint8_t sg_menu_buttons(void) {
-#if META_TARGET_POKITTO
+#if M0_TARGET_POKITTO
     /* C stays out: held, it opened the menu (meta_pad.h maps it to HOME) */
-    return (uint8_t)(META_PAD(SG_PAD_RAW()) & ~META_MB_HOME);
+    return (uint8_t)(M0_PAD(SG_PAD_RAW()) & ~M0_MB_HOME);
 #else
-    return META_PAD(SG_PAD_RAW()); /* the library's order, the META_MB_* values */
+    return M0_PAD(SG_PAD_RAW()); /* the library's order, the M0_MB_* values */
 #endif
 }
 
@@ -174,9 +174,9 @@ enum { SGM_RESUME, SGM_RESTART, SGM_SLOT, SGM_SAVE, SGM_LOAD, SGM_VOLUME, SGM_SP
        SGM_USB_SD, SGM_BOOTLOADER, SGM_QUIT };
 
 static void sg_option_menu(void) {
-    uint8_t vol = meta_audio_volume();
+    uint8_t vol = m0_audio_volume();
     uint8_t fast = sg_menu_fast;
-    uint8_t mhz = meta_clock_mhz() == (META_TARGET_ESPBOY ? 160 : 72);
+    uint8_t mhz = m0_clock_mhz() == (M0_TARGET_ESPBOY ? 160 : 72);
 #ifdef SG_MENU_STATE_SLOTS
     uint8_t slot = sg_state_slot;
 #endif
@@ -188,7 +188,7 @@ static void sg_option_menu(void) {
     SG_ADD(SGM_RESUME, "Reprendre", META_MENU_ACTION, 0, 0, 0);
     SG_ADD(SGM_RESTART, "Redemarrer", META_MENU_ACTION, 0, 0, 0);
 #ifdef SG_MENU_STATE_SLOTS
-    if (meta_state_available()) {
+    if (m0_state_available()) {
         sg_name_slots();
         SG_ADD(SGM_SLOT, "Etat", META_MENU_CHOICE, &slot, SG_MENU_STATE_SLOTS, sg_slot_names);
         SG_ADD(SGM_SAVE, "Sauver l'etat", META_MENU_ACTION, 0, 0, 0);
@@ -218,34 +218,34 @@ static void sg_option_menu(void) {
     {
         char *p = sg_put_uint(info, sg_ips);
         memcpy(p, " ips, pile ", 11);
-#if META_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY
         p = sg_put_uint(p + 11, 0);
 #else
         p = sg_put_uint(p + 11, sg_stack_never_used());
 #endif
         *p = 0;
     }
-    meta_audio_pause(1); /* the game's sound stops while the menu is open */
+    m0_audio_pause(1); /* the game's sound stops while the menu is open */
 #ifdef SG_MENU_SCREEN_ENTER
     SG_MENU_SCREEN_ENTER();
 #endif
-    int line = meta_menu_run(SG_MENU_TITLE, items, n, sg_menu_buttons, info);
+    int line = m0_menu_run(SG_MENU_TITLE, items, n, sg_menu_buttons, info);
 #ifdef SG_MENU_SCREEN_LEAVE
     SG_MENU_SCREEN_LEAVE();
 #endif
-    meta_audio_pause(0);
+    m0_audio_pause(0);
     int action = line >= 0 ? ids[line] : -1;
-    meta_audio_set_volume(vol);
+    m0_audio_set_volume(vol);
     sg_menu_fast = fast;
-    meta_lcd_end_frame(); /* no transfer while the clocks change */
-    meta_clock_set(META_TARGET_ESPBOY ? (mhz ? 160 : 80) : (mhz ? 72 : 48));
+    m0_lcd_end_frame(); /* no transfer while the clocks change */
+    m0_clock_set(M0_TARGET_ESPBOY ? (mhz ? 160 : 80) : (mhz ? 72 : 48));
 #ifdef SG_MENU_STATE_SLOTS
     sg_state_slot = slot;
     if (action == SGM_SAVE || action == SGM_LOAD) {
-        meta_lcd_end_frame();
+        m0_lcd_end_frame();
         if (action == SGM_SAVE)
-            sg_state_msg = meta_state_save(slot, SG_MENU_STATE_BUF()) ? "Etat sauve" : "Echec sauvegarde";
-        else if (!meta_state_load(slot, SG_MENU_STATE_BUF()))
+            sg_state_msg = m0_state_save(slot, SG_MENU_STATE_BUF()) ? "Etat sauve" : "Echec sauvegarde";
+        else if (!m0_state_load(slot, SG_MENU_STATE_BUF()))
             sg_state_msg = "Echec chargement";
         else {
             SG_MENU_STATE_LOADED();

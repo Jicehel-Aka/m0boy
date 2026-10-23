@@ -275,7 +275,9 @@ comme carte SD ; `EMU_INPUT` scripte les boutons (`image:touches:durée,...`).
 |---|---|
 | `recompiler/` | `m0recomp` (aussi `gbrecomp`) : backend Game Boy, recompilateur Z80 (`src/system/sg1000/`), front-end PICO-8 (`src/system/pico8/`), plan de stockage des ROM |
 | `targets/meta/runtime/` | le runtime Game Boy commun aux trois consoles ; réglages par console dans `gbl_profile.h` |
-| `targets/meta/platform/` | frontend commun (menu, sauvegardes, états, carte SD, FAT, affichage) et pilotes de chaque console |
+| `targets/common/platform/` | le frontend commun à toutes les consoles (`m0_*` : menu, sauvegardes, états, carte SD, FAT, touches) |
+| `targets/meta/platform/` | le frontend Game Boy (`gb_main.cpp`, sauvegardes, streaming, modes d'écran) |
+| `targets/consoles/` | pilotes bare-metal et gabarits de projet de chaque console |
 | `targets/sg1000/`, `targets/gamegear/` | runtimes SG-1000 et Game Gear/Master System, frontends, harnais |
 | `targets/pico8/` | runtime PICO-8, frontend, harnais |
 | `targets/common/` | codecs de ROM, cache carte, partage pile/cache, explorateur, morceaux du frontend Sega |

@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include "gbl_espboy.h"
 #include "espboy_hw.h"
-#include "meta_state.h"
+#include "m0_state.h"
 #include "sg_config.h"
 
 static uint8_t fake_machine[25536];
@@ -66,20 +66,20 @@ int main(void) {
     memset(again, 0, sizeof again);
     espboy_ram_load(again, sizeof again);
     CHECK(!memcmp(again, ram, sizeof ram));
-    meta_state_init(1, sec);
-    CHECK(meta_state_available() && meta_state_used() == 0);
+    m0_state_init(1, sec);
+    CHECK(m0_state_available() && m0_state_used() == 0);
     for (unsigned i = 0; i < sizeof fake_machine; i++) fake_machine[i] = (uint8_t)(i * 7 + 3);
     fake_frame = 1234;
-    CHECK(meta_state_save(GG_STATE_SLOTS - 1, sec));
-    CHECK(meta_state_used() == 1u << (GG_STATE_SLOTS - 1));
+    CHECK(m0_state_save(GG_STATE_SLOTS - 1, sec));
+    CHECK(m0_state_used() == 1u << (GG_STATE_SLOTS - 1));
     memset(fake_machine, 0, sizeof fake_machine);
-    CHECK(!meta_state_load(0, sec)); /* an empty slot */
-    CHECK(meta_state_load(GG_STATE_SLOTS - 1, sec) && fake_machine[1] == 10 && fake_machine[25535] == (uint8_t)(25535 * 7 + 3));
+    CHECK(!m0_state_load(0, sec)); /* an empty slot */
+    CHECK(m0_state_load(GG_STATE_SLOTS - 1, sec) && fake_machine[1] == 10 && fake_machine[25535] == (uint8_t)(25535 * 7 + 3));
     memset(again, 0, sizeof again);
     espboy_ram_load(again, sizeof again); /* the last slot did not reach the RAM's copies */
     CHECK(!memcmp(again, ram, sizeof ram));
-    meta_state_init(1, sec); /* reboot: the slot is still there */
-    CHECK(meta_state_used() == 1u << (GG_STATE_SLOTS - 1));
+    m0_state_init(1, sec); /* reboot: the slot is still there */
+    CHECK(m0_state_used() == 1u << (GG_STATE_SLOTS - 1));
     printf("espboy sega flash ok: %u erases, %u programs, %u state slots\n", ESP.erases, ESP.programs, (unsigned)GG_STATE_SLOTS);
     return 0;
 }

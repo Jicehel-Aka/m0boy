@@ -1846,7 +1846,7 @@ static void state_mem(gbl_state_fn io, void *ctx, int load) {
 #elif GBL_ERAM_SIZE > 0
     io(gbl_eram, GBL_ERAM_SIZE, ctx);
 #if GBL_BATTERY
-    if (load) { /* the save file follows the loaded RAM (meta_save_tick) */
+    if (load) { /* the save file follows the loaded RAM (gbl_save_tick) */
         eram_dirty_mask = 0xFFFFFFFFu >> (32u - (GBL_ERAM_SIZE + 511u) / 512u);
         save_pending = 1;
         gbl_save_last_change = gbl_frame;

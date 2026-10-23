@@ -169,6 +169,8 @@ if(BUILD_TESTS)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_cmake_compiler.py"
                 --cmake "${CMAKE_COMMAND}" --selector "${PROJECT_SOURCE_DIR}/targets/meta/host/prefer_compiler.cmake")
     set(GBL_META_DIR "${PROJECT_SOURCE_DIR}/targets/meta")
+set(GBL_CONSOLES_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/consoles")
+set(GBL_COMMON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/common")
     file(GLOB GBL_META_RUNTIME_SOURCES "${GBL_META_DIR}/runtime/gbl_*.c")
     include_directories("${PROJECT_SOURCE_DIR}/targets/common/runtime") # m0_cache.h, shared with the Game Gear
 
@@ -182,30 +184,30 @@ if(BUILD_TESTS)
     add_test(NAME meta_ppu_pal32_matches_per_pixel_reference COMMAND test_meta_ppu_reference_pal32)
 
     add_executable(test_meta_lcd_queue "${GBL_META_DIR}/tests/lcd_queue.c")
-    target_include_directories(test_meta_lcd_queue PRIVATE "${GBL_META_DIR}/platform/meta")
+    target_include_directories(test_meta_lcd_queue PRIVATE "${GBL_CONSOLES_DIR}/meta")
     add_test(NAME meta_lcd_queue_is_fifo_and_lossless COMMAND test_meta_lcd_queue)
 
     add_executable(test_meta_display_sim "${GBL_META_DIR}/tests/display_sim.c"
-        "${GBL_META_DIR}/platform/meta/meta_display.c" "${GBL_META_DIR}/platform/src/meta_palettes.c"
+        "${GBL_META_DIR}/platform/gbl_display.c" "${GBL_META_DIR}/platform/gbl_palettes.c"
         ${GBL_META_RUNTIME_SOURCES})
     target_include_directories(test_meta_display_sim PRIVATE "${GBL_META_DIR}/runtime"
-        "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/platform/src" "${GBL_META_DIR}/platform/meta" "${GBL_META_DIR}/tests")
-    add_test(NAME meta_display_panel_matches_reference COMMAND test_meta_display_sim)
+        "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/platform" "${GBL_COMMON_DIR}/platform" "${GBL_CONSOLES_DIR}/meta" "${GBL_META_DIR}/tests")
+    add_test(NAME gbl_display_panel_matches_reference COMMAND test_meta_display_sim)
 
     add_executable(test_meta_display_sim_stream "${GBL_META_DIR}/tests/display_sim.c"
-        "${GBL_META_DIR}/platform/meta/meta_display.c" "${GBL_META_DIR}/platform/src/meta_palettes.c"
+        "${GBL_META_DIR}/platform/gbl_display.c" "${GBL_META_DIR}/platform/gbl_palettes.c"
         ${GBL_META_RUNTIME_SOURCES})
     target_include_directories(test_meta_display_sim_stream PRIVATE "${GBL_META_DIR}/runtime"
-        "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/platform/src" "${GBL_META_DIR}/platform/meta" "${GBL_META_DIR}/tests")
+        "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/platform" "${GBL_COMMON_DIR}/platform" "${GBL_CONSOLES_DIR}/meta" "${GBL_META_DIR}/tests")
     target_compile_definitions(test_meta_display_sim_stream PRIVATE META_MERGE_MODES=0)
-    add_test(NAME meta_display_stream_profile_matches_reference COMMAND test_meta_display_sim_stream)
+    add_test(NAME gbl_display_stream_profile_matches_reference COMMAND test_meta_display_sim_stream)
 
     # 12-bit panel (META_LCD_12BPP): rows packed in place, read back as the panel would.
     add_executable(test_meta_display_sim_12bpp "${GBL_META_DIR}/tests/display_sim.c"
-        "${GBL_META_DIR}/platform/meta/meta_display.c" "${GBL_META_DIR}/platform/src/meta_palettes.c"
+        "${GBL_META_DIR}/platform/gbl_display.c" "${GBL_META_DIR}/platform/gbl_palettes.c"
         ${GBL_META_RUNTIME_SOURCES})
     target_include_directories(test_meta_display_sim_12bpp PRIVATE "${GBL_META_DIR}/runtime"
-        "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/platform/src" "${GBL_META_DIR}/platform/meta"
+        "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/platform" "${GBL_COMMON_DIR}/platform" "${GBL_CONSOLES_DIR}/meta"
         "${GBL_META_DIR}/tests")
     target_compile_definitions(test_meta_display_sim_12bpp PRIVATE META_LCD_12BPP=1)
     add_test(NAME meta_display_12bpp_matches_reference COMMAND test_meta_display_sim_12bpp)
@@ -216,11 +218,11 @@ if(BUILD_TESTS)
     foreach(variant legacy merge_tblend2 short short_tile short_tblend2 short_12bpp)
         set(test_name test_meta_display_${variant})
         add_executable(${test_name} "${GBL_META_DIR}/tests/display_sim.c"
-            "${GBL_META_DIR}/platform/meta/meta_display.c"
-            "${GBL_META_DIR}/platform/src/meta_palettes.c" ${GBL_META_RUNTIME_SOURCES})
+            "${GBL_META_DIR}/platform/gbl_display.c"
+            "${GBL_META_DIR}/platform/gbl_palettes.c" ${GBL_META_RUNTIME_SOURCES})
         target_include_directories(${test_name} PRIVATE "${GBL_META_DIR}/runtime"
-            "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/platform/src"
-            "${GBL_META_DIR}/platform/meta" "${GBL_META_DIR}/tests")
+            "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/platform" "${GBL_COMMON_DIR}/platform"
+            "${GBL_CONSOLES_DIR}/meta" "${GBL_META_DIR}/tests")
         if(variant STREQUAL "legacy")
             target_compile_definitions(${test_name} PRIVATE META_DISPLAY_COMPACT=0 META_STRIP_LINES=4)
         elseif(variant STREQUAL "merge_tblend2")
@@ -240,9 +242,9 @@ if(BUILD_TESTS)
     endforeach()
 
     add_executable(test_meta_menu_slices "${GBL_META_DIR}/tests/menu_slices.cpp"
-        "${GBL_META_DIR}/platform/src/meta_menu.cpp")
+        "${GBL_COMMON_DIR}/platform/m0_menu.cpp")
     target_include_directories(test_meta_menu_slices PRIVATE "${GBL_META_DIR}/tests/stubs"
-        "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/runtime" "${GBL_META_DIR}/platform/src")
+        "${GBL_META_DIR}/tests/config" "${GBL_META_DIR}/runtime" "${GBL_META_DIR}/platform" "${GBL_COMMON_DIR}/platform")
     target_compile_options(test_meta_menu_slices PRIVATE -UNDEBUG)
     add_test(NAME meta_menu_short_scratch_matches_full_band COMMAND test_meta_menu_slices)
 
@@ -309,7 +311,7 @@ if(BUILD_TESTS)
     add_test(NAME m0_stack_pool_stack_first COMMAND test_m0_stack_pool)
 
     add_executable(test_meta_lcd_pack "${GBL_META_DIR}/tests/lcd_pack.c")
-    target_include_directories(test_meta_lcd_pack PRIVATE "${GBL_META_DIR}/platform/meta")
+    target_include_directories(test_meta_lcd_pack PRIVATE "${GBL_CONSOLES_DIR}/meta")
     add_test(NAME meta_lcd_pack444_matches_st7735 COMMAND test_meta_lcd_pack)
 
     add_executable(test_meta_apu_lfsr "${GBL_META_DIR}/tests/apu_lfsr.c")
@@ -334,9 +336,9 @@ if(BUILD_TESTS)
     set_tests_properties(meta_pokitto_target PROPERTIES TIMEOUT 300)
 
     add_executable(test_meta_fat_check "${GBL_META_DIR}/tests/fat_check.c"
-        "${GBL_META_DIR}/platform/src/meta_fat.c")
-    target_include_directories(test_meta_fat_check PRIVATE "${GBL_META_DIR}/platform/src")
-    add_test(NAME meta_fat_finds_streamed_rom
+        "${GBL_COMMON_DIR}/platform/m0_fat.c")
+    target_include_directories(test_meta_fat_check PRIVATE "${GBL_META_DIR}/platform" "${GBL_COMMON_DIR}/platform")
+    add_test(NAME m0_fat_finds_streamed_rom
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_meta_fat.py"
                 --fat-check "$<TARGET_FILE:test_meta_fat_check>")
 endif()

@@ -1786,7 +1786,7 @@ static fs::path resolve_meta_dir(const char* argv0, const fs::path& explicit_dir
     for (const fs::path& candidate : candidates) {
         error.clear();
         if (fs::is_regular_file(candidate / "runtime" / "gbl.h", error) &&
-            fs::is_regular_file(candidate / "platform" / "meta" / "platformio.ini.in", error)) {
+            fs::is_regular_file(candidate / "platform" / "gb_main.cpp", error)) {
             return fs::weakly_canonical(candidate, error);
         }
     }

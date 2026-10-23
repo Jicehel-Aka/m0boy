@@ -7,6 +7,6 @@ int main(void) {
     usb_msc_init();
     for (;;) {
         usb_msc_poll();
-        meta_watchdog_feed();
+        m0_watchdog_feed();
     }
 }
