@@ -590,11 +590,7 @@ private:
                     if (last_cls_ == c_direct || last_cls_ == c_raw || last_cls_ == c_sub || last_cls_ == c_zero) rom(last_g, last_kind, n);
                     else repeat_cached(last_g, n);
                 } else if (last_event == 3) {
-                    st_.accesses += n;
-                    if (cfg_.cart_on_card) {
-                        st_.count[c_cart] += n;
-                        st_.cart_cycles += cfg_.cost.cart * static_cast<double>(n);
-                    }
+                    cart_access(last_g, last_kind != 0, n); /* a repeated write keeps the block dirty and its last change current */
                 }
                 continue;
             }

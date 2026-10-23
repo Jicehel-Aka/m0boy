@@ -83,6 +83,10 @@ static void cache_writeback(unsigned i) {
 /* A block for a miss: by the hand, written back if needed, its tag void. */
 static unsigned cache_victim(void) {
     unsigned i;
+#if M0C_SAVE
+    unsigned refused = 0;
+again:
+#endif
     for (;;) {
         i = cache_hand;
         cache_hand = (uint8_t)(i + 1u == CACHE_N ? 0 : i + 1u);
@@ -102,11 +106,14 @@ static unsigned cache_victim(void) {
     if (CACHE_IS_ETAG(cache_tag[i])) {
 #if M0C_SAVE
         cache_writeback(i);
+        /* The card refused it: the block keeps its changes, another one is
+         * tried.  Only when every block was refused is one given up. */
+        if (cache_dirty[i] && ++refused < CACHE_N) goto again;
 #endif
         cache_changed = 1;
     }
     cache_tag[i] = -1;
-    cache_dirty[i] = 0; /* even if the card refused the write-back */
+    cache_dirty[i] = 0; /* every write-back refused: this one is lost */
     cache_ref[i] = 0;
     return i;
 }
@@ -272,7 +279,8 @@ static void cache_drop(void) {
 #endif
     cache_mru = cache_rom_last = 0;
 #if M0C_LEND
-    while (cache_tag[cache_mru] == CACHE_LENT) cache_mru = cache_rom_last = (uint8_t)(cache_mru + 1u);
+    while (cache_mru < CACHE_N && cache_tag[cache_mru] == CACHE_LENT) cache_mru = cache_rom_last = (uint8_t)(cache_mru + 1u);
+    if (cache_mru >= CACHE_N) cache_mru = cache_rom_last = 0; /* all lent: nothing to guard until cache_unlend */
 #endif
     cache_hand = 0;
     cache_changed = 0;
@@ -297,6 +305,24 @@ static uintptr_t cache_lend(void) {
     cache_flush();
 #endif
     unsigned n = M0C_WAYS - M0C_LEND_KEEP;
+#if M0C_SAVE
+    /* The card refused a write-back: that block keeps its changes, so the
+     * lent part stops short of the first one, and the dirty blocks stay. */
+    for (unsigned i = 0; i < n; i++)
+        if (CACHE_IS_ETAG(cache_tag[i]) && cache_dirty[i]) {
+            for (unsigned j = 0; j < CACHE_N; j++) {
+                if (j < i) cache_tag[j] = CACHE_LENT;
+                else if (!(CACHE_IS_ETAG(cache_tag[j]) && cache_dirty[j])) { cache_tag[j] = -1; cache_dirty[j] = 0; }
+                cache_ref[j] = 0;
+            }
+#if M0C_BLOCK < 512
+            sector_tag = -1;
+#endif
+            cache_mru = cache_rom_last = (uint8_t)i;
+            cache_hand = 0;
+            return ((uintptr_t)CACHE_BLK(0) + i * M0C_BLOCK) & ~(uintptr_t)7;
+        }
+#endif
     for (unsigned i = 0; i < n; i++) cache_tag[i] = CACHE_LENT;
     cache_drop();
     return ((uintptr_t)CACHE_BLK(0) + n * M0C_BLOCK) & ~(uintptr_t)7;
@@ -305,6 +331,7 @@ static uintptr_t cache_lend(void) {
 static void cache_unlend(void) {
     for (unsigned i = 0; i < CACHE_N; i++)
         if (cache_tag[i] == CACHE_LENT) cache_tag[i] = -1;
+    cache_mru = cache_rom_last = cache_hand = 0;
 }
 #endif
 

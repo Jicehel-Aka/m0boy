@@ -110,6 +110,9 @@ with tempfile.TemporaryDirectory(prefix='m0_romsim_') as temporary:
         body, last, cart_last = bytearray(), 0, 0
         for events in frames:
             for e in events:
+                if e[0] == 'again':  # repeats of the access before, after an end of frame
+                    body += token((e[1] << 2 | 2) + 1)
+                    continue
                 if e[0] == 'c':
                     g = e[1] >> 4
                     d = g - cart_last
@@ -140,6 +143,10 @@ with tempfile.TemporaryDirectory(prefix='m0_romsim_') as temporary:
     r = sim('--ways', 4, '--cart-on-card', 1, rom, t)['page0_only']
     assert r['classes']['cart_miss'] == 1 and r['sd_writes'] == 1, r
     assert sim('--ways', 4, rom, t)['page0_only']['sd_writes'] == 0  # cartridge RAM in RAM
+    # a write repeated in every frame is a change in every frame: never 120 quiet ones
+    trace2(t, len(data), [[('c', 0x100, 1)]] + [[('again', 1)] for _ in range(130)])
+    r = sim('--ways', 4, '--cart-on-card', 1, rom, t)['page0_only']
+    assert r['sd_writes'] == 0, r
     # one way each for code and data: no thrashing where one shared way
     # would; a unified cache of one way reloads at every switch
     trace2(t, len(data), [[('f', 0x4000, 0), ('r', 0x8000, 0)] * 8])

@@ -227,6 +227,13 @@ if(BUILD_TESTS)
     target_compile_options(test_meta_menu_slices PRIVATE -UNDEBUG)
     add_test(NAME meta_menu_short_scratch_matches_full_band COMMAND test_meta_menu_slices)
 
+    # m0_cache.inc against a card that refuses writes, and a menu lending the whole pool.
+    add_executable(test_m0_cache_failures tests/test_m0_cache_failures.c)
+    target_include_directories(test_m0_cache_failures PRIVATE targets/common/runtime)
+    target_compile_options(test_m0_cache_failures PRIVATE -UNDEBUG -fsanitize=address,undefined)
+    target_link_options(test_m0_cache_failures PRIVATE -fsanitize=address,undefined)
+    add_test(NAME m0_cache_refused_write_back_and_full_lend COMMAND test_m0_cache_failures)
+
     # Cartridge RAM cache on the card: 8 KiB, and 32 KiB in four MBC5 banks.
     foreach(variant 1 2 8 8_32k 8_32k_dbg 8_stk)
         string(REGEX REPLACE "_.*" "" ways ${variant})

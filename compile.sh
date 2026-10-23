@@ -827,6 +827,11 @@ in_array() { # $1 valeur, $2... tableau
 }
 
 
+# rom.plan / rom.rank / storage.json are shared by the consoles of a game: they
+# are only reused for the console, simulator, profile tool and cache they were made with.
+plan_stamp() { echo "$TARGET $(cat ./build/bin/m0romsim "$PROFILE_TOOL" targets/common/runtime/m0_cache.inc 2> /dev/null | sha1sum | cut -c1-16)"; }
+plan_stale() { [ "$(cat "$1/rom.rank.stamp" 2> /dev/null)" != "$(plan_stamp)" ]; }
+
 build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and build system.
   local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
   local SRC_DIR="$(dirname "$rom_path")"
@@ -930,14 +935,15 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   if [ "$sys" != sg1000 ] && [ "${STORAGE:-1}" = 1 ] && [ "$(stat -L -c %s "$rom_path")" -gt 229376 ] &&
      { [ "$TARGET" = meta ] || [ "$TARGET" = pokitto ]; } &&
      [ -f "$PROFILE_TOOL" ] && [ -x ./build/bin/m0romsim ]; then
-    if [ ! -f "$store/rom.rank" ] || [ -n "$(find "$store" -maxdepth 1 \( -name 'coverage-*.cov' -o -name "calibration-$TARGET.json" \) -newer "$store/rom.rank" | head -n1)" ]; then
+    if [ ! -f "$store/rom.rank" ] || plan_stale "$store" || [ -n "$(find "$store" -maxdepth 1 \( -name 'coverage-*.cov' -o -name "calibration-$TARGET.json" \) -newer "$store/rom.rank" | head -n1)" ]; then
       echo "[i] Plan de stockage de la ROM : cache carte simulé sur les parties enregistrées"
       command -v flock > /dev/null && plan_lock=(flock "$DEST_DIR/.gbrecomp-auto.lock")
       # le projet généré du build précédent rejoue les parties avec son propre
       # code compilé : le trafic ROM de ce firmware (gm0 : identique)
       local plan_project=()
       [ -f "$out_dir/host/CMakeLists.txt" ] && plan_project=(--project "$out_dir")
-      "${plan_lock[@]}" python3 "$PROFILE_TOOL" storage "$store" --quick --target "$TARGET" "${plan_project[@]}" ||
+      "${plan_lock[@]}" python3 "$PROFILE_TOOL" storage "$store" --quick --target "$TARGET" "${plan_project[@]}" &&
+        plan_stamp > "$store/rom.rank.stamp" ||
         echo "[!] Plan de stockage impossible : secteurs choisis par fréquence de lecture"
     fi
     [ -f "$store/rom.rank" ] && rom_plan=(--rom-plan "$store/rom.rank")
@@ -992,7 +998,17 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
       sg_build_once; rc=$?
       [ $rc -eq 0 ] && break
       [ $rc -eq 2 ] && return 1
-      tries=$((tries + 1)); bpi=$((bpi + 3))
+      tries=$((tries + 1))
+      # Au moins +3 ; sinon la part du dépassement retirée du code compilé (le code précis,
+      # Super Game 150, coûte bien plus que la mesure du premier build : +3 par essai ne suffisait pas).
+      local over cnt nb=$((bpi + 3))
+      over=$(echo "$build_log" | sed -n 's/.*overflowed by \([0-9]*\) bytes.*/\1/p' | head -n1)
+      cnt=$(echo "$gen_log" | sed -n 's/.*instructions: *\([0-9]*\) compiled.*/\1/p')
+      if [ -n "$over" ] && [ -n "$cnt" ] && [ $((cnt * bpi)) -gt "$over" ]; then
+        local grown=$(( cnt * bpi * bpi / (cnt * bpi - over) + 1 ))
+        [ "$grown" -gt "$nb" ] && nb=$grown
+      fi
+      bpi=$nb
       [ $tries -le 6 ] || { echo "[x] Le firmware ne tient pas en flash."; return 1; }
     done
   elif [ $rc -ne 0 ]; then
@@ -1382,9 +1398,11 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   if [ "${STORAGE:-1}" = 1 ] && [ "$(stat -L -c %s "$rom_path")" -gt 229376 ] &&
      { [ "$TARGET" = meta ] || [ "$TARGET" = pokitto ]; } &&
      [ -f "$PROFILE_TOOL" ] && [ -x ./build/bin/m0romsim ] && ls "$store"/coverage-*.input > /dev/null 2>&1; then
-    if [ ! -f "$store/rom.rank" ] || [ -n "$(find "$store" -maxdepth 1 -name 'coverage-*.cov' -newer "$store/rom.rank" | head -n1)" ]; then
+    if [ ! -f "$store/rom.rank" ] || plan_stale "$store" ||
+       [ -n "$(find "$store" -maxdepth 1 \( -name 'coverage-*.cov' -o -name "calibration-$TARGET.json" \) -newer "$store/rom.rank" | head -n1)" ]; then
       echo "[i] Plan de stockage de la ROM : cache carte simulé sur les parties enregistrées"
-      python3 "$PROFILE_TOOL" storage "$store" --quick --target "$TARGET" ||
+      python3 "$PROFILE_TOOL" storage "$store" --quick --target "$TARGET" &&
+        plan_stamp > "$store/rom.rank.stamp" ||
         echo "[!] Plan de stockage impossible : blocs choisis par nombre de lectures"
     fi
     [ -f "$store/rom.rank" ] && cov_args+=(--rom-plan "$store/rom.rank")

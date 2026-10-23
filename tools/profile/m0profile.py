@@ -634,6 +634,16 @@ def held_out_folds(traces, limit=None):
     return test[:limit] if limit else test
 
 
+def cart_on_card(project):
+    """Does the generated Sega project keep its cartridge RAM in the save file
+    (GG_CART_SD): its blocks then share the cache with the ROM's."""
+    try:
+        with open(os.path.join(project, 'src', 'sg_config.h'), encoding='utf-8') as f:
+            return re.search(r'^#define GG_CART_SD\s+1\b', f.read(), re.M) is not None
+    except OSError:
+        return False
+
+
 def cmd_storage(store, budget=None, jobs=None, quick=False, target='meta', project=None):
     """Traced by the target's generated project when given (its last build),
     else with the firmware's compiled list (its interpreted fetches count),
@@ -649,8 +659,11 @@ def cmd_storage(store, budget=None, jobs=None, quick=False, target='meta', proje
     rom = env.get('ROM', '')
     traces, fetches = ensure_traces(store, env, jobs, target, project)
     model = ['--fetch', 1 if fetches else 0, '--runtime', 'lean']
-    if target == 'pokitto':  # 2 KiB of USB RAM: four 512-byte blocks
-        model += ['--block', 512, '--ways', 4]
+    sega = env.get('SYSTEM') in ('gg', 'sms')
+    if target == 'pokitto':  # USB RAM bank: four 512-byte blocks on Game Gear, two on Master System (it shares the bank with its tables)
+        model += ['--block', 512, '--ways', 2 if env.get('SYSTEM') == 'sms' else 4]
+    if sega and project and cart_on_card(project):  # the save file's blocks compete with the ROM's
+        model += ['--cart-on-card', 1]
     calibration = None
     try:
         with open(os.path.join(store, f'calibration-{target}.json'), encoding='utf-8') as f:
@@ -675,6 +688,8 @@ def cmd_storage(store, budget=None, jobs=None, quick=False, target='meta', proje
                         budget = int(m.group(1))
     folds = held_out_folds(traces, 3 if quick else None)
     gb = env.get('SYSTEM') in ('gb', 'gameboy')
+    if gb and not (calibration and calibration.get('ways')):  # the unified pool of the Game Boy firmwares, not Game Gear's 12 ways
+        model += ['--ways', 61]
     mins, every_size = ((512,), GB_SIZES) if gb else (MIN_SIZES, ALL_SIZES)
     if gb:
         model += ['--block', 64, '--raw-sizes', 4096]
