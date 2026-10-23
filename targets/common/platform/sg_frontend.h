@@ -126,8 +126,18 @@ static uint8_t sg_menu_fast, sg_fast_draw;
  * line rendering, audio catch-up, LCD/audio drivers and interrupts: about
  * 2 KiB, -fstack-usage); at least 1 KiB is left for nesting when RAM is
  * tight (cartridge RAM). */
+#if defined(SG_MSX) && SG_MSX
+/* MSX: 3.6 KiB of RAM is left (8 KiB of guest RAM and 16 KiB of VRAM).  Over a
+ * ten-minute session the deepest the runtime calls went below the guard was
+ * 672 bytes (stack paint, tools/meta-usb.py), so 1400 leaves room to spare and
+ * doubles what regions may nest before they unwind to the dispatcher (an
+ * unwound region runs interpreted until it returns). */
+#define SG_STACK_RESERVE 1400
+#else
+#define SG_STACK_RESERVE 2560
+#endif
 #define SG_STACK_GUARD() do { \
-        uintptr_t stack = (uintptr_t)&__StackTop - (uintptr_t)&end, reserve = 2560; \
+        uintptr_t stack = (uintptr_t)&__StackTop - (uintptr_t)&end, reserve = SG_STACK_RESERVE; \
         if (stack < reserve + 1024) reserve = stack > 2048 ? stack - 1024 : stack / 2; \
         sg_stack_limit = (uintptr_t)&end + reserve; \
     } while (0)

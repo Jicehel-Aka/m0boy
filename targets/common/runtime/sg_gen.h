@@ -149,11 +149,30 @@ SG_HELPER void sg_outd(void) { sg_outx(-1); }
  * (pc and refresh included), expanded once here. */
 SG_HELPER unsigned sg_op(const z80_decoded_t *d) { return z80_execute(&Z, d); }
 
-/* T-states and refresh counter */
+/* T-states and refresh counter.  Only LD A,R reads R: a ROM without that
+ * instruction (SG_TRACK_R 0, the generator's scan) does not need the counter
+ * kept, which is a load, an add, a mask and a store at every group of
+ * instructions.  Precise builds always keep it (they must equal the
+ * interpreter, which does). */
+#ifndef SG_TRACK_R
+#define SG_TRACK_R 1
+#endif
+#ifndef SG_PRECISE
+#define SG_PRECISE 0
+#endif
+#if SG_TRACK_R && SG_PRECISE
 #define ADV(cy, rf) do { \
         machine.cyc += (uint32_t)(cy); \
         Z.r = (uint8_t)((Z.r & 128) | ((Z.r + (rf)) & 127)); \
     } while (0)
+#elif SG_TRACK_R /* R's bit 7 comes from r7 (z80.h): the sum may carry into it without harm */
+#define ADV(cy, rf) do { \
+        machine.cyc += (uint32_t)(cy); \
+        Z.r = (uint8_t)(Z.r + (rf)); \
+    } while (0)
+#else
+#define ADV(cy, rf) ((void)(rf), machine.cyc += (uint32_t)(cy))
+#endif
 #define CY(cy) (machine.cyc += (uint32_t)(cy))
 #define EVT() ((int32_t)(machine.cyc - machine.next_evt) >= 0)
 #define SYNC(pc) do { if (EVT() && sg_event(pc)) return; } while (0)

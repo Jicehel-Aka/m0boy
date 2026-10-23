@@ -31,22 +31,22 @@ init:
     ld de,0x2008
     ld bc,8
     call 0x005c
-    ld hl,0x3800+33        ; name table: tile 1 here, and a run of them
+    ld hl,0x1800+33        ; name table (the BIOS default of screen 2): tile 1 here, and a run of them
     ld a,1
     call 0x004d            ; WRTVRM
-    ld hl,0x3840
+    ld hl,0x1840
     ld bc,40
     ld a,1
     call 0x0056            ; FILVRM
     ld hl,sprite_pattern   ; sprite 0: a solid 8x8 square
-    ld de,0x1800
+    ld de,0x3800
     ld bc,8
     call 0x005c
     ld hl,sprite_attr
-    ld de,0x3b00
+    ld de,0x1b00
     ld bc,8
     call 0x005c
-    ld hl,0x3800+33        ; read back through RDVRM
+    ld hl,0x1800+33        ; read back through RDVRM
     call 0x004a
     ld (0xe020),a
     call 0x0090            ; GICINI
@@ -118,11 +118,9 @@ main:
     ld (0xe008),a
     ld a,(0xfc9e)          ; JIFFY moves the sprite
     out (0x99),a
-    ld a,0x40 + 0x3b
-    ld c,0x99
-    ld a,0x01              ; sprite 0, x: VRAM 3b01
+    ld a,0x01              ; sprite 0, x: VRAM 1b01
     out (0x99),a
-    ld a,0x7b
+    ld a,0x5b
     out (0x99),a
     ld a,(0xfc9e)
     out (0x98),a
@@ -137,7 +135,15 @@ main:
     ld a,(0xe100)
     add a,b
     ld (0xe018),a
+    ld ix,0x1234           ; the interrupt routine must give IX and IY back (the BIOS saves them)
+    ld iy,0x5678
     halt
+    push ix
+    pop hl
+    ld (0xe030),hl
+    push iy
+    pop hl
+    ld (0xe032),hl
     jr main
 
 helper:
@@ -146,6 +152,8 @@ helper:
     ret
 
 isr:
+    ld ix,0xdead
+    ld iy,0xbeef
     ld a,(0xe002)
     inc a
     ld (0xe002),a
@@ -266,3 +274,51 @@ msg:
 def text_fixture():
     """CHPUT and POSIT in screen 1: "HI", a new line, "OK", then a Z at column 5, row 3"""
     return bytes(Asm(0x10000).assemble(TEXT_SOURCE)[0x4000:0x4100])
+
+
+SCC_SOURCE = r"""
+org 0x4000
+    db 0x41,0x42
+    dw init
+    dw 0
+    dw 0
+    dw 0
+    db 0,0,0,0,0,0
+org 0x4010
+init:
+    ld a,1                 ; 8000-BFFF on the cartridge
+    ld h,0x80
+    call 0x0024
+    ld a,7                 ; AY: tones and noise off, so the SCC is what is heard
+    ld e,0xbf
+    call 0x0093
+    ld a,0x3f
+    ld (0x9000),a          ; the bank-3 register's value switches the SCC on
+    ld hl,wave
+    ld de,0x9800           ; voice 1's waveform
+    ld bc,32
+    ldir
+    ld a,111               ; period 111: 3579545 / (32 * 112) = 998.8 Hz
+    ld (0x9880),a
+    xor a
+    ld (0x9881),a
+    ld a,15
+    ld (0x988a),a
+    ld a,1
+    ld (0x988f),a
+    ei
+spin:
+    halt
+    jr spin
+wave:
+    db 100,100,100,100,100,100,100,100,100,100,100,100,100,100,100,100
+    db -100,-100,-100,-100,-100,-100,-100,-100,-100,-100,-100,-100,-100,-100,-100,-100
+"""
+
+
+def scc_fixture(units=8):
+    """a Konami SCC cartridge that plays a square wave on voice 1"""
+    code = bytes(Asm(0x10000).assemble(SCC_SOURCE)[0x4000:0x6000])
+    rom = bytearray(b'\xff' * (units * 0x2000))
+    rom[:0x2000] = code
+    return bytes(rom)

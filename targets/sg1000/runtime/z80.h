@@ -27,6 +27,7 @@ typedef struct {
     uint8_t a,f;
     uint16_t bc2,de2,hl2,af2,ix,iy,sp,pc;
     uint8_t i,r,im,iff1,iff2,halted,ei_delay,irq,nmi,irq_vector,fault;
+    uint8_t r7; /* bit 7 of R as LD R,A set it: R's low seven bits are what counts, so generated code may add to r without masking */
     uint64_t cycles;
     void *user;
     z80_read_fn read,in;

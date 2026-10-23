@@ -669,28 +669,11 @@ static inline void gg_cover(uint32_t loc) {
 static inline void gg_cover(uint32_t loc) { machine.coverage[loc]++; }
 #endif
 
-static int interp_one(void) {
+/* The instructions the fast path declines: decoded and executed generically
+ * (the same split as sg1000.c, whose block loop this one follows). */
+static __attribute__((noinline)) int interp_generic(uint16_t pc) {
     gg_t *m = &machine;
     z80_t *c = &m->cpu;
-    if ((int32_t)(m->cyc - m->next_evt) >= 0 && sg_event(c->pc)) return 0;
-    uint16_t pc = c->pc;
-    if (m->coverage) {
-        const uint32_t loc = gg_location(pc);
-        if (loc < m->coverage_size) gg_cover(loc);
-#ifdef GG_ROM_TRACE
-        uint32_t offset;
-        if (gg_rom_offset(pc, &offset)) gg_rom_trace_insn(offset);
-#endif
-    }
-    int jumped;
-    const int fast = z80_fast(c, &jumped); /* common opcodes without decoding */
-    if (fast >= 0) {
-        c->r = (uint8_t)((c->r & 128) | ((c->r + 1) & 127));
-        m->cyc += (uint32_t)fast;
-        m->interpreted++;
-        if (c->ei_delay && --c->ei_delay == 0 && c->irq) m->next_evt = m->cyc;
-        return !jumped;
-    }
     z80_decoded_t d;
     if (!z80_decode(c, &d)) { c->fault = 1; m->stop = 1; return 0; }
     const uint16_t sp = c->sp;
@@ -705,6 +688,39 @@ static int interp_one(void) {
     }
     return c->pc == (uint16_t)(pc + d.length);
 }
+
+static inline __attribute__((always_inline)) int interp_step(void) {
+    gg_t *m = &machine;
+    z80_t *c = &m->cpu;
+    if (__builtin_expect((int32_t)(m->cyc - m->next_evt) >= 0, 0) && sg_event(c->pc)) return 0;
+    const uint16_t pc = c->pc;
+    if (m->coverage) {
+        const uint32_t loc = gg_location(pc);
+        if (loc < m->coverage_size) gg_cover(loc);
+#ifdef GG_ROM_TRACE
+        uint32_t offset;
+        if (gg_rom_offset(pc, &offset)) gg_rom_trace_insn(offset);
+#endif
+    }
+    int jumped;
+    const int fast = z80_fast(c, &jumped); /* common opcodes without decoding */
+    if (fast >= 0) {
+        c->r = (uint8_t)((c->r & 128) | ((c->r + 1) & 127));
+        m->cyc += (uint32_t)fast;
+        m->interpreted++;
+        if (__builtin_expect(c->ei_delay != 0, 0) && --c->ei_delay == 0 && c->irq) m->next_evt = m->cyc;
+        return !jumped;
+    }
+    return interp_generic(pc);
+}
+
+/* The block loop is the one place the step is inlined (a second copy would double the fast path's flash). */
+static __attribute__((noinline)) unsigned interp_run(unsigned limit) {
+    unsigned n = 0;
+    while (n < limit) { n++; if (!interp_step()) break; }
+    return n;
+}
+static void interp_one(void) { (void)interp_run(1); }
 
 /* OUTI / OUTD in RAM, where games unroll their VRAM uploads: z80_execute's
  * effects without the generic decode.  1 done, 0 another instruction, -1
@@ -737,11 +753,11 @@ void sg_interp_block(void) {
     unsigned n = 0;
     if (machine.cpu.pc >= 0xc000)
         for (int r; n < 32 && (r = ram_outx()) != 0; n++) if (r < 0) return;
-    for (; n < 32 && interp_one(); n++) {}
+    if (n < 32) (void)interp_run(32 - n);
 }
 
 int sg_step(uint16_t after) {
-    do (void)interp_one();
+    do interp_one();
     while (machine.cpu.ei_delay && !machine.stop && !machine.cpu.fault);
     return machine.cpu.pc == after && !machine.stop;
 }

@@ -159,8 +159,8 @@ static inline Z80_NATIVE_INLINE unsigned z80_execute(z80_t *c,const z80_decoded_
         case 5:c->pc=z80_pop(c);c->iff1=c->iff2;cycles=14;break;
         case 6:{static const uint8_t modes[8]={0,0,1,2,0,0,1,2};c->im=modes[y];break;}
         case 7:
-            if(y==0)c->i=c->a;else if(y==1)c->r=c->a;
-            else if(y<4){c->a=y==2?c->i:c->r;c->f=(c->f&1)|z80_sz(c->a)|(c->iff2?Z80_PV:0);}
+            if(y==0)c->i=c->a;else if(y==1){c->r=c->a;c->r7=c->a&128;}
+            else if(y<4){c->a=y==2?c->i:(uint8_t)((c->r&127)|c->r7);c->f=(c->f&1)|z80_sz(c->a)|(c->iff2?Z80_PV:0);}
             else if(y<6){uint8_t v=z80_rd(c,c->hl),a=c->a;
                 if(y==4){z80_wr(c,c->hl,(uint8_t)((a<<4)|(v>>4)));c->a=(a&0xf0)|(v&15);}
                 else{z80_wr(c,c->hl,(uint8_t)((v<<4)|(a&15)));c->a=(a&0xf0)|(v>>4);}

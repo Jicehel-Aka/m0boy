@@ -26,6 +26,9 @@ static int audio_error;
 static unsigned frames = 300, buttons, start_frame = ~0u, pause_frame = ~0u, explore_frames;
 #if SG_MSX
 /* banked cartridges: locations are page << 16 | pc, allocated once the ROM is known */
+#ifdef SG_MSX_TRACE
+extern uint32_t *msx_trace_count, *msx_trace_last;
+#endif
 static uint16_t peek_at[64]; /* --peek ADDR: bytes of the address space printed after the run */
 static unsigned peeks;
 static uint32_t *hits, *coverage_order;
@@ -73,7 +76,11 @@ static void snapshot_load(void *ctx, const void *state) {
 }
 static uint32_t explore_novelty(void) { /* program counters reached so far */
     uint32_t n = 0;
+#if SG_MSX
+    for (uint32_t loc = 0; loc < machine.coverage_size; loc++) n += hits[loc] != 0;
+#else
     for (unsigned pc = 0; pc < 65536; pc++) n += hits[pc] != 0;
+#endif
     return n;
 }
 static void explore(unsigned total) {
@@ -119,13 +126,15 @@ static void ref_row(void *ctx, unsigned y, const uint8_t *pixels) {
     sg1000_filter_line(pixels, expected);
     if (memcmp(out_row, expected, sizeof expected)) out_mismatch++;
 }
+static int hash_r = 1; /* R is compared only when the ROM can read it (m0_reads_refresh) */
+#define M0_OBSERVED_R(s) ((uint8_t)(hash_r ? ((s)->cpu.r & 127) | (s)->cpu.r7 : 0))
 static uint32_t run_hash(void) {
     sg1000_t *s = &machine;
     uint32_t h = M0_RUN_HASH_INIT;
     uint16_t registers[] = { s->cpu.bc, s->cpu.de, s->cpu.hl, s->cpu.bc2, s->cpu.de2, s->cpu.hl2, s->cpu.af2,
                              s->cpu.ix, s->cpu.iy, s->cpu.sp, s->cpu.pc };
     h = m0_hash_u16s(h, registers, sizeof registers / sizeof *registers);
-    uint8_t flags[] = { s->cpu.a, s->cpu.f, s->cpu.i, s->cpu.r, s->cpu.im, s->cpu.iff1, s->cpu.iff2, s->cpu.halted,
+    uint8_t flags[] = { s->cpu.a, s->cpu.f, s->cpu.i, M0_OBSERVED_R(s), s->cpu.im, s->cpu.iff1, s->cpu.iff2, s->cpu.halted,
                         s->cpu.ei_delay, s->vdp_status, s->vdp_latch, s->vdp_pending, s->vdp_buffer, s->cpu.irq,
                         s->cpu.nmi, s->cpu.fault, s->pause };
     h = m0_hash_bytes(h, flags, sizeof flags);
@@ -156,13 +165,14 @@ static uint32_t run_hash(void) {
 }
 
 int main(int argc, char **argv) {
-    const char *rom_path = 0, *shot = 0, *cov_path = 0, *wav_path = 0;
+    const char *rom_path = 0, *shot = 0, *cov_path = 0, *wav_path = 0, *vram_path = 0;
     int interp = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--interp")) interp = 1;
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--shot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav_path = argv[++i];
+        else if (!strcmp(argv[i], "--dump-vram") && i + 1 < argc) vram_path = argv[++i]; /* the 16 KiB of VRAM at the end, to compare with another emulator */
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) cov_path = argv[++i];
 #if SG_MSX
         else if (!strcmp(argv[i], "--peek") && i + 1 < argc && peeks < 64) peek_at[peeks++] = (uint16_t)strtoul(argv[++i], 0, 0);
@@ -217,12 +227,23 @@ int main(int argc, char **argv) {
         coverage = fopen(cov_path, "w");
         if (!coverage) { perror(cov_path); free(loaded); return 1; }
     }
+#if defined(SG_GENERATED) && defined(SG_ROM_READS_R)
+    hash_r = SG_ROM_READS_R;
+#else
+    hash_r = m0_reads_refresh(rom, size);
+#endif
     sg1000_init(rom, size, cart);
     machine.row = row;
     machine.row_out = out_row;
     machine.ref_row = ref_row;
     machine.frame = frame;
 #if SG_MSX
+#ifdef SG_MSX_TRACE
+    if (coverage) { /* ROM sectors read, per frame (the planner's weights) */
+        msx_trace_count = calloc(size / 512 + 1, sizeof *msx_trace_count);
+        msx_trace_last = calloc(size / 512 + 1, sizeof *msx_trace_last);
+    }
+#endif
     if (coverage) {
         machine.coverage_size = machine.msx_mapper ? (uint32_t)machine.rom_units << 16 : 65536u;
         hits = calloc(machine.coverage_size, sizeof *hits);
@@ -255,6 +276,10 @@ int main(int argc, char **argv) {
         fprintf(coverage, "# m0boy.msx.coverage.v2\n");
         if (machine.msx_mapper) fprintf(coverage, "# bank-shift 13\n# mapper %u\n", machine.msx_mapper);
         fprintf(coverage, "# frames %u\n", machine.frames);
+#ifdef SG_MSX_TRACE
+        for (uint32_t sec = 0; sec < size / 512; sec++) /* ROM sectors read by the program: sector, frames */
+            if (msx_trace_count[sec]) fprintf(coverage, "# read %04x %u\n", sec, msx_trace_count[sec]);
+#endif
         for (uint32_t loc = 0; loc < machine.coverage_size; loc++) /* dynamic jump targets: region entries */
             if (entries[loc]) fprintf(coverage, "# entry %0*x\n", (int)width, loc);
         if (m0_coverage_dump(coverage, hits, coverage_order, machine.coverage_size, width) < 0) { fclose(coverage); free(loaded); return 1; }
@@ -282,6 +307,10 @@ int main(int argc, char **argv) {
 #if SG_MSX
     for (unsigned k = 0; k < peeks; k++) printf("peek %04x=%02x\n", peek_at[k], sg1000_read(peek_at[k]));
 #endif
+    if (vram_path) {
+        FILE *v = fopen(vram_path, "wb");
+        if (!v || fwrite(machine.vram, 1, sizeof machine.vram, v) != sizeof machine.vram || fclose(v)) { perror(vram_path); free(loaded); return 1; }
+    }
     printf("frames=%u cycles=%u pc=%04x compiled=%u interpreted=%u out_mismatch=%u run_hash=%08x\n",
            machine.frames, machine.cyc, machine.cpu.pc, machine.compiled, machine.interpreted, out_mismatch, run_hash());
     free(loaded);

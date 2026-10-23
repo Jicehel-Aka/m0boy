@@ -5,7 +5,13 @@ static inline void sg_native_write(z80_t *c, uint16_t a, uint8_t v) { (void)c; s
 #define Z80_NATIVE_WRITE sg_native_write
 #include "z80_ops.h"
 /* Opcode fetch as the generic decoder sees it: mapped, never a data read. */
+#if defined(SG_MSX_TRACE)
+extern int msx_in_fetch;
+static inline uint8_t sg_fetch(uint16_t a) { msx_in_fetch = 1; const uint8_t v = sg1000_read(a); msx_in_fetch = 0; return v; }
+#define Z80_FAST_FETCH(a) sg_fetch((a))
+#else
 #define Z80_FAST_FETCH(a) sg1000_read((a))
+#endif
 #include "z80_fast.h"
 #include <string.h>
 #if SG_MSX
@@ -381,11 +387,40 @@ static void note_dynamic(const z80_decoded_t *d, uint16_t sp, uint16_t pc) {
 #endif
 }
 
-static int interp_one(void) {
+/* The instructions the fast path declines: decoded and executed generically. */
+static __attribute__((noinline)) int interp_generic(uint16_t pc) {
     sg1000_t *m = &machine;
     z80_t *c = &m->cpu;
-    if ((int32_t)(m->cyc - m->next_evt) >= 0 && sg_event(c->pc)) return 0;
-    uint16_t pc = c->pc;
+    z80_decoded_t d;
+#ifdef SG_MSX_TRACE
+    msx_in_fetch = 1;
+#endif
+    const int decoded = z80_decode(c, &d);
+#ifdef SG_MSX_TRACE
+    msx_in_fetch = 0;
+#endif
+    if (!decoded) { c->fault = 1; m->stop = 1; return 0; }
+    const uint16_t sp = c->sp;
+    m->cyc += z80_execute(c, &d);
+    m->interpreted++;
+    if (m->entries && c->pc != (uint16_t)(pc + d.length)) note_dynamic(&d, sp, c->pc);
+    if (c->ei_delay && --c->ei_delay == 0 && c->irq) m->next_evt = m->cyc;
+    if (c->halted) {
+        sg_halt();
+        if (!m->stop) (void)sg_event(c->pc);
+        return 0;
+    }
+    return c->pc == (uint16_t)(pc + d.length);
+}
+
+/* One instruction: 0 ends the block (a control transfer, HALT, an event that
+ * moved pc, a stop).  Inlined into the block loop: the registers it works
+ * with stay in registers from one instruction to the next. */
+static inline __attribute__((always_inline)) int interp_step(void) {
+    sg1000_t *m = &machine;
+    z80_t *c = &m->cpu;
+    if (__builtin_expect((int32_t)(m->cyc - m->next_evt) >= 0, 0) && sg_event(c->pc)) return 0;
+    const uint16_t pc = c->pc;
     if (m->coverage) {
 #if SG_MSX
         const uint32_t loc = msx_location(pc);
@@ -400,33 +435,29 @@ static int interp_one(void) {
         c->r = (uint8_t)((c->r & 128) | ((c->r + 1) & 127));
         m->cyc += (uint32_t)fast;
         m->interpreted++;
-        if (c->ei_delay && --c->ei_delay == 0 && c->irq) m->next_evt = m->cyc;
+        if (__builtin_expect(c->ei_delay != 0, 0) && --c->ei_delay == 0 && c->irq) m->next_evt = m->cyc;
         return !jumped;
     }
-    z80_decoded_t d;
-    if (!z80_decode(c, &d)) { c->fault = 1; m->stop = 1; return 0; }
-    const uint16_t sp = c->sp;
-    m->cyc += z80_execute(c, &d);
-    m->interpreted++;
-    if (m->entries && c->pc != (uint16_t)(pc + d.length)) note_dynamic(&d, sp, c->pc);
-    if (c->ei_delay && --c->ei_delay == 0 && c->irq) m->next_evt = m->cyc;
-    if (c->halted) {
-        sg_halt();
-        if (!m->stop) (void)sg_event(c->pc);
-        return 0;
-    }
-    return c->pc == (uint16_t)(pc + d.length);
+    return interp_generic(pc);
 }
+
+/* The block loop is the one place the step is inlined: a second copy would double the fast path's flash. */
+static __attribute__((noinline)) unsigned interp_run(unsigned limit) {
+    unsigned n = 0;
+    while (n < limit) { n++; if (!interp_step()) break; }
+    return n;
+}
+static void interp_one(void) { (void)interp_run(1); }
 
 /* Interpreter: until a control transfer, or 32 instructions. */
 void sg_interp_block(void) {
-    for (unsigned n = 0; n < 32 && interp_one(); n++) {}
+    (void)interp_run(32);
 }
 
 /* The instruction after EI, in the interpreter; again while it was itself
  * an EI (the delay restarts), so generated code resumes with no delay. */
 int sg_step(uint16_t after) {
-    do (void)interp_one();
+    do interp_one();
     while (machine.cpu.ei_delay && !machine.stop && !machine.cpu.fault);
     return machine.cpu.pc == after && !machine.stop;
 }

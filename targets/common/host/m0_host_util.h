@@ -30,6 +30,13 @@ static inline size_t m0_rom_page_bytes(size_t rom_bytes) {
  * copier header, refuse more than max_bytes, and when pad_pages is set pad
  * to whole 16 KiB pages with 0xff.  Returns the buffer to free and its
  * length in *size, or 0 with nothing allocated. */
+/* R is only observable through LD A,R (ED 5F): the generated code of a ROM without it does not keep the
+ * count (SG_TRACK_R), so the harnesses leave R out of their hash for such a ROM. */
+static inline int m0_reads_refresh(const uint8_t *rom, size_t size) {
+    for (size_t i = 0; i + 1 < size; i++) if (rom[i] == 0xed && rom[i + 1] == 0x5f) return 1;
+    return 0;
+}
+
 static inline uint8_t *m0_rom_load(FILE *file, size_t max_bytes, int pad_pages, size_t *size) {
     if (fseek(file, 0, SEEK_END)) return 0;
     const long file_bytes = ftell(file);

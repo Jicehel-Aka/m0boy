@@ -19,6 +19,7 @@ struct GenerateOptions {
     bool mastersystem = false;     ///< with gamegear: a Master System cartridge
     bool msx = false;              ///< MSX1 cartridge (simulated BIOS, TMS9918A, AY-3-8910)
     int msx_mapper = -1;           ///< msx: M0_MSX_* to force, -1: detect from the ROM
+    bool msx_pack = false;         ///< msx, consoles: LZSS sectors in flash even when the ROM fits raw (more flash for compiled code)
     std::string compiler = "gcc";  ///< firmware compiler: gcc or clang
     size_t code_budget_bytes = 0;  ///< 0: the flash left by the runtime and the ROM
     size_t bytes_per_instruction = 0; ///< flash per compiled instruction; 0: the default estimate

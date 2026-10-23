@@ -53,6 +53,35 @@ Pokitto, avant et après).
   système usuelles (RGnSAV, STATFL, FORCLR, BAKCLR, BDRCLR, SCRMOD, NAMBAS...,
   JIFFY, RAMADn, crochets) sont initialisées comme après le démarrage du BIOS.
 
+## Interruption, vitesse et Gradius 2 (2026-10-23)
+
+- La routine d'interruption (0038) sauvegarde **tous** les registres, IX et IY
+  compris, comme le BIOS (C-BIOS `keyint`). Sans cela, Gradius 2 — qui exécute sa
+  logique dans le crochet H.TIMI, avec IX pour pointeur d'objet — corrompait ses
+  sprites, écrasait sa RAM puis tombait dans un toboggan de NOP : « ça rame puis
+  ça reset ». Vérifié : 6 graines d'entrées aléatoires (directions possibles
+  seulement), 20 000 images chacune, sans plantage ; avant, plantage vers l'image
+  550-670 à chaque graine. `tests/test_msx_runtime.c` en garde un test (IX/IY
+  rendus intacts).
+- Un `CALL` d'un code recompilé vers une routine du BIOS simulé (table
+  `targets/common/runtime/m0_msx_bios.h`) appelle la routine directement, sans
+  passer par le stub interprété (hors build précis, où l'interpréteur et le code
+  natif doivent donner le même résultat à chaque instruction).
+- AY : une voix muette ou à bruit et enveloppe inutilisés ne coûte plus de
+  comptage, et les voix à tonalité seule se génèrent par blocs (même son, octet
+  pour octet).
+- Budget de flash : le générateur compte désormais le runtime MSX (62 Kio) et
+  39 octets par instruction compilée, et donne à la ROM brute tout ce qui reste.
+  `--msx-pack` force la ROM compressée : mesuré sur Gradius 2 (gm0, estimation) c'est
+  plus lent (28 % du temps à décompresser contre 1675 instructions compilées de plus).
+- Mesure (gm0, estimation, pas la console) : Gradius 2 en jeu avec des entrées
+  scriptées, 2954 images du jeu en 3600 images gm0 (82 % du temps réel) ; reste
+  de l'ordre de 27 % pour le rendu des lignes et 20 % pour l'interpréteur (le code
+  de jeu au-delà des ~1300 instructions que la flash permet de compiler).
+- Garde de pile des firmwares MSX : 1400 octets réservés au runtime (au lieu de
+  2560 : le maximum observé sous la garde est de 672 octets), le reste sert aux
+  appels imbriqués du code recompilé.
+
 ## Le BIOS : licence
 
 Le BIOS d'origine est protégé et n'est ni utilisé ni fourni. Le BIOS est

@@ -34,7 +34,7 @@ add_library(m0boy_msx_runtime STATIC targets/sg1000/runtime/sg1000.c targets/sg1
     targets/msx/runtime/msx.c targets/msx/runtime/msx_ay.c)
 target_include_directories(m0boy_msx_runtime PUBLIC targets/common/runtime targets/sg1000/runtime)
 target_link_libraries(m0boy_msx_runtime PUBLIC m0boy_z80_runtime)
-target_compile_definitions(m0boy_msx_runtime PUBLIC SG_MSX=1 SG_MSX_RAM=16384)
+target_compile_definitions(m0boy_msx_runtime PUBLIC SG_MSX=1 SG_MSX_RAM=16384 SG_MSX_TRACE=1) # TRACE: the frames that read each ROM sector, for the storage plan
 add_executable(msx_host targets/sg1000/host/sg_host.c)
 target_include_directories(msx_host PRIVATE targets/common/host) # m0_explore.h
 target_link_libraries(msx_host PRIVATE m0boy_msx_runtime)
@@ -78,6 +78,9 @@ if(BUILD_TESTS)
     add_executable(test_z80_execution tests/test_z80_execution.cpp)
     target_link_libraries(test_z80_execution PRIVATE m0boy_z80_runtime m0boy_cpu_z80)
     add_test(NAME z80_execution_reference COMMAND test_z80_execution)
+    add_executable(test_z80_fast tests/test_z80_fast.c)
+    target_link_libraries(test_z80_fast PRIVATE m0boy_z80_runtime)
+    add_test(NAME z80_fast_path_against_reference COMMAND test_z80_fast)
     add_executable(test_sg1000_runtime tests/test_sg1000_runtime.c)
     target_link_libraries(test_sg1000_runtime PRIVATE m0boy_sg1000_runtime)
     add_test(NAME sg1000_runtime_devices COMMAND test_sg1000_runtime)

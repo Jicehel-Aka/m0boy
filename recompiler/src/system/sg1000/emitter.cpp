@@ -13,6 +13,7 @@
 #include "m0boy/code_scan.h"
 #include "z80.h"
 #include "m0_msx_layout.h"
+#include "m0_msx_bios.h"
 #include <algorithm>
 #include <cstring>
 #include <deque>
@@ -78,6 +79,15 @@ std::string lab(Loc a) {
     return o.str();
 }
 std::string hexloc(Loc a) { return a > 0xffff ? hex(a, 6) : hex(a); }
+
+/* The simulated BIOS routine a CALL to this address runs (msx.c: the stub is
+ * OUT (id),A ; RET), when it can run without the stub: -1 if none. */
+static int msx_bios_direct(unsigned address) {
+#define X(name, a, id, direct) if (direct && address == (a)) return (id);
+    M0_MSX_BIOS(X)
+#undef X
+    return -1;
+}
 
 /* ---- sandbox: the interpreter measures cycles and flow ------------------ */
 struct Sandbox {
@@ -779,6 +789,7 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
         }
         if (flags) switch (y) { /* all flags, inline (ADC/SBC keep the helper) */
         case 0: case 2: case 7: { /* ADD, SUB, CP (CP: X/Y from the operand) */
+            if (!hot_site()) { o << "    " << alu[y] << "(" << v << ");\n"; return true; } /* a call, not 60 bytes, for what is not hot */
             const char* op = y ? "-" : "+";
             o << "    { uint32_t a_ = Z.a, b_ = " << v << ", r_ = a_ " << op << " b_; Z.f = (uint8_t)((r_ & 0x80) | ((uint8_t)r_ ? 0 : 0x40) | ("
               << (y == 7 ? "b_" : "r_") << " & 0x28) | ((a_ ^ b_ ^ r_) & 0x10) | (((" << (y ? "(a_ ^ b_)" : "~(a_ ^ b_)")
@@ -956,6 +967,13 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
         pend_rf_ += d.refresh;
         flush(o);
         const Ins* t = find(in.target_dest.loc);
+        if (opt_.msx && !opt_.precise && in.flow == Flow::Call && msx_bios_direct(in.target) >= 0) {
+            /* a BIOS routine: what the interpreter would do through the stub (CALL, OUT (id),A, RET)
+             * without the stack and the dispatch; the interrupt window between those three
+             * instructions goes, so not in precise builds */
+            o << "    CY(" << in.taken << "); " << opt_.io_out << "(" << msx_bios_direct(in.target) << ", Z.a); ADV(21, 2);\n";
+            break;
+        }
         if (in.flow == Flow::CallCond) o << "    if (" << cond_expr((d.opcode >> 3) & 7) << ") {\n";
         o << "    CY(" << in.taken << "); " << push_stmt(hex(next)) << "; Z.pc = " << hex(in.target) << ";\n";
         if (t && in.target_dest.guard_slot >= 0)
@@ -1253,35 +1271,45 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
     o << "\n};\nstatic const sg_fn entry_fn[" << std::max<size_t>(entries.size(), 1) << "] SG_ENTRY_ATTR = {";
     for (size_t i = 0; i < entries.size(); i++) o << (i % 8 ? " " : "\n    ") << region_name(entries[i]->region) << ",";
     if (entries.empty()) o << "0";
+    /* Open-addressing table over the entry keys: one multiply, usually one probe
+     * and no RAM (the lookup used to keep a direct-mapped cache in front of a
+     * binary search).  Twice as many slots as entries, a power of two. */
+    unsigned bits = 4;
+    while ((size_t(1) << bits) < entries.size() * 2) bits++;
+    const size_t slots = size_t(1) << bits;
+    std::vector<uint32_t> slot(slots, 0xffffffffu);
+    for (size_t i = 0; i < entries.size(); i++) {
+        const uint32_t key = opt_.banked ? entries[i]->loc : entries[i]->addr;
+        size_t h = (static_cast<uint32_t>(key * 0x9e3779b1u)) >> (32 - bits);
+        while (slot[h] != 0xffffffffu) h = (h + 1) & (slots - 1);
+        slot[h] = static_cast<uint32_t>(i);
+    }
+    o << "\n};\n#if defined(ESP8266)\ntypedef uint32_t sg_slot_t; /* flash is read by words */\n#else\ntypedef uint16_t sg_slot_t;\n#endif\n"
+      << "static const sg_slot_t entry_slot[" << slots << "] SG_ENTRY_ATTR = {";
+    for (size_t i = 0; i < slots; i++) o << (i % 12 ? " " : "\n    ") << (slot[i] == 0xffffffffu ? std::string("(sg_slot_t)~0u") : std::to_string(slot[i])) << ",";
     o << "\n};\n"
       << "sg_fn sg_gen_lookup(uint16_t pc) {\n";
     if (opt_.banked && opt_.msx) /* the unit each window shows, while the slots show the cartridge there */
         o << "    if (pc >= 0xc000 || pc < 0x4000 || !(machine.cart_vis >> (pc >> 13) & 1)) return 0;\n"
-          << "    const uint32_t loc = (uint32_t)machine.page[pc >> 13] << 16 | pc;\n"
-          << "    static uint32_t cache_pc[32];\n    static sg_fn cache_fn[32];\n"
-          << "    unsigned h = (loc ^ (loc >> 5) ^ (loc >> 16)) & 31;\n";
+          << "    const uint32_t loc = (uint32_t)machine.page[pc >> 13] << 16 | pc;\n";
     else if (opt_.banked) /* the location of pc under the current mapping; RAM: interpreter */
         o << "    if (pc >= 0xc000) return 0;\n"
           << (opt_.fixed_kib ? "    const uint32_t loc = pc < 0x400 ? pc : (uint32_t)machine.page[pc >> " + std::to_string(opt_.bank_shift) + "] << 16 | pc;\n"
                              : "    const uint32_t loc = (uint32_t)machine.page[pc >> " + std::to_string(opt_.bank_shift) + "] << 16 | pc;\n")
-          << "    static uint32_t cache_pc[32];\n    static sg_fn cache_fn[32];\n" /* RAM is short */
-          << "    unsigned h = (loc ^ (loc >> 5) ^ (loc >> 16)) & 31;\n";
+          ;
     else if (opt_.msx) /* the cartridge, and only while the slots show it there */
         o << "    if (pc >= 0xc000 || pc < " << hex(opt_.rom_start) << ") return 0;\n"
           << "    if (machine.rd_win[pc >> 13] != machine.rom + ((pc & 0xe000u) - " << hex(opt_.rom_start) << ")) return 0;\n"
-          << "    const uint16_t loc = pc;\n"
-          << "    static uint16_t cache_pc[64];\n    static sg_fn cache_fn[64];\n"
-          << "    unsigned h = (pc ^ (pc >> 6)) & 63;\n";
+          << "    const uint16_t loc = pc;\n";
     else
-        o << "    const uint16_t loc = pc;\n"
-          << "    static uint16_t cache_pc[64];\n    static sg_fn cache_fn[64];\n"
-          << "    unsigned h = (pc ^ (pc >> 6)) & 63;\n";
-    o << "    if (cache_fn[h] && cache_pc[h] == loc) return cache_fn[h];\n"
-      << "    unsigned lo = 0, hi = " << entries.size() << ";\n"
-      << "    while (lo < hi) { unsigned mid = (lo + hi) / 2; if (entry_pc[mid] < loc) lo = mid + 1; else hi = mid; }\n"
-      << "    if (lo == " << entries.size() << " || entry_pc[lo] != loc) return 0;\n"
-      << "    cache_pc[h] = loc; cache_fn[h] = entry_fn[lo];\n"
-      << "    return entry_fn[lo];\n}\n";
+        o << "    const uint16_t loc = pc;\n";
+    o << "    unsigned h = ((uint32_t)loc * 0x9e3779b1u) >> " << (32 - bits) << ";\n"
+      << "    for (;;) {\n"
+      << "        const sg_slot_t i = entry_slot[h];\n"
+      << "        if (i == (sg_slot_t)~0u) return 0;\n"
+      << "        if (entry_pc[i] == loc) return entry_fn[i];\n"
+      << "        h = (h + 1) & " << (slots - 1) << ";\n"
+      << "    }\n}\n";
     return o.str();
 }
 

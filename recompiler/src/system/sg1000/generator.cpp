@@ -58,6 +58,12 @@ std::string replace(std::string s, const std::string& what, const std::string& v
     return s;
 }
 
+/* LD A,R (ED 5F) is the only way a program reads the refresh counter. */
+bool reads_refresh(const std::vector<uint8_t>& rom) {
+    for (size_t i = 0; i + 1 < rom.size(); i++) if (rom[i] == 0xed && rom[i + 1] == 0x5f) return true;
+    return false;
+}
+
 /* What the profiled runs saw.  "rated" when every run says how many frames
  * it lasted ("# frames N"): the rates are then executions and ROM sector
  * reads per frame, averaged over the runs. */
@@ -171,8 +177,10 @@ constexpr size_t runtime_bytes = 30 * 1024; /* drivers, runtime and, since 0.10.
                                             * menu (meta_menu.cpp, meta_font.h, sg_menu.h: about 6 KiB — left
                                             * unbudgeted it pushed the hot instructions to the interpreter:
                                             * Ristar's first level at 16 fps on the device, 2026-10-20) */
-constexpr size_t msx_state_bytes = 17600; /* sizeof(sg1000_t) with SG_MSX, less its RAM (host build: an upper bound for the ARM one) */
+constexpr size_t msx_state_bytes = 17900; /* sizeof(sg1000_t) with SG_MSX, less its RAM (host build: an upper bound for the ARM one) */
 constexpr size_t bytes_per_instruction = 32; /* measured 13-27 with GCC 7.2 -O2 */
+constexpr size_t msx_runtime_bytes = 67 * 1024;  /* measured 66.3 KiB (2026-10-23) */     /* MSX: the SG-1000 runtime plus the simulated BIOS, font and USB drivers (META build, 2026-10-23) */
+constexpr size_t msx_bytes_per_instruction = 33;    /* MSX banked code: 31.3 measured over 1181 instructions */
 constexpr size_t gg_bytes_per_instruction = 36; /* Game Gear: paged reads, measured 28-33 */
 constexpr double gg_interpreted_cycles = 300;   /* an interpreted instruction costs about this much more than a compiled one (gm0 profiles) */
 constexpr double gg_sector_miss_cycles = rom::sd_cycles; /* a ROM sector read from the SD card (gm0 estimate, rom_storage.h) */
@@ -323,7 +331,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         bool packed_all = false;
         const size_t pages = rom_size / 0x4000;
         const size_t per_instruction = o.bytes_per_instruction ? o.bytes_per_instruction
-                                       : gg ? gg_bytes_per_instruction : bytes_per_instruction;
+                                       : gg ? gg_bytes_per_instruction : msx ? msx_bytes_per_instruction : bytes_per_instruction;
         if (esp) {
             const size_t free = esp_app > esp_runtime ? esp_app - esp_runtime : 0;
             if (gg && rom_size > esp_embed) {
@@ -337,23 +345,51 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             } else budget = free > rom_size ? free - rom_size : 0;
         } else if (o.target != TargetId::desktop) {
             const size_t area = o.target == TargetId::pokitto ? 0x39000 : 240 * 1024;
-            const size_t free = area > runtime_bytes ? area - runtime_bytes : 0;
-            const size_t all_code = o.code_budget_bytes ? o.code_budget_bytes : hot.size() * per_instruction + 16 * 1024;
+            const size_t rt = msx ? msx_runtime_bytes : runtime_bytes;
+            const size_t free = area > rt ? area - rt : 0;
+            const size_t all_code = o.code_budget_bytes ? o.code_budget_bytes
+                                  : msx_banked ? 24 * 1024 /* what the ROM leaves, up to the profile, goes to code */
+                                               : hot.size() * per_instruction + 16 * 1024;
             const size_t code_need = std::min(all_code, free / 2);
-            const bool raw_fits = pages == 1 || rom::fits_raw(area, runtime_bytes, rom_size, all_code);
-            if (msx_banked && !raw_fits) {
+            const bool raw_fits = pages == 1 || rom::fits_raw(area, rt, rom_size, all_code);
+            if (msx_banked && (!raw_fits || o.msx_pack)) {
                 size_t packed_bytes = 0;
                 for (size_t sector = 0; sector < rom_size / 512; sector++) {
                     msx_blocks.push_back(rom::encode(rom.data() + sector * 512, 512));
                     packed_bytes += msx_blocks.back().bytes.size();
                 }
                 const size_t metadata = (rom_size / 512 + 1) * 4 + 2;
-                if (!rom::fits_raw(area, runtime_bytes + rom::lzss_decoder_bytes + metadata + 512 * 4, packed_bytes, all_code)) {
+                if (!rom::fits_raw(area, rt + rom::lzss_decoder_bytes + metadata + 512 * 4, packed_bytes, all_code)) {
                     error = "MSX ROM does not fit the flash even compressed (" + std::to_string(packed_bytes) + " bytes packed); streaming from the SD card is not available for MSX";
                     return false;
                 }
+                /* The sectors the profile reads as data stay raw (read in place, no decoding), the
+                 * most read first, with what the compiled code leaves: the cache serves the cold rest. */
+                std::vector<size_t> sizes(rom_size / 512);
+                std::vector<double> weights(sizes.size(), 0);
+                for (size_t s = 0; s < sizes.size(); s++) sizes[s] = msx_blocks[s].bytes.size();
+                /* Read as data, and fetched by the interpreter: the instructions beyond what the budget
+                 * compiles (a guess, before the sectors are chosen) are run from their sector. */
+                std::vector<double> fetched(weights.size(), 0);
+                const size_t guess = std::min(hot.size(), (free - rom::lzss_decoder_bytes - metadata - packed_bytes) / msx_bytes_per_instruction);
+                for (size_t k = guess; k < hot.size(); k++) {
+                    const uint32_t offset = (hot[k] >> 16 << 13) + (hot[k] & 0x1fff);
+                    if (offset / 512 < fetched.size()) fetched[offset / 512] += profile.rate.at(hot[k]);
+                }
+                for (size_t sec = 0; sec < weights.size(); sec++) {
+                    const auto it = profile.sector_rate.find(static_cast<uint32_t>(sec));
+                    const double data = it == profile.sector_rate.end() ? 0.0 : std::min(it->second, 1.0);
+                    weights[sec] = 1.0 - (1.0 - data) * (1.0 - std::min(fetched[sec], 1.0));
+                }
+                const size_t base_free = free - rom::lzss_decoder_bytes - metadata - packed_bytes;
+                const size_t extra = 8 * 1024; /* flash the hot sectors may take from the compiled code */
+                for (size_t s : rom::raw_units(sizes, weights, 1, 0, rom_size, extra)) {
+                    auto& block = msx_blocks[s];
+                    packed_bytes += 512 - block.bytes.size();
+                    block = {rom::Codec::raw, {rom.data() + s * 512, rom.data() + (s + 1) * 512}};
+                }
                 msx_packed = true;
-                msx_packed_budget = free - rom::lzss_decoder_bytes - metadata - packed_bytes;
+                msx_packed_budget = free - rom::lzss_decoder_bytes - metadata - packed_bytes - 2048; /* the estimate of the runtime and code sizes errs */
             }
             /* Like GB --meta-pack: try all cold ROM in flash before requiring
              * a card. Every sector keeps its independent raw/LZSS choice. */
@@ -573,6 +609,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         stats.cart_ram = cart_ram;
 
         const bool pow2 = rom_size && !(rom_size & (rom_size - 1));
+        const bool reads_r = reads_refresh(rom), track_r = o.precise || reads_r;
         std::ostringstream config;
         /* Renderer loops in SRAM (no flash wait states) on the Pokitto; in
          * flash on the META, where code run from SRAM faulted with the CPU
@@ -588,6 +625,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                << "#define SG_ROM_SIZE " << rom_size << "u\n"
                << "#define SG_CART_RAM " << (cart_ram ? 1 : 0) << "\n"
                << "#define SG_PRECISE " << (eo.precise ? 1 : 0) << "\n"
+               << "#define SG_TRACK_R " << (track_r ? 1 : 0) << " /* the ROM reads the refresh counter (LD A,R), or the build is precise */\n"
+               << "#define SG_ROM_READS_R " << (reads_r ? 1 : 0) << "\n"
                << "#define GG_PANEL_SWAP " << (swap_panel ? 1 : 0) << " /* META SPI: high byte first */\n"
                << esp_id << (esp ? "#define GG_CART_RAM_8K 1 /* ESPboy: 8 KiB in RAM, mirrored */\n" : "")
                << "#define SG_ROM_STREAM " << (streamed ? 1 : 0) << "\n"
@@ -661,6 +700,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                << "#define SG_CART_RAM 0\n"
                << "#define SG_LOW_RAM " << (o.target == TargetId::desktop ? 0 : 1) << " /* no room for the colour-pair table */\n"
                << "#define SG_PRECISE " << (o.precise ? 1 : 0) << "\n"
+               << "#define SG_TRACK_R " << (track_r ? 1 : 0) << " /* the ROM reads the refresh counter (LD A,R), or the build is precise */\n"
+               << "#define SG_ROM_READS_R " << (reads_r ? 1 : 0) << "\n"
                << "#define SG_PANEL_SWAP " << (swap_panel ? 1 : 0) << " /* META SPI: high byte first */\n" << esp_id;
         else config << "/* Generated by m0recomp --system sg1000. */\n#pragma once\n" << code_in_sram
                << "#define SG_SYSTEM_GG 0 /* sg_gen.h: unbanked ROM, RAM at C000 */\n"
@@ -669,6 +710,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                << "#define SG_CART_RAM " << (cart_ram ? 1 : 0) << "\n"
                << "#define SG_LOW_RAM " << (cart_ram ? 1 : 0) << "\n"
                << "#define SG_PRECISE " << (o.precise ? 1 : 0) << "\n"
+               << "#define SG_TRACK_R " << (track_r ? 1 : 0) << " /* the ROM reads the refresh counter (LD A,R), or the build is precise */\n"
+               << "#define SG_ROM_READS_R " << (reads_r ? 1 : 0) << "\n"
                << "#define SG_PANEL_SWAP " << (swap_panel ? 1 : 0) << " /* META SPI: high byte first */\n" << esp_id;
         write(src / "sg_config.h", config.str());
         std::ostringstream data;
@@ -756,6 +799,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             for (const auto& entry : fs::directory_iterator(msx_dir / "runtime"))
                 if (entry.is_regular_file()) copy_template(entry.path(), src / entry.path().filename());
             copy_template(common_dir / "runtime/m0_msx_layout.h", src / "m0_msx_layout.h");
+            copy_template(common_dir / "runtime/m0_msx_bios.h", src / "m0_msx_bios.h");
         }
         /* the Z80 engine both consoles run (the memory map differs, see
          * sg_gen.h), and the PSG sample generation sg_audio.c / gg_psg.c
@@ -846,7 +890,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 copy_template(o.meta_templates / "platform" / bus, src / bus.filename());
             }
             auto platform = o.meta_templates / "platform" / (esp ? "espboy" : o.target == TargetId::pokitto ? "pokitto" : "meta");
-            for (const char* name : { "meta_target.h", "meta_lcd.h", "meta_clock.h" })
+            for (const char* name : { "meta_target.h", "meta_lcd.h", "meta_clock.h", "meta_pad.h" })
                 copy_template(o.meta_templates / "platform" / "src" / name, src / name);
             /* the option menu (sg_menu.h runs it; meta_menu.cpp draws it) */
             copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");

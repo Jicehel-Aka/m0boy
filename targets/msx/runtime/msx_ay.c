@@ -10,6 +10,7 @@
 #include "sg1000.h"
 #if SG_MSX
 #define AY_TICK_HZ 223722u
+#define SG_AY_BLOCK 64
 #define SG_CLOCK 3579545u
 
 /* AY-3-8910 DAC levels (0..1), scaled to +-40 per channel */
@@ -21,22 +22,11 @@ void sg1000_audio_rate(unsigned rate) {
     m->audio_div = m->audio_rate;
     m->audio_tick_int = m->audio_div ? AY_TICK_HZ / m->audio_div : 0;
     m->audio_tick_frac = m->audio_div ? AY_TICK_HZ % m->audio_div : 0;
+    m->scc_k = m->audio_rate ? (uint32_t)(((uint64_t)3579545 << 16) / m->audio_rate) : 0; /* SCC wave steps per output sample, 16.16 */
+    for (unsigned c = 0; c < 5; c++) m->scc_inc[c] = m->scc_k / ((unsigned)m->scc_period[c] + 1);
     m->audio_phase = m->audio_tick_phase = 0;
     m->audio_cyc = m->cyc;
     m->audio_head = m->audio_tail = 0;
-}
-
-/* A counter that reloads from period every period ticks: advance it by
- * ticks, returning how many times it reloaded. */
-static inline unsigned advance(uint16_t *count, unsigned period, unsigned ticks) {
-    unsigned reloads = 0, c = *count;
-    while (ticks >= c) {
-        ticks -= c;
-        c = period;
-        reloads++;
-    }
-    *count = (uint16_t)(c - ticks);
-    return reloads;
 }
 
 static inline unsigned envelope_level(const sg1000_t *m) {
@@ -55,37 +45,116 @@ static void envelope_step(sg1000_t *m) {
     else if (shape & 2) m->ay_env_attack ^= 1;
 }
 
+/* Registers do not change inside a call (msx_ay_write catches up first), so
+ * what each channel needs is worked out once.  A block of samples is produced
+ * a source at a time, as the SN76489 generator does: the ticks of every
+ * sample once, then the noise bit and the envelope level of every sample when
+ * an audible channel uses them, then each channel over the block.  A silent
+ * channel, or one whose tone and noise are both off, is a constant and costs
+ * no counting. */
 static void produce(sg1000_t *m, unsigned n) {
     const uint32_t tint = m->audio_tick_int, tfrac = m->audio_tick_frac, div = m->audio_div;
-    while (n--) {
-        uint32_t ticks = tint;
-        m->audio_tick_phase += tfrac;
-        if (m->audio_tick_phase >= div) { m->audio_tick_phase -= div; ticks++; }
-        const uint8_t *r = m->ay_reg;
-        for (unsigned ch = 0; ch < 3; ch++) {
-            unsigned period = (r[ch * 2] | (r[ch * 2 + 1] & 15u) << 8);
-            if (period < 1) period = 1;
-            uint16_t count = m->ay_count[ch];
-            m->ay_out[ch] ^= (uint8_t)(advance(&count, period, ticks) & 1);
-            m->ay_count[ch] = count;
+    const uint8_t *r = m->ay_reg;
+    const unsigned mixer = r[7];
+    unsigned period[3], enveloped = 0, noisy = 0, counting = 0;
+    int fixed = m->click_used ? (m->click ? 12 : -12) : 0; /* the click, and below the channels that never toggle, summed */
+    uint8_t volume[3], mode[3];             /* mode: 1 tone, 2 noise */
+    for (unsigned ch = 0; ch < 3; ch++) {
+        volume[ch] = r[8 + ch];
+        const unsigned tone = !((mixer >> ch) & 1), noise = !((mixer >> (ch + 3)) & 1);
+        mode[ch] = 0;
+        period[ch] = 0;
+        if (!(volume[ch] & 16) && !(volume[ch] & 15)) continue; /* silent */
+        if (volume[ch] & 16) enveloped = 1;
+        if (noise) { noisy = 1; mode[ch] |= 2; }
+        if (tone) {
+            period[ch] = r[ch * 2] | (r[ch * 2 + 1] & 15u) << 8;
+            if (period[ch] < 1) period[ch] = 1;
+            counting |= 1u << ch;
+            mode[ch] |= 1;
         }
-        unsigned np = r[6] & 31;
-        if (np < 1) np = 1;
-        for (unsigned k = advance(&m->ay_noise_count, np * 2, ticks); k; k--)
-            m->ay_lfsr = (m->ay_lfsr >> 1) | ((((m->ay_lfsr ^ (m->ay_lfsr >> 3)) & 1) << 16));
-        unsigned ep = r[11] | (unsigned)r[12] << 8;
-        if (ep < 1) ep = 1;
-        for (unsigned k = advance(&m->ay_env_count, ep * 2, ticks); k; k--) envelope_step(m);
-        const unsigned noise = m->ay_lfsr & 1, mixer = r[7];
-        int sum = 128;
-        for (unsigned ch = 0; ch < 3; ch++) {
-            const unsigned on = (m->ay_out[ch] | (mixer >> ch)) & (noise | (mixer >> (ch + 3))) & 1;
-            const unsigned volume = r[8 + ch];
-            const int amp = level[volume & 16 ? envelope_level(m) : volume & 15];
-            sum += on ? amp : -amp;
+        if (!mode[ch] && !(volume[ch] & 16)) fixed += level[volume[ch] & 15]; /* a constant high */
+    }
+    unsigned np = r[6] & 31, ep = r[11] | (unsigned)r[12] << 8;
+    if (np < 1) np = 1;
+    if (ep < 1) ep = 1;
+    int16_t mix[SG_AY_BLOCK];
+    uint8_t ticks[SG_AY_BLOCK], noise_bit[SG_AY_BLOCK], env_level[SG_AY_BLOCK];
+    while (n) {
+        const unsigned k = n > SG_AY_BLOCK ? SG_AY_BLOCK : n;
+        n -= k;
+        uint32_t phase = m->audio_tick_phase;
+        for (unsigned i = 0; i < k; i++) {
+            uint32_t t = tint;
+            phase += tfrac;
+            if (phase >= div) { phase -= div; t++; }
+            ticks[i] = (uint8_t)t;
+            mix[i] = (int16_t)(128 + fixed);
         }
-        const unsigned next = (m->audio_head + 1u) & 511u;
-        if (next != m->audio_tail) { m->audio_buffer[m->audio_head] = (uint8_t)sum; m->audio_head = (uint16_t)next; }
+        m->audio_tick_phase = phase;
+        if (noisy) {
+            uint32_t lfsr = m->audio_lfsr;
+            int32_t count = m->ay_noise_count;
+            const int32_t period_n = (int32_t)np * 2;
+            for (unsigned i = 0; i < k; i++) {
+                count -= ticks[i];
+                while (count <= 0) { count += period_n; lfsr = (lfsr >> 1) | ((((lfsr ^ (lfsr >> 3)) & 1) << 16)); }
+                noise_bit[i] = (uint8_t)(lfsr & 1);
+            }
+            m->audio_lfsr = lfsr;
+            m->ay_noise_count = (uint16_t)count;
+        }
+        if (enveloped) {
+            int32_t count = m->ay_env_count;
+            const int32_t period_e = (int32_t)ep * 2;
+            for (unsigned i = 0; i < k; i++) {
+                count -= ticks[i];
+                while (count <= 0) { count += period_e; envelope_step(m); }
+                env_level[i] = (uint8_t)envelope_level(m);
+            }
+            m->ay_env_count = (uint16_t)count;
+        }
+        for (unsigned ch = 0; ch < 3; ch++) {
+            const unsigned vol = volume[ch], md = mode[ch];
+            if (!md && !(vol & 16)) continue; /* silent, or in fixed */
+            const int amp = level[vol & 15];
+            const int32_t p = (int32_t)period[ch];
+            int32_t count = m->ay_count[ch];
+            unsigned out = m->ay_out[ch];
+            for (unsigned i = 0; i < k; i++) {
+                if (md & 1) { /* the tone counter runs even where noise decides the sample */
+                    count -= ticks[i];
+                    if (count <= 0) { do { count += p; out ^= 1; } while (count <= 0); }
+                }
+                const unsigned on = ((md & 1) ? out : 1) & ((md & 2) ? noise_bit[i] : 1);
+                const int a = (vol & 16) ? level[env_level[i]] : amp;
+                mix[i] = (int16_t)(mix[i] + (on ? a : -a));
+            }
+            m->ay_count[ch] = (uint16_t)count;
+            m->ay_out[ch] = (uint8_t)out;
+        }
+        for (unsigned c = 0; c < 5; c++) { /* the SCC: 32-step waveforms, each voice a phase accumulator */
+            const unsigned vol = m->scc_vol[c];
+            if (!(m->scc_enable >> c & 1) || !vol) continue;
+            const int8_t *w = m->scc_wave[c < 4 ? c : 3];
+            uint32_t phase = m->scc_phase[c];
+            const uint32_t inc = m->scc_inc[c];
+            for (unsigned i = 0; i < k; i++) {
+                phase += inc;
+                mix[i] = (int16_t)(mix[i] + (((int)w[(phase >> 16) & 31] * (int)vol) >> 6));
+            }
+            m->scc_phase[c] = phase;
+        }
+        unsigned head = m->audio_head;
+        const unsigned tail = m->audio_tail;
+        for (unsigned i = 0; i < k; i++) {
+            const unsigned next = (head + 1u) & 511u;
+            if (next == tail) break;
+            const int v = mix[i];
+            m->audio_buffer[head] = (uint8_t)(v < 1 ? 1 : v > 255 ? 255 : v);
+            head = next;
+        }
+        m->audio_head = (uint16_t)head;
     }
 }
 
@@ -111,6 +180,21 @@ void sg1000_audio_render(uint8_t *buffer, unsigned n) {
         if (s->audio_tail == s->audio_head) *buffer++ = 128;
         else { *buffer++ = s->audio_buffer[s->audio_tail]; s->audio_tail = (uint16_t)((s->audio_tail + 1) & 511); }
     }
+}
+
+/* K051649 registers (offset in 9800-98FF): waveforms, periods, volumes, enable */
+void msx_scc_write(unsigned reg, uint8_t value) {
+    sg1000_t *m = &machine;
+    sg1000_audio_catchup();
+    if (reg < 0x80) { m->scc_wave[reg >> 5][reg & 31] = (int8_t)value; return; }
+    if (reg < 0x8a) {
+        const unsigned c = (reg - 0x80) >> 1;
+        m->scc_period[c] = (uint16_t)((reg & 1) ? (m->scc_period[c] & 0xff) | (value & 15u) << 8 : (m->scc_period[c] & 0xf00) | value);
+        m->scc_inc[c] = m->scc_k / ((unsigned)m->scc_period[c] + 1);
+        return;
+    }
+    if (reg < 0x8f) { m->scc_vol[reg - 0x8a] = value & 15; return; }
+    if (reg == 0x8f) m->scc_enable = value & 31;
 }
 
 void msx_ay_write(unsigned reg, uint8_t value) {

@@ -41,12 +41,14 @@ int main(int argc, char **argv) {
     CHECK(sg1000_read(0xe011) == 0xff, "an empty page reads FF");
     CHECK(sg1000_read(0xe013) == 15 && sg1000_read(0xe014) == 0x98 && sg1000_read(0xe016) == 0x5a, "variables, CALSLT");
     CHECK(sg1000_read(0xe020) == 1, "RDVRM");
+    CHECK((sg1000_read(0xe030) | sg1000_read(0xe031) << 8) == 0x1234 && (sg1000_read(0xe032) | sg1000_read(0xe033) << 8) == 0x5678,
+          "IX and IY survive the interrupt routine: %02x%02x %02x%02x", sg1000_read(0xe031), sg1000_read(0xe030), sg1000_read(0xe033), sg1000_read(0xe032));
     const unsigned jiffy = sg1000_read(0xfc9e) | sg1000_read(0xfc9f) << 8;
     CHECK(jiffy >= 20 && jiffy <= 30 && sg1000_read(0xe002) == (jiffy & 255), "JIFFY %u, hook count %u", jiffy, sg1000_read(0xe002));
     CHECK(sg1000_read(0xe003) & 0x80, "STATFL keeps the frame flag: %02x", sg1000_read(0xe003));
-    CHECK(sg1000_read(0xfcaf) == 2 && machine.vdp[0] == 2 && machine.vdp[1] == 0xe0 && machine.vdp[2] == 0x0e, "INIGRP registers");
-    CHECK(machine.vram[8] == 0xaa && machine.vram[0x2008] == 0xf1 && machine.vram[0x3800 + 33] == 1 && machine.vram[0x3840 + 39] == 1 && machine.vram[0x3840 + 40] == 104, "VRAM through LDIRVM, WRTVRM, FILVRM");
-    CHECK(machine.vram[0x3b00] == 60 && machine.vram[0x3b02] == 0, "sprite attributes");
+    CHECK(sg1000_read(0xfcaf) == 2 && machine.vdp[0] == 2 && machine.vdp[1] == 0xe0 && machine.vdp[2] == 0x06 && machine.vdp[3] == 0xff && machine.vdp[4] == 3 && machine.vdp[5] == 0x36 && machine.vdp[6] == 7, "INIGRP registers");
+    CHECK(machine.vram[8] == 0xaa && machine.vram[0x2008] == 0xf1 && machine.vram[0x1800 + 33] == 1 && machine.vram[0x1840 + 39] == 1 && machine.vram[0x1840 + 40] == 104, "VRAM through LDIRVM, WRTVRM, FILVRM");
+    CHECK(machine.vram[0x1b00] == 60 && machine.vram[0x1b02] == 0, "sprite attributes");
     CHECK(machine.ay_reg[0] == 0xfe && machine.ay_reg[3] == 1 && machine.ay_reg[7] == 0xb8 && machine.ay_reg[13] == 0x0e && machine.ay_reg[15] == 0x8f, "AY registers");
     CHECK(machine.ppi_a == 0xf4, "PPI A");
     if (argc > 2) { /* the text fixture: CHPUT, POSIT and the font */

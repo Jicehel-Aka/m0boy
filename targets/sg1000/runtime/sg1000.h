@@ -61,6 +61,14 @@ typedef struct {
     z80_t cpu;               /* registers; cpu.user points back here */
     uint32_t cyc;            /* T-states, wrapping */
     uint32_t next_evt;       /* sync when cyc reaches it (forced to cyc for IRQs) */
+    /* What every interpreted instruction touches comes first: a Thumb-1 load reaches 124 bytes from the base,
+     * further fields cost an extra literal load each. */
+    uint32_t interpreted, compiled; /* statistics: instructions / region entries */
+    uint32_t *coverage;           /* host: per-pc hit counters (65536), or NULL */
+    uint8_t *entries;             /* host: targets of RET / JP (HL) seen (65536), or NULL */
+#if SG_MSX
+    const uint8_t *rd_win[8];     /* per 8 KiB window, where reads go (NULL: msx_read_slow); rebuilt from ppi_a by msx_remap */
+#endif
     uint32_t frame_start;    /* cycle of line 0 of the current frame */
     uint32_t render_at;      /* cycle at which line render_line ends */
     uint32_t frames;
@@ -95,16 +103,11 @@ typedef struct {
     void (*frame)(void *);
     /* Execution */
     sg_fn (*lookup)(uint16_t pc); /* generated entry table, or NULL */
-    uint32_t interpreted, compiled; /* statistics: instructions / region entries */
-    uint32_t *coverage;           /* host: per-pc hit counters (65536), or NULL */
-    uint8_t *entries;             /* host: targets of RET / JP (HL) seen (65536), or NULL */
     uint16_t irq_sp[8];           /* host: stack of interrupt return slots, for entries */
     uint8_t irq_depth;
     uint8_t cart_ram_used;        /* a write reached 8000-BFFF */
 #if SG_MSX
-    /* Memory: per 8 KiB window, where reads and writes go (NULL: nothing, or
-     * the BIOS image for reads of window 0); rebuilt from ppi_a by msx_remap. */
-    const uint8_t *rd_win[8];
+    /* Memory: per 8 KiB window, where writes go (NULL: nothing, a bank register, or the SCC); rd_win is above. */
     uint8_t *wr_win[8];
     uint8_t ppi_a, ppi_c, ay_latch, ay_reg[16];
     uint16_t msx_base, msx_init;  /* address of the cartridge's first byte, its INIT routine */
@@ -116,6 +119,13 @@ typedef struct {
     /* AY-3-8910 sample generation (msx_ay.c) */
     uint16_t ay_count[3], ay_noise_count, ay_env_count;
     uint8_t ay_out[3], ay_env_pos, ay_env_attack, ay_env_hold, ay_env_final;
+    /* SCC (K051649) of the Konami SCC mapper: 4 waveforms of 32 signed bytes (the fifth voice shares the
+     * fourth's), per voice a 12-bit period, a volume, the enable mask; scc_on while the 9000 bank holds 3F */
+    int8_t scc_wave[4][32];
+    uint16_t scc_period[5];
+    uint32_t scc_inc[5], scc_phase[5], scc_k;
+    uint8_t scc_vol[5], scc_enable, scc_on;
+    uint8_t click_used, click;  /* the key-click bit of the PPI (port C bit 7): a 1-bit speaker some games play samples on */
     uint32_t ay_lfsr;
     uint32_t msx_calls;           /* BIOS calls made (statistics) */
 #endif
@@ -141,6 +151,7 @@ static inline uint8_t sg1000_read(uint16_t a) {
     return w ? m0_load_u8(w + (a & 0x1fff)) : msx_read_slow(a);
 }
 void msx_mapper_write(uint16_t a, uint8_t v);
+void msx_scc_write(unsigned reg, uint8_t value); /* 9800-98FF while the SCC is on */
 static inline void sg1000_write(uint16_t a, uint8_t v) {
     uint8_t *w = machine.wr_win[a >> 13];
     if (w) w[a & 0x1fff] = v;

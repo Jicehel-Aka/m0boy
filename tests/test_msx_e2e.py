@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from msx_fixture import fixture, text_fixture, mapper_fixture, mapper_expected, MAPPERS  # noqa: E402
+from msx_fixture import fixture, text_fixture, scc_fixture, mapper_fixture, mapper_expected, MAPPERS  # noqa: E402
 
 
 def run(*args):
@@ -102,6 +102,37 @@ def main():
             print(target + ': precise native = interpreter (hashes, pixels, audio, fallback); default build runs')
         for name in MAPPERS:
             banked(args, root, name)
+        scc(args, root)
+
+
+def frequency(path):
+    """frequency of the dominant square wave in an 8-bit mono WAV (zero crossings)"""
+    import wave
+    with wave.open(str(path)) as w:
+        samples = [b - 128 for b in w.readframes(w.getnframes())][2000:]
+        rate = w.getframerate()
+    edges = sum(1 for a, b in zip(samples, samples[1:]) if (a > 0) != (b > 0))
+    return edges / 2 / (len(samples) / rate), max(samples)
+
+
+def scc(args, root):
+    """the SCC of the Konami SCC mapper: pitch, volume, and the same sound from the recompiled code"""
+    rom = root / 'scc.mx1'
+    rom.write_bytes(scc_fixture())
+    coverage = root / 'scc.cov'
+    common = ('--mapper', 'konami-scc', '--frames', 60)
+    run(args.host, rom, *common, '--coverage', coverage, '--wav', root / 'scc_ref.wav')
+    pitch, peak = frequency(root / 'scc_ref.wav')
+    assert abs(pitch - 3579545 / (32 * 112)) < 3 and peak == (100 * 15) >> 6, (pitch, peak)
+    output = root / 'scc-desktop'
+    run(args.recompiler, rom, '--target', 'desktop', '--coverage', coverage, '--meta-precise', '--msx-mapper', 'konami-scc',
+        '--output-prefix', 'synthetic', '-o', output)
+    host = output / 'host/build'
+    run('cmake', '-G', 'Ninja', '-S', output / 'host', '-B', host)
+    run('ninja', '-C', host)
+    run(host / 'synthetic_host', '--frames', 60, '--wav', root / 'scc_native.wav')
+    assert (root / 'scc_native.wav').read_bytes() == (root / 'scc_ref.wav').read_bytes()
+    print('scc: %.1f Hz at amplitude %d, recompiled code the same' % (pitch, peak))
 
 
 def banked(args, root, name):

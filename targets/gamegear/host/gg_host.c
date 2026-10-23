@@ -189,13 +189,15 @@ static void row(void *ctx, unsigned y, uint16_t *pixels) {
         image[y - GG_WIN_TOP][x] = pixels[x];
 #endif
 }
+static int hash_r = 1; /* R is compared only when the ROM can read it (m0_reads_refresh) */
+#define M0_OBSERVED_R(s) ((uint8_t)(hash_r ? ((s)->cpu.r & 127) | (s)->cpu.r7 : 0))
 static uint32_t run_hash(void) {
     gg_t *s = &machine;
     uint32_t h = M0_RUN_HASH_INIT;
     uint16_t registers[] = { s->cpu.bc, s->cpu.de, s->cpu.hl, s->cpu.bc2, s->cpu.de2, s->cpu.hl2, s->cpu.af2,
                              s->cpu.ix, s->cpu.iy, s->cpu.sp, s->cpu.pc };
     h = m0_hash_u16s(h, registers, sizeof registers / sizeof *registers);
-    uint8_t flags[] = { s->cpu.a, s->cpu.f, s->cpu.i, s->cpu.r, s->cpu.im, s->cpu.iff1, s->cpu.iff2, s->cpu.halted,
+    uint8_t flags[] = { s->cpu.a, s->cpu.f, s->cpu.i, M0_OBSERVED_R(s), s->cpu.im, s->cpu.iff1, s->cpu.iff2, s->cpu.halted,
                         s->cpu.ei_delay, s->vdp_status, s->vdp_latch, s->vdp_pending, s->vdp_buffer, s->vdp_code,
                         s->cram_latch, s->line_irq, s->lc_count, s->cpu.irq, s->cpu.nmi, s->cpu.fault,
                         s->page[0], s->page[1], s->page[2], s->ram_ctl };
@@ -306,6 +308,12 @@ int main(int argc, char **argv) {
     }
 #ifdef GG_ROM_TRACE
     if (rom_trace_path && !cov_path) { fprintf(stderr, "--rom-trace-out needs --coverage\n"); free(loaded); return 2; }
+#endif
+
+#if defined(SG_GENERATED) && defined(SG_ROM_READS_R)
+    hash_r = SG_ROM_READS_R;
+#else
+    hash_r = m0_reads_refresh(rom, size);
 #endif
 #ifdef SG_GENERATED
     gg_init(rom, size, cart);
