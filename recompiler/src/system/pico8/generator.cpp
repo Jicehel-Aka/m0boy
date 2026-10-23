@@ -152,6 +152,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             copy_template(o.meta_templates / "platform" / "src" / "meta_state.h", src / "meta_state.h");
             if (esp) {
                 copy_template(platform / "espboy_flash.cpp", src / "espboy_flash.cpp");
+                copy_template(common_dir / "runtime" / "m0_scale.h", src / "m0_scale.h"); /* espboy_hw.cpp */
             } else {
                 for (const char* name : { "meta_state.cpp", "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h" })
                     copy_template(o.meta_templates / "platform" / "src" / name, src / name);
@@ -179,12 +180,12 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 write(src / "sg_audio.h", "#pragma once\n#include \"p8_audio.h\"\n#define sg_platform_audio_rate p8_audio_set_rate\n#define sg_platform_audio_render p8_audio_render\n");
                 for (const char* name : { "espboy_hw.h" }) copy_template(platform / name, src / name);
                 auto hw = read(platform / "espboy_hw.cpp");
-                const std::string row = "line[x] = p[(x * 5u + 2u) / 4u];", frame = "uint8_t samples[192];";
+                const std::string row = "line[x] = p[m0_nearest(x, 160, 128)];", frame = "uint8_t samples[192];";
                 if (hw.find(row) == std::string::npos || hw.find(frame) == std::string::npos)
                     throw std::runtime_error("espboy_hw.cpp changed: the PICO-8 patch no longer applies");
                 /* the picture is 128 columns at 16 in a 160-wide row; the option menu's rows are
                  * 160 wide, narrowed as on the Sega cores while it is open (p8_main.cpp) */
-                hw = replace(hw, row, "line[x] = p8_menu_wide ? p[(x * 5u + 2u) / 4u] : p[x + 16];");
+                hw = replace(hw, row, "line[x] = p8_menu_wide ? p[m0_nearest(x, 160, 128)] : p[x + 16];");
                 hw = "extern \"C\" unsigned char p8_menu_wide;\n" + hw;
                 hw = replace(hw, frame, "uint8_t samples[400]; /* a 30 Hz frame at 11025 Hz */");
                 write(src / "espboy_hw.cpp", hw);

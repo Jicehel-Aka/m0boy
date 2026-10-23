@@ -15,8 +15,9 @@ typedef struct {
     uint8_t color, width, shift;
 } sprite_t;
 
-/* Device line: a box filter from 256 to 160 pixels.  Each device pixel
- * covers 1.6 source pixels; in eighths, the five pixels of a tile take
+/* Device line: a box filter from 256 to 160 pixels (m0_scale.h, the exact
+ * 5-in-8 method).  Each device pixel covers 1.6 source pixels; in eighths,
+ * the five pixels of a tile take
  *   o0 = 5 s0 + 3 s1          o3 = 1 s4 + 5 s5 + 2 s6
  *   o1 = 2 s1 + 5 s2 + 1 s3   o4 = 3 s6 + 5 s7
  *   o2 = 4 s3 + 4 s4
@@ -26,37 +27,8 @@ typedef struct {
  * the foreground bits: tile_w gives the five weights of a pattern byte and
  * mix the 9 blends of a colour byte (rebuilt when the palette or the
  * backdrop changes).  Both paths compute the same values. */
-static inline uint32_t spread(uint32_t c) { return (c | (c << 16)) & 0x07e0f81fu; }
-/* Panel order: the META's SPI sends the high byte first (SG_PANEL_SWAP); the
- * glass's BGR wiring is corrected by the MADCTL BGR bit of the LCD init, so
- * colours are native. */
-#ifndef SG_PANEL_SWAP
-#define SG_PANEL_SWAP 0
-#endif
-static inline uint16_t panel(uint32_t c) {
-#if SG_PANEL_SWAP
-    return __builtin_bswap16((uint16_t)c); /* REV16 */
-#else
-    return (uint16_t)c;
-#endif
-}
-static inline uint16_t fold(uint32_t s) {
-    s = ((s + 0x00802004u) >> 3) & 0x07e0f81fu;
-    return (uint16_t)(s | (s >> 16));
-}
-/* sums of sixteenths (two lines) */
-static inline uint16_t fold16(uint32_t s) {
-    s = ((s + 0x01004008u) >> 4) & 0x07e0f81fu;
-    return (uint16_t)(s | (s >> 16));
-}
-/* five source pixels -> five device pixels, from 8 spread colours */
-static inline void filter8(const uint32_t *s, uint16_t *o) {
-    o[0] = panel(fold(5 * s[0] + 3 * s[1]));
-    o[1] = panel(fold(2 * s[1] + 5 * s[2] + s[3]));
-    o[2] = panel(fold(4 * s[3] + 4 * s[4]));
-    o[3] = panel(fold(s[4] + 5 * s[5] + 2 * s[6]));
-    o[4] = panel(fold(3 * s[6] + 5 * s[7]));
-}
+#define M0_PANEL_SWAP SG_PANEL_SWAP
+#include "m0_scale.h"
 /* five weights of a pattern byte, as byte offsets 2w in 5-bit fields */
 const uint32_t sg_tile_w[256] = {
     0x0000000, 0x0a00000, 0x0620000, 0x1020000, 0x0050000, 0x0a50000,
@@ -155,8 +127,8 @@ const uint32_t sg_tile_wv[256] = {
 static uint16_t mix_backdrop;
 static uint8_t mix_ready;
 static inline void mix_fill(uint16_t *row, unsigned c, const uint16_t *pal, uint16_t bd) {
-    uint32_t f = spread((c >> 4) ? pal[c >> 4] : bd), b = spread((c & 15) ? pal[c & 15] : bd);
-    for (unsigned w = 0; w <= 8; w++) row[w] = panel(fold(w * f + (8 - w) * b));
+    uint32_t f = m0_spread565((c >> 4) ? pal[c >> 4] : bd), b = m0_spread565((c & 15) ? pal[c & 15] : bd);
+    for (unsigned w = 0; w <= 8; w++) row[w] = m0_panel(m0_fold565(w * f + (8 - w) * b));
 }
 #if !SG_LOW_RAM
 static uint16_t mix[256][9];
@@ -460,7 +432,7 @@ static const uint32_t *spread_palette(void) {
     const unsigned bd = machine.vdp[7] & 15;
     if (bd != spal_backdrop) {
         spal_backdrop = bd;
-        for (unsigned c = 0; c < 16; c++) spal[c] = spread(machine.palette[c ? c : bd]);
+        for (unsigned c = 0; c < 16; c++) spal[c] = m0_spread565(machine.palette[c ? c : bd]);
     }
     return spal;
 }
@@ -486,7 +458,7 @@ static inline void tile_spread(unsigned y, unsigned tx, const uint8_t *over, con
 static void tile_filtered(unsigned y, unsigned tx, const uint8_t *over, uint16_t *o) {
     uint32_t src[8];
     tile_spread(y, tx, over, spread_palette(), src, 0);
-    filter8(src, o);
+    m0_box58_exact(src, o);
 }
 /* tile tx of lines ya and ya + 1, sprites per line (or none) */
 static void pair_filtered(unsigned ya, unsigned tx, const uint8_t *over_a, const uint8_t *over_b, uint16_t *o) {
@@ -494,11 +466,7 @@ static void pair_filtered(unsigned ya, unsigned tx, const uint8_t *over_a, const
     uint32_t s[8];
     tile_spread(ya, tx, over_a, sp, s, 0);
     tile_spread(ya + 1, tx, over_b, sp, s, 1);
-    o[0] = panel(fold16(5 * s[0] + 3 * s[1]));
-    o[1] = panel(fold16(2 * s[1] + 5 * s[2] + s[3]));
-    o[2] = panel(fold16(4 * s[3] + 4 * s[4]));
-    o[3] = panel(fold16(s[4] + 5 * s[5] + 2 * s[6]));
-    o[4] = panel(fold16(3 * s[6] + 5 * s[7]));
+    m0_box58_pair(s, o);
 }
 
 /* Device renderer: SG_OUT_WIDTH RGB565 pixels, box-filtered. */
@@ -507,7 +475,7 @@ static void out_line(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n)
     const uint16_t *pal = m->palette;
     const uint16_t bd = pal[m->vdp[7] & 15];
     if (!(m->vdp[1] & 64)) {
-        for (unsigned i = 0; i < SG_OUT_WIDTH; i++) out[i] = panel(bd);
+        for (unsigned i = 0; i < SG_OUT_WIDTH; i++) out[i] = m0_panel(bd);
         return;
     }
     if (m->vdp[1] & 24) { /* text or multicolour: filter the reference line */
@@ -569,20 +537,14 @@ void sg1000_filter_line(const uint8_t *pixels, uint16_t *out) {
     const uint16_t *pal = machine.palette;
     for (unsigned t = 0; t < 32; t++) {
         uint32_t src[8];
-        for (unsigned i = 0; i < 8; i++) src[i] = spread(pal[pixels[t * 8 + i] & 15]);
-        filter8(src, out + t * 5);
+        for (unsigned i = 0; i < 8; i++) src[i] = m0_spread565(pal[pixels[t * 8 + i] & 15]);
+        m0_box58_exact(src, out + t * 5);
     }
 }
 
 /* the sprites of the previous line, for the pair drawn with it */
 static sprite_t prev_spr[4];
 static unsigned prev_n, prev_y = ~0u;
-
-/* Two RGB565 pixels averaged per channel (rounded down). */
-static inline uint16_t avg565(uint32_t a, uint32_t b) { /* both in panel order */
-    a = panel(a); b = panel(b);
-    return panel((a & b) + (((a ^ b) & 0xf7deu) >> 1));
-}
 
 /* Device row from two source lines (ya, ya + 1) of one tile row: tiles
  * whose two lines share their colour byte are filtered once with the mean
@@ -603,7 +565,7 @@ static void out_pair(unsigned ya, uint16_t *out, const sprite_t *spr_b, unsigned
         uint16_t second[SG_OUT_WIDTH];
         out_line(ya, out, spr_a, n_a);
         out_line(yb, second, spr_b, n_b);
-        for (unsigned i = 0; i < SG_OUT_WIDTH; i++) out[i] = avg565(out[i], second[i]);
+        for (unsigned i = 0; i < SG_OUT_WIDTH; i++) out[i] = m0_avg2_panel(out[i], second[i]);
         return;
     }
     const uint16_t *pal = m->palette;
@@ -645,7 +607,7 @@ static void out_pair(unsigned ya, uint16_t *out, const sprite_t *spr_b, unsigned
             const uint32_t wa = tile_w[pa], wb = tile_w[pb]; \
             SG_ROWS_AB(ca, cb); \
             for (unsigned k_ = 0; k_ < 5; k_++) \
-                o[k_] = avg565(*(const uint16_t *)(ma + ((wa >> (5 * k_)) & 31)), *(const uint16_t *)(mb + ((wb >> (5 * k_)) & 31))); \
+                o[k_] = m0_avg2_panel(*(const uint16_t *)(ma + ((wa >> (5 * k_)) & 31)), *(const uint16_t *)(mb + ((wb >> (5 * k_)) & 31))); \
         } \
     } while (0)
 #if SG_RENDER_ASM

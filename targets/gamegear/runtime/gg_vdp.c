@@ -9,18 +9,10 @@
 #include "gg_tables.h"
 #include <string.h>
 
-#ifndef GG_PANEL_SWAP
-#define GG_PANEL_SWAP 0
-#endif
-static inline uint16_t panel(uint32_t c) {
-#if GG_PANEL_SWAP
-    /* META : octets du poids fort d'abord ; le croisement R/B de la dalle
-     * BGR est corrigé par le bit BGR du MADCTL de l'init de l'écran. */
-    return __builtin_bswap16((uint16_t)c);
-#else
-    return (uint16_t)c;
-#endif
-}
+/* Panel byte order (GG_PANEL_SWAP, sg_config.h) and the shared filter
+ * arithmetic: the 5-in-8 box, the fast method (below) in m0_scale.h. */
+#define M0_PANEL_SWAP GG_PANEL_SWAP
+#include "m0_scale.h"
 
 /* ---- CRAM ----------------------------------------------------------------- */
 
@@ -29,19 +21,14 @@ static inline uint16_t panel(uint32_t c) {
 static uint32_t spal[32];
 static uint16_t pair53[2][256];
 static uint8_t pairs_stale = 1;
-static inline uint32_t spread(uint32_t c) { return (c | c << 16) & 0x07e0f81fu; }
-static inline uint16_t fold(uint32_t s) {
-    s = ((s + 0x00802004u) >> 3) & 0x07e0f81fu;
-    return (uint16_t)(s | s >> 16);
-}
 /* Master System colour: 6 bits, --BBGGRR */
 static void cram_colour_sms(unsigned i) {
     static const uint8_t c5[4] = { 0, 10, 21, 31 }, c6[4] = { 0, 21, 42, 63 };
     gg_t *m = &machine;
     const unsigned c = m->cram[i];
     const uint32_t rgb = (uint32_t)c5[c & 3] << 11 | (uint32_t)c6[(c >> 2) & 3] << 5 | c5[(c >> 4) & 3];
-    m->pal[i] = panel(rgb);
-    spal[i] = spread(rgb);
+    m->pal[i] = m0_panel(rgb);
+    spal[i] = m0_spread565(rgb);
     pairs_stale = 1;
 }
 
@@ -50,7 +37,7 @@ static void cram_colour(unsigned i) {
     gg_t *m = &machine;
     const unsigned w = m->cram[2 * i] | (m->cram[2 * i + 1] << 8);
     const unsigned r = w & 15, g = (w >> 4) & 15, b = (w >> 8) & 15;
-    m->pal[i] = panel(((r << 1 | r >> 3) << 11) | ((g << 2 | g >> 2) << 5) | (b << 1 | b >> 3));
+    m->pal[i] = m0_panel(((r << 1 | r >> 3) << 11) | ((g << 2 | g >> 2) << 5) | (b << 1 | b >> 3));
 }
 
 /* ---- sprites -------------------------------------------------------------- */
@@ -325,14 +312,8 @@ static void render(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n) {
 static void pairs_build(void) {
     for (unsigned h = 0; h < 2; h++)
         for (unsigned a = 0; a < 16; a++)
-            for (unsigned b = 0; b < 16; b++) pair53[h][a | b << 4] = panel(fold(5 * spal[16 * h + a] + 3 * spal[16 * h + b]));
+            for (unsigned b = 0; b < 16; b++) pair53[h][a | b << 4] = m0_panel(m0_fold565(5 * spal[16 * h + a] + 3 * spal[16 * h + b]));
     pairs_stale = 0;
-}
-
-/* (a + b) / 2 per channel, rounded down, of two spread colours */
-static inline uint16_t mean2(uint32_t a, uint32_t b) {
-    const uint32_t s = ((a + b) >> 1) & 0x07e0f81fu;
-    return panel(s | s >> 16);
 }
 
 /* five pixels from a group's 4-bit fields (one palette) */
@@ -341,7 +322,7 @@ static inline void group_out(uint32_t w, unsigned half, uint16_t *o) {
     const uint32_t *sp = spal + 16 * half;
     o[0] = t[w & 0xff];
     o[1] = t[((w >> 8) & 15) | (w & 0xf0)];
-    o[2] = mean2(sp[(w >> 12) & 15], sp[(w >> 16) & 15]);
+    o[2] = m0_blend2_565(sp[(w >> 12) & 15], sp[(w >> 16) & 15]);
     o[3] = t[(w >> 20) & 0xff];
     o[4] = t[(w >> 28) | ((w >> 20) & 0xf0)];
 }
@@ -350,11 +331,7 @@ static inline void group_out(uint32_t w, unsigned half, uint16_t *o) {
 static void group_filter(const uint8_t *px, uint16_t *o) {
     uint32_t s[8];
     for (unsigned i = 0; i < 8; i++) s[i] = spal[px[i] & 31];
-    o[0] = panel(fold(5 * s[0] + 3 * s[1]));
-    o[1] = panel(fold(3 * s[1] + 5 * s[2]));
-    o[2] = mean2(s[3], s[4]);
-    o[3] = panel(fold(5 * s[5] + 3 * s[6]));
-    o[4] = panel(fold(3 * s[6] + 5 * s[7]));
+    m0_box58_fast(s, o);
 }
 
 /* Background colour indices of the tiles in mask (bit k: tile k, at screen
@@ -483,8 +460,8 @@ static void tms_palette(void) {
     static const uint8_t c5[4] = { 0, 10, 21, 31 }, c6[4] = { 0, 21, 42, 63 };
     for (unsigned i = 0; i < 16; i++) {
         const unsigned c = tms_sms[i];
-        tms_spal[i] = spread((uint32_t)c5[c & 3] << 11 | (uint32_t)c6[(c >> 2) & 3] << 5 | c5[(c >> 4) & 3]);
-        tms_solid[i] = panel(fold(8 * tms_spal[i]));
+        tms_spal[i] = m0_spread565((uint32_t)c5[c & 3] << 11 | (uint32_t)c6[(c >> 2) & 3] << 5 | c5[(c >> 4) & 3]);
+        tms_solid[i] = m0_panel(m0_fold565(8 * tms_spal[i]));
     }
     tms_ready = 1;
 }
@@ -603,11 +580,11 @@ static inline void tms_tile(unsigned bits, unsigned hi, unsigned lo, uint16_t *o
     const unsigned b0 = bits >> 7 & 1, b1 = bits >> 6 & 1, b2 = bits >> 5 & 1, b3 = bits >> 4 & 1,
                    b4 = bits >> 3 & 1, b5 = bits >> 2 & 1, b6 = bits >> 1 & 1, b7 = bits & 1;
     const unsigned w0 = 5 * b0 + 3 * b1, w1 = 3 * b1 + 5 * b2, w3 = 5 * b5 + 3 * b6, w4 = 3 * b6 + 5 * b7;
-    o[0] = panel(fold(w0 * f + (8 - w0) * b));
-    o[1] = panel(fold(w1 * f + (8 - w1) * b));
-    o[2] = mean2(b3 ? f : b, b4 ? f : b);
-    o[3] = panel(fold(w3 * f + (8 - w3) * b));
-    o[4] = panel(fold(w4 * f + (8 - w4) * b));
+    o[0] = m0_panel(m0_fold565(w0 * f + (8 - w0) * b));
+    o[1] = m0_panel(m0_fold565(w1 * f + (8 - w1) * b));
+    o[2] = m0_blend2_565(b3 ? f : b, b4 ? f : b);
+    o[3] = m0_panel(m0_fold565(w3 * f + (8 - w3) * b));
+    o[4] = m0_panel(m0_fold565(w4 * f + (8 - w4) * b));
 }
 
 static void tms_render(unsigned y, uint16_t *out, const tms_sprite_t *t, unsigned n) {
@@ -657,12 +634,7 @@ static void tms_render(unsigned y, uint16_t *out, const tms_sprite_t *t, unsigne
         if (!(tiles >> g & 1)) continue;
         uint32_t s[8];
         for (unsigned i = 0; i < 8; i++) s[i] = tms_spal[px[8 * g + i] & 15];
-        uint16_t *o = out + 5 * g;
-        o[0] = panel(fold(5 * s[0] + 3 * s[1]));
-        o[1] = panel(fold(3 * s[1] + 5 * s[2]));
-        o[2] = mean2(s[3], s[4]);
-        o[3] = panel(fold(5 * s[5] + 3 * s[6]));
-        o[4] = panel(fold(3 * s[6] + 5 * s[7]));
+        m0_box58_fast(s, out + 5 * g);
     }
 }
 

@@ -33,6 +33,8 @@ extern "C" {
 }
 #include "meta_menu.h"
 
+#include "m0_scale.h" /* m0_nearest */
+
 /* GPIO_SIGMA_DELTA, as the core's sigma-delta driver defines it. */
 #define GPSD ESP8266_REG(0x368)
 #define GPSDT 0 /* target, 8 bits */
@@ -161,14 +163,14 @@ extern "C" void meta_lcd_init(void) {
 
 static uint32_t seq;
 /* Rows come in order from row 0 each frame; the window is reopened when they
- * do not.  160 -> 128 columns, nearest neighbour; the pixels are already
- * RGB565 big-endian in memory order. */
+ * do not.  160 -> 128 columns, nearest neighbour of each row's centre
+ * (m0_nearest); the pixels are already RGB565 big-endian in memory order. */
 extern "C" uint32_t meta_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
     static uint16_t line[128] __attribute__((aligned(4)));
     const uint16_t *p = (const uint16_t *)buf;
     for (unsigned y = 0; y < rows && row0 + y < 128; y++, p += 160) {
         if (next_row != row0 + y) window(row0 + y);
-        for (unsigned x = 0; x < 128; x++) line[x] = p[(x * 5u + 2u) / 4u];
+        for (unsigned x = 0; x < 128; x++) line[x] = p[m0_nearest(x, 160, 128)];
         SPI.writeBytes((const uint8_t *)line, sizeof line);
         next_row++;
     }
