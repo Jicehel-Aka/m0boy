@@ -100,6 +100,37 @@ def bootloader() -> dict:
     return {"bootloader": True}
 
 
+def leave_usb_mode() -> dict:
+    """Unmount the bridge and eject it: the firmware takes that SCSI eject
+    (START STOP UNIT, LOEJ) as the way out and restarts into the Gamebuino
+    loader.  No USB privileges needed (udisks); HOME+MENU held 0.5 s on the
+    console does the same."""
+    import subprocess
+    disks = [line.split(None, 1) for line in subprocess.run(
+        ["lsblk", "-dno", "NAME,MODEL"], capture_output=True, text=True, check=True).stdout.splitlines()]
+    names = [f"/dev/{d[0]}" for d in disks if len(d) == 2 and "META SD BRIDGE" in d[1].upper().replace("_", " ")]
+    if not names:
+        raise OSError("META SD Bridge not found (already left USB mode?)")
+    disk = names[0]
+    parts = subprocess.run(["lsblk", "-lnpo", "NAME,MOUNTPOINT", disk], capture_output=True, text=True).stdout.splitlines()
+    for line in parts:
+        fields = line.split(None, 1)
+        if len(fields) == 2:
+            subprocess.run(["sync"], check=False)
+            done = subprocess.run(["udisksctl", "unmount", "-b", fields[0]], capture_output=True, text=True)
+            if done.returncode != 0:  # a file manager window keeps it busy: the data is synced, force it
+                subprocess.run(["udisksctl", "unmount", "-f", "-b", fields[0]], capture_output=True, text=True)
+    import time
+    for _ in range(8):  # udisks answers "busy" for a few seconds after an unmount
+        done = subprocess.run(["udisksctl", "power-off", "-b", disk], capture_output=True, text=True)
+        if done.returncode == 0:
+            break
+        time.sleep(3)
+    else:
+        raise OSError("eject refused: " + (done.stderr or done.stdout).strip())
+    return {"exit": True, "device": disk}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", type=Path, default=os.environ.get("META_SD_MOUNT"),
@@ -115,7 +146,11 @@ def main() -> None:
     uz = sub.add_parser("unzip"); uz.add_argument("archive", type=Path)
     uz.add_argument("destination", nargs="?", default=".")
     sub.add_parser("bootloader")
+    sub.add_parser("exit", help="unmount and eject: the console leaves USB mode for the Gamebuino loader")
     args = ap.parse_args()
+    if args.command == "exit":
+        print(json.dumps({"ok": True, **leave_usb_mode()}))
+        return
     if args.command == "bootloader":
         print(json.dumps({"ok": True, **bootloader()}))
         return

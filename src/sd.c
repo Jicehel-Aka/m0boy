@@ -77,6 +77,17 @@ static void bus_init(void) {
     while (SPI.SYNCBUSY.bit.CTRLB) {}
     rate(95); /* 250 kHz at 48 MHz */
 }
+/* The pad's 74HC165 (CS PB03) shares the card's bus: 2 MHz for it, then the card's rate again. */
+uint8_t sd_pad(void) {
+    rate(11);
+    for (unsigned i = 0; i < 4 && (SPI.INTFLAG.reg & SERCOM_SPI_INTFLAG_RXC); ++i) (void)SPI.DATA.reg;
+    PORT->Group[1].OUTCLR.reg = 1u << 3;
+    for (volatile unsigned t = 0; t < 100; ++t) {} /* latch time */
+    uint8_t raw = xfer(1);
+    PORT->Group[1].OUTSET.reg = 1u << 3;
+    rate(1);
+    return (uint8_t)~raw; /* active low */
+}
 uint32_t sd_sectors(void) { return capacity; }
 int sd_init(void) {
     bus_init();

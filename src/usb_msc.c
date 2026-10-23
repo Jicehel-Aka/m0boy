@@ -16,7 +16,8 @@ static uint8_t ep0_in[64] __attribute__((aligned(4)));
 static uint8_t bulk_out[64] __attribute__((aligned(4)));
 static uint8_t bulk_in[64] __attribute__((aligned(4)));
 static uint8_t sector[512];
-static volatile uint8_t configured, bootloader_request;
+static volatile uint8_t configured, bootloader_request, exit_request;
+static uint32_t exit_chord_since, buttons_polled;
 static uint8_t state, sense_key, sense_asc;
 static uint32_t tag, residue, current_lba, remaining_blocks;
 static uint16_t fill;
@@ -287,7 +288,10 @@ static void scsi(const uint8_t *b) {
         r[3] = 8;
         if (!in || !data_in(r, 16)) { fail(5, 0x24); return; }
         csw(0); return;
-    case 0x1b: case 0x1e: case 0x35: /* START STOP, PREVENT/ALLOW, SYNC CACHE */
+    case 0x1b: /* START STOP UNIT: LOEJ=1, START=0 is the host's eject, the way out of USB mode */
+        if ((c[4] & 0x02u) && !(c[4] & 0x01u)) exit_request = 1;
+        csw(0); return;
+    case 0x1e: case 0x35: /* PREVENT/ALLOW, SYNC CACHE */
         csw(0); return;
     case 0x2f: /* VERIFY(10), no comparison data */
         if (c[1] & 2u) { fail(5, 0x24); return; }
@@ -324,7 +328,32 @@ static void scsi(const uint8_t *b) {
     default: fail(5, 0x20); return;
     }
 }
+/* Back to the Gamebuino loader: detach, then a watchdog reset (a wrong CLEAR key resets at once), which
+ * the bootloader answers by starting the launcher from the card. */
+static void leave(void) __attribute__((noreturn));
+static void leave(void) {
+    USB->DEVICE.CTRLB.reg = USB_DEVICE_CTRLB_DETACH;
+    delay(100);
+    WDT->CLEAR.reg = 0;
+    NVIC_SystemReset();
+    for (;;) {}
+}
+/* HOME and MENU, the META's Select/Start pair, held half a second; sampled at 50 Hz between transfers. */
+static void poll_exit(uint32_t now) {
+    if ((uint32_t)(now - buttons_polled) < 20u) return;
+    buttons_polled = now;
+    if ((sd_pad() & 0xc0u) == 0xc0u) {
+        if (!exit_chord_since) exit_chord_since = now ? now : 1;
+        else if ((uint32_t)(now - exit_chord_since) >= 500u) leave();
+    } else {
+        exit_chord_since = 0;
+    }
+}
 void usb_msc_poll(void) {
+    if (state == WAIT_CBW && fill == 0) {
+        if (exit_request) leave();
+        poll_exit(millis());
+    }
     if (bootloader_request) {
         delay(50);
         USB->DEVICE.CTRLB.reg = USB_DEVICE_CTRLB_DETACH;

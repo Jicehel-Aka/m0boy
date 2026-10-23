@@ -56,6 +56,24 @@ python3 meta_sd.py --root /media/$USER/META rm SAUVEGARDES/ancien.sav
 racine ; `.` désigne celle-ci. Pour copier le ZIP lui-même : `put jeu.zip .
 --raw`.
 
+## Quitter le mode USB
+
+Trois façons de rendre la console au loader Gamebuino (le firmware se détache
+du bus puis déclenche un reset watchdog, que le bootloader traduit en
+lancement du loader depuis la carte) :
+
+- sur la console, **HOME + MENU** (la paire Select/Start de la META) tenus
+  une demi-seconde ;
+- sur le PC, `python3 meta_sd.py exit` : démonte le volume (en forçant si une
+  fenêtre de gestionnaire de fichiers le retient) et l'éjecte via udisks,
+  sans privilège particulier. Le firmware prend la commande SCSI START STOP
+  UNIT avec LOEJ comme demande de sortie ; udisks répond « busy » pendant
+  quelques secondes après un démontage, le script réessaie ;
+- éjecter le volume depuis le gestionnaire de fichiers.
+
+La sortie n'attend pas la fin d'un transfert en cours : elle n'a lieu qu'entre
+deux commandes.
+
 Après démontage du volume, `python3 meta_sd.py bootloader` demande au firmware
 de redémarrer en mode sam-ba pour un nouveau téléversement. Cette requête USB
 nécessite l'accès en écriture au périphérique USB (règle udev ou exécution
