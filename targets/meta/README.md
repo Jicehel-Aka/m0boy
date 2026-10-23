@@ -288,7 +288,12 @@ error screens. The read first waits for the display's strips (its CS is
 low between strips of a frame), lets the last byte leave the shifter and
 drains the receive FIFO. `meta_spi_init()` sets PA12 (MISO) as an input
 (INEN) and every chip select inactive: without INEN the pad and the card
-read 0.
+read 0. Every frontend then decodes its console's raw bits once through
+`META_PAD` (meta_pad.h) into the menu's `META_MB_*` order — the same
+mapping code everywhere, the Game Boy's A/B swap, the Sega START and the
+PICO-8's C-tap reading the same named bits — and gm0 (EMU_INPUT) drives
+the same roles: H is the m0boy menu key on every console (the META's
+HOME, the Pokitto's C).
 
 ## Saves and large cartridge RAM
 

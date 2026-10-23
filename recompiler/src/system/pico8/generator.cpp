@@ -145,7 +145,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             copy_template(common_dir / "platform" / "sg_frontend.h", src / "sg_frontend.h");
             copy_template(common_dir / "platform" / "sg_menu.h", src / "sg_menu.h");
             const auto platform = o.meta_templates / "platform" / (esp ? "espboy" : pokitto ? "pokitto" : "meta");
-            for (const char* name : { "meta_target.h", "meta_lcd.h", "meta_clock.h" })
+            for (const char* name : { "meta_target.h", "meta_lcd.h", "meta_clock.h", "meta_pad.h" })
                 copy_template(o.meta_templates / "platform" / "src" / name, src / name);
             /* the option menu (sg_menu.h runs it; meta_menu.cpp draws it) */
             copy_template(o.meta_templates / "platform" / "src" / "meta_menu.h", src / "meta_menu.h");

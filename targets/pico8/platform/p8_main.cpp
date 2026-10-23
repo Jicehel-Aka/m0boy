@@ -311,20 +311,12 @@ extern "C" void p8_error(const char *msg, const char *what) {
     }
 }
 
-static uint16_t read_buttons(unsigned *menu) {
-#if META_TARGET_POKITTO
-    const uint8_t raw = SG_PAD_RAW();
-    *menu = raw;
-    /* the p8 pad: 1 left, 2 right, 4 up, 8 down, 16 O, 32 X */
-    return (uint16_t)(((raw & POKITTO_LEFT) ? 1u : 0u) | ((raw & POKITTO_RIGHT) ? 2u : 0u) | ((raw & POKITTO_UP) ? 4u : 0u) |
-                      ((raw & POKITTO_DOWN) ? 8u : 0u) | ((raw & POKITTO_A) ? 16u : 0u) | ((raw & POKITTO_B) ? 32u : 0u));
-#else
-    const uint8_t raw = SG_PAD_RAW();
-    SG_PAD_WDT();
-    *menu = raw;
-    return (uint16_t)(((raw & 2u) ? 1u : 0u) | ((raw & 4u) ? 2u : 0u) | ((raw & 8u) ? 4u : 0u) | ((raw & 1u) ? 8u : 0u) |
-                      ((raw & 16u) ? 16u : 0u) | ((raw & 32u) ? 32u : 0u));
-#endif
+/* the p8 pad from the console's buttons (meta_pad.h): 1 left, 2 right,
+ * 4 up, 8 down, 16 O, 32 X */
+static uint16_t game_buttons(uint8_t mb) {
+    return (uint16_t)(((mb & META_MB_LEFT) ? 1u : 0u) | ((mb & META_MB_RIGHT) ? 2u : 0u) |
+                      ((mb & META_MB_UP) ? 4u : 0u) | ((mb & META_MB_DOWN) ? 8u : 0u) |
+                      ((mb & META_MB_A) ? 16u : 0u) | ((mb & META_MB_B) ? 32u : 0u));
 }
 
 #ifdef P8_STACK_CHECK /* debug: the deepest the C stack went, drawn in a corner of the picture */
@@ -360,8 +352,9 @@ int main() {
     deadline = meta_micros();
     __asm__ volatile("" : : "r"(version));
     for (;;) {
-        unsigned raw;
-        p8_frame(read_buttons(&raw));
+        const uint8_t mb = META_PAD(SG_PAD_RAW());
+        SG_PAD_WDT();
+        p8_frame(game_buttons(mb));
 #ifdef P8_STACK_CHECK
         stack_check();
 #endif
@@ -373,13 +366,13 @@ int main() {
         if (meta_micros() > P8_STOP_AFTER_US) p8_error("stopped", "");
 #endif
         sg_menu_frame();
-        sg_menu_poll((uint8_t)raw);
+        sg_menu_poll(mb);
         sg_menu_tick();
 #if META_TARGET_POKITTO
         /* MENU's role is SG_MENU_TAP's: a tap on C, already handled */
 #else
-        if ((raw & 64u) && !menu_was_down) p8_start();
-        menu_was_down = raw & 64u;
+        if ((mb & META_MB_MENU) && !menu_was_down) p8_start();
+        menu_was_down = mb & META_MB_MENU;
 #endif
         if (!sg_menu_fast) {
             deadline += p8_fps == 60 ? 16667u : 33333u;

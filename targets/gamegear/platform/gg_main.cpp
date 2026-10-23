@@ -345,17 +345,16 @@ static void frame(void *) {
     return;
 #endif
     uint8_t keys = 0;
-    const uint8_t raw = SG_PAD_RAW();
+    const uint8_t mb = META_PAD(SG_PAD_RAW());
+    /* the Game Gear pad: 1 up, 2 down, 4 left, 8 right, 16 button 1,
+     * 32 button 2; MENU is START (the SMS's PAUSE) */
+    keys = ((mb & META_MB_UP) ? GG_UP : 0) | ((mb & META_MB_DOWN) ? GG_DOWN : 0) |
+           ((mb & META_MB_LEFT) ? GG_LEFT_KEY : 0) | ((mb & META_MB_RIGHT) ? GG_RIGHT_KEY : 0) |
+           ((mb & META_MB_A) ? GG_B1 : 0) | ((mb & META_MB_B) ? GG_B2 : 0) |
+           ((mb & META_MB_MENU) ? (GG_SMS ? GG_PAUSE : GG_START) : 0);
 #if META_TARGET_POKITTO
-    keys = ((raw & POKITTO_UP) ? GG_UP : 0) | ((raw & POKITTO_DOWN) ? GG_DOWN : 0) |
-           ((raw & POKITTO_LEFT) ? GG_LEFT_KEY : 0) | ((raw & POKITTO_RIGHT) ? GG_RIGHT_KEY : 0) |
-           ((raw & POKITTO_A) ? GG_B1 : 0) | ((raw & POKITTO_B) ? GG_B2 : 0);
     if (start_frames) { keys |= GG_SMS ? GG_PAUSE : GG_START; start_frames--; }
 #else
-    /* META: A is button 1, B button 2, MENU is START */
-    keys = ((raw & 8) ? GG_UP : 0) | ((raw & 1) ? GG_DOWN : 0) | ((raw & 2) ? GG_LEFT_KEY : 0) |
-           ((raw & 4) ? GG_RIGHT_KEY : 0) | ((raw & 16) ? GG_B1 : 0) | ((raw & 32) ? GG_B2 : 0) |
-           ((raw & 64) ? (GG_SMS ? GG_PAUSE : GG_START) : 0);
     SG_PAD_WDT();
 #endif
     gg_buttons(keys);
@@ -369,7 +368,7 @@ static void frame(void *) {
     espboy_ram_tick(cart_ram, GG_CART_RAM_SIZE, machine.frames);
 #endif
     sg_menu_frame();
-    sg_menu_poll(raw);
+    sg_menu_poll(mb);
     sg_menu_tick();
 #if GG_CACHE_DYN
     if (stack_pool.top) m0_stack_pool_frame(&stack_pool);

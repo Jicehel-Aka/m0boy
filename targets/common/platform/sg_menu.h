@@ -41,6 +41,7 @@
 #define SG_MENU_H
 
 #include "meta_menu.h"
+#include "meta_pad.h"
 #include "meta_audio.h"
 #include "meta_clock.h"
 
@@ -115,18 +116,16 @@ static unsigned sg_stack_never_used(void) {
 
 /* HOME held half a second (alone) asks for the menu; any other key while it
  * is held cancels it (HOME stays exclusive).  On release without the hold,
- * SG_MENU_TAP (the game's key on the Pokitto, whose C is HOME). */
+ * SG_MENU_TAP (the game's key on the Pokitto, whose C is HOME).  The caller
+ * passes the pad through META_PAD: the bits are the META_MB_* ones on every
+ * console. */
 static uint8_t sg_menu_was_down, sg_menu_stage, sg_menu_request;
 static uint32_t sg_menu_since;
 
-#if META_TARGET_POKITTO
-#define SG_MENU_HOME_BIT POKITTO_C
-#else
-#define SG_MENU_HOME_BIT 0x80
-#endif
+#define SG_MENU_HOME_BIT META_MB_HOME
 
-static void sg_menu_poll(uint8_t raw) {
-    const uint8_t home = raw & SG_MENU_HOME_BIT, others = raw & (uint8_t)~SG_MENU_HOME_BIT;
+static void sg_menu_poll(uint8_t mb) {
+    const uint8_t home = mb & SG_MENU_HOME_BIT, others = mb & (uint8_t)~SG_MENU_HOME_BIT;
     uint32_t now = millis();
     if (home) {
         if (!sg_menu_was_down) {
@@ -147,17 +146,10 @@ static void sg_menu_poll(uint8_t raw) {
 /* The menu's keys as the META_MB_* bits meta_menu_run reads them. */
 static uint8_t sg_menu_buttons(void) {
 #if META_TARGET_POKITTO
-    const uint8_t p = SG_PAD_RAW();
-    uint8_t m = 0;
-    if (p & POKITTO_DOWN) m |= META_MB_DOWN;
-    if (p & POKITTO_LEFT) m |= META_MB_LEFT;
-    if (p & POKITTO_RIGHT) m |= META_MB_RIGHT;
-    if (p & POKITTO_UP) m |= META_MB_UP;
-    if (p & POKITTO_A) m |= META_MB_A;
-    if (p & POKITTO_B) m |= META_MB_B;
-    return m; /* C stays held: it opened the menu */
+    /* C stays out: held, it opened the menu (meta_pad.h maps it to HOME) */
+    return (uint8_t)(META_PAD(SG_PAD_RAW()) & ~META_MB_HOME);
 #else
-    return SG_PAD_RAW(); /* the library's bit order (META pad, ESPboy) */
+    return META_PAD(SG_PAD_RAW()); /* the library's order, the META_MB_* values */
 #endif
 }
 

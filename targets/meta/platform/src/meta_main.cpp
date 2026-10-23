@@ -56,6 +56,7 @@
 #include "meta_display.h"
 #include "meta_lcd.h"
 #include "meta_menu.h"
+#include "meta_pad.h"
 #include "meta_sd.h"
 #include "meta_save.h"
 #include "meta_state.h"
@@ -104,13 +105,6 @@ static int close_frame(void) {
 
 /* ---- buttons -------------------------------------------------------------- */
 
-#if !META_TARGET_POKITTO
-
-/* The pad is read by the bus driver (meta_pad_read, meta_spi.c) at
- * META_BUTTONS_SPI_HZ (gbl_board.h); the frontends only map the bits. */
-
-#endif /* !META_TARGET_POKITTO */
-
 /* META A gives Game Boy B and META B gives Game Boy A; 0 maps them straight
  * (the Pokitto's default: its A is already the right-hand button). */
 #ifndef META_SWAP_AB
@@ -119,7 +113,7 @@ static int close_frame(void) {
 
 #if META_TARGET_ESPBOY
 static void enter_loader(void) { gbl_save_flush(); espboy_restart(); }
-static uint8_t meta_buttons(void) { return espboy_buttons(); }
+static uint8_t meta_buttons(void) { return META_PAD(espboy_buttons()); }
 #elif !META_TARGET_POKITTO
 
 /* Hand the console back to the Gamebuino loader in the state it expects:
@@ -140,25 +134,10 @@ static void enter_loader(void) {
     ((void (*)(void))(*((uint32_t *)0x3FF4)))();
 }
 
-/* Pressed buttons in the Gamebuino library order (META_MB_*): 0 down,
- * 1 left, 2 right, 3 up, 4 A, 5 B, 6 MENU, 7 HOME. */
-static uint8_t meta_buttons(void) {
-    uint8_t m = meta_pad_read();
-#ifdef META_BUTTONS_LAPINOU_ORDER
-    /* 0 left, 1 right, 2 up, 3 A, 4 B, 5 MENU, 6 down, 7 HOME */
-    uint8_t b = (uint8_t)(m & 0x80);
-    if (m & 0x01) b |= META_MB_LEFT;
-    if (m & 0x02) b |= META_MB_RIGHT;
-    if (m & 0x04) b |= META_MB_UP;
-    if (m & 0x08) b |= META_MB_A;
-    if (m & 0x10) b |= META_MB_B;
-    if (m & 0x20) b |= META_MB_MENU;
-    if (m & 0x40) b |= META_MB_DOWN;
-    return b;
-#else
-    return m;
-#endif
-}
+/* Pressed buttons in the menu's META_MB_* order (meta_pad.h): the pad is
+ * read by the bus driver (meta_pad_read, meta_spi.c) at
+ * META_BUTTONS_SPI_HZ (gbl_board.h); the frontends only map the bits. */
+static uint8_t meta_buttons(void) { return META_PAD(meta_pad_read()); }
 
 #else /* Pokitto */
 
@@ -172,19 +151,8 @@ static void enter_loader(void) {
     meta_audio_init();
 }
 
-/* Pokitto buttons as META_MB_* bits: C plays the META's HOME. */
-static uint8_t meta_buttons(void) {
-    uint8_t p = pokitto_buttons();
-    uint8_t m = 0;
-    if (p & POKITTO_A) m |= META_MB_A;
-    if (p & POKITTO_B) m |= META_MB_B;
-    if (p & POKITTO_C) m |= META_MB_HOME;
-    if (p & POKITTO_UP) m |= META_MB_UP;
-    if (p & POKITTO_DOWN) m |= META_MB_DOWN;
-    if (p & POKITTO_LEFT) m |= META_MB_LEFT;
-    if (p & POKITTO_RIGHT) m |= META_MB_RIGHT;
-    return m;
-}
+/* Pokitto buttons as META_MB_* bits (meta_pad.h): C plays the META's HOME. */
+static uint8_t meta_buttons(void) { return META_PAD(pokitto_buttons()); }
 
 #endif /* !META_TARGET_POKITTO */
 
