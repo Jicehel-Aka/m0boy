@@ -32,7 +32,7 @@ l'ESPboy, une image à flasher).
 | Game Gear | oui | oui | oui |
 | Master System | oui | oui | oui |
 | MSX1 (mappers ASCII8/16, Konami ; expérimental) | oui | oui | — |
-| PICO-8 | oui | — | oui |
+| PICO-8 | oui | oui | oui |
 
 Chaque cœur a le même menu d'options (HOME maintenu ; C sur la Pokitto) :
 reprendre, redémarrer, **10 emplacements d'états**, volume, vitesse,
@@ -42,7 +42,7 @@ META).
 
 | Fonction | META | Pokitto | ESPboy |
 |---|---|---|---|
-| États sauvegardés | tous les cœurs, fichier sur la carte | tous sauf PICO-8, fichier sur la carte | tous les cœurs, en flash |
+| États sauvegardés | tous les cœurs, fichier sur la carte | tous les cœurs, fichier sur la carte | tous les cœurs, en flash |
 | Sauvegardes sur pile | `.SAV` sur la carte | `.SAV` sur la carte | en flash, deux copies alternées |
 | ROM plus grande que la flash | lue sur la carte, secteurs chauds gardés en flash | lue sur la carte | `rom.bin` dans les 4 Mio de flash |
 | Secteurs de ROM compressés (LZSS) | oui | oui | oui |
@@ -229,6 +229,8 @@ pointeurs absolus du tas : un état ne se recharge que dans le firmware qui l'a
 ```bash
 build/bin/m0recomp celeste.p8.png --system pico8 --target meta -o out/celeste
 pio run -d out/celeste
+build/bin/m0recomp celeste.p8.png --system pico8 --target pokitto -o out/celeste-pokitto
+cmake -G Ninja -S out/celeste-pokitto -B out/celeste-pokitto/build -DCMAKE_TOOLCHAIN_FILE=out/celeste-pokitto/arm-toolchain.cmake && ninja -C out/celeste-pokitto/build
 ```
 
 ### ESPboy
@@ -261,8 +263,8 @@ comme carte SD ; `EMU_INPUT` scripte les boutons (`image:touches:durée,...`).
 - SG-1000 : cartouches non paginées jusqu'à 48 Kio, NTSC, pas de clavier
   SC-3000. Master System : pas de son FM. ESPboy : RAM de cartouche Game Gear
   de 8 Kio.
-- PICO-8 : pas encore de Pokitto ; la cartouche doit tenir dans le tas
-  (18 Kio sur la META, 22 Kio sur l'ESPboy).
+- PICO-8 : la cartouche doit tenir dans le tas (18 Kio sur la META et la
+  Pokitto, 22 Kio sur l'ESPboy).
 - Des images sont sautées quand la console prend du retard.
 - Les chiffres marqués **estimé** ou **gm0** ne sont pas des mesures sur
   console.

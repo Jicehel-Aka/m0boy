@@ -8,9 +8,9 @@
 #   (sys = plateforme source : gb, sg, gg ou sms ; deux consoles peuvent ainsi
 #   porter le même nom de jeu sans se distraire).
 #   Un dossier explicite accepte .gb/.gbc/.sg/.gg (ou ses sous-dossiers gb/, sg/ et gg/).
-#   PICO-8 (META, ESPboy ; SRC_SYSTEM=pico8 pour eux seuls) : .p8 et .p8.png,
-#   à la racine, sous pico8/ ou dans un dossier par cartouche sous pico8/
-#   (le jeu prend le nom du dossier) ; tout le Lua est compilé, fichier
+#   PICO-8 (META, Pokitto, ESPboy ; SRC_SYSTEM=pico8 pour eux seuls) : .p8 et
+#   .p8.png, à la racine, sous pico8/ ou dans un dossier par cartouche sous
+#   pico8/ (le jeu prend le nom du dossier) ; tout le Lua est compilé, fichier
 #   d'états <NOM>.ST8 à côté du .bin (ESPboy : dans la flash).
 #   SG-1000 : code Z80 recompilé (projets out/sg1000/<cible>/<jeu>/), GCC ou Clang, couverture NTSC automatique
 #   de AUTO_SECONDS secondes émulées (SG_AUTO_FRAMES pour choisir les images) :
@@ -30,7 +30,8 @@
 #
 #   TARGET=pokitto  même chaîne pour la Pokitto : jeux dans ./roms/pokitto/<sys>/<Jeu>/,
 #                   projets dans out/pokitto/<jeu>/ (build/firmware.elf), firmware
-#                   construit par make (arm-none-eabi-gcc seul, sans PlatformIO),
+#                   construit par make ou cmake+ninja (arm-none-eabi-gcc seul,
+#                   sans PlatformIO),
 #                   228 Kio de flash sous le loader au lieu de 240, pas
 #                   d'icônes (format du loader META).  Les parties
 #                   enregistrées sont communes aux deux consoles.
@@ -1134,13 +1135,12 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
 }
 
 # PICO-8 : p8c compile le Lua de la cartouche en C (pas de partie à jouer :
-# tout est compilé) ; META et ESPboy.  Fichier d'états <NOM>.ST8 sur la
-# carte (META), dans la flash sur l'ESPboy.
+# tout est compilé) ; META, Pokitto et ESPboy.  Fichier d'états <NOM>.ST8 sur
+# la carte (META, Pokitto), dans la flash sur l'ESPboy.
 build_p8_game() { # $1 cartouche (.p8, .p8.png), $2 préfixe, $3 dossier du jeu, $4 sha1
   local rom_path="$1" prefix="$2" game_name="$3" rom_sha="$4"
   local out_dir="out/pico8/$TARGET/$prefix" game_dir="$DEST_DIR/pico8/$game_name"
   local sd_name gen_log build_log esp_stack="" flags firmware
-  [ "$TARGET" = pokitto ] && { echo "[x] PICO-8 : pas encore de cible Pokitto (META et ESPboy)."; return 1; }
   sd_name=$(sd_name_of "$game_name" "$rom_sha")
   mkdir -p "$out_dir" "$game_dir" || return 1
   gen_log=$("$GBRECOMP" "$rom_path" --system pico8 --target "$TARGET" --output-prefix "$prefix" --sd-name "$sd_name" \
@@ -1148,6 +1148,11 @@ build_p8_game() { # $1 cartouche (.p8, .p8.png), $2 préfixe, $3 dossier du jeu,
   flags="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG}"
   if [ "$TARGET" = espboy ]; then
     espboy_pio_run "$out_dir" "$flags" || { echo "$build_log" | tail -20; return 1; }
+  elif [ "$TARGET" = pokitto ]; then
+    build_log=$(cmake -G Ninja -S "$out_dir" -B "$out_dir/build" -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake \
+      -DSG_COMPILER="$FIRMWARE_COMPILER" -DEXTRA_DEFS=-DMETA_OVERCLOCK=$OVERCLOCK 2>&1) \
+      && build_log=$(ninja -C "$out_dir/build" -j"$NPROC" 2>&1) \
+      || { echo "$build_log" | tail -20; return 1; }
   else
     build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" PLATFORMIO_BUILD_FLAGS="$flags" pio run -d "$out_dir" 2>&1) \
       || { echo "$build_log" | tail -20; return 1; }
@@ -1155,6 +1160,7 @@ build_p8_game() { # $1 cartouche (.p8, .p8.png), $2 préfixe, $3 dossier du jeu,
   echo "$gen_log"
   echo "$build_log" | grep -E "^(RAM|Flash):" || true
   firmware="$out_dir/.pio/build/$PIO_ENV/firmware.bin"
+  [ "$TARGET" = pokitto ] && firmware="$out_dir/build/firmware.bin"
   if [ "$TARGET" = espboy ]; then
     cp "$firmware" "$game_dir/firmware.bin" || return 1
     [ -f "${firmware%.bin}.sym" ] && cp "${firmware%.bin}.sym" "$game_dir/firmware.sym" # symboles pour gm0
@@ -1173,7 +1179,11 @@ build_p8_game() { # $1 cartouche (.p8, .p8.png), $2 préfixe, $3 dossier du jeu,
   printf '{\n  "rom": "%s",\n  "sha1": "%s",\n  "version": "%s",\n  "prefix": "%s",\n  "system": "pico8",\n  "pack": 0,\n  "hc": %s,\n  "compiler": "%s"\n}\n' \
     "$(json_escape "$(basename "$rom_path")")" "$rom_sha" "$CUR_VERSION" "$prefix" "$([ "$OVERCLOCK" = 1 ] && echo 1 || echo 0)" "$FIRMWARE_COMPILER" > "$game_dir/.gbrmeta.json"
   if [ "$SOURCE" = 1 ]; then
-    export_source "$out_dir" "$game_dir" "$flags" "$([ "$TARGET" = espboy ] || echo "FIRMWARE_COMPILER=$FIRMWARE_COMPILER ")pio run -d ." || return 1
+    if [ "$TARGET" = pokitto ]; then
+      export_source "$out_dir" "$game_dir" "" "cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake -DSG_COMPILER=$FIRMWARE_COMPILER -DEXTRA_DEFS=-DMETA_OVERCLOCK=$OVERCLOCK && ninja -C build" || return 1
+    else
+      export_source "$out_dir" "$game_dir" "$flags" "$([ "$TARGET" = espboy ] || echo "FIRMWARE_COMPILER=$FIRMWARE_COMPILER ")pio run -d ." || return 1
+    fi
   fi
   zip_game "$game_dir" "$game_dir.zip" || { echo "[x] Zip impossible : le jeu reste en dossier."; return 1; }
   rm -rf "$game_dir"
@@ -1599,9 +1609,9 @@ if [ -n "${SRC_SYSTEM:-}" ]; then
 else
   roms=("$SRC_DIR"/*.gb "$SRC_DIR"/*.gbc "$SRC_DIR"/*.sg "$SRC_DIR"/*.gg "$SRC_DIR"/*.sms
         "$SRC_DIR"/gb/*.gb "$SRC_DIR"/gb/*.gbc "$SRC_DIR"/sg/*.sg "$SRC_DIR"/gg/*.gg "$SRC_DIR"/sms/*.sms)
-  # PICO-8 (META, ESPboy) : une cartouche par fichier, ou par dossier sous pico8/
-  [ "$TARGET" = pokitto ] || roms+=("$SRC_DIR"/*.p8 "$SRC_DIR"/*.p8.png "$SRC_DIR"/pico8/*.p8 "$SRC_DIR"/pico8/*.p8.png
-                                    "$SRC_DIR"/pico8/*/*.p8 "$SRC_DIR"/pico8/*/*.p8.png)
+  # PICO-8 (META, Pokitto, ESPboy) : une cartouche par fichier, ou par dossier sous pico8/
+  roms+=("$SRC_DIR"/*.p8 "$SRC_DIR"/*.p8.png "$SRC_DIR"/pico8/*.p8 "$SRC_DIR"/pico8/*.p8.png
+         "$SRC_DIR"/pico8/*/*.p8 "$SRC_DIR"/pico8/*/*.p8.png)
 fi
 shopt -u nullglob nocaseglob
 

@@ -30,7 +30,8 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
 - PICO-8 (`--system pico8`): `recompiler/src/system/pico8/p8c.c` compiles a
   cartridge's Lua (femto8's reader and compiler, `FEMTO8_DIR`) to C;
   `targets/pico8/runtime/` (values, tables, collector, drawing, sound, API in
-  `p8_natives.def`), `targets/pico8/platform/p8_main.cpp` (META frontend),
+  `p8_natives.def`), `targets/pico8/platform/p8_main.cpp` (META/Pokitto/ESPboy
+  frontend),
   `targets/pico8/host/p8_host.c` (harness). Rule: the screen must equal
   femto8's (`tests/test_pico8_e2e.py` holds a recorded hash; compare Celeste
   against a femto8 built with scripted input and no sleeping when touching the

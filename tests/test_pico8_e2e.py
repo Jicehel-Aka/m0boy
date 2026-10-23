@@ -7,11 +7,21 @@ EXPECTED_HASH is what femto8 produces on the same cartridge and the same buttons
 the 8 KiB), recorded once: the generated C must give the same picture.
 """
 import argparse
+import os
 from pathlib import Path
 import re
 import shutil
+import struct
 import subprocess
 import tempfile
+
+
+def toolchain() -> str | None:
+    """The Pokitto firmware needs arm-none-eabi-gcc: PATH or PlatformIO's."""
+    if shutil.which('arm-none-eabi-gcc'):
+        return ''
+    pio = Path.home() / '.platformio' / 'packages' / 'toolchain-gccarmnoneeabi' / 'bin'
+    return str(pio) + '/' if (pio / 'arm-none-eabi-gcc').exists() else None
 
 FRAMES = 600
 INPUT = "30:16:100,200:32:3,300:1:20,350:2:20"
@@ -143,6 +153,45 @@ def main():
         if shutil.which('pio'):
             run('pio', 'run', '-d', meta)
             assert (meta / '.pio/build/meta/firmware.bin').is_file()
+        # the Pokitto project: the console's drivers and the firmware project
+        pokitto = root / 'pokitto'
+        run(args.recompiler, cart, '--target', 'pokitto', '-o', pokitto)
+        for name in ('CMakeLists.txt', 'pokitto.ld', 'arm-toolchain.cmake', 'checksum.py',
+                     'src/p8_main.cpp', 'src/p8_config.h', 'src/pokitto_audio.c', 'src/pokitto_lcd.c',
+                     'src/pokitto_p8lcd.c', 'src/pokitto_sd.c', 'src/meta_state.cpp', 'src/meta_menu.cpp'):
+            assert (pokitto / name).is_file(), name
+        for name in ('meta_lcd.cpp', 'meta_sd_bus.cpp', 'platformio.ini', 'gamebuino_meta.ld'):
+            assert not (pokitto / 'src' / name).exists() and not (pokitto / name).exists(), name
+        config = (pokitto / 'src/p8_config.h').read_text()
+        assert 'P8_STATE_NAME83' in config and 'P8_BIN_NAME83' not in config, config
+        if toolchain() is None:
+            print('pico8 end to end: ok (firmware skipped: no arm-none-eabi-gcc)')
+            return 0
+        pio = Path.home() / '.platformio' / 'packages' / 'toolchain-gccarmnoneeabi' / 'bin'
+        env = dict(os.environ, TOOLCHAIN=str(pio) + '/')
+        for compiler in ('gcc', 'clang'):
+            folder = 'build-clang' if compiler == 'clang' else 'build'
+            if compiler == 'clang' and not shutil.which('clang'):
+                continue
+            proc = subprocess.run(['cmake', '-G', 'Ninja', '-S', str(pokitto), '-B', str(pokitto / folder),
+                                   '-DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake', '-DSG_COMPILER=' + compiler],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+            assert proc.returncode == 0, proc.stdout[-4000:]
+            proc = subprocess.run(['ninja', '-C', str(pokitto / folder)],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+            assert proc.returncode == 0, proc.stdout[-4000:]
+            fw = (pokitto / folder / 'firmware.bin').read_bytes()
+            if len(fw) > 0x39000:
+                raise SystemExit('pico8 pokitto firmware is %d bytes, above the loader at 0x39000' % len(fw))
+            words = struct.unpack_from('<8I', fw, 0)
+            if sum(words) & 0xFFFFFFFF:
+                raise SystemExit('pico8 pokitto firmware: vector checksum %#x' % (sum(words) & 0xFFFFFFFF))
+            sp, reset = words[0], words[1]
+            if not (0x10000100 < sp <= 0x10008000) or not (reset & 1) or reset >= len(fw):
+                raise SystemExit('pico8 pokitto firmware: vectors SP %#x, reset %#x' % (sp, reset))
+            if b'm0boy-pico8-pokitto ' not in fw:
+                raise SystemExit('pico8 pokitto firmware: version string missing')
+            print('pico8 pokitto %s firmware: %d bytes, checksum and vectors ok' % (compiler, len(fw)))
     print('pico8 end to end: ok')
     return 0
 

@@ -392,7 +392,7 @@ touches the FAT.
   renderer's caches rebuilt), and the ESPboy keeps the slots in its flash
   after the cartridge RAM's copies (8 for a Game Gear game, 5 with
   cartridge RAM, 10 for an SG-1000 one; `espboy_flash.cpp` serves all the
-  cores), and the PICO-8 has them too (META and ESPboy: `p8_state_io`, the
+  cores), and the PICO-8 has them too (META, Pokitto and ESPboy: `p8_state_io`, the
   heap with its absolute pointers, so a state loads only into the firmware
   whose code hash wrote it; `docs/PICO8.fr.md`).  Checked in gm0 on each console: save, play on, load, the menu
   says "Etat charge" and the picture is the saved one.  Also a

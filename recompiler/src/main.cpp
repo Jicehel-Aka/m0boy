@@ -2006,6 +2006,7 @@ int main(int argc, char* argv[]) {
     fs::path rom_plan;
     fs::path meta_dir;
     std::string msx_mapper_name;
+    bool msx_pack = false;
     
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -2196,6 +2197,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--meta-sync-cycles") {
             if (i + 1 < argc) g_meta_sync_cycles = std::stol(argv[++i]);
+        } else if (arg == "--msx-pack") {
+            msx_pack = true;
         } else if (arg == "--msx-mapper") {
             if (i + 1 < argc) msx_mapper_name = argv[++i];
         } else if (arg == "--meta-dir") {
@@ -2216,7 +2219,7 @@ int main(int argc, char* argv[]) {
                       << " inspect=yes disasm="
                       << (m0boy::cpu_descriptor(system.cpu).decoder_available ? "yes" : "no")
                       << " codegen="
-                      << (system.id == m0boy::SystemId::pico8 ? "desktop,meta" : system.supports(m0boy::TargetId::desktop) ? "desktop,meta,pokitto" : "unavailable")
+                      << (system.id == m0boy::SystemId::pico8 ? "desktop,meta,pokitto" : system.supports(m0boy::TargetId::desktop) ? "desktop,meta,pokitto" : "unavailable")
                       << (system.id != m0boy::SystemId::pico8 && system.supports(m0boy::TargetId::espboy) ? ",espboy" : "")
                       << "\n";
         }
@@ -2346,6 +2349,7 @@ int main(int argc, char* argv[]) {
         options.gamegear = gamegear;
         options.mastersystem = mastersystem;
         options.msx = msx;
+        options.msx_pack = msx_pack && msx;
         if (!msx_mapper_name.empty()) {
             int found = -1;
             for (int m = 0; m < 5; m++) if (msx_mapper_name == m0_msx_mapper_name(static_cast<unsigned>(m))) found = m;

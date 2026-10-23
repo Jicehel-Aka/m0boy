@@ -32,7 +32,7 @@ on the ESPboy, an image to flash).
 | Game Gear | yes | yes | yes |
 | Master System | yes | yes | yes |
 | MSX1 (ASCII8/16, Konami mappers; experimental) | yes | yes | — |
-| PICO-8 | yes | — | yes |
+| PICO-8 | yes | yes | yes |
 
 Every core has the same option menu (hold HOME; C on the Pokitto): resume,
 restart, **10 save-state slots**, volume, speed, CPU clock, return to the
@@ -41,7 +41,7 @@ Game Boy, USB bootloader on the META).
 
 | Feature | META | Pokitto | ESPboy |
 |---|---|---|---|
-| Save states | every core, file on the card | every core but PICO-8, file on the card | every core, in flash |
+| Save states | every core, file on the card | every core, file on the card | every core, in flash |
 | Battery saves | `.SAV` on the card | `.SAV` on the card | in flash, two alternating copies |
 | ROM larger than the flash | read from the card, hot sectors kept in flash | read from the card | `rom.bin` in the 4 MiB flash |
 | Compressed ROM sectors (LZSS) | yes | yes | yes |
@@ -217,6 +217,8 @@ by a hash of its code. Notes: [docs/PICO8.fr.md](docs/PICO8.fr.md).
 ```bash
 build/bin/m0recomp celeste.p8.png --system pico8 --target meta -o out/celeste
 pio run -d out/celeste
+build/bin/m0recomp celeste.p8.png --system pico8 --target pokitto -o out/celeste-pokitto
+cmake -G Ninja -S out/celeste-pokitto -B out/celeste-pokitto/build -DCMAKE_TOOLCHAIN_FILE=out/celeste-pokitto/arm-toolchain.cmake && ninja -C out/celeste-pokitto/build
 ```
 
 ### ESPboy
@@ -246,8 +248,8 @@ card; `EMU_INPUT` scripts buttons (`frame:keys:frames,...`).
   session you record through that part fixes it.
 - SG-1000: unbanked cartridges up to 48 KiB, NTSC, no SC-3000 keyboard.
   Master System: no FM sound. ESPboy: Game Gear cartridge RAM is 8 KiB.
-- PICO-8: no Pokitto target yet; cartridges must fit the heap (18 KiB on the
-  META, 22 KiB on the ESPboy).
+- PICO-8: cartridges must fit the heap (18 KiB on the META and the Pokitto,
+  22 KiB on the ESPboy).
 - Frames are skipped when the console falls behind.
 - Performance figures marked **estimate** or **gm0** are not device
   measurements.

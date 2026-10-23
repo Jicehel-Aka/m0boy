@@ -44,6 +44,10 @@ enum {
 /* gm0's enlarged picture: 200 columns from x = 10, panel row y (0..175). */
 #define POKITTO_ZOOM_X 10u
 void pokitto_lcd_row_zoom(unsigned y, const uint16_t *px);
+/* The PICO-8 picture is centred: columns 46..173, rows 24..151 (1:1). */
+#define POKITTO_P8_X 46u
+#define POKITTO_P8_Y 24u
+void pokitto_lcd_row128(unsigned row, const uint16_t *px); /* 128 pixels to picture row `row` (pokitto_p8lcd.c, the PICO-8 projects only) */
 void pokitto_lcd_fill_all(uint16_t color);               /* whole 220x176 panel */
 void pokitto_fault_screen(void);                         /* red screen, never returns */
 

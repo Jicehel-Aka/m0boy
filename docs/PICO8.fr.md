@@ -1,13 +1,14 @@
-# PICO-8 sur la Gamebuino META
+# PICO-8 sur la Gamebuino META et la Pokitto
 
-Statut au 2026-10-19. Les étiquettes disent d'où vient chaque affirmation :
+Statut au 2026-10-23. Les étiquettes disent d'où vient chaque affirmation :
 **vérifié** (comparaison avec femto8 ou test automatique), **mesuré dans gm0**
 (émulateur, pas la console), **estimé**.
 
 ## Ce que c'est
 
-`m0recomp cart.p8.png --target meta` compile le Lua d'une cartouche PICO-8 en C,
-puis en firmware pour la META. Ce n'est pas un interpréteur Lua embarqué : le
+`m0recomp cart.p8.png --target meta` (ou `--target pokitto`) compile le Lua d'une
+cartouche PICO-8 en C,
+puis en firmware pour la console. Ce n'est pas un interpréteur Lua embarqué : le
 bytecode de la cartouche devient une fonction C par fonction Lua, sur un petit
 runtime (`targets/pico8/runtime/`).
 
@@ -24,20 +25,26 @@ runtime (`targets/pico8/runtime/`).
   tables en tableau + nœuds chaînés (Lua 5.2), fermetures et valeurs montantes,
   tas de 18 Kio avec ramasse-miettes qui tasse les tampons (pas de
   fragmentation), dessin et son entiers (pas de virgule flottante).
-- **Frontend META** (`targets/pico8/platform/p8_main.cpp`) : l'image 128×128
-  affichée 1:1 au milieu de l'écran (fenêtre de colonnes du panneau réduite à
-  128, 256 octets par ligne), D-pad, A = O, B = X, MENU relance la cartouche.
+- **Frontend** (`targets/pico8/platform/p8_main.cpp`, les trois consoles) :
+  l'image 128×128 affichée 1:1 au milieu de l'écran (sur la META, fenêtre de
+  colonnes du panneau réduite à 128, 256 octets par ligne ; sur la Pokitto,
+  colonnes 46..173, lignes 24..151, chaque ligne poussée par
+  `pokitto_p8lcd.c`), D-pad, A = O, B = X, MENU relance la cartouche (sur la
+  Pokitto : une impulsion sur C, maintenue à mi-seconde elle ouvre le menu).
   Une erreur d'exécution arrête la cartouche et s'affiche à l'écran.
-- **Save states** (0.10.34, META et ESPboy) : lignes Etat / Sauver / Charger
+- **Save states** (0.10.34 sur la META et l'ESPboy, 0.10.35 sur la Pokitto) :
+  lignes Etat / Sauver / Charger
   du menu, entre deux images. `p8_state_io` sérialise le tas et ses index,
   l'état du dessin et l'écran, les boutons, le générateur aléatoire, les
   canaux audio et toutes les globales que la cartouche peut changer
   (`p8_gen_state_globals`, émise par p8c). Le tas contient des pointeurs
   absolus : un état ne se recharge que dans le firmware qui l'a écrit,
   reconnu par une empreinte de son code (`p8_state_identity`, FNV-1a de
-  0x4000 à `__etext` sur la META, de la zone irom0 sur l'ESPboy) qui entre
+  0x4000 à `__etext` sur la META, de la zone irom0 sur l'ESPboy, de 0x0 à
+  `_sidata` sur la Pokitto) qui entre
   dans le format. Fichier `<NOM>.ST8` sur la carte (créé par `compile.sh`,
-  10 emplacements), dans la flash sur l'ESPboy (6 emplacements pour
+  10 emplacements ; sur la Pokitto, cherché à la racine et dans les dossiers
+  de premier niveau), dans la flash sur l'ESPboy (6 emplacements pour
   Celeste). **Vérifié** : sur le harnais (sans PIE, mêmes adresses à chaque
   lancement), un état sauvé à l'image 300 puis rechargé finit à l'image 600
   sur l'empreinte de femto8, ramasse-miettes forcé compris
@@ -47,10 +54,12 @@ runtime (`targets/pico8/runtime/`).
 - Le menu (META) dessine une ligne de 160 pixels à la fois dans les tampons
   de l'image (640 octets rendus à la pile) et rouvre les 160 colonnes du
   panneau le temps de s'afficher (il était brouillé depuis 0.10.28) ; sur
-  l'ESPboy ses lignes sont réduites à 128 colonnes (il était coupé).
+  l'ESPboy ses lignes sont réduites à 128 colonnes (il était coupé). Sur la
+  Pokitto ses lignes sortent telles quelles (fenêtre Game Boy du panneau) et
+  l'écran est effacé à la fermeture.
 - **ESPboy** : tas de 22 Kio et pile de continuation de 6 Kio en `.bss` (le
   code PICO-8 demande environ 1 Kio de pile C). `compile.sh` traite les
-  cartouches (META et ESPboy ; pas encore de Pokitto).
+  cartouches (META, Pokitto et ESPboy).
 
 ## Vérifié
 
@@ -95,7 +104,12 @@ runtime (`targets/pico8/runtime/`).
   effets d'`sfx` ; boucles d'`sfx`, fondu et masque de `music` ignorés comme
   dans femto8. Le mixage est à 22050 Hz (femto8 : 44100) et n'est pas identique
   à l'échantillon près ; aucune comparaison à l'oreille n'a été faite.
-- Pokitto : non pris en charge pour PICO-8.
+- Pokitto (`--target pokitto`) : firmware construit (gcc et clang, sous le
+  loader à 0x39000, checksums et vecteurs du LPC vérifiés par le test,
+  `tests/test_pico8_e2e.py`), tas de 18 Kio et anneau audio dans la banque
+  RAM1 (POKITTO_RAM_BANKS 1 ; 28,7 Kio de RAM principale sur 32 au rapport
+  du build — **estimé**). Pas encore lancé dans gm0 ni essayé sur la console :
+  ni l'écran, ni le son, ni les états sur carte n'y sont vérifiés.
 - ESPboy (`--target espboy`) : construit avec PlatformIO (RAM 73,7 Kio sur 80, flash
   352 Ko) et lancé dans gm0 (Celeste affiche et joue, couleurs justes) ; la
   cartouche, la police et les tables sont en flash, lues par mots alignés
@@ -107,6 +121,9 @@ runtime (`targets/pico8/runtime/`).
 ```bash
 build/bin/m0recomp roms/pico8/Celeste/celeste.p8.png --target meta -o out/celeste
 (cd out/celeste && pio run)           # .pio/build/meta/firmware.bin sur la carte SD
+build/bin/m0recomp cart.p8.png --target pokitto -o out/celeste-pokitto
+(cd out/celeste-pokitto && cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake && ninja -C build)
+                                      # build/firmware.bin sur la carte SD
 build/bin/m0recomp cart.p8.png --target desktop -o out/celeste-host   # harnais PC
 cmake -G Ninja -S out/celeste-host/host -B out/celeste-host/host/build && ninja -C out/celeste-host/host/build
 out/celeste-host/host/build/celeste_host --frames 600 --input "30:16:100,200:2:60" --shot image.ppm

@@ -2,12 +2,12 @@
 
 La sélection d’un jeu comporte désormais trois identités indépendantes :
 
-| Axe | Game Boy | SG-1000 | Game Gear | Master System |
-| --- | --- | --- | --- | --- |
-| Console d’origine (`--system`) | `gameboy` | `sg1000` | `gg` | `sms` |
-| CPU requis (`--cpu`, contrôle facultatif) | `sm83` | `z80` | `z80` | `z80` |
-| Destination (`--target`) | `desktop`, `meta`, `pokitto` | `desktop` (harness), `meta`, `pokitto` | idem | idem |
-| État actuel | Pipeline existant | Code Z80 recompilé, runtime TMS9918A/SN76489, cartouches sans mapper | Code Z80 recompilé par banques, runtime VDP mode 4/PSG, mappers Sega et Codemasters, ROM et RAM de cartouche sur la carte SD | Runtime Game Gear, image entière réduite 256 → 160 |
+| Axe | Game Boy | SG-1000 | Game Gear | Master System | PICO-8 |
+| --- | --- | --- | --- | --- | --- |
+| Console d’origine (`--system`) | `gameboy` | `sg1000` | `gg` | `sms` | `pico8` |
+| CPU requis (`--cpu`, contrôle facultatif) | `sm83` | `z80` | `z80` | `z80` | `lua` |
+| Destination (`--target`) | `desktop`, `meta`, `pokitto` | `desktop` (harness), `meta`, `pokitto` | idem | idem | `desktop` (harness), `meta`, `pokitto`, `espboy` |
+| État actuel | Pipeline existant | Code Z80 recompilé, runtime TMS9918A/SN76489, cartouches sans mapper | Code Z80 recompilé par banques, runtime VDP mode 4/PSG, mappers Sega et Codemasters, ROM et RAM de cartouche sur la carte SD | Runtime Game Gear, image entière réduite 256 → 160 | Lua compilé en C sur le runtime PICO-8 (notes : `docs/PICO8.fr.md`) |
 
 `--target sg1000` n’est pas une destination : la SG-1000 est la machine
 dont on traduit le programme. META et Pokitto restent les machines sur
