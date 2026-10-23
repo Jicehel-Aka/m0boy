@@ -2321,10 +2321,15 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     if (source.id == m0boy::SystemId::sg1000 || source.id == m0boy::SystemId::gamegear ||
-        source.id == m0boy::SystemId::mastersystem) {
+        source.id == m0boy::SystemId::mastersystem || source.id == m0boy::SystemId::msx) {
+        const bool msx = source.id == m0boy::SystemId::msx;
         const bool mastersystem = source.id == m0boy::SystemId::mastersystem;
         const bool gamegear = source.id == m0boy::SystemId::gamegear || mastersystem;
-        const char* system_label = mastersystem ? "Master System" : gamegear ? "Game Gear" : "SG-1000";
+        const char* system_label = msx ? "MSX" : mastersystem ? "Master System" : gamegear ? "Game Gear" : "SG-1000";
+        if (!source.supports(*m0boy::parse_target(target))) {
+            std::cerr << "Error: " << system_label << " code generation is not available for --target " << target << "\n";
+            return 1;
+        }
         if (analyze_only || meta_thumb || g_meta_pack ||
             g_meta_stream != -1 || !g_rom_profiles.empty() || g_meta_resident ||
             emit_android_project || !native_patch_manifest_path.empty() ||
@@ -2336,6 +2341,7 @@ int main(int argc, char* argv[]) {
         m0boy::sg1000::GenerateOptions options;
         options.gamegear = gamegear;
         options.mastersystem = mastersystem;
+        options.msx = msx;
         options.target = *m0boy::parse_target(target);
         options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string()) : output_prefix;
         if (options.name.empty() || sanitize_prefix(options.name) != options.name) {
@@ -2343,7 +2349,7 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         options.sd_name = g_sd_name;
-        options.output = output_dir.empty() ? fs::path(options.name + (mastersystem ? "_sms_" : gamegear ? "_gg_" : "_sg1000_") + target) : fs::path(output_dir);
+        options.output = output_dir.empty() ? fs::path(options.name + (msx ? "_msx_" : mastersystem ? "_sms_" : gamegear ? "_gg_" : "_sg1000_") + target) : fs::path(output_dir);
         options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
         options.coverage = coverage_paths;
         options.code_budget_bytes = g_meta_code_budget;

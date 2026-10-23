@@ -12,7 +12,7 @@
 namespace m0boy {
 
 enum class CpuId { sm83, z80, lua };
-enum class SystemId { gameboy, sg1000, gamegear, mastersystem, pico8 };
+enum class SystemId { gameboy, sg1000, gamegear, mastersystem, pico8, msx };
 enum class TargetId { desktop, meta, pokitto, espboy };
 
 struct CpuDescriptor {
@@ -66,6 +66,7 @@ namespace sg1000 {
 std::optional<CartridgeInfo> inspect(const std::filesystem::path&, std::string&);
 std::optional<CartridgeInfo> inspect_gamegear(const std::filesystem::path&, std::string&);
 std::optional<CartridgeInfo> inspect_mastersystem(const std::filesystem::path&, std::string&);
+std::optional<CartridgeInfo> inspect_msx(const std::filesystem::path&, std::string&);
 }
 
 } // namespace m0boy

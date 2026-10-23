@@ -3,6 +3,7 @@
  * shared with the Game Boy frontend. */
 #include <cctype>
 #include "m0boy/sg1000_generator.h"
+#include "m0_msx_layout.h"
 #include "m0_sega_mapper.h"
 #include "m0boy/rom_storage.h"
 #include "m0boy/sg1000.h"
@@ -81,13 +82,13 @@ struct Profile {
  * else by its share of the run's executions, averaged over the runs, so the
  * code of a long game session outranks the logos and menus that every run
  * repeats.  Otherwise the first occurrence wins. */
-Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sms, unsigned bank_shift) {
+Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sms, unsigned bank_shift, bool msx = false) {
     Profile profile;
     std::set<Loc> seen;
     std::map<Loc, double> score;
     bool counted = true, rated = true;
     const unsigned long limit = gamegear ? 0xffffff : 0xffff;
-    const std::string base = sms ? "sms" : gamegear ? "gg" : "sg1000";
+    const std::string base = msx ? "msx" : sms ? "sms" : gamegear ? "gg" : "sg1000";
     for (const auto& path : files) {
         std::ifstream file(path);
         std::string line;
@@ -170,6 +171,7 @@ constexpr size_t runtime_bytes = 30 * 1024; /* drivers, runtime and, since 0.10.
                                             * menu (meta_menu.cpp, meta_font.h, sg_menu.h: about 6 KiB — left
                                             * unbudgeted it pushed the hot instructions to the interpreter:
                                             * Ristar's first level at 16 fps on the device, 2026-10-20) */
+constexpr size_t msx_state_bytes = 17440; /* sizeof(sg1000_t) with SG_MSX, less its RAM (host build: an upper bound for the ARM one) */
 constexpr size_t bytes_per_instruction = 32; /* measured 13-27 with GCC 7.2 -O2 */
 constexpr size_t gg_bytes_per_instruction = 36; /* Game Gear: paged reads, measured 28-33 */
 constexpr double gg_interpreted_cycles = 300;   /* an interpreted instruction costs about this much more than a compiled one (gm0 profiles) */
@@ -196,15 +198,38 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
          * same way, so their pages stay aligned) */
         rom.erase(rom.begin(), rom.begin() + static_cast<std::ptrdiff_t>(copier_header_skip(rom.size())));        if (rom.size() < 0x400 || rom.size() > 0x400000) { error = "Game Gear cartridge must contain 1 KiB to 4 MiB"; return false; }
         rom.resize((rom.size() + 0x3fff) & ~size_t(0x3fff), 0xff);
+    } else if (o.msx) { /* whole 8 KiB windows, padded with FF */
+        std::ifstream file(path, std::ios::binary);
+        if (!file) { error = "Cannot read MSX cartridge: " + path.string(); return false; }
+        rom.assign(std::istreambuf_iterator<char>(file), {});
     } else {
         auto cartridge = Cartridge::load(path, error);
         if (!cartridge) return false;
         rom.assign(cartridge->bytes().begin(), cartridge->bytes().end());
     }
-    const std::string system_name = o.mastersystem ? "Master System" : gg ? "Game Gear" : "SG-1000";
+    const bool msx = o.msx;
+    m0_msx_layout_t msx_layout{};
+    if (msx) {
+        if (rom.empty() || rom.size() > M0_MSX_MAX_ROM) {
+            error = "MSX cartridge must contain 1 to 32768 bytes; larger cartridges use a mapper (ASCII, Konami), not supported";
+            return false;
+        }
+        msx_layout = m0_msx_layout(rom.data(), rom.size());
+        if (!msx_layout.valid) {
+            error = "Not a plain MSX ROM: an \"AB\" header and an INIT routine inside the cartridge are required";
+            return false;
+        }
+        if (!msx_layout.init) {
+            error = "MSX cartridge has no INIT routine (a BASIC extension, not a game)";
+            return false;
+        }
+        rom.resize(m0_msx_padded(rom.size()), 0xff);
+    }
+    const std::string system_name = msx ? "MSX" : o.mastersystem ? "Master System" : gg ? "Game Gear" : "SG-1000";
     try {
         const auto shared = o.meta_templates.parent_path() / "sg1000";
         const auto tpl = o.meta_templates.parent_path() / (gg ? "gamegear" : "sg1000");
+        const auto msx_dir = o.meta_templates.parent_path() / "msx";
         /* Files both consoles share (CMake templates, host helpers, frontend
          * pieces, the generated-code interface sg_gen.h). */
         const auto common_dir = o.meta_templates.parent_path() / "common";
@@ -212,7 +237,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             throw std::runtime_error(system_name + " templates missing next to targets/meta");
         const unsigned mapper = gg ? m0_sega_mapper(rom.data(), rom.size()) : 0;
         const unsigned bank_shift = mapper == M0_MAPPER_KOREAN150 ? 13 : 14;
-        const Profile profile = read_coverage(o.coverage, gg, o.mastersystem, bank_shift);
+        const Profile profile = read_coverage(o.coverage, gg, o.mastersystem, bank_shift, msx);
         const auto& hot = profile.hot;
         const auto& entries = profile.entries;
         const auto& reads = profile.reads;
@@ -220,7 +245,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const size_t rom_size = rom.size();
         /* consoles: no room for 8 KiB more, the RAM lives in a save file */
         const bool cart_on_card = gg && cart_ram && o.target != TargetId::desktop && o.target != TargetId::espboy;
-        if (!gg) cart_ram = cart_ram && rom_size <= 0x8000; /* 40/48 KiB boards: ROM at 8000 */
+        if (!gg) cart_ram = cart_ram && rom_size <= 0x8000 && !msx; /* 40/48 KiB boards: ROM at 8000 */
+        /* MSX RAM: 16 KiB at C000 on the host; the consoles' SRAM holds the top 8 KiB */
+        const unsigned msx_ram = o.target == TargetId::desktop ? 16384 : 8192;
 
         // compile.sh writes its log into the project directory before generation.
         auto foreign = [&] {
@@ -245,6 +272,12 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         eo.sync_cycles = o.sync_cycles;
         eo.cart_ram = cart_ram;
         eo.mastersystem = o.mastersystem;
+        if (msx) {
+            eo.msx = true;
+            eo.rom_start = msx_layout.base;
+            eo.msx_ram = msx_ram;
+            eo.msx_init = msx_layout.init;
+        }
         eo.aggressive_scan = o.aggressive_scan;
         eo.infer_data_zones = o.infer_data_zones;
         eo.entries.assign(entries.begin(), entries.end());
@@ -481,7 +514,13 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         std::vector<HotLoc> hot_counts;
         hot_counts.reserve(hot.size());
         for (Loc loc : hot) hot_counts.push_back({ loc, profile.hits.at(loc) });
-        write(src / "sg_gen.c", emit_code(rom, hot_counts, eo, es));
+        /* MSX: the emitter addresses the image like the Z80 bus */
+        std::vector<uint8_t> emit_image;
+        if (msx) {
+            emit_image.assign(msx_layout.base, 0xff);
+            emit_image.insert(emit_image.end(), rom.begin(), rom.end());
+        }
+        write(src / "sg_gen.c", emit_code(msx ? std::span<const uint8_t>(emit_image) : std::span<const uint8_t>(rom), hot_counts, eo, es));
         { /* the instructions the firmware runs natively: their fetches never
            * reach the ROM (tools/profile traces the others, --rom-trace-skip) */
             std::ostringstream list;
@@ -533,7 +572,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
          * larger than a slot. */
         const bool states = o.target == TargetId::meta || o.target == TargetId::pokitto;
         if (states) {
-            const size_t state_bytes = (gg ? 25536u : 18216u) + (cart_ram ? 8192u : 0u); /* sizeof(gg_t), sizeof(sg1000_t) */
+            const size_t state_bytes = msx ? msx_state_bytes + msx_ram : (gg ? 25536u : 18216u) + (cart_ram ? 8192u : 0u); /* sizeof(gg_t), sizeof(sg1000_t) */
             config << "#define GG_STATE_NAME \"" << sd << ".ST8\"\n#define GG_STATE_NAME83 \""
                    << name83(sd, "ST8") << "\"\n#define GG_STATE_SLOTS 10\n#define GG_STATE_SLOT_SECTORS "
                    << (state_bytes + 511) / 512 + 1 << "\n";
@@ -574,6 +613,17 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                        << name83(sd, ext) << "\"\n";
             }
         }
+        else if (msx) config << "/* Generated by m0recomp --system msx. */\n#pragma once\n" << code_in_sram
+               << "#define SG_SYSTEM_GG 0 /* sg_gen.h: the MSX slots, through the table of windows */\n"
+               << "#define SG_MSX 1\n"
+               << "#define SG_MSX_RAM " << msx_ram << " /* bytes, at the top of the address space */\n"
+               << "#define SG_MSX_STATE_BYTES " << msx_state_bytes + msx_ram << "\n"
+               << "#define SG_ROM_SIZE " << rom_size << "u\n"
+               << "#define SG_ROM_MASK 0u\n"
+               << "#define SG_CART_RAM 0\n"
+               << "#define SG_LOW_RAM " << (o.target == TargetId::desktop ? 0 : 1) << " /* no room for the colour-pair table */\n"
+               << "#define SG_PRECISE " << (o.precise ? 1 : 0) << "\n"
+               << "#define SG_PANEL_SWAP " << (swap_panel ? 1 : 0) << " /* META SPI: high byte first */\n" << esp_id;
         else config << "/* Generated by m0recomp --system sg1000. */\n#pragma once\n" << code_in_sram
                << "#define SG_SYSTEM_GG 0 /* sg_gen.h: unbanked ROM, RAM at C000 */\n"
                << "#define SG_ROM_SIZE " << rom_size << "u\n"
@@ -644,7 +694,13 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         }
 
         for (const auto& entry : fs::directory_iterator(tpl / "runtime"))
-            if (entry.is_regular_file()) copy_template(entry.path(), src / entry.path().filename());
+            if (entry.is_regular_file() && !(msx && entry.path().filename() == "sg_audio.c"))
+                copy_template(entry.path(), src / entry.path().filename());
+        if (msx) { /* the SG-1000 runtime with the MSX's bus, ports, BIOS and PSG */
+            for (const auto& entry : fs::directory_iterator(msx_dir / "runtime"))
+                if (entry.is_regular_file()) copy_template(entry.path(), src / entry.path().filename());
+            copy_template(common_dir / "runtime/m0_msx_layout.h", src / "m0_msx_layout.h");
+        }
         /* the Z80 engine both consoles run (the memory map differs, see
          * sg_gen.h), and the PSG sample generation sg_audio.c / gg_psg.c
          * include (sg_psg.h) */
@@ -671,6 +727,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const auto cmake_tpl = common_dir / "cmake";
         const std::string console = gg ? "gg" : "sg1000";
         const std::string core_sources = gg ? "${SRC}/z80.c ${SRC}/gg.c ${SRC}/gg_psg.c ${SRC}/gg_vdp.c"
+                                            : msx ? "${SRC}/z80.c ${SRC}/sg1000.c ${SRC}/msx.c ${SRC}/msx_ay.c ${SRC}/tms9918.c"
                                             : "${SRC}/z80.c ${SRC}/sg1000.c ${SRC}/sg_audio.c ${SRC}/tms9918.c";
         const std::string generated_sources = "${SRC}/sg_gen.c ${SRC}/sg_rom.c";
         const std::string render_asm = gg ? "gg_render_asm.S" : "sg_render_asm.S";
@@ -845,7 +902,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
               "Run: host/build/" + o.name + "_host --frames 300 [--interp] [--shot image.ppm]\n\n" +
               (o.target == TargetId::pokitto ? "Firmware: cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake && ninja -C build\n"
                : o.target == TargetId::meta ? "Firmware: pio run\n" : "") +
-              (gg ? std::string(mapper == M0_MAPPER_KOREAN150
+              (msx ? std::string("\nMSX1 unbanked cartridge (") + (msx_layout.base == 0x8000 ? "8000-BFFF" : "4000-BFFF") + "), simulated BIOS, " +
+                         std::to_string(msx_ram / 1024) + " KiB RAM at the top of the address space, TMS9918A, AY-3-8910.\n"
+              : gg ? std::string(mapper == M0_MAPPER_KOREAN150
                         ? "\nKorean 150-in-1 mapper (six 8 KiB windows), native code synced after stores, 8 KiB RAM, SN76489.\n"
                         : "\nSega/Codemasters mapper (16 KiB pages), 8 KiB RAM, VDP mode 4, SN76489.\n")
                   : std::string("\nBaseline NTSC, unbanked cartridge (optional 8 KiB cartridge RAM), TMS9918A, SN76489.\n")));

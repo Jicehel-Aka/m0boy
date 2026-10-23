@@ -82,6 +82,8 @@ std::string hexloc(Loc a) { return a > 0xffff ? hex(a, 6) : hex(a); }
 struct Sandbox {
     std::span<const uint8_t> rom;
     bool banked = false, fixed_kib = true;
+    bool msx = false;       ///< zero-based image of the ROM window only
+    unsigned rom_start = 0;
     unsigned bank_shift = 14;
     unsigned page = 0;      ///< page of the decoded instruction's slot
     int slot = -1;          ///< its slot (-1: fixed area)
@@ -91,6 +93,7 @@ struct Sandbox {
      * at their usual pages; RAM reads 0. */
     uint8_t read(uint16_t a) const {
         const size_t n = rom.size();
+        if (msx) return a >= 0xc000 ? 0 : a >= rom_start && a < n ? rom[a] : 0xff;
         if (!banked) {
             if (a >= 0xc000) return 0;
             if (n && !(n & (n - 1))) return rom[a & (n - 1)];
@@ -124,6 +127,7 @@ struct Z80ScanCtx {
  * access to a known port is evidence of code; writing ROM is evidence of
  * data. */
 static int z80_port_signal(unsigned port, const EmitOptions& opt) {
+    if (opt.msx) return port == 0x98 || port == 0x99 || (port >= 0xa0 && port <= 0xa2) || (port >= 0xa8 && port <= 0xab);
     if (port >= 0x40) return 1;
     if (opt.mastersystem) return (port == 0x3e || port == 0x3f) ? 1 : 0;
     if (opt.banked && port <= 0x06) return 1;
@@ -131,6 +135,7 @@ static int z80_port_signal(unsigned port, const EmitOptions& opt) {
 }
 
 static int z80_store_signal(uint16_t a, const EmitOptions& opt) {
+    if (opt.msx) return a >= 0x10000u - opt.msx_ram ? 1 : 0;
     if (a < 0x8000) return -1;         /* writing ROM never happens */
     if (a >= 0xc000) return 1;         /* RAM */
     return opt.cart_ram ? 1 : 0;       /* 8000-BFFF: cartridge RAM when enabled */
@@ -138,6 +143,7 @@ static int z80_store_signal(uint16_t a, const EmitOptions& opt) {
 
 static int z80_target_signal(uint16_t a, const EmitOptions& opt, size_t rom_size) {
     if (a >= 0xc000) return 0;         /* RAM code: the dispatcher handles it */
+    if (opt.msx && a < opt.rom_start) return 0; /* the BIOS */
     if (!opt.banked && a >= rom_size) return -1;
     return 0;
 }
@@ -294,6 +300,8 @@ public:
         sb_.banked = opt.banked;
         sb_.fixed_kib = opt.fixed_kib;
         sb_.bank_shift = opt.bank_shift;
+        sb_.msx = opt.msx;
+        sb_.rom_start = opt.rom_start;
     }
     std::string run(const std::vector<HotLoc>& hot, EmitStats& stats);
 
@@ -335,12 +343,14 @@ private:
     bool in_rom(Loc l) const {
         const uint16_t a = addr_of(l);
         if (a >= 0xc000) return false;
+        if (opt_.msx && a < opt_.rom_start) return false;
         if (!opt_.banked) return a < rom_.size();
         if (a < 0x400 && opt_.fixed_kib) return a < rom_.size();
         return (static_cast<size_t>(page_of(l)) << opt_.bank_shift) < rom_.size();
     }
     /* Constant reads that can be folded: unbanked ROM, or the fixed first KiB */
     bool rom_const(uint16_t a) const {
+        if (opt_.msx) return a >= opt_.rom_start && a < rom_.size();
         if (opt_.banked) return opt_.fixed_kib && a < 0x400 && a < rom_.size();
         return a < (opt_.cart_ram ? 0x8000u : 0xc000u);
     }
@@ -385,7 +395,7 @@ private:
  * through the dispatcher. */
 Dest Emitter::resolve(const Ins& from, uint16_t a) const {
     Dest d;
-    if (!opt_.banked) { if (a < 0xc000) d.loc = a; return d; }
+    if (!opt_.banked) { if (a < 0xc000 && a >= opt_.rom_start) d.loc = a; return d; }
     if (a >= 0xc000) return d;
     if (a < 0x400 && opt_.fixed_kib) { d.loc = a; return d; }
     const int s = a >> opt_.bank_shift;
@@ -611,6 +621,8 @@ std::string Emitter::pair(unsigned p, const z80_decoded_t& d) const {
  * registers (FFFC-FFFF) and the cartridge window are written by the bus. */
 std::string Emitter::mem_read(uint16_t a) const {
     if (rom_const(a)) return hex(rom_at(a), 2);
+    if (opt_.msx) /* RAM at the top of the address space; the slots decide the rest */
+        return a >= 0xc000 && a >= 0x10000u - opt_.msx_ram ? "machine.ram[" + hex(a - (0x10000u - opt_.msx_ram)) + "]" : "RD(" + hex(a) + ")";
     if (opt_.banked) {
         if (a >= 0xc000) return "machine.ram[" + hex(a & 8191u) + "]";
         return "RD(" + hex(a) + ")";
@@ -619,6 +631,9 @@ std::string Emitter::mem_read(uint16_t a) const {
     return "machine.cart_ram[" + hex(a & 8191u) + "]";
 }
 std::string Emitter::mem_write(uint16_t a, const std::string& v) const {
+    if (opt_.msx)
+        return a >= 0xc000 && a >= 0x10000u - opt_.msx_ram ? "machine.ram[" + hex(a - (0x10000u - opt_.msx_ram)) + "] = " + v + ";"
+                                                           : "sg_wr(" + hex(a) + ", " + v + ");";
     if (opt_.banked) {
         if (a >= 0xc000 && a < 0xfffc && !(opt_.bank_shift == 13 && a == 0xfff3)) return "machine.ram[" + hex(a & 8191u) + "] = " + v + ";";
         return "sg_wr(" + hex(a) + ", " + v + ");";
@@ -1114,6 +1129,7 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
     };
     auto reach = [&](Loc a) { if (a != NOLOC && !ins_.count(a) && in_rom(a) && !padding(a)) add(a, false, 0); };
     for (Loc v : { 0x0000u, 0x0038u, 0x0066u }) reach(v);
+    if (opt_.msx && opt_.msx_init) reach(opt_.msx_init);
     auto drain = [&]() {
         while (!work.empty()) {
             Ins in = ins_[work.front()];
@@ -1139,23 +1155,23 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
         std::vector<m0boy::ScanZone> zones; /* (page << 16 | page offset) keys */
         m0boy::ScanOptions scan_options;
         scan_options.min_instructions = 2;
-        scan_options.pointer_lo = 0x0000;
+        scan_options.pointer_lo = opt_.msx ? opt_.rom_start : 0x0000;
         scan_options.pointer_hi = 0xc000;
         const size_t page_bytes = size_t(1) << opt_.bank_shift;
         const size_t page_count = opt_.banked ? (rom_.size() + page_bytes - 1) / page_bytes : 1;
         for (size_t pi = 0; pi < page_count; pi++) {
-            const size_t base = opt_.banked ? pi * page_bytes : 0;
-            const size_t size = opt_.banked ? std::min<size_t>(page_bytes, rom_.size() - base) : rom_.size();
+            const size_t base = opt_.banked ? pi * page_bytes : opt_.msx ? opt_.rom_start : 0;
+            const size_t size = opt_.banked ? std::min<size_t>(page_bytes, rom_.size() - base) : rom_.size() - base;
             SweptRegion region;
             region.page = opt_.banked ? static_cast<unsigned>(pi) : 0;
             region.slot = opt_.banked ? (pi == 0 ? 0 : 1) : -1;
-            region.addr_base = opt_.banked && pi > 0 ? static_cast<uint16_t>(page_bytes) : 0x0000;
+            region.addr_base = opt_.banked && pi > 0 ? static_cast<uint16_t>(page_bytes) : opt_.msx ? static_cast<uint16_t>(opt_.rom_start) : 0x0000;
             Z80ScanCtx ctx{&sb_, &opt_, rom_.size(), region.page, region.slot, region.addr_base};
             m0boy::ScanAdapter adapter{&ctx, z80_scan_step};
             m0boy::scan_region(rom_.data() + base, size, adapter, scan_options, region.scan);
-            const uint32_t zone_base = opt_.banked ? static_cast<uint32_t>(pi) << 16 : 0;
+            const uint32_t zone_base = opt_.banked ? static_cast<uint32_t>(pi) << 16 : opt_.msx ? opt_.rom_start : 0;
             for (const m0boy::ScanZone& z : m0boy::scan_data_zones(region.scan, 512)) {
-                zones.push_back({zone_base | z.start, zone_base | z.end, z.dominant});
+                zones.push_back({zone_base + z.start, zone_base + z.end, z.dominant});
                 stats.data_bytes += z.end - z.start;
             }
             swept.push_back(std::move(region));
@@ -1203,7 +1219,7 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
     for (const auto& [a, in] : ins_) stats.locations.push_back(static_cast<uint32_t>(a));
     plan();
     std::ostringstream o;
-    o << "/* Generated by m0recomp --system " << (opt_.banked ? "gg" : "sg1000") << ". Do not edit. */\n#include \"sg_gen.h\"\n"
+    o << "/* Generated by m0recomp --system " << (opt_.banked ? "gg" : opt_.msx ? "msx" : "sg1000") << ". Do not edit. */\n#include \"sg_gen.h\"\n"
       << "#pragma GCC diagnostic ignored \"-Wunused-label\"\n";
     /* noinline: regions call each other; inlining chains of them explodes
      * compile time and flash. */
@@ -1234,6 +1250,12 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
                              : "    const uint32_t loc = (uint32_t)machine.page[pc >> " + std::to_string(opt_.bank_shift) + "] << 16 | pc;\n")
           << "    static uint32_t cache_pc[32];\n    static sg_fn cache_fn[32];\n" /* RAM is short */
           << "    unsigned h = (loc ^ (loc >> 5) ^ (loc >> 16)) & 31;\n";
+    else if (opt_.msx) /* the cartridge, and only while the slots show it there */
+        o << "    if (pc >= 0xc000 || pc < " << hex(opt_.rom_start) << ") return 0;\n"
+          << "    if (machine.rd_win[pc >> 13] != machine.rom + ((pc & 0xe000u) - " << hex(opt_.rom_start) << ")) return 0;\n"
+          << "    const uint16_t loc = pc;\n"
+          << "    static uint16_t cache_pc[64];\n    static sg_fn cache_fn[64];\n"
+          << "    unsigned h = (pc ^ (pc >> 6)) & 63;\n";
     else
         o << "    const uint16_t loc = pc;\n"
           << "    static uint16_t cache_pc[64];\n    static sg_fn cache_fn[64];\n"

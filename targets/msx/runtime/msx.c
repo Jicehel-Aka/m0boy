@@ -1,0 +1,428 @@
+/* MSX1 on the SG-1000 runtime: slots, PPI, AY-3-8910 registers, joystick and
+ * keyboard matrix, and a simulated BIOS.
+ *
+ * No BIOS image is used or shipped.  The 512 bytes at 0000 (msx_bios) are
+ * the jump table of the standard entry points, each a stub
+ *     OUT (id),A ; RET
+ * whose port is the routine's number: sg1000_out sends ports 00-3F here, and
+ * the routine runs in C on the registers in machine.cpu, in the interpreter
+ * and in recompiled code alike.  The interrupt handler at 0038 is real Z80
+ * code (it calls the hooks H.KEYI and H.TIMI in RAM, which games patch).
+ * Entry points not listed below are a bare RET.
+ *
+ * Covered: slot selection (RDSLT, WRSLT, ENASLT, CALSLT, CALLF, RSLREG,
+ * WSLREG), VDP access (WRTVDP, RDVRM, WRTVRM, SETRD, SETWRT, FILVRM, LDIRMV,
+ * LDIRVM, DISSCR, ENASCR, RDVDP, CLRSPR, CLS), screen modes 0-3 (CHGMOD,
+ * INITXT, INIT32, INIGRP, INIMLT, SETTXT/SETT32/SETGRP/SETMLT, CHGCLR),
+ * sound (GICINI, WRTPSG, RDPSG), input (GTSTCK, GTTRIG, SNSMAT, CHSNS,
+ * CHGET, GTPAD, GTPDL) and the frame counter JIFFY.  Not covered: the BIOS
+ * font (text modes show no glyphs), CHPUT and the other text routines, the
+ * cassette, printer and disk routines, slot expansion, MSX2. */
+#include "sg1000.h"
+#if SG_MSX
+#include "m0_msx_layout.h"
+#include <string.h>
+
+void msx_ay_write(unsigned reg, uint8_t value);
+
+#define Z (machine.cpu)
+
+#ifdef SG_MSX_STATE_BYTES /* generated projects: the save-state slots are sized from this */
+_Static_assert(sizeof(sg1000_t) <= SG_MSX_STATE_BYTES, "sg1000_t outgrew SG_MSX_STATE_BYTES (generator.cpp: msx_state_bytes)");
+#endif
+
+/* ---- the BIOS image ------------------------------------------------------- */
+
+enum {
+    T_RDSLT = 1, T_WRSLT, T_ENASLT, T_CALLF, T_DCOMPR, T_DISSCR, T_ENASCR, T_WRTVDP, T_RDVRM, T_WRTVRM,
+    T_SETRD, T_SETWRT, T_FILVRM, T_LDIRMV, T_LDIRVM, T_CHGMOD, T_CHGCLR, T_CLRSPR, T_INITXT, T_INIT32,
+    T_INIGRP, T_INIMLT, T_SETTXT, T_SETT32, T_SETGRP, T_SETMLT, T_GICINI, T_WRTPSG, T_RDPSG, T_CLS,
+    T_GTSTCK, T_GTTRIG, T_RSLREG, T_WSLREG, T_RDVDP, T_SNSMAT, T_CHSNS, T_CHGET, T_GTPAD, T_TICK
+};
+#define ENTRY(address, id) [address] = 0xd3, [(address) + 1] = (id), [(address) + 2] = 0xc9
+
+#pragma GCC diagnostic ignored "-Woverride-init"
+const uint8_t msx_bios[MSX_BIOS_BYTES] = {
+    [0 ... MSX_BIOS_BYTES - 1] = 0xc9, /* anything else the BIOS would hold: RET */
+    [0x06] = 0x98, [0x07] = 0x98,      /* VDP read and write ports */
+    [0x2b] = 0x00, [0x2c] = 0x00, [0x2d] = 0x00, [0x2e] = 0x00, /* 60 Hz, Japanese set, MSX1 */
+    ENTRY(0x0c, T_RDSLT), ENTRY(0x14, T_WRSLT), ENTRY(0x24, T_ENASLT), ENTRY(0x30, T_CALLF),
+    ENTRY(0x20, T_DCOMPR),
+    [0x1c] = 0xdd, [0x1d] = 0xe9,      /* CALSLT: JP (IX); the slot is not switched */
+    [0x38] = 0xc3, [0x39] = 0x70, [0x3a] = 0x01, /* KEYINT */
+    ENTRY(0x41, T_DISSCR), ENTRY(0x44, T_ENASCR), ENTRY(0x47, T_WRTVDP), ENTRY(0x4a, T_RDVRM),
+    ENTRY(0x4d, T_WRTVRM), ENTRY(0x50, T_SETRD), ENTRY(0x53, T_SETWRT), ENTRY(0x56, T_FILVRM),
+    ENTRY(0x59, T_LDIRMV), ENTRY(0x5c, T_LDIRVM), ENTRY(0x5f, T_CHGMOD), ENTRY(0x62, T_CHGCLR),
+    ENTRY(0x69, T_CLRSPR), ENTRY(0x6c, T_INITXT), ENTRY(0x6f, T_INIT32), ENTRY(0x72, T_INIGRP),
+    ENTRY(0x75, T_INIMLT), ENTRY(0x78, T_SETTXT), ENTRY(0x7b, T_SETT32), ENTRY(0x7e, T_SETGRP),
+    ENTRY(0x81, T_SETMLT), ENTRY(0x90, T_GICINI), ENTRY(0x93, T_WRTPSG), ENTRY(0x96, T_RDPSG),
+    ENTRY(0x9c, T_CHSNS), ENTRY(0x9f, T_CHGET), ENTRY(0xc3, T_CLS), ENTRY(0xd5, T_GTSTCK),
+    ENTRY(0xd8, T_GTTRIG), ENTRY(0xdb, T_GTPAD), ENTRY(0xde, T_GTPAD),
+    ENTRY(0x138, T_RSLREG), ENTRY(0x13b, T_WSLREG), ENTRY(0x13e, T_RDVDP), ENTRY(0x141, T_SNSMAT),
+    /* KEYINT body: save every register, H.KEYI, read the VDP status, and on a
+     * frame interrupt store it in STATFL, count JIFFY and call H.TIMI */
+    [0x170] = 0xe5, 0xd5, 0xc5, 0xf5,          /* PUSH HL, DE, BC, AF */
+    0xd9, 0x08,                                 /* EXX; EX AF,AF' */
+    0xe5, 0xd5, 0xc5, 0xf5,                     /* PUSH HL, DE, BC, AF (the other set) */
+    0xcd, 0x9a, 0xfd,                           /* CALL H.KEYI */
+    0xdb, 0x99, 0xa7,                           /* IN A,(99); AND A */
+    0xf2, 0x8b, 0x01,                           /* JP P,done */
+    0x32, 0xe7, 0xf3,                           /* LD (STATFL),A */
+    0xd3, T_TICK,                               /* OUT: JIFFY++ */
+    0xcd, 0x9f, 0xfd,                           /* CALL H.TIMI */
+    0xf1, 0xc1, 0xd1, 0xe1,                     /* done: POP AF, BC, DE, HL */
+    0x08, 0xd9,                                 /* EX AF,AF'; EXX */
+    0xf1, 0xc1, 0xd1, 0xe1,                     /* POP AF, BC, DE, HL */
+    0xfb, 0xc9,                                 /* EI; RET */
+};
+#pragma GCC diagnostic warning "-Woverride-init"
+
+/* ---- work area (the BIOS variables games read) ---------------------------- */
+
+enum {
+    RG0SAV = 0xf3df, STATFL = 0xf3e7, FORCLR = 0xf3e9, BAKCLR = 0xf3ea, BDRCLR = 0xf3eb,
+    SCRMOD = 0xfcaf, JIFFY = 0xfc9e, EXPTBL = 0xfcc1, RAMAD0 = 0xf341, HIMEM = 0xfc4a,
+    LINL32 = 0xf3af, LINLEN = 0xf3b0, CRTCNT = 0xf3b1, CLIKSW = 0xf3db, H_KEYI = 0xfd9a,
+    NAMBAS = 0xf922, CGPBAS = 0xf924, PATBAS = 0xf926, ATRBAS = 0xf928
+};
+
+/* Time the routines take; none while the machine is being set up. */
+static int booting;
+static void spend(unsigned cycles) { if (!booting) machine.cyc += cycles; }
+
+static uint8_t rd(uint16_t a) { return sg1000_read(a); }
+static void wr(uint16_t a, uint8_t v) { sg1000_write(a, v); }
+static void wr16(uint16_t a, uint16_t v) { wr(a, (uint8_t)v); wr((uint16_t)(a + 1), (uint8_t)(v >> 8)); }
+static uint16_t rd16(uint16_t a) { return (uint16_t)(rd(a) | rd((uint16_t)(a + 1)) << 8); }
+
+/* ---- slots ---------------------------------------------------------------- */
+
+/* Primary slots: 0 BIOS (page 0), 1 the cartridge, 2 empty, 3 RAM. */
+void msx_remap(void) {
+    sg1000_t *m = &machine;
+    const unsigned ram_windows = SG_MSX_RAM / 0x2000;
+    for (unsigned w = 0; w < 8; w++) {
+        const unsigned slot = (m->ppi_a >> ((w >> 1) * 2)) & 3;
+        m->rd_win[w] = 0;
+        m->wr_win[w] = 0;
+        if (slot == 1) {
+            const uint32_t at = w * 0x2000u;
+            if (at >= m->msx_base && at - m->msx_base < m0_msx_padded(m->rom_size))
+                m->rd_win[w] = m->rom + (at - m->msx_base);
+        } else if (slot == 3 && w >= 8 - ram_windows) {
+            m->rd_win[w] = m->wr_win[w] = m->ram + (w - (8 - ram_windows)) * 0x2000u;
+        }
+    }
+}
+
+/* Reads that have no window: the BIOS (slot 0, page 0) and empty space. */
+uint8_t msx_read_slow(uint16_t a) {
+    if (a < 0x4000 && !(machine.ppi_a & 3)) return a < MSX_BIOS_BYTES ? msx_bios[a] : 0xc9;
+    return 0xff;
+}
+
+static uint8_t slot_read(unsigned slot, uint16_t a) {
+    sg1000_t *m = &machine;
+    slot &= 3;
+    if (slot == 0) return a < 0x4000 ? (a < MSX_BIOS_BYTES ? msx_bios[a] : 0xc9) : 0xff;
+    if (slot == 1) return a >= m->msx_base && (uint32_t)a - m->msx_base < m0_msx_padded(m->rom_size) ? m->rom[a - m->msx_base] : 0xff;
+    if (slot == 3 && a >= 0x10000u - SG_MSX_RAM) return m->ram[a - (0x10000u - SG_MSX_RAM)];
+    return 0xff;
+}
+
+static void slot_write(unsigned slot, uint16_t a, uint8_t v) {
+    if ((slot & 3) == 3 && a >= 0x10000u - SG_MSX_RAM) machine.ram[a - (0x10000u - SG_MSX_RAM)] = v;
+}
+
+/* ---- VDP helpers (the data path is the SG-1000 one) ----------------------- */
+
+static void vdp_address(uint16_t a, unsigned write) {
+    msx_vdp_out(0x99, (uint8_t)a);
+    msx_vdp_out(0x99, (uint8_t)(((a >> 8) & 63) | (write ? 64 : 0)));
+}
+static void vdp_put(uint8_t v) { msx_vdp_out(0x98, v); }
+static void vdp_register(unsigned r, uint8_t v) {
+    msx_vdp_out(0x99, v);
+    msx_vdp_out(0x99, (uint8_t)(0x80 | r));
+    wr((uint16_t)(RG0SAV + r), v);
+}
+/* A VRAM block, byte by byte through the data port. */
+static void vdp_fill(uint16_t a, unsigned n, uint8_t v) {
+    vdp_address(a, 1);
+    while (n--) { vdp_put(v); spend(24); }
+}
+
+/* ---- screen modes --------------------------------------------------------- */
+
+typedef struct { uint8_t r[8]; uint16_t name, color, pattern, attr, sprites; } mode_t_;
+static const mode_t_ modes[4] = {
+    { { 0x00, 0xf0, 0x00, 0x00, 0x01, 0x36, 0x07, 0xf4 }, 0x0000, 0x0000, 0x0800, 0x1b00, 0x3800 }, /* screen 0 */
+    { { 0x00, 0xe0, 0x06, 0x80, 0x00, 0x36, 0x07, 0x04 }, 0x1800, 0x2000, 0x0000, 0x1b00, 0x3800 }, /* screen 1 */
+    { { 0x02, 0xe0, 0x0e, 0xff, 0x03, 0x76, 0x03, 0x04 }, 0x3800, 0x2000, 0x0000, 0x3b00, 0x1800 }, /* screen 2 */
+    { { 0x00, 0xe8, 0x02, 0x00, 0x00, 0x36, 0x07, 0x04 }, 0x0800, 0x0000, 0x0000, 0x1b00, 0x3800 }, /* screen 3 */
+};
+
+static void clear_sprites(const mode_t_ *md) {
+    vdp_address(md->attr, 1);
+    for (unsigned i = 0; i < 32; i++) {
+        vdp_put(209); vdp_put(0); vdp_put((uint8_t)i); vdp_put(rd(FORCLR) & 15);
+    }
+    vdp_fill(md->sprites, 256, 0);
+    spend(32 * 40);
+}
+
+/* INITXT / INIT32 / INIGRP / INIMLT: the VDP registers, the tables and the
+ * variables of the mode.  VRAM is cleared; there is no BIOS font to load. */
+static void screen_init(unsigned mode) {
+    const mode_t_ *md = &modes[mode & 3];
+    const uint8_t fore = rd(FORCLR) & 15, back = rd(BAKCLR) & 15, border = rd(BDRCLR) & 15;
+    vdp_register(1, 0); /* blank while the tables are rebuilt */
+    vdp_fill(0, 16384, 0);
+    for (unsigned r = 0; r < 8; r++) {
+        uint8_t v = md->r[r];
+        if (r == 1) v = (uint8_t)((v & 0xfc) | (rd((uint16_t)(RG0SAV + 1)) & 3)); /* sprite size is kept */
+        if (r == 7) v = mode == 0 ? (uint8_t)(fore << 4 | back) : border;
+        if (r != 1) vdp_register(r, v);
+        else wr((uint16_t)(RG0SAV + 1), v);
+    }
+    switch (mode & 3) {
+    case 0: vdp_fill(md->name, 960, 0x20); break;
+    case 1:
+        vdp_fill(md->name, 768, 0x20);
+        vdp_fill(md->color, 32, (uint8_t)(fore << 4 | back));
+        break;
+    case 2:
+        vdp_address(md->name, 1);
+        for (unsigned i = 0; i < 768; i++) { vdp_put((uint8_t)i); spend(24); }
+        vdp_fill(md->color, 6144, (uint8_t)(fore << 4 | back));
+        break;
+    default:
+        vdp_address(md->name, 1);
+        for (unsigned row = 0; row < 24; row++)
+            for (unsigned col = 0; col < 32; col++) { vdp_put((uint8_t)((row / 4) * 32 + col)); spend(24); }
+        break;
+    }
+    clear_sprites(md);
+    vdp_register(1, (uint8_t)(md->r[1] & 0xfc) | (rd((uint16_t)(RG0SAV + 1)) & 3));
+    wr(SCRMOD, (uint8_t)mode);
+    wr(NAMBAS, (uint8_t)md->name); wr((uint16_t)(NAMBAS + 1), (uint8_t)(md->name >> 8));
+    wr(CGPBAS, (uint8_t)md->pattern); wr((uint16_t)(CGPBAS + 1), (uint8_t)(md->pattern >> 8));
+    wr(PATBAS, (uint8_t)md->sprites); wr((uint16_t)(PATBAS + 1), (uint8_t)(md->sprites >> 8));
+    wr(ATRBAS, (uint8_t)md->attr); wr((uint16_t)(ATRBAS + 1), (uint8_t)(md->attr >> 8));
+}
+
+/* SETTXT & co: the registers of the mode only, VRAM untouched. */
+static void screen_set(unsigned mode) {
+    const mode_t_ *md = &modes[mode & 3];
+    for (unsigned r = 0; r < 8; r++) {
+        uint8_t v = md->r[r];
+        if (r == 1) v = (uint8_t)((v & 0xfc) | (rd((uint16_t)(RG0SAV + 1)) & 3));
+        if (r == 7) v = mode == 0 ? (uint8_t)((rd(FORCLR) & 15) << 4 | (rd(BAKCLR) & 15)) : rd(BDRCLR) & 15;
+        vdp_register(r, v);
+    }
+    wr(SCRMOD, (uint8_t)mode);
+}
+
+static void change_colors(void) {
+    const unsigned mode = rd(SCRMOD) & 3;
+    const uint8_t fore = rd(FORCLR) & 15, back = rd(BAKCLR) & 15, border = rd(BDRCLR) & 15;
+    if (mode == 0) { vdp_register(7, (uint8_t)(fore << 4 | back)); return; }
+    vdp_register(7, border);
+    if (mode == 1) vdp_fill(modes[1].color, 32, (uint8_t)(fore << 4 | back));
+    else if (mode == 2) vdp_fill(modes[2].color, 6144, (uint8_t)(fore << 4 | back));
+}
+
+/* ---- input ---------------------------------------------------------------- */
+
+/* Pad bits as sg1000_buttons: 1 up, 2 down, 4 left, 8 right, 16 button 1, 32 button 2. */
+static uint8_t key_row(unsigned row) {
+    sg1000_t *m = &machine;
+    uint8_t v = 0xff;
+    if (row == 7 && m->pause) v &= (uint8_t)~0x80;                 /* RETURN */
+    if (row == 8) {
+        const uint8_t b = m->buttons[0];
+        if (b & 16) v &= (uint8_t)~0x01;                           /* SPACE */
+        if (b & 4) v &= (uint8_t)~0x10;                            /* LEFT */
+        if (b & 1) v &= (uint8_t)~0x20;                            /* UP */
+        if (b & 2) v &= (uint8_t)~0x40;                            /* DOWN */
+        if (b & 8) v &= (uint8_t)~0x80;                            /* RIGHT */
+    }
+    return v;
+}
+
+static unsigned stick_direction(uint8_t b) {
+    static const uint8_t table[16] = { 0, 1, 5, 0, 7, 8, 6, 7, 3, 2, 4, 3, 0, 1, 5, 0 };
+    return table[b & 15];
+}
+
+/* AY register read: R14 is joystick port 1 or 2 (R15 bit 6), active low;
+ * bit 6 reads high (no JIS pad), bit 7 the idle cassette input. */
+static uint8_t ay_read(unsigned r) {
+    sg1000_t *m = &machine;
+    if (r == 14) return (uint8_t)(0xc0 | (~m->buttons[(m->ay_reg[15] >> 6) & 1] & 0x3f));
+    return m->ay_reg[r & 15];
+}
+
+/* ---- the BIOS routines ---------------------------------------------------- */
+
+static void set_flags_a(uint8_t v) { Z.f = (uint8_t)(Z.f & Z80_C) | (v & 0x80) | (v ? 0 : Z80_Z); }
+
+static void trap(unsigned id) {
+    sg1000_t *m = &machine;
+    m->msx_calls++;
+    spend(60); /* a call into the BIOS is not free */
+    switch (id) {
+    case T_RDSLT: Z.a = slot_read(Z.a, Z.hl); Z.iff1 = Z.iff2 = 0; break;
+    case T_WRSLT: slot_write(Z.a, Z.hl, Z.e); Z.iff1 = Z.iff2 = 0; break;
+    case T_ENASLT: {
+        const unsigned page = Z.h >> 6, shift = page * 2;
+        m->ppi_a = (uint8_t)((m->ppi_a & ~(3u << shift)) | ((Z.a & 3u) << shift));
+        msx_remap();
+        Z.iff1 = Z.iff2 = 0;
+        break;
+    }
+    case T_CALLF: { /* RST 30h; DB slot; DW address: the slot is not switched */
+        const uint16_t data = rd16(Z.sp), target = rd16((uint16_t)(data + 1));
+        wr16(Z.sp, (uint16_t)(data + 3));  /* where the callee returns to */
+        Z.sp = (uint16_t)(Z.sp - 2);
+        wr16(Z.sp, target);                /* the stub's RET goes there */
+        break;
+    }
+    case T_DCOMPR:
+        Z.f = (uint8_t)((Z.hl == Z.de ? Z80_Z : 0) | (Z.hl < Z.de ? Z80_C : 0) | Z80_N);
+        break;
+    case T_DISSCR: vdp_register(1, (uint8_t)(rd(RG0SAV + 1) & ~0x40)); break;
+    case T_ENASCR: vdp_register(1, (uint8_t)(rd(RG0SAV + 1) | 0x40)); break;
+    case T_WRTVDP: vdp_register(Z.c & 7, Z.b); break;
+    case T_RDVRM: vdp_address(Z.hl, 0); Z.a = msx_vdp_in(0x98); break;
+    case T_WRTVRM: vdp_address(Z.hl, 1); vdp_put(Z.a); break;
+    case T_SETRD: vdp_address(Z.hl, 0); break;
+    case T_SETWRT: vdp_address(Z.hl, 1); break;
+    case T_FILVRM: {
+        unsigned n = Z.bc;
+        vdp_address(Z.hl, 1);
+        while (n--) { vdp_put(Z.a); spend(24); }
+        Z.bc = 0;
+        break;
+    }
+    case T_LDIRMV: { /* VRAM HL -> RAM DE */
+        vdp_address(Z.hl, 0);
+        while (Z.bc) { wr(Z.de++, msx_vdp_in(0x98)); Z.hl++; Z.bc--; spend(40); }
+        break;
+    }
+    case T_LDIRVM: { /* RAM HL -> VRAM DE */
+        vdp_address(Z.de, 1);
+        while (Z.bc) { vdp_put(rd(Z.hl++)); Z.de++; Z.bc--; spend(40); }
+        break;
+    }
+    case T_CHGMOD: if (Z.a < 4) screen_init(Z.a); break;
+    case T_CHGCLR: change_colors(); break;
+    case T_CLRSPR: clear_sprites(&modes[rd(SCRMOD) & 3]); break;
+    case T_INITXT: screen_init(0); break;
+    case T_INIT32: screen_init(1); break;
+    case T_INIGRP: screen_init(2); break;
+    case T_INIMLT: screen_init(3); break;
+    case T_SETTXT: screen_set(0); break;
+    case T_SETT32: screen_set(1); break;
+    case T_SETGRP: screen_set(2); break;
+    case T_SETMLT: screen_set(3); break;
+    case T_GICINI:
+        for (unsigned r = 0; r < 14; r++) msx_ay_write(r, r == 7 ? 0xb8 : 0);
+        msx_ay_write(15, 0x8f);
+        break;
+    case T_WRTPSG: msx_ay_write(Z.a & 15, Z.e); break;
+    case T_RDPSG: Z.a = ay_read(Z.a & 15); break;
+    case T_CLS: {
+        const unsigned mode = rd(SCRMOD) & 3;
+        if (mode < 2) vdp_fill(modes[mode].name, mode ? 768 : 960, 0x20);
+        break;
+    }
+    case T_GTSTCK: Z.a = (uint8_t)stick_direction(m->buttons[Z.a == 2 ? 1 : 0]); break;
+    case T_GTTRIG: {
+        /* 0 space, 1/2 joystick 1/2 button A, 3/4 button B */
+        const unsigned n = Z.a;
+        const uint8_t b = n == 0 || n == 1 ? m->buttons[0] : n == 2 ? m->buttons[1] : n == 3 ? m->buttons[0] >> 1 : m->buttons[1] >> 1;
+        Z.a = b & 16 ? 0xff : 0;
+        set_flags_a(Z.a);
+        break;
+    }
+    case T_GTPAD: Z.a = 0; break;
+    case T_RSLREG: Z.a = m->ppi_a; break;
+    case T_WSLREG: m->ppi_a = Z.a; msx_remap(); break;
+    case T_RDVDP: Z.a = msx_vdp_in(0x99); break;
+    case T_SNSMAT: Z.a = key_row(Z.a); break;
+    case T_CHSNS: Z.f = (uint8_t)((m->buttons[0] & 0x1f) || m->pause ? 0 : Z80_Z); break;
+    case T_CHGET: {
+        const uint8_t b = m->buttons[0];
+        Z.a = m->pause ? 13 : b & 16 ? 32 : b & 1 ? 30 : b & 2 ? 31 : b & 4 ? 29 : b & 8 ? 28 : 0;
+        break;
+    }
+    case T_TICK: wr16(JIFFY, (uint16_t)(rd16(JIFFY) + 1)); break;
+    default: break;
+    }
+}
+
+/* ---- ports ---------------------------------------------------------------- */
+
+uint8_t sg1000_in(uint8_t port) {
+    sg1000_t *m = &machine;
+    switch (port) {
+    case 0x98: case 0x99: return msx_vdp_in(port);
+    case 0xa2: return ay_read(m->ay_latch);
+    case 0xa8: return m->ppi_a;
+    case 0xa9: return key_row(m->ppi_c & 15);
+    case 0xaa: return m->ppi_c;
+    default: return 0xff;
+    }
+}
+
+void sg1000_out(uint8_t port, uint8_t v) {
+    sg1000_t *m = &machine;
+    if (port < 0x40) { trap(port); return; }
+    switch (port) {
+    case 0x98: case 0x99: msx_vdp_out(port, v); break;
+    case 0xa0: m->ay_latch = v & 15; break;
+    case 0xa1: msx_ay_write(m->ay_latch, v); break;
+    case 0xa8: m->ppi_a = v; msx_remap(); break;
+    case 0xaa: m->ppi_c = v; break;
+    case 0xab:
+        if (!(v & 0x80)) m->ppi_c = (uint8_t)((v & 1) ? m->ppi_c | (1u << ((v >> 1) & 7)) : m->ppi_c & ~(1u << ((v >> 1) & 7)));
+        break;
+    default: break; /* printer, clock, MSX-MUSIC...: not present */
+    }
+}
+
+/* ---- boot ----------------------------------------------------------------- */
+
+/* The state the BIOS leaves when it hands over to the cartridge's INIT: page
+ * 1 (or 2) on the cartridge, RAM above, the hooks as RET, the VDP in
+ * screen 1. */
+void msx_boot(void) {
+    sg1000_t *m = &machine;
+    m->ppi_a = m->msx_base == 0x8000 ? 0xd0 : 0xf4;
+    m->ppi_c = 0;
+    m->ay_latch = 0;
+    msx_remap();
+    for (unsigned a = H_KEYI; a < 0xffc9; a++) wr((uint16_t)a, 0xc9);
+    wr(RAMAD0, 0); wr(RAMAD0 + 1, 0); wr(RAMAD0 + 2, 3); wr(RAMAD0 + 3, 3);
+    wr(LINL32, 29); wr(LINLEN, 39); wr(CRTCNT, 24); wr(CLIKSW, 0);
+    wr(FORCLR, 15); wr(BAKCLR, 4); wr(BDRCLR, 4);
+    wr(HIMEM, 0x80); wr(HIMEM + 1, 0xf3);
+    for (unsigned r = 0; r < 14; r++) m->ay_reg[r] = r == 7 ? 0xb8 : 0;
+    m->ay_reg[15] = 0x8f;
+    m->ay_lfsr = 1;
+    wr(RG0SAV + 1, 0xe0);
+    booting = 1; /* the boot costs no emulated time */
+    screen_init(1);
+    booting = 0;
+    m->vdp_pending = 0;
+    m->sprites_dirty = 1;
+    m->vdp_status = 31;
+    Z.sp = 0xf380;
+    Z.im = 1;
+    Z.iff1 = Z.iff2 = 1;
+    Z.pc = m->msx_init ? m->msx_init : m->msx_base;
+}
+
+void msx_state_loaded(void) { msx_remap(); }
+#endif

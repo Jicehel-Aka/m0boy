@@ -8,6 +8,9 @@ static inline void sg_native_write(z80_t *c, uint16_t a, uint8_t v) { (void)c; s
 #define Z80_FAST_FETCH(a) sg1000_read((a))
 #include "z80_fast.h"
 #include <string.h>
+#if SG_MSX
+#include "m0_msx_layout.h"
+#endif
 
 sg1000_t machine;
 
@@ -32,10 +35,12 @@ static void bus_write(void *u, uint16_t a, uint8_t v) { (void)u; sg1000_write(a,
 static uint8_t bus_in(void *u, uint16_t p) { (void)u; return sg1000_in((uint8_t)p); }
 static void bus_out(void *u, uint16_t p, uint8_t v) { (void)u; sg1000_out((uint8_t)p, v); }
 
+#if !SG_MSX
 void sg1000_write_cart(uint16_t a, uint8_t v) {
     machine.cart_ram_used = 1;
     if (machine.cart_ram) machine.cart_ram[a & (SG_CART_RAM_SIZE - 1)] = v;
 }
+#endif
 
 /* Next device event; an acceptable interrupt makes it now. */
 static void schedule(void) {
@@ -51,6 +56,12 @@ void sg_irq_update(void) {
     if (m->cpu.irq && m->cpu.iff1) m->next_evt = m->cyc;
 }
 
+#if SG_MSX
+/* The MSX decodes its own ports (msx.c); the VDP below is this file's,
+ * reached through these names. */
+#define sg1000_in msx_vdp_in
+#define sg1000_out msx_vdp_out
+#endif
 uint8_t sg1000_in(uint8_t port) {
     sg1000_t *m = &machine;
     if (port >= 0x80 && port < 0xc0) {
@@ -117,6 +128,11 @@ void sg1000_out(uint8_t port, uint8_t value) {
     }
 }
 
+#if SG_MSX
+#undef sg1000_in
+#undef sg1000_out
+#endif
+
 /* ---- machine -------------------------------------------------------------- */
 
 void sg1000_init(const uint8_t *rom, size_t size, uint8_t *cart_ram) {
@@ -129,9 +145,19 @@ void sg1000_init(const uint8_t *rom, size_t size, uint8_t *cart_ram) {
     /* Power-of-two boards mirror ROM through the cartridge window; irregular
      * 40/48 KiB dumps map directly and read FF past their end. */
     m->rom_mask = size && !(size & (size - 1)) ? (uint32_t)size - 1 : 0;
+#if SG_MSX
+    (void)cart_ram;
+    m->cart_ram = 0;
+    {
+        const m0_msx_layout_t layout = m0_msx_layout(rom, size);
+        m->msx_base = layout.base;
+        m->msx_init = layout.init;
+    }
+#else
     /* Cartridge RAM sits at 8000-BFFF only on boards of up to 32 KiB of
      * ROM; 40/48 KiB cartridges have ROM there. */
     m->cart_ram = size <= 0x8000 ? cart_ram : 0;
+#endif
     for (unsigned i = 0; i < 16; i++) {
         uint32_t rgb = sg1000_palette[i];
         m->palette[i] = (uint16_t)(((rgb >> 8) & 0xf800) | ((rgb >> 5) & 0x07e0) | ((rgb >> 3) & 0x001f));
@@ -176,6 +202,10 @@ void sg1000_reset(void) {
     memset(m->audio_count, 0, sizeof m->audio_count);
     memset(m->audio_output, 0, sizeof m->audio_output);
     m->interpreted = m->compiled = 0;
+#if SG_MSX
+    memset(m->ay_reg, 0, sizeof m->ay_reg);
+    msx_boot();
+#endif
     schedule();
 }
 
@@ -184,6 +214,10 @@ void sg1000_buttons(unsigned player, uint8_t pressed) {
 }
 
 void sg1000_pause(int pressed) {
+#if SG_MSX
+    machine.pause = !!pressed; /* RETURN on the keyboard matrix: the MSX has no NMI */
+    return;
+#endif
     if (pressed && !machine.pause) { machine.cpu.nmi = 1; machine.next_evt = machine.cyc; }
     machine.pause = !!pressed;
 }
@@ -407,6 +441,9 @@ void sg_state_io(void (*io)(void *data, uint32_t bytes, void *ctx), void *ctx, i
     machine.cpu.out = out;
     machine.stop = 0; /* the saved run's end must not end this one */
     machine.sprites_dirty = 1; /* the renderer's caches follow the loaded VRAM */
+#if SG_MSX
+    msx_state_loaded();
+#endif
     sg1000_palette_changed();
 }
 

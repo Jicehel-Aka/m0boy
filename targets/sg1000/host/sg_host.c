@@ -3,6 +3,9 @@
  * reference one on every displayed line. */
 #include "sg1000.h"
 #include "m0_host_util.h"
+#if SG_MSX
+#include "m0_msx_layout.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -128,6 +131,12 @@ static uint32_t run_hash(void) {
     h = m0_hash_bytes(h, s->psg_volume, sizeof s->psg_volume);
     h = m0_hash_bytes(h, &s->psg_noise, 1);
     h = m0_hash_bytes(h, &s->psg_latch, 1);
+#if SG_MSX
+    h = m0_hash_bytes(h, s->ay_reg, sizeof s->ay_reg);
+    h = m0_hash_bytes(h, &s->ay_latch, 1);
+    h = m0_hash_bytes(h, &s->ppi_a, 1);
+    h = m0_hash_bytes(h, &s->ppi_c, 1);
+#endif
     /* cartridge RAM: the generic harness always maps it; generated projects
      * only when the profile saw it written */
 #ifdef SG_GENERATED
@@ -175,7 +184,11 @@ int main(int argc, char **argv) {
     if (!rom_path) { fprintf(stderr, "Usage: sg1000_host cartridge.sg [--frames N] [--shot file.ppm] [--coverage file]\n"); return 1; }
     FILE *file = fopen(rom_path, "rb");
     if (!file) { perror(rom_path); return 1; }
+#if SG_MSX
+    loaded = m0_rom_load(file, M0_MSX_MAX_ROM, 1, &size); /* padded with FF to whole pages */
+#else
     loaded = m0_rom_load(file, 0xc000, 0, &size); /* unbanked: no page padding */
+#endif
     fclose(file);
     if (!loaded) { fprintf(stderr, "Unsupported cartridge size\n"); return 1; }
     rom = loaded;
@@ -209,7 +222,11 @@ int main(int argc, char **argv) {
     if (coverage) {
         /* v2: every address line carries its execution count, so the
          * recompiler ranks heat across sessions instead of file order */
+#if SG_MSX
+        fprintf(coverage, "# m0boy.msx.coverage.v2\n");
+#else
         fprintf(coverage, "# m0boy.sg1000.coverage.v2\n");
+#endif
         if (machine.cart_ram_used) fprintf(coverage, "# cart-ram\n");
         for (unsigned pc = 0; pc < 65536; pc++) /* dynamic jump targets: region entries */
             if (entries[pc]) fprintf(coverage, "# entry %04x\n", pc);

@@ -22,6 +22,11 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
   `sg_gen.h`); `targets/sg1000/platform/`: META/Pokitto frontend.
 - SG-1000 rule: a `--meta-precise` project must print the same `run_hash` as
   `--interp` (host harness), and `out_mismatch=0` (device renderer = reference).
+- MSX (`--system msx`): the SG-1000 runtime built with `SG_MSX` (slots through a
+  table of 8 KiB windows, PPI, AY-3-8910 in `msx_ay.c`, BIOS simulated in C by
+  `OUT (n),A` traps in `msx.c`; layout rule in `targets/common/runtime/m0_msx_layout.h`).
+  `tests/test_msx_e2e.py` (synthetic cartridge `tests/msx_fixture.py`). The SG-1000
+  firmware must stay identical byte for byte. Notes: `docs/MSX.fr.md`.
 - PICO-8 (`--system pico8`): `recompiler/src/system/pico8/p8c.c` compiles a
   cartridge's Lua (femto8's reader and compiler, `FEMTO8_DIR`) to C;
   `targets/pico8/runtime/` (values, tables, collector, drawing, sound, API in

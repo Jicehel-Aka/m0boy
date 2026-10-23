@@ -46,6 +46,10 @@ static inline __attribute__((always_inline)) uint8_t RD(uint16_t a) {
     return gg_slot_read(a);
 }
 static inline __attribute__((always_inline)) void WR(uint16_t a, uint8_t v) { gg_write(a, v); }
+#elif SG_MSX
+/* Four primary slots through the table of 8 KiB windows (sg1000.h). */
+static inline __attribute__((always_inline)) uint8_t RD(uint16_t a) { return sg1000_read(a); }
+static inline __attribute__((always_inline)) void WR(uint16_t a, uint8_t v) { sg1000_write(a, v); }
 #else
 static inline __attribute__((always_inline)) uint8_t RD(uint16_t a) {
     if (a >= 0xc000) return machine.ram[a & 1023];

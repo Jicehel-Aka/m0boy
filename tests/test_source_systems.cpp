@@ -12,13 +12,18 @@ static void require(bool condition, const char* message) {
 int main() {
     using namespace m0boy;
     try {
-        require(systems().size() == 5, "Source registry incomplete");
+        require(systems().size() == 6, "Source registry incomplete");
         require(detect_system("game.sms") == SystemId::mastersystem && parse_system("sms") == SystemId::mastersystem,
                 "Master System detection failed");
         const auto& gg = system_descriptor(SystemId::gamegear);
         require(gg.cpu == CpuId::z80 && gg.work_ram_bytes == 8192 && parse_system("gg") == SystemId::gamegear,
                 "Game Gear profile incorrect");
         require(detect_system("game.GG") == SystemId::gamegear, "GG detection failed");
+        const auto& msx = system_descriptor(SystemId::msx);
+        require(msx.cpu == CpuId::z80 && msx.reset_address == 0x4000 && parse_system("msx") == SystemId::msx &&
+                    detect_system("game.MX1") == SystemId::msx && msx.supports(TargetId::meta) &&
+                    msx.supports(TargetId::pokitto) && !msx.supports(TargetId::espboy),
+                "MSX profile incorrect");
         const auto& sg = system_descriptor(SystemId::sg1000);
         require(sg.cpu == CpuId::z80 && sg.reset_address == 0 &&
                 sg.work_ram_bytes == 1024, "SG-1000 profile incorrect");
@@ -65,6 +70,32 @@ int main() {
             auto sms = sg1000::inspect_mastersystem(path, error);
             require(sms && sms->rom_bytes == 0x4000 && sms->system == SystemId::mastersystem,
                     "Master System inspection keeps the copier header");
+            std::filesystem::remove(path);
+        }
+        {   /* MSX: "AB" header, INIT inside the cartridge; the page follows INIT */
+            const auto path = std::filesystem::temp_directory_path() / "m0boy_msx_test.mx1";
+            auto write = [&](std::vector<uint8_t> bytes) {
+                std::ofstream file(path, std::ios::binary);
+                file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+            };
+            std::vector<uint8_t> rom(0x4000, 0xff);
+            rom[0] = 'A'; rom[1] = 'B'; rom[2] = 0x10; rom[3] = 0x40;
+            write(rom);
+            auto low = sg1000::inspect_msx(path, error);
+            require(low && low->system == SystemId::msx && low->rom_bytes == 0x4000 && low->mapper == "unbanked 4000-BFFF",
+                    "MSX 4000 cartridge misread");
+            rom[3] = 0x80; /* INIT at 8000: a 16 KiB ROM sits in page 2 */
+            write(rom);
+            auto high = sg1000::inspect_msx(path, error);
+            require(high && high->mapper == "unbanked 8000-BFFF", "MSX 8000 cartridge misread");
+            rom[3] = 0xc0; /* INIT outside the cartridge */
+            write(rom);
+            require(!sg1000::inspect_msx(path, error) && !error.empty(), "MSX INIT outside the ROM accepted");
+            rom[0] = 'X';
+            write(rom);
+            require(!sg1000::inspect_msx(path, error), "MSX cartridge without header accepted");
+            write(std::vector<uint8_t>(0x8001, 0));
+            require(!sg1000::inspect_msx(path, error), "MSX mapper cartridge accepted");
             std::filesystem::remove(path);
         }
     } catch (const std::exception& e) {

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <fstream>
 #include <stdexcept>
 
 namespace m0boy {
@@ -18,6 +19,8 @@ constexpr std::array espboy_targets = {TargetId::desktop, TargetId::meta, Target
 // The Sega consoles' frontends run on every destination, the ESPboy included.
 constexpr std::array sega_targets = espboy_targets;
 // PICO-8 cartridges are compiled to C for the META (and a desktop harness).
+// MSX: the SG-1000 frontends (TMS9918A, Z80); the ESPboy build is not wired up.
+constexpr std::array msx_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto};
 constexpr std::array pico8_targets = {TargetId::desktop, TargetId::meta};
 constexpr std::array system_table = {
     SystemDescriptor{SystemId::gameboy, "gameboy", CpuId::sm83, 0x0100,
@@ -28,6 +31,8 @@ constexpr std::array system_table = {
                      8192, sg1000::inspect_gamegear, sega_targets},
     SystemDescriptor{SystemId::mastersystem, "sms", CpuId::z80, 0x0000,
                      8192, sg1000::inspect_mastersystem, sega_targets},
+    SystemDescriptor{SystemId::msx, "msx", CpuId::z80, 0x4000,
+                     16384, sg1000::inspect_msx, msx_targets},
     SystemDescriptor{SystemId::pico8, "pico8", CpuId::lua, 0x0000,
                      0x8000, pico8::inspect, pico8_targets},
 };
@@ -77,6 +82,12 @@ std::optional<SystemId> detect_system(const std::filesystem::path& path) {
     if (ext == ".gg") return SystemId::gamegear;
     if (ext == ".sms") return SystemId::mastersystem;
     if (ext == ".p8") return SystemId::pico8;
+    if (ext == ".mx1" || ext == ".msx") return SystemId::msx;
+    if (ext == ".rom") { // a MSX ROM starts with "AB"
+        std::ifstream file(path, std::ios::binary);
+        char header[2] = {};
+        if (file.read(header, 2) && header[0] == 'A' && header[1] == 'B') return SystemId::msx;
+    }
     if (ext == ".png") {
         auto stem = path.stem().string();
         std::transform(stem.begin(), stem.end(), stem.begin(), [](unsigned char c) { return std::tolower(c); });

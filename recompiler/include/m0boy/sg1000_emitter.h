@@ -38,6 +38,13 @@ struct EmitOptions {
     /// write moves every window, the running code included.
     bool sync_stores = false;
     bool mastersystem = false; ///< ports 3E/3F instead of the Game Gear 00-06 registers
+    /// MSX: the ROM image handed to emit_code is addressed like the Z80 bus (bytes below
+    /// rom_start are never code); ports 98/99 VDP, A0-A2 PSG, A8-AB PPI; RAM is the top
+    /// msx_ram bytes of the address space; the BIOS (0000-3FFF) runs in the interpreter.
+    bool msx = false;
+    unsigned rom_start = 0;    ///< msx: address of the first ROM byte
+    unsigned msx_ram = 0x2000; ///< msx: bytes of RAM at the top of the address space
+    unsigned msx_init = 0;     ///< msx: INIT routine, a code entry
     std::string io_out = "sg1000_out", io_in = "sg1000_in";
     size_t max_instructions = 6000; ///< flash budget, in instructions
     size_t max_region_instructions = 200;

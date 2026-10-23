@@ -29,6 +29,15 @@ target_link_libraries(m0boy_sg1000_runtime PUBLIC m0boy_z80_runtime)
 add_executable(sg1000_host targets/sg1000/host/sg_host.c)
 target_include_directories(sg1000_host PRIVATE targets/common/host) # m0_explore.h
 target_link_libraries(sg1000_host PRIVATE m0boy_sg1000_runtime)
+# MSX: the SG-1000 runtime with its memory map, ports and BIOS replaced (SG_MSX).
+add_library(m0boy_msx_runtime STATIC targets/sg1000/runtime/sg1000.c targets/sg1000/runtime/tms9918.c
+    targets/msx/runtime/msx.c targets/msx/runtime/msx_ay.c)
+target_include_directories(m0boy_msx_runtime PUBLIC targets/common/runtime targets/sg1000/runtime)
+target_link_libraries(m0boy_msx_runtime PUBLIC m0boy_z80_runtime)
+target_compile_definitions(m0boy_msx_runtime PUBLIC SG_MSX=1 SG_MSX_RAM=16384)
+add_executable(msx_host targets/sg1000/host/sg_host.c)
+target_include_directories(msx_host PRIVATE targets/common/host) # m0_explore.h
+target_link_libraries(msx_host PRIVATE m0boy_msx_runtime)
 add_library(m0boy_gg_runtime STATIC targets/gamegear/runtime/gg.c targets/gamegear/runtime/gg_vdp.c targets/gamegear/runtime/gg_psg.c)
 target_include_directories(m0boy_gg_runtime PUBLIC targets/gamegear/runtime)
 target_include_directories(m0boy_gg_runtime PUBLIC targets/common/runtime) # sg_psg.h
@@ -83,6 +92,13 @@ if(BUILD_TESTS)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_sg1000_e2e.py"
                 --recompiler "$<TARGET_FILE:m0recomp>" --host "$<TARGET_FILE:sg1000_host>")
     set_tests_properties(sg1000_native_end_to_end PROPERTIES TIMEOUT 300)
+    add_executable(test_msx_runtime tests/test_msx_runtime.c)
+    target_link_libraries(test_msx_runtime PRIVATE m0boy_msx_runtime)
+    add_test(NAME msx_native_end_to_end
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_msx_e2e.py"
+                --recompiler "$<TARGET_FILE:m0recomp>" --host "$<TARGET_FILE:msx_host>"
+                --runtime-test "$<TARGET_FILE:test_msx_runtime>")
+    set_tests_properties(msx_native_end_to_end PROPERTIES TIMEOUT 300)
     add_test(NAME gg_native_end_to_end
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_gg_e2e.py"
                 --recompiler "$<TARGET_FILE:m0recomp>" --host "$<TARGET_FILE:gg_host>")

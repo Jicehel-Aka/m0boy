@@ -31,6 +31,7 @@ on the ESPboy, an image to flash).
 | SG-1000 | yes | yes | yes |
 | Game Gear | yes | yes | yes |
 | Master System | yes | yes | yes |
+| MSX (plain ROMs, experimental) | yes | yes | — |
 | PICO-8 | yes | — | yes |
 
 Every core has the same option menu (hold HOME; C on the Pokitto): resume,

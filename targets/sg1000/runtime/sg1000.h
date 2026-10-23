@@ -21,6 +21,22 @@
 #include "sg_config.h"
 #endif
 #endif
+/* MSX (targets/msx): a Z80 + TMS9918A machine whose BIOS is replaced by a
+ * simulated one (msx.c).  Memory is four 16 KiB pages, each in a primary
+ * slot chosen through the PPI; the bus goes through a table of 8 KiB
+ * windows.  SG_MSX_RAM bytes of RAM are present at the top of the address
+ * space (16 KiB: C000-FFFF; 8 KiB on the consoles: E000-FFFF). */
+#ifndef SG_MSX
+#define SG_MSX 0
+#endif
+#if SG_MSX
+#ifndef SG_MSX_RAM
+#define SG_MSX_RAM 8192
+#endif
+#define SG_RAM_BYTES SG_MSX_RAM
+#else
+#define SG_RAM_BYTES 1024
+#endif
 /* Cartridge RAM leaves no room for the 4 KiB colour-pair table. */
 #ifndef SG_LOW_RAM
 #define SG_LOW_RAM 0
@@ -53,7 +69,7 @@ typedef struct {
     const uint8_t *rom;
     uint32_t rom_size, rom_mask; /* mask: power-of-two size - 1, else 0 */
     uint8_t *cart_ram;       /* 8 KiB at 8000-BFFF (mirrored), or NULL */
-    uint8_t ram[1024], vram[16384], vdp[8];
+    uint8_t ram[SG_RAM_BYTES], vram[16384], vdp[8];
     uint16_t vdp_address, sat_base;
     uint8_t vdp_latch, vdp_pending, vdp_buffer, vdp_status;
     uint8_t sprites_dirty;   /* sprite Y, terminator, size or table changed */
@@ -85,6 +101,19 @@ typedef struct {
     uint16_t irq_sp[8];           /* host: stack of interrupt return slots, for entries */
     uint8_t irq_depth;
     uint8_t cart_ram_used;        /* a write reached 8000-BFFF */
+#if SG_MSX
+    /* Memory: per 8 KiB window, where reads and writes go (NULL: nothing, or
+     * the BIOS image for reads of window 0); rebuilt from ppi_a by msx_remap. */
+    const uint8_t *rd_win[8];
+    uint8_t *wr_win[8];
+    uint8_t ppi_a, ppi_c, ay_latch, ay_reg[16];
+    uint16_t msx_base, msx_init;  /* address of the cartridge's first byte, its INIT routine */
+    /* AY-3-8910 sample generation (msx_ay.c) */
+    uint16_t ay_count[3], ay_noise_count, ay_env_count;
+    uint8_t ay_out[3], ay_env_pos, ay_env_attack, ay_env_hold, ay_env_final;
+    uint32_t ay_lfsr;
+    uint32_t msx_calls;           /* BIOS calls made (statistics) */
+#endif
 } sg1000_t;
 
 extern sg1000_t machine;
@@ -100,6 +129,25 @@ void sg1000_pause(int pressed);
 void sg1000_run(void);
 
 /* Bus, at machine.cyc (callers flush pending cycles first). */
+#if SG_MSX
+uint8_t msx_read_slow(uint16_t a);
+static inline uint8_t sg1000_read(uint16_t a) {
+    const uint8_t *w = machine.rd_win[a >> 13];
+    return w ? m0_load_u8(w + (a & 0x1fff)) : msx_read_slow(a);
+}
+static inline void sg1000_write(uint16_t a, uint8_t v) {
+    uint8_t *w = machine.wr_win[a >> 13];
+    if (w) w[a & 0x1fff] = v;
+}
+static inline void sg1000_write_cart(uint16_t a, uint8_t v) { (void)a; (void)v; }
+void msx_remap(void);
+uint8_t msx_vdp_in(uint8_t port);        /* the TMS9918A data and status ports */
+void msx_vdp_out(uint8_t port, uint8_t value);
+void msx_boot(void);                 /* BIOS-simulated start: state the BIOS leaves, jump to INIT */
+void msx_state_loaded(void);
+extern const uint8_t msx_bios[];
+#define MSX_BIOS_BYTES 512
+#else
 static inline uint8_t sg1000_read(uint16_t a) {
     if (a >= 0xc000) return machine.ram[a & 1023];
     if (a >= 0x8000 && machine.cart_ram) return machine.cart_ram[a & (SG_CART_RAM_SIZE - 1)];
@@ -111,6 +159,7 @@ static inline void sg1000_write(uint16_t a, uint8_t v) {
     if (a >= 0xc000) machine.ram[a & 1023] = v;
     else if (a >= 0x8000) sg1000_write_cart(a, v);
 }
+#endif
 uint8_t sg1000_in(uint8_t port);
 void sg1000_out(uint8_t port, uint8_t v);
 
