@@ -50,7 +50,7 @@ runtime (`targets/pico8/runtime/`).
   sur l'empreinte de femto8, ramasse-miettes forcé compris
   (`tests/test_pico8_e2e.py`). **Mesuré dans gm0** : Celeste sur META et
   ESPboy, sauver, jouer, charger, « Etat charge » et l'image de la
-  sauvegarde ; pile C au pire 930 octets sur 1 840 libres (META).
+  sauvegarde ; la pile C mesurée en jeu est donnée plus bas.
 - Le menu (META) dessine une ligne de 160 pixels à la fois dans les tampons
   de l'image (640 octets rendus à la pile) et rouvre les 160 colonnes du
   panneau le temps de s'afficher (il était brouillé depuis 0.10.28) ; sur
@@ -76,22 +76,34 @@ runtime (`targets/pico8/runtime/`).
 
 ## Mesuré dans gm0 (pas sur la console)
 
-- Celeste, firmware META : 18 s d'émulation = 474 images à 48 MHz, soit 26 images
-  par seconde pour 30 demandées. gm0 ne modélise pas les 72 MHz du
-  `META_OVERCLOCK` ; la console, à 72 MHz, devrait tenir 30 images
-  (**estimé**, non mesuré).
-- RAM 30,7 Kio sur 32 (tas 18 Kio, image 8 Kio, pile C 0,9 Kio au plus mesurée),
-  flash 130 Kio sur 240.
-- L'attente du SPI de l'écran (environ 20 % du temps) n'est pas recouverte par
-  le calcul de l'image suivante.
+- Celeste Practice Mod, firmware META, 6000 images d'affichage (100,46 s
+  émulées) à 48 MHz : 2757 images de jeu avant optimisation, 2993 après, soit
+  +8,6 % et environ 30,0 images par seconde hors démarrage (27,6 avant) pour
+  30 demandées. gm0 ne modélise pas les 72 MHz du `META_OVERCLOCK` ; la
+  console, à 72 MHz, a plus de marge (**estimé**, non mesuré).
+- Celeste (cartouche d'origine), même mesure après optimisation : 2993 images,
+  soit environ 30,0 par seconde hors démarrage.
+- RAM 30,5 Kio sur 32 (tas 18 Kio, image 8 Kio, pile C 1 056 octets au plus
+  mesurée en jeu sur 1 544 libres), flash 178 Kio sur 240 pour Celeste Practice Mod.
+- Le transfert SPI de l'écran reste d'environ 11,7 ms par image (24 MHz) et
+  n'est pas recouvert par le calcul de l'image suivante ; c'est la prochaine
+  réserve de temps si le calcul devient plus court.
+- Le code Lua généré est compilé en `-O2` par défaut ; `-DP8_GEN_SIZE` le
+  repasse en `-Os` pour une cartouche qui ne tiendrait plus en flash. Le
+  runtime lit les rangées de sprites par mot, copie d'un mot les sprites
+  entièrement opaques, remplit l'écran par mots de 32 bits et avance dans les
+  sprites mis à l'échelle sans division par pixel. Ces changements ne modifient
+  pas l'image (même hash que femto8, y compris sous `P8_GC_STRESS`).
 
 ## Limites connues
 
 - **Mémoire** : les objets de Celeste occupent jusqu'à environ 16 Kio vivants
   en jeu (mesuré sur un hôte 32 bits). Une cartouche qui garde plus de données
   vivantes que le tas s'arrête sur « out of memory ». `P8_HEAP_BYTES`
-  (`src/p8_config.h`) règle le tas ; la pile C (≈ 0,9 Kio utilisés) et le
-  reste de la RAM limitent sa taille.
+  (`src/p8_config.h`) règle le tas ; la pile C (1 056 octets utilisés au plus
+  en jeu sur 1 544 libres pour Celeste Practice Mod) et le reste de la RAM limitent
+  sa taille. `-DP8_GEN_SIZE` rend environ 22 Kio de flash et 128 octets de
+  pile au prix d'un code Lua plus lent.
 - **Non pris en charge** (la cartouche est compilée, l'appel arrête le jeu) :
   `peek`/`poke`/`memcpy`/`memset`/`reload`/`cstore`, `mset`/`sset`/`fset` (les
   données de la cartouche sont en flash), `fillp`, `tline`, `rrect`,
@@ -107,14 +119,16 @@ runtime (`targets/pico8/runtime/`).
 - Pokitto (`--target pokitto`) : firmware construit (gcc et clang, sous le
   loader à 0x39000, checksums et vecteurs du LPC vérifiés par le test,
   `tests/test_pico8_e2e.py`), tas de 18 Kio et anneau audio dans la banque
-  RAM1 (POKITTO_RAM_BANKS 1 ; 28,7 Kio de RAM principale sur 32 au rapport
-  du build — **estimé**). **Mesuré dans gm0** : l'image 1:1 centrée, les
+  RAM1 (POKITTO_RAM_BANKS 1 ; 29,7 Kio de RAM principale sur 32 au rapport
+  du build, 175 032 octets de firmware sous le loader — **estimé**).
+  **Mesuré dans gm0** : l'image 1:1 centrée, les
   boutons, le menu d'options (C maintenu), sauver puis charger un état
   (le `.ST8` à côté du jeu, dans un dossier de premier niveau de la carte —
   la recherche FAT de la Pokitto ne descend pas plus loin, comme pour les
   autres cœurs). Pas encore essayé sur la console : ni l'écran, ni le son.
-- ESPboy (`--target espboy`) : construit avec PlatformIO (RAM 73,7 Kio sur 80, flash
-  352 Ko) et lancé dans gm0 (Celeste affiche et joue, couleurs justes) ; la
+- ESPboy (`--target espboy`) : construit avec PlatformIO (RAM 75,9 Kio sur 80,
+  firmware 383 Ko) et lancé dans gm0 (Celeste affiche et joue, couleurs
+  justes) ; la
   cartouche, la police et les tables sont en flash, lues par mots alignés
   (`p8_rom.h`). Tas de 28 Kio. Pas encore essayé sur la console, ni mesuré en
   vitesse ni en son.
@@ -140,7 +154,10 @@ build/bin/p8c cart.p8.png --lua       # le Lua tel que compilé
 Options de construction utiles au débogage du firmware : `-DP8_ERROR_STATS`
 (la page d'erreur détaille le tas), `-DP8_STACK_CHECK` (barre de la pile C en
 haut de l'image), `-DP8_STOP_AFTER_US=n` (s'arrête à n µs et affiche le nombre
-d'images, pour comparer des versions dans gm0).
+d'images, pour comparer des versions dans gm0). `-DP8_GEN_SIZE` compile le
+code Lua généré en `-Os` au lieu de `-O2` : environ 22 Kio de flash et 128
+octets de pile en moins, au prix d'environ 10 % sur `p8_frame` pour Celeste
+Practice Mod.
 
 ## gm0
 

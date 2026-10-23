@@ -432,8 +432,16 @@ const Str *p8_str_sub(const Str *src, size_t offset, size_t len) {
     return str;
 }
 
-static int str_eq(const Str *a, const Str *b) {
-    return a == b || (a->len == b->len && a->hash == b->hash && !memcmp(a->s, b->s, a->len));
+static inline int str_eq(const Str *a, const Str *b) {
+    if (a == b) return 1;
+    const uint32_t n = a->len;
+    if (n != b->len || a->hash != b->hash) return 0;
+    const char *x = a->s, *y = b->s;
+    if (n <= 8) { /* keys and short values: a call to memcmp costs more than the bytes */
+        for (uint32_t i = 0; i < n; i++) if (x[i] != y[i]) return 0;
+        return 1;
+    }
+    return memcmp(x, y, n) == 0;
 }
 
 /* ---------------------------------------------------------------- tables */

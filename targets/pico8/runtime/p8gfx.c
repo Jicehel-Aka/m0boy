@@ -5,10 +5,58 @@
 #include <string.h>
 
 P8Gfx p8g;
-uint8_t p8_screen[(P8_W * P8_H) / 2];
+uint8_t p8_screen[(P8_W * P8_H) / 2] __attribute__((aligned(4)));
 uint16_t p8_buttons, p8_btnp;
 uint32_t p8_frames;
 unsigned p8_fps = 30;
+
+/* 256 bits: the sprite sheet's 8x8 cells with no colour 0 pixel.  With the
+ * default draw palette those cells are fully opaque, so a row can be copied
+ * as one word instead of four byte merges.  The sheet is constant; scan it
+ * when the graphics state resets instead of testing every row again. */
+static uint8_t sprite_opaque[32];
+
+static inline int nibbles_nonzero(uint32_t w) {
+    const uint32_t lo = w & 0x0f0f0f0fu, hi = (w >> 4) & 0x0f0f0f0fu;
+    /* each nibble is 0..15: adding 15 sets bit 4 of that byte exactly when it
+     * was not zero (the sums do not carry into the next nibble) */
+    return ((lo + 0x0f0f0f0fu) & 0x10101010u) == 0x10101010u &&
+           ((hi + 0x0f0f0f0fu) & 0x10101010u) == 0x10101010u;
+}
+
+static void scan_sprite_opaque(void) {
+    memset(sprite_opaque, 0, sizeof sprite_opaque);
+    for (int n = 0; n < 256; n++) {
+        const uint8_t *s = &p8_cart[((n >> 4) & 15) * 8 * 64 + (n & 15) * 4];
+        int opaque = 1;
+        for (int y = 0; y < 8 && opaque; y++)
+            opaque = nibbles_nonzero(p8_rom_u32(s + y * 64));
+        if (opaque) sprite_opaque[n >> 3] |= (uint8_t)(1u << (n & 7));
+    }
+}
+
+static inline int sprite_is_opaque(int n) {
+    n &= 255;
+    return (sprite_opaque[n >> 3] >> (n & 7)) & 1;
+}
+
+/* the same fill for a run that may start at any byte: align, then words */
+static void fill_pair_run(uint8_t *p, unsigned n, uint8_t pair) {
+    const uint32_t v = (uint32_t)pair * 0x01010101u;
+    while (n && ((uintptr_t)p & 3u)) { *p++ = pair; n--; }
+    unsigned words = n >> 2;
+    uint32_t *w = (uint32_t *)p;
+    while (words >= 4) { w[0] = v; w[1] = v; w[2] = v; w[3] = v; w += 4; words -= 4; }
+    while (words--) *w++ = v;
+    p = (uint8_t *)w;
+    n &= 3;
+    while (n--) *p++ = pair;
+}
+
+/* aligned, whole screen or whole rows */
+static inline void fill_pairs(uint8_t *p, unsigned bytes, uint8_t pair) {
+    fill_pair_run(p, bytes, pair);
+}
 
 const uint32_t p8_palette_rgb[16] = {
     0x000000, 0x1D2B53, 0x7E2553, 0x008751, 0xAB5236, 0x5F574F, 0xC2C3C7, 0xFFF1E8,
@@ -25,6 +73,7 @@ void p8_gfx_reset(void) {
     p8g.clip_x1 = P8_W;
     p8g.clip_y1 = P8_H;
     p8_gfx_pal_changed();
+    scan_sprite_opaque();
 }
 
 void p8_gfx_pal_changed(void) {
@@ -49,7 +98,7 @@ static inline unsigned draw_color(int col) { return p8g.pal_draw[col & 15] & 15u
 
 void p8_gfx_cls(int color) {
     const unsigned c = draw_color(color);
-    memset(p8_screen, (int)(c | (c << 4)), sizeof p8_screen);
+    fill_pairs(p8_screen, sizeof p8_screen, (uint8_t)(c | (c << 4)));
     p8g.clip_x0 = 0; p8g.clip_y0 = 0; p8g.clip_x1 = P8_W; p8g.clip_y1 = P8_H;
     p8g.cur_x = 0; p8g.cur_y = 0;
 }
@@ -75,7 +124,7 @@ void p8_gfx_rectfill(int x0, int y0, int x1, int y1, int col) {
     if (x0 > x1 || y0 > y1) return;
     const uint8_t pair = (uint8_t)(c | (c << 4));
     if (x0 == 0 && x1 == P8_W - 1) { /* whole rows: one fill */
-        memset(&p8_screen[y0 * 64], pair, (size_t)(y1 - y0 + 1) * 64);
+        fill_pairs(&p8_screen[y0 * 64], (unsigned)(y1 - y0 + 1) * 64, pair);
         return;
     }
     for (int y = y0; y <= y1; y++) {
@@ -84,7 +133,7 @@ void p8_gfx_rectfill(int x0, int y0, int x1, int y1, int col) {
         if (x & 1) { row[x >> 1] = (uint8_t)((row[x >> 1] & 0x0f) | (c << 4)); x++; } /* odd first pixel */
         if (x <= x1) {
             const int pairs = (x1 - x + 1) >> 1;
-            memset(&row[x >> 1], pair, (size_t)pairs);
+            fill_pair_run(&row[x >> 1], (unsigned)pairs, pair);
             x += pairs * 2;
         }
         if (x <= x1) row[x >> 1] = (uint8_t)((row[x >> 1] & 0xf0) | c); /* the last one, even */
@@ -180,36 +229,38 @@ void p8_gfx_sprite(int n, int left, int top, int flip_x, int flip_y) {
     const uint8_t *sheet = &p8_cart[((n >> 4) & 15) * 8 * 64 + (n & 15) * 4];
     const uint8_t *pal = p8g.pal_draw;
     const int inside = dx >= p8g.clip_x0 && dx + 8 <= p8g.clip_x1;
+    const int opaque = p8g.pal_simple && inside && !(dx & 1) && sprite_is_opaque(n);
+    const int aligned = !(dx & 7);
     for (int y = 0; y < 8; y++) {
         const int py = dy + y;
         if (py < p8g.clip_y0 || py >= p8g.clip_y1) continue;
         const uint8_t *src = sheet + (flip_y ? 7 - y : y) * 64;
         uint8_t *row = &p8_screen[py * 64];
+        /* one flash word per row; flip_x reverses the four bytes and swaps
+         * the two pixels in each of them */
+        uint32_t w = p8_rom_u32(src);
+        if (flip_x) w = __builtin_bswap32(((w & 0x0f0f0f0fu) << 4) | ((w >> 4) & 0x0f0f0f0fu));
+        if (opaque) { /* no colour 0: the bytes go out as they are */
+            uint8_t *d = &row[dx >> 1];
+            if (aligned) *(uint32_t *)d = w;
+            else { d[0] = (uint8_t)w; d[1] = (uint8_t)(w >> 8); d[2] = (uint8_t)(w >> 16); d[3] = (uint8_t)(w >> 24); }
+            continue;
+        }
         if (p8g.pal_simple && inside && !(dx & 1)) { /* default palette, whole bytes: no table at all */
             uint8_t *d = &row[dx >> 1];
-            if (!flip_x) {
-                for (int i = 0; i < 4; i++, d++) {
-                    const unsigned b = p8_rom_u8(&src[i]);
-                    if ((b & 0x0f) && (b & 0xf0)) *d = (uint8_t)b;
-                    else if (b & 0x0f) *d = (uint8_t)((*d & 0xf0) | b);
-                    else if (b) *d = (uint8_t)((*d & 0x0f) | b);
-                }
-            } else {
-                for (int i = 3; i >= 0; i--, d++) {
-                    const unsigned b = p8_rom_u8(&src[i]), sw = ((b << 4) | (b >> 4)) & 0xff;
-                    if ((sw & 0x0f) && (sw & 0xf0)) *d = (uint8_t)sw;
-                    else if (sw & 0x0f) *d = (uint8_t)((*d & 0xf0) | sw);
-                    else if (sw) *d = (uint8_t)((*d & 0x0f) | sw);
-                }
+            for (int i = 0; i < 4; i++, d++) {
+                const unsigned b = (w >> (8 * i)) & 0xffu;
+                if ((b & 0x0f) && (b & 0xf0)) *d = (uint8_t)b;
+                else if (b & 0x0f) *d = (uint8_t)((*d & 0xf0) | b);
+                else if (b) *d = (uint8_t)((*d & 0x0f) | b);
             }
             continue;
         }
         uint8_t c[8]; /* the row through the palette; 0xff: transparent */
         for (int i = 0; i < 4; i++) {
-            const unsigned b = p8_rom_u8(&src[i]), lo = pal[b & 15], hi = pal[b >> 4];
-            const int a = flip_x ? 7 - 2 * i : 2 * i;
-            c[a] = (lo & 0x10) ? 0xff : (uint8_t)(lo & 15);
-            c[flip_x ? a - 1 : a + 1] = (hi & 0x10) ? 0xff : (uint8_t)(hi & 15);
+            const unsigned b = (w >> (8 * i)) & 0xffu, lo = pal[b & 15], hi = pal[b >> 4];
+            c[2 * i] = (lo & 0x10) ? 0xff : (uint8_t)(lo & 15);
+            c[2 * i + 1] = (hi & 0x10) ? 0xff : (uint8_t)(hi & 15);
         }
         if (inside && !(dx & 1)) { /* whole bytes */
             uint8_t *d = &row[dx >> 1];
@@ -237,14 +288,32 @@ void p8_gfx_sprites(int n, int x, int y, int w, int h, int flip_x, int flip_y) {
 
 void p8_gfx_sspr(int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh, int flip_x, int flip_y) {
     if (dw <= 0 || dh <= 0) return;
-    for (int y = 0; y < dh; y++)
+    if (sw < 0 || sh < 0) { /* the rare negative source size keeps the old formula */
+        for (int y = 0; y < dh; y++)
+            for (int x = 0; x < dw; x++) {
+                const int src_x = sx + (flip_x ? sw - 1 - (x * sw) / dw : (x * sw) / dw);
+                const int src_y = sy + (flip_y ? sh - 1 - (y * sh) / dh : (y * sh) / dh);
+                if (src_x < 0 || src_y < 0 || src_x > 127 || src_y > 127) continue;
+                const unsigned color = p8g.pal_draw[sheet_pixel(src_x, src_y)];
+                if (!(color & 0xf0)) pset_world(dx + x, dy + y, color & 15u);
+            }
+        return;
+    }
+    /* Bresenham in the source: floor(x*sw/dw) without a division per pixel */
+    int src_y = flip_y ? sy + sh - 1 : sy, acc_y = 0;
+    for (int y = 0; y < dh; y++) {
+        int src_x = flip_x ? sx + sw - 1 : sx, acc_x = 0;
         for (int x = 0; x < dw; x++) {
-            const int src_x = sx + (flip_x ? sw - 1 - (x * sw) / dw : (x * sw) / dw);
-            const int src_y = sy + (flip_y ? sh - 1 - (y * sh) / dh : (y * sh) / dh);
-            if (src_x < 0 || src_y < 0 || src_x > 127 || src_y > 127) continue;
-            const unsigned color = p8g.pal_draw[sheet_pixel(src_x, src_y)];
-            if (!(color & 0xf0)) pset_world(dx + x, dy + y, color & 15u);
+            if (src_x >= 0 && src_y >= 0 && src_x <= 127 && src_y <= 127) {
+                const unsigned color = p8g.pal_draw[sheet_pixel(src_x, src_y)];
+                if (!(color & 0xf0)) pset_world(dx + x, dy + y, color & 15u);
+            }
+            acc_x += sw;
+            while (acc_x >= dw) { acc_x -= dw; src_x += flip_x ? -1 : 1; }
         }
+        acc_y += sh;
+        while (acc_y >= dh) { acc_y -= dh; src_y += flip_y ? -1 : 1; }
+    }
 }
 
 /* ---- map ---- */
