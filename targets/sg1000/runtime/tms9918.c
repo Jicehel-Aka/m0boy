@@ -817,6 +817,10 @@ unsigned sg1000_render_selftest(void) {
     uint16_t a[SG_OUT_WIDTH], b[SG_OUT_WIDTH];
     for (unsigned round = 0; round < 8; round++) {
         for (unsigned i = 0; i < 16384; i++) { r = r * 1103515245u + 12345u; m->vram[i] = (uint8_t)(r >> 16); }
+        if (round == 7) { /* blank patterns, one colour: the asm's fast tile and pair copies */
+            memset(m->vram, 0, 0x2000);
+            memset(m->vram + 0x2000, 0xe4, 0x1800);
+        }
         for (unsigned i = 0; i < 32; i++) m->vram[0x3b00 + i * 4] = (uint8_t)(m->vram[0x3b00 + i * 4] % 200);
         if (round & 4) m->vram[0x3b00 + 6 * 4] = 208;
         m->vdp[0] = (round & 1) ? 2 : 0;

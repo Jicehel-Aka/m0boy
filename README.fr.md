@@ -21,7 +21,7 @@ l'ESPboy, une image à flasher).
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le jeu | 36 Kio de RAM, 228 Kio de flash | 80 Kio de RAM, 4 Mio de flash |
 | Écran | 160×128 | 220×176 | 128×128 |
 | Stockage | carte SD | carte SD | flash seulement |
-| Version du runtime | 0.10.37 | 0.10.31 | 0.3.7 |
+| Version du runtime | 0.10.41 | 0.10.36 | 0.3.10 |
 
 ## Ce qui tourne où
 
@@ -31,8 +31,18 @@ l'ESPboy, une image à flasher).
 | SG-1000 | oui | oui | oui |
 | Game Gear | oui | oui | oui |
 | Master System | oui | oui | oui |
-| MSX1 (mappers ASCII8/16, Konami ; expérimental) | oui | oui | — |
+| MSX1 (mappers ASCII8/16, Konami et Konami SCC ; AY-3-8910 et SCC ; expérimental) | oui | oui | — |
 | PICO-8 | oui | oui | oui |
+
+MSX1 est vérifié contre openMSX (VRAM des écrans titres) et contre le rendu
+de référence de l'hôte ; Gradius 2 (128 Kio, Konami SCC) a tenu 60 images de
+jeu par seconde sur une META lors d'un essai de 90 s (compteur d'images du
+firmware ; images affichées non mesurées). La passe 0.10.41 sur le rendu et
+l'audio saute les mélanges des tuiles et paires vides et les copies
+d'échantillon une à une : sur 3 600 images gm0 de Gradius 2, 3,4 s de moins
+dans les routines de tuiles et 0,8 s de moins dans la génération audio
+(estimations), l'écran et la RAM du jeu restant identiques à la build
+précédente à la même image. Notes : `docs/MSX.fr.md`.
 
 Chaque cœur a le même menu d'options (HOME maintenu ; C sur la Pokitto) :
 reprendre, redémarrer, **10 emplacements d'états**, volume, vitesse,

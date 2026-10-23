@@ -140,11 +140,12 @@ le SG-1000. Le profil est un fichier `# m0boy.msx.coverage.v2`. Le
   flash 98 940 octets.
 - Texte : `CHPUT`, `POSIT` et la police chargée (`tests/test_msx_runtime.c`).
 
-Non vérifié : aucun jeu MSX1 réel n'a été essayé (la seule ROM MSX fournie, Aleste, est MSX2 ;
-hors les jeux de la Super Game 150, qui tournent sur un autre matériel) ; ni
-l'exécution sur console (META, Pokitto) ni sous gm0 ; le son contre un AY réel
+Non vérifié : aucun jeu MSX1 réel n'a été essayé sur console (la seule ROM MSX
+fournie, Aleste, est MSX2 ; hors les jeux de la Super Game 150, qui tournent sur
+un autre matériel) ; l'exécution sur META et Pokitto ; le son contre un AY réel
 (niveaux et cadence de l'enveloppe issus de la documentation de la
-communauté) ; la vitesse (aucun relevé de cycles).
+communauté) ; la vitesse sur console (les chiffres gm0 ci-dessous sont des
+estimations, pas des relevés de cycles).
 
 ## BIOS, son et rendu (0.10.40)
 
@@ -163,3 +164,29 @@ communauté) ; la vitesse (aucun relevé de cycles).
   une estimation, pas une mesure de la console. Les images affichées (saut vidéo
   du pacing) ne sont pas mesurées.
 - `--msx-pack` : ROM en secteurs LZSS dans la flash ; plus lent sur Gradius 2.
+
+## Chemins rapides de rendu et d'audio (0.10.41)
+
+- **Rendu** : dans `sg_render_asm.S`, une tuile de motif nul
+  (`pa == pb == 0`) et une paire dont les deux lignes sont identiques et de
+  motif nul recopient cinq fois le premier mélange au lieu d'en calculer cinq.
+  Gradius 2 en jeu sous gm0 (3 600 images, mêmes entrées des deux côtés) :
+  `sg_pair_g2` 8,77 s → 6,12 s (−30 %), `sg_tiles_g2` 3,98 s → 3,20 s (−20 %),
+  soit ~3,4 s de CPU émulé en moins. Le total reste 59,47 s : la boucle est
+  cadencée à 60 Hz et le temps gagné passe dans les attentes.
+- **Audio** : `sg1000_audio_render` copie le ring par segments (`memcpy`) au
+  lieu d'un échantillon à la fois ; une écriture AY identique (sauf R13, qui
+  relance l'enveloppe) ou SCC identique, ou sur une voix muette, ne découpe
+  plus le bloc en cours. Même mesure : `produce` 3,24 s → 2,67 s et le rendu
+  0,70 s → 0,45 s. Le WAV du harnais hôte est identique bit pour bit avant et
+  après.
+- **Validation du rendu asm** : build `-DSG_SELFTEST`, `sg_selftest_result` lu
+  dans la RAM sous gm0 vaut 1 (aucune ligne différente entre l'assembleur et
+  le C) pour `SG_PANEL_SWAP` 0 et 1. Une des passes du test force des motifs
+  nuls et une couleur constante (`0xE4`) pour couvrir les deux copies rapides,
+  que la VRAM aléatoire n'atteint presque jamais.
+- **Validation en jeu** : Gradius 2 arrêté à la même image du jeu (compteur
+  invité 900, après l'appui sur A) avec le firmware d'avant et celui-ci :
+  captures identiques (md5 `ea2ddaab…`), et la RAM du jeu, la VRAM et les
+  registres du VDP sont identiques ; seuls les compteurs d'audio et de temps,
+  la pile et les pointeurs de code diffèrent.

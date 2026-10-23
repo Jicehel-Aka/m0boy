@@ -8,6 +8,7 @@
  * sample is output, as the SN76489 generator does.  Registers are written
  * through msx_ay_write, which first brings the samples up to the write. */
 #include "sg1000.h"
+#include <string.h>
 #if SG_MSX
 #define AY_TICK_HZ 223722u
 #define SG_AY_BLOCK 64
@@ -201,15 +202,50 @@ void sg1000_audio_catchup(void) {
 
 void sg1000_audio_render(uint8_t *buffer, unsigned n) {
     sg1000_t *s = &machine;
-    while (n--) {
-        if (s->audio_tail == s->audio_head) *buffer++ = 128;
-        else { *buffer++ = s->audio_buffer[s->audio_tail]; s->audio_tail = (uint16_t)((s->audio_tail + 1) & 511); }
+    while (n) {
+        const unsigned head = s->audio_head, tail = s->audio_tail;
+        unsigned avail = (head - tail) & 511u;
+        if (!avail) { memset(buffer, 128, n); return; }
+        if (avail > n) avail = n;
+        unsigned first = 512u - tail;
+        if (first > avail) first = avail;
+        memcpy(buffer, s->audio_buffer + tail, first);
+        if (avail > first) memcpy(buffer + first, s->audio_buffer, avail - first);
+        s->audio_tail = (uint16_t)((tail + avail) & 511u);
+        buffer += avail;
+        n -= avail;
     }
 }
 
 /* K051649 registers (offset in 9800-98FF): waveforms, periods, volumes, enable */
 void msx_scc_write(unsigned reg, uint8_t value) {
     sg1000_t *m = &machine;
+    /* A write that changes nothing audible need not split the current sample
+     * block: the generator's state is the same at the next catch-up, which
+     * then covers these cycles (only the write's own effect is deferred, and
+     * a silent voice's waveform and period change no sample). */
+    if (reg < 0x80) {
+        const unsigned c = reg >> 5;
+        if (m->scc_wave[c][reg & 31] == (int8_t)value) return;
+        if (!(m->scc_enable >> c & 1) || !m->scc_vol[c]) {
+            m->scc_wave[c][reg & 31] = (int8_t)value;
+            return;
+        }
+    } else if (reg < 0x8a) {
+        const unsigned c = (reg - 0x80) >> 1;
+        const uint16_t period = (uint16_t)((reg & 1) ? (m->scc_period[c] & 0xff) | (value & 15u) << 8
+                                                    : (m->scc_period[c] & 0xf00) | value);
+        if (m->scc_period[c] == period) return;
+        if (!(m->scc_enable >> c & 1) || !m->scc_vol[c]) {
+            m->scc_period[c] = period;
+            m->scc_inc[c] = (m->scc_k / ((unsigned)period + 1)) << 11;
+            return;
+        }
+    } else if (reg < 0x8f) {
+        if (m->scc_vol[reg - 0x8a] == (value & 15)) return;
+    } else if (reg == 0x8f) {
+        if (m->scc_enable == (value & 31)) return;
+    }
     sg1000_audio_catchup();
     if (reg < 0x80) { m->scc_wave[reg >> 5][reg & 31] = (int8_t)value; return; }
     if (reg < 0x8a) {
@@ -226,8 +262,14 @@ void msx_ay_write(unsigned reg, uint8_t value) {
     static const uint8_t mask[16] = { 255, 15, 255, 15, 255, 15, 31, 255, 31, 31, 31, 255, 255, 15, 255, 255 };
     sg1000_t *m = &machine;
     reg &= 15;
+    const uint8_t v = value & mask[reg];
+    /* An unchanged register leaves the generator's state and the samples it
+     * would produce untouched, so the pending cycles can be rendered by the
+     * next catch-up.  R13 is the exception: rewriting it restarts the
+     * envelope, a side effect that must happen after the pending samples. */
+    if (reg != 13 && m->ay_reg[reg] == v) return;
     sg1000_audio_catchup();
-    m->ay_reg[reg] = value & mask[reg];
+    m->ay_reg[reg] = v;
     if (reg == 13) { /* restarts the envelope */
         m->ay_env_attack = (value >> 2) & 1;
         m->ay_env_pos = 0;

@@ -176,6 +176,8 @@ sg_tiles_g2:
     mov r6, r11
     ands r4, r6
     ldrb r4, [r3, r4]          /* colour byte */
+    cmp r5, #0
+    beq 2f                     /* blank tile: five times the first blend */
     lsls r5, r5, #2
     ldr r5, [r7, r5]
     MIXROW r4, r6
@@ -186,10 +188,18 @@ sg_tiles_g2:
     lsrs r6, r5, #20
     ldrh r6, [r4, r6]
     strh r6, [r0, #8]
-    adds r0, r0, #10
+3:  adds r0, r0, #10
     cmp r1, lr
     bne 1b
     LEAVE
+2:  MIXROW r4, r6
+    ldrh r6, [r4]
+    strh r6, [r0, #0]
+    strh r6, [r0, #2]
+    strh r6, [r0, #4]
+    strh r6, [r0, #6]
+    strh r6, [r0, #8]
+    b 3b
     .pool
     .size sg_tiles_g2, . - sg_tiles_g2
 
@@ -318,6 +328,9 @@ sg_pair_g2:
     ldrb r4, [r4, #1]          /* colour byte, line b */
     cmp r5, r4
     bne 3f
+    movs r4, r6
+    orrs r4, r7
+    beq 4f                     /* blank lines: five times the first blend */
     ldr r4, =sg_tile_wv
     lsls r6, r6, #2
     ldr r6, [r4, r6]
@@ -336,6 +349,14 @@ sg_pair_g2:
     cmp r1, lr
     bne 1b
     LEAVE
+4:  MIXROW r5, r7
+    ldrh r6, [r5]
+    strh r6, [r0, #0]
+    strh r6, [r0, #2]
+    strh r6, [r0, #4]
+    strh r6, [r0, #6]
+    strh r6, [r0, #8]
+    b 2b
 3:  push {r1-r3}
     MIXROW r5, r1              /* blend row, line a */
     MIXROW r4, r1, r5          /* line b, line a's row kept */

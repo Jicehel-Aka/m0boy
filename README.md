@@ -21,7 +21,7 @@ on the ESPboy, an image to flash).
 | Memory | 32 KiB RAM, 240 KiB flash for the game | 36 KiB RAM, 228 KiB flash | 80 KiB RAM, 4 MiB flash |
 | Screen | 160×128 | 220×176 | 128×128 |
 | Storage | SD card | SD card | flash only |
-| Runtime version | 0.10.39 | 0.10.31 | 0.3.7 |
+| Runtime version | 0.10.41 | 0.10.36 | 0.3.10 |
 
 ## What runs where
 
@@ -37,7 +37,12 @@ on the ESPboy, an image to flash).
 MSX1 is checked against openMSX (VRAM of the title screens) and against the
 host reference renderer; Gradius 2 (128 KiB, Konami SCC) held 60 game frames
 a second on a META in a 90 s hands-on test (frame counter against the
-firmware's own clock; displayed frames not measured). Notes: `docs/MSX.fr.md`.
+firmware's own clock; displayed frames not measured). The 0.10.41 renderer
+and audio pass skips the blank tile and pair blends and the per-sample audio
+copies: over 3,600 gm0 frames of Gradius 2 that is 3.4 s less in the tile
+routines and 0.8 s less in audio generation (estimates), with the screen and
+game RAM identical to the previous build at the same game frame.
+Notes: `docs/MSX.fr.md`.
 
 Every core has the same option menu (hold HOME; C on the Pokitto): resume,
 restart, **10 save-state slots**, volume, speed, CPU clock, return to the
