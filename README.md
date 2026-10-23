@@ -74,12 +74,16 @@ python3 -m unittest discover -s tests -v
 pio run
 ```
 
-Le build local produit un binaire de moins de 10 KiB de flash et moins de
-2 KiB de RAM statique. Les tests Python couvrent l'extraction à la racine et
-dans un dossier, le rejet de `../` et des liens symboliques. **Le transport
-USB MSC et les écritures SD ne sont pas encore validés sur une console
-physique** ; le binaire est expérimental. Le système de fichiers du PC doit
-être éjecté proprement après toute écriture. Le protocole prend en charge
+Le build local utilise 9 324 octets de flash et 1 004 octets de RAM statique.
+Les tests Python couvrent l'extraction à la racine et dans un dossier, le
+rejet de `../` et des liens symboliques. Sur une META physique (23 octobre
+2026), Linux a énuméré le périphérique et sa carte de 7,3 Gio, puis monté sa
+partition FAT32. Le CLI a extrait un ZIP compressé contenant deux fichiers ;
+après démontage et remontage, les 4 096 octets du fichier de contrôle ont
+été relus à l'identique. Les fichiers de contrôle ont été retirés. Ce test
+valide un transfert court, pas une longue session ou toutes les cartes SD.
+Le système de fichiers du PC doit être éjecté proprement après toute
+écriture. Le protocole prend en charge
 INQUIRY, TEST UNIT READY, REQUEST SENSE, READ CAPACITY, READ/WRITE(10), MODE
 SENSE et les commandes de synchronisation usuelles ; les cartes qui exigent
 exFAT dépendent du support exFAT de l'ordinateur.
