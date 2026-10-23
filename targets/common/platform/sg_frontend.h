@@ -41,7 +41,7 @@ extern char __StackTop;
 #else
 /* USB serial port (META_USB, meta_usb.c): the upload tools' 1200-baud touch
  * resets into the bootloader at the next frame. */
-#if META_USB
+#if META_USB_SERIAL
 #include "meta_usb.h"
 #define SG_USB_INIT() meta_usb_init()
 #define SG_USB_POLL() do { \

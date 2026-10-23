@@ -21,7 +21,7 @@ on the ESPboy, an image to flash).
 | Memory | 32 KiB RAM, 240 KiB flash for the game | 36 KiB RAM, 228 KiB flash | 80 KiB RAM, 4 MiB flash |
 | Screen | 160×128 | 220×176 | 128×128 |
 | Storage | SD card | SD card | flash only |
-| Runtime version | 0.10.37 | 0.10.31 | 0.3.7 |
+| Runtime version | 0.10.39 | 0.10.31 | 0.3.7 |
 
 ## What runs where
 

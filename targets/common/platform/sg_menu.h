@@ -179,7 +179,7 @@ static void sg_menu_run(void) { sg_option_menu(); }
 #endif
 
 enum { SGM_RESUME, SGM_RESTART, SGM_SLOT, SGM_SAVE, SGM_LOAD, SGM_VOLUME, SGM_SPEED, SGM_CLOCK,
-       SGM_BOOTLOADER, SGM_QUIT };
+       SGM_USB_SD, SGM_BOOTLOADER, SGM_QUIT };
 
 static void sg_option_menu(void) {
     uint8_t vol = meta_audio_volume();
@@ -188,8 +188,8 @@ static void sg_option_menu(void) {
 #ifdef SG_MENU_STATE_SLOTS
     uint8_t slot = sg_state_slot;
 #endif
-    meta_menu_item items[11];
-    uint8_t ids[11];
+    meta_menu_item items[12];
+    uint8_t ids[12];
     unsigned n = 0;
 #define SG_ADD(id, label, type, value, count, names) \
     (ids[n] = (id), items[n++] = (meta_menu_item){label, type, value, count, names})
@@ -207,6 +207,9 @@ static void sg_option_menu(void) {
     SG_ADD(SGM_SPEED, "Vitesse", META_MENU_CHOICE, &fast, 2, sg_speed_names);
     SG_ADD(SGM_CLOCK, "Processeur", META_MENU_CHOICE, &mhz, 2, sg_clock_names);
 #ifdef SG_MENU_BOOTLOADER
+#ifdef SG_MENU_USB_SD
+    SG_ADD(SGM_USB_SD, "Carte SD USB", META_MENU_ACTION, 0, 0, 0);
+#endif
     SG_ADD(SGM_BOOTLOADER, "Bootloader USB", META_MENU_ACTION, 0, 0, 0);
 #endif
     SG_ADD(SGM_QUIT, "Quitter", META_MENU_ACTION, 0, 0, 0);
@@ -261,6 +264,9 @@ static void sg_option_menu(void) {
     SG_MENU_RESUME();
     if (action == SGM_RESTART) SG_MENU_RESTART();
 #ifdef SG_MENU_BOOTLOADER
+#ifdef SG_MENU_USB_SD
+    if (action == SGM_USB_SD) SG_MENU_USB_SD();
+#endif
     if (action == SGM_BOOTLOADER) SG_MENU_BOOTLOADER();
 #endif
     if (action == SGM_QUIT) SG_MENU_QUIT();

@@ -263,7 +263,7 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
 #else
 /* Hand the console back to the Gamebuino loader in the state it expects
  * (the Game Boy frontend's enter_loader). */
-#if META_USB
+#if META_USB_SERIAL
 #define SG_MENU_USB_STOP() meta_usb_stop()
 #else
 #define SG_MENU_USB_STOP() do { } while (0)
@@ -281,6 +281,19 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
         *(volatile uint32_t *)0x20007FFC = 0x3aecfd88u; \
         NVIC_SystemReset(); \
     } while (0)
+#if META_USB_SD
+#include "meta_usb_msc.h"
+#define SG_MENU_USB_SD() do { \
+        meta_lcd_end_frame(); \
+        GG_MENU_SAVE_FLUSH(); \
+        meta_audio_stop(); \
+        NVIC_DisableIRQ(DMAC_IRQn); \
+        meta_watchdog_stop(); \
+        unsigned rows; \
+        uint8_t *sector = (uint8_t *)meta_menu_scratch(&rows); \
+        meta_usb_msc_enter(sector); \
+    } while (0)
+#endif
 #define SG_MENU_QUIT() do { \
         meta_lcd_end_frame(); \
         meta_clock_set_lcd_spi(24); /* the loader expects the core's clocks */ \
@@ -410,7 +423,7 @@ int main() {
      * USB included, and a margin); the stack guard then from their top.
      * Not there (another linker script): the fixed part alone. */
 #ifndef GG_DYN_STACK_GUARD
-#if META_USB
+#if META_USB_SERIAL
 #define GG_DYN_STACK_GUARD 2000u
 #else
 #define GG_DYN_STACK_GUARD 2400u

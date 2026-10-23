@@ -14,6 +14,7 @@
 #include "meta_sd.h"
 
 static uint8_t block_addressing; /* SDHC/SDXC: sector numbers, else bytes */
+static uint32_t card_sectors;
 
 static uint8_t command(uint8_t cmd, uint32_t arg, uint8_t crc) {
     meta_sd_xfer(0xFF);
@@ -29,6 +30,7 @@ static uint8_t command(uint8_t cmd, uint32_t arg, uint8_t crc) {
 }
 
 int meta_sd_init(void) {
+    card_sectors = 0;
     meta_sd_deselect();
     meta_sd_bus_begin(1);
     for (int i = 0; i < 10; i++) meta_sd_xfer(0xFF); /* >= 74 clocks, CS high */
@@ -66,6 +68,39 @@ done:
     meta_sd_xfer(0xFF); /* release the card's data output */
     meta_sd_bus_end(1, ok);
     return ok;
+}
+
+/* The USB Mass Storage READ CAPACITY response needs the card's true size.
+ * CMD9 supplies CSD v2 for SDHC/SDXC or v1 for an older SDSC card. */
+uint32_t meta_sd_sectors(void) {
+    if (card_sectors) return card_sectors;
+    uint8_t csd[16];
+    meta_sd_bus_begin(0);
+    meta_sd_cs(1);
+    int ok = command(9, 0, 1) == 0;
+    if (ok) {
+        uint32_t start = meta_sd_ms();
+        uint8_t token;
+        do { token = meta_sd_xfer(0xFF); } while (token == 0xFF && meta_sd_ms() - start < 100);
+        ok = token == 0xFE;
+    }
+    if (ok) {
+        for (unsigned i = 0; i < sizeof csd; i++) csd[i] = meta_sd_xfer(0xFF);
+        meta_sd_xfer(0xFF); meta_sd_xfer(0xFF); /* data CRC */
+    }
+    meta_sd_cs(0);
+    meta_sd_xfer(0xFF);
+    meta_sd_bus_end(0, ok);
+    if (!ok) return 0;
+    if ((csd[0] >> 6) == 1) {
+        uint32_t c = ((uint32_t)(csd[7] & 63u) << 16) | ((uint32_t)csd[8] << 8) | csd[9];
+        card_sectors = (c + 1u) * 1024u;
+    } else if ((csd[0] >> 6) == 0) {
+        uint32_t c = ((uint32_t)(csd[6] & 3u) << 10) | ((uint32_t)csd[7] << 2) | (csd[8] >> 6);
+        uint32_t mult = ((uint32_t)(csd[9] & 3u) << 1) | (csd[10] >> 7);
+        card_sectors = ((c + 1u) << (mult + 2u + (csd[5] & 15u))) / 512u;
+    }
+    return card_sectors;
 }
 
 /* A card can stop answering in the middle of a game (seen on the META:

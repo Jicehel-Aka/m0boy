@@ -16,6 +16,8 @@ extern "C" {
 
 /* ---- the card (meta_sd.c) ------------------------------------------------ */
 int meta_sd_init(void);      /* card-level SD.begin; returns 1 when ready */
+/* Total 512-byte logical sectors from CMD9/CSD, cached after first query. */
+uint32_t meta_sd_sectors(void);
 /* Read card sector lba (512 bytes) into dst; returns 1 on success. */
 int meta_sd_read(uint32_t lba, uint8_t *dst);
 /* Write card sector lba (512 bytes) from src; returns 1 once programmed. */

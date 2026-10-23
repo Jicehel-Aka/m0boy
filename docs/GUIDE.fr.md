@@ -518,7 +518,8 @@ Ajoute-les dans `build_flags` du `platformio.ini` généré, par exemple
 | `META_LCD_SPI_MHZ` | 48 | Débit SPI de l'écran au démarrage : 12, 24, 36 ou 48 (48 par défaut, le maximum, vu correct sur une META ; ramené à 35 quand le processeur est à 70 MHz, à 24 si la PLL ne s'accroche pas) ; le menu « SPI ecran » le change |
 | `META_OVERCLOCK` | 1 (META) | Démarrage à 70 MHz (META) ; 0 : 48 MHz.  compile.sh : `OVERCLOCK=0` |
 | `META_SD_SPI_HZ` | 12000000 | Débit SPI de la carte SD hors identification (24 MHz : lectures en échec sur une META) |
-| `META_USB` | 1 | Port série USB : le « 1200 bauds » des outils de téléversement (`pio run -t upload`, `tools/meta-usb.py flash`) relance la console en sam-ba sans toucher aux boutons ; `tools/meta-usb.py` lit et écrit la mémoire par symbole pendant le jeu, profile (échantillons du PC, moins de 1 % du processeur), appuie sur les touches (tests) et lit le journal des fautes ; 0 retire tout |
+| `META_USB_MODE` | 3 | 0 aucun USB, 1 serie, 2 carte SD, 3 serie et carte SD. Le menu « Carte SD USB » arrete le jeu, vide les sauvegardes et expose la carte comme lecteur USB. Une demande d’ejection du PC ou le debranchement USB ramene au jeu ; MENU+HOME maintenus 0,5 s quittent aussi le mode apres demontage cote PC. |
+| `META_USB` | derive | Ancien interrupteur 0/1, utilise seulement si `META_USB_MODE` n’est pas defini ; correspond aux modes 0/3. Le port serie permet le televersement a 1200 bauds et `tools/meta-usb.py`. |
 | `META_LCD_BUFFERS` / `META_STRIP_LINES` | 3 / 4 | Buffers d'écran et lignes par buffer |
 | `META_MAX_SKIP` | 3 | Frames consécutives sautées au maximum en cas de retard |
 | `META_BUTTONS_LAPINOU_ORDER` | off | Ordre des bits de meta-lapinou au lieu de celui de la bibliothèque (inutile sur la META testée) |

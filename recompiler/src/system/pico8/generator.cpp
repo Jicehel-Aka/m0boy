@@ -194,7 +194,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                                                    "-DCONT_STACKSIZE=12288", "-DCONT_STACKSIZE=6144"));
             } else {
                 for (const char* name : { "meta_startup.c", "meta_clock.cpp", "meta_lcd_pack.h", "meta_lcd_queue.h",
-                                          "meta_dma.h", "meta_dma.cpp", "meta_spi.c", "meta_hw.h", "meta_usb.c", "meta_usb.h" })
+                                          "meta_dma.h", "meta_dma.cpp", "meta_spi.c", "meta_hw.h", "meta_usb.c", "meta_usb.h",
+                                          "meta_usb_msc.c", "meta_usb_msc.h" })
                     copy_template(platform / name, src / name);
                 /* The picture is 128 pixels wide: the panel's column window is narrowed to it
                  * (meta_lcd_set_columns) so that a row is 256 bytes on the wire instead of 320. */

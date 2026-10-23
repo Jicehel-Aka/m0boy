@@ -22,13 +22,14 @@
  * which stays at 48 MHz whatever clock the CPU uses (meta_clock.cpp).
  */
 #include "meta_usb.h"
+#include "meta_usb_msc.h"
 
 #include <string.h>
 
 #include "meta_hw.h"
 #include "meta_target.h"
 
-#if META_USB
+#if META_USB_SERIAL
 
 #define VID 0x2341u /* the Arduino Zero's native port, like the Gamebuino library */
 #define PID 0x804Du
@@ -337,6 +338,9 @@ static void receive(void) {
 }
 
 void USB_Handler(void) {
+#if META_USB_SD
+    if (meta_usb_msc_active) { meta_usb_msc_handler(); return; }
+#endif
     uint16_t flags = USB->DEVICE.INTFLAG.reg;
 #ifdef META_USB_DEBUG
     DBG(isr)++;
@@ -445,6 +449,16 @@ void meta_usb_write(const void *data, unsigned n) {
     NVIC_EnableIRQ(USB_IRQn);
 }
 
+UsbDeviceDescriptor *meta_usb_msc_descriptors(void) { return ep_desc; }
+uint8_t *meta_usb_msc_packet(unsigned index) {
+    switch (index) {
+    case 0: return ep0_out;
+    case 1: return ep0_in;
+    case 2: return rx_buf;
+    default: return tx_buf;
+    }
+}
+
 /* The META's bootloader (read from flash, 0x1964), on any reset but a
  * watchdog one, first checks 0x20007FFC: 0x3aecfd88 there starts sam-ba (the
  * Gamebuino launcher's "enter bootloader").  A watchdog reset starts the
@@ -457,4 +471,4 @@ void meta_reset_to_bootloader(void) {
     NVIC_SystemReset();
 }
 
-#endif /* META_USB */
+#endif /* META_USB_SERIAL */

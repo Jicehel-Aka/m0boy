@@ -409,6 +409,27 @@ touches the FAT.
   streaming Game Gear builds run it on the card cache's blocks, lent out
   (`gg_cache_lend`, the save written back first); its Redemarrer is a power
   cycle: the cartridge RAM is flushed to the card, then cleared.
+
+On the META, `META_USB_MODE` selects 0 none, 1 serial, 2 SD, or 3 serial + SD
+(default). With SD enabled, the GB, Sega and PICO-8 menus add **Carte SD USB**.
+Choosing it finishes display DMA, flushes the GB save, stops audio and the
+watchdog, then detaches USB and exposes the whole SD card as a Mass Storage
+drive. The game remains stopped until reset: the PC owns FAT exclusively.
+USB endpoint buffers are shared with the serial mode; the 512-byte sector
+buffer comes from display scratch RAM after the menu has closed. A host eject
+request returns to the game automatically; unplugging USB does the same after
+the bus has been disconnected for 750 ms. You can also hold the META's MENU
+and HOME buttons together for half a second. Eject or unmount the drive on the
+PC before using the button shortcut. ZIP extraction is performed by
+`tools/meta-sd-usb/meta_sd.py` on the PC, not in the firmware.
+On 2026-10-23, a synthetic SG-1000 firmware was uploaded to a physical META:
+the serial port responded during play, then **Carte SD USB** re-enumerated as
+`META SD Bridge`; Linux mounted and listed its 7.3 GiB FAT32 card. A small
+file was written, read back, deleted and the volume unmounted cleanly.
+For a synthetic GB firmware built with GCC `-O2`, mode 3 versus serial-only
+mode 1 adds 3,652 bytes of flash and 56 bytes of static RAM (PlatformIO
+linker report, 2026-10-23). That number is a build comparison, not a device
+memory measurement; each game's compiled-code budget must still fit.
 - The first-level folders of the card are searched 32 at a time: before
   0.10.26 only the first 32 were, and a game in a later folder found
   neither its own folder nor its ROM (red screen).
@@ -912,7 +933,8 @@ run (same picture in Link's Awakening).
 | `META_LCD_BGR` | 0 | BGR order in the ST7735's MADCTL; 0 on the META tested (with 1, red and blue were swapped) |
 | `GBL_ERAM_CACHE_SECTORS` (window) | — | With the cartridge RAM on the card, `gbl_rd`/`gbl_wr` (C and assembly) read the newest cached sector directly, and write it once it is dirty, without `gbl_rd_slow` and `eram_sector`. Estimator on Super Mario Land 2 (2,400 frames into level 1, same pixel and state hashes): 593k → 497k cycles a frame, frames over the 60 Hz budget 455 → 27. Host, four sessions (539,000 frames): cartridge RAM writes / reads with 8 sectors 12,899 / 34,330, 9: 7,833 / 27,725, 10: 3,066 / 4,820, 12: 2,450 / 2,882 |
 | `GBL_ERAM_CACHE_SECTORS` | 8 with the ROM and the cartridge RAM on the card (the ROM cache then gets 2), else 2 | Write-back cache of cartridge RAM kept in the save file (`GBL_ERAM_ON_SD`): Super Mario Land 2 uses its RAM as work RAM (about seven sectors); 2 sectors gave 157 card writes a second, 8 reduced them to about 4/s in the measured run. Exact LRU with no timestamp wrap; deferred flush occurs 120 frames after the last change |
-| `META_USB` | 1 | USB serial port (`meta_usb.c`; about 600 bytes of RAM and 2.6 KiB of flash on Super Mario Land): the 1200-baud touch of upload tools (`pio run -t upload`, bossac, `tools/meta-usb.py flash`) resets into sam-ba without touching the console (the META's bootloader starts sam-ba when 0x20007FFC holds 0x3aecfd88 after a software reset; read from its code). For debugging, `tools/meta-usb.py`: `read`/`write` memory by ELF symbol while the game runs (sam-ba's `R`, `W`, `O`), `prof` (SysTick samples the interrupted PC into a ring of 32, the host drains it: about 1000 samples a second, under 1% of the CPU), `press` (buttons ORed into `meta_pad_read`, for scripted tests), `fault` (below). 0 removes all of it: `compile.sh RELEASE=1` builds the streaming Game Gear/Master System firmwares that way (420 bytes back to the card cache, whose growth guard then rises to 2400 free bytes: four sectors, 16 blocks of 128, about 620 bytes of margin over the deepest measured stack — watermark 1640, demo and menu, on the device). Reflashing a USB-less firmware needs the bootloader without the touch (double reset) |
+| `META_USB_MODE` | 3 | 0 none, 1 serial, 2 SD, 3 serial and SD. The SD menu action appears only with bit 2. Serial runs while playing; SD takes the card exclusively until reset. Legacy `META_USB=0/1` maps to mode 0/3 when `META_USB_MODE` is unspecified. `compile.sh RELEASE=1` selects SD-only mode 2. |
+| `META_USB` | derived | Legacy serial flag: 1200-baud touch for sam-ba and `tools/meta-usb.py` debugging during play. `META_USB_MODE` takes precedence when set. |
 | `META_MERGE_MODES` | 1 (0 when streaming) | BLEND and DARK display modes (1 KiB table, a spare line); TBLEND then blends two pixels per lookup |
 | `META_TBLEND` | 2 with a ROM cache or cartridge RAM on SD, otherwise 1 | TBLEND, the default mode, same picture in 1 and 2. 1 keeps the 15 held lines (600 bytes) so each is rendered only when it changes; 2 keeps one, in SMOOTH's buffers, and renders the 15 held lines on every drawn frame (frames that did not change at all are still skipped): 640 bytes less on Super Mario Land 2 (2,576 → 3,216 bytes free above `.bss`), CPU cost not measured on the device. Without `META_MERGE_MODES`, a 16-colour table (one lookup per pixel) instead of the 1 KiB one. 0 leaves TBLEND out (TILE instead), 64 bytes less than 2 |
 | `META_STACK_RESERVE` | 640 (Pokitto 768) | C stack kept below `gbl_stack_limit`, for what generated code calls there unguarded. Static worst case on the META (frames and call graph of the SML2 firmware): a slow-path read that renders a line, about 390 bytes with the region's frame, plus the USB and DMA interrupts nested, about 220. In streamed builds the option menu (about 590 bytes) runs on the ROM cache's buffers, emptied afterwards: in Super Mario Land 2 every VBlank comes deep in the game's calls. The menu shows the stack never used since boot ("pile", bytes above `.bss`) |

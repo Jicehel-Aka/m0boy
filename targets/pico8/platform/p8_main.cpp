@@ -86,7 +86,7 @@ extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
 #if META_TARGET_ESPBOY
 #define SG_MENU_QUIT() do { espboy_restart(); } while (0)
 #else
-#if META_USB
+#if META_USB_SERIAL
 #define SG_MENU_USB_STOP() meta_usb_stop()
 #else
 #define SG_MENU_USB_STOP() do { } while (0)
@@ -101,6 +101,18 @@ extern "C" uint16_t *meta_menu_scratch(unsigned *rows) {
         *(volatile uint32_t *)0x20007FFC = 0x3aecfd88u; \
         NVIC_SystemReset(); \
     } while (0)
+#if META_USB_SD
+#include "meta_usb_msc.h"
+#define SG_MENU_USB_SD() do { \
+        meta_lcd_end_frame(); \
+        meta_audio_stop(); \
+        NVIC_DisableIRQ(DMAC_IRQn); \
+        meta_watchdog_stop(); \
+        unsigned rows; \
+        uint8_t *sector = (uint8_t *)meta_menu_scratch(&rows); \
+        meta_usb_msc_enter(sector); \
+    } while (0)
+#endif
 /* Hand the console back to the Gamebuino loader (the Game Boy frontend's
  * enter_loader). */
 #define SG_MENU_QUIT() do { \

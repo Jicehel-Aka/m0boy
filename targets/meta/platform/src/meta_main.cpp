@@ -42,8 +42,11 @@
 #include "pokitto_hw.h"
 #else
 #include "meta_hw.h"
-#if META_USB
+#if META_USB_SERIAL
 #include "meta_usb.h"
+#endif
+#if META_USB_SD && !META_TARGET_POKITTO && !META_TARGET_ESPBOY
+#include "meta_usb_msc.h"
 #endif
 #endif
 #include <setjmp.h>
@@ -130,7 +133,7 @@ static void enter_loader(void) {
     meta_audio_stop();
     NVIC_DisableIRQ(DMAC_IRQn);
     meta_watchdog_stop(); /* the loader does not feed it */
-#if META_USB
+#if META_USB_SERIAL
     meta_usb_stop();
 #endif
     meta_sd_deselect();
@@ -185,7 +188,7 @@ static uint8_t meta_buttons(void) {
 
 #endif /* !META_TARGET_POKITTO */
 
-#if !META_TARGET_POKITTO && META_USB
+#if !META_TARGET_POKITTO && META_USB_SERIAL
 /* The upload tools' 1200-baud touch (meta_usb.c): cartridge RAM saved,
  * then the bootloader.  playing: 0 on the boot error screens, where
  * neither the cartridge RAM nor the audio has been set up (stopping the
@@ -467,7 +470,7 @@ static void name_slots(void) {
 }
 
 enum { M_RESUME, M_RESTART, M_SLOT, M_SAVE, M_LOAD, M_VOLUME, M_AUDIO, M_SCREEN, M_PALETTE, M_SKIP,
-       M_SPEED, M_CLOCK, M_LCD_SPI, M_BOOTLOADER, M_QUIT };
+       M_SPEED, M_CLOCK, M_LCD_SPI, M_USB_SD, M_BOOTLOADER, M_QUIT };
 
 static void option_menu(void) {
     uint8_t mode = meta_display_mode(), pal = meta_display_palette(), skip = skip_mode;
@@ -493,6 +496,9 @@ static void option_menu(void) {
     ADD(M_SPEED, "Vitesse", META_MENU_CHOICE, &fast, 2, speed_names);
     ADD(M_CLOCK, "Processeur", META_MENU_CHOICE, &mhz, 2, clock_names);
 #if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
+#if META_USB_SD
+    ADD(M_USB_SD, "Carte SD USB", META_MENU_ACTION, 0, 0, 0);
+#endif
     ADD(M_BOOTLOADER, "Bootloader USB", META_MENU_ACTION, 0, 0, 0);
 #endif
     ADD(M_QUIT, "Quitter", META_MENU_ACTION, 0, 0, 0);
@@ -530,6 +536,18 @@ static void option_menu(void) {
     meta_audio_pause(0);
     int action = line >= 0 ? ids[line] : -1;
 #if !META_TARGET_POKITTO && !META_TARGET_ESPBOY
+#if META_USB_SD
+    if (action == M_USB_SD) {
+        meta_lcd_end_frame();
+        gbl_save_flush();
+        meta_audio_stop();
+        NVIC_DisableIRQ(DMAC_IRQn);
+        meta_watchdog_stop();
+        unsigned rows;
+        uint8_t *sector = (uint8_t *)meta_display_scratch(&rows);
+        meta_usb_msc_enter(sector); /* full stack; game stays stopped until reset */
+    }
+#endif
     if (action == M_BOOTLOADER) {
         /* The USB bootloader (sam-ba) directly: its magic where the
          * bootloader looks after a software reset — with or without
@@ -539,7 +557,7 @@ static void option_menu(void) {
         meta_audio_stop();
         NVIC_DisableIRQ(DMAC_IRQn);
         meta_watchdog_stop();
-#if META_USB
+#if META_USB_SERIAL
         meta_usb_stop();
 #endif
         meta_sd_deselect();
@@ -756,7 +774,7 @@ int main(void) {
 #endif
 #if !META_TARGET_POKITTO
     meta_sd_deselect(); /* the card off the shared SPI bus from the start */
-#if META_USB
+#if META_USB_SERIAL
     meta_usb_init();
 #endif
 #else

@@ -3,6 +3,7 @@
 #define META_USB_H
 
 #include <stdint.h>
+#include <sam.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -11,6 +12,9 @@ extern "C" {
 void meta_usb_init(void);
 void meta_usb_stop(void); /* detach, before the loader takes over */
 void meta_usb_write(const void *data, unsigned n);
+/* In META_USB_MODE=3 the exclusive SD mode reuses CDC endpoint buffers. */
+UsbDeviceDescriptor *meta_usb_msc_descriptors(void);
+uint8_t *meta_usb_msc_packet(unsigned index);
 /* Set by the 1200-baud touch: the frontend saves, then calls
  * meta_reset_to_bootloader (meta_startup.c does it after a second if the
  * frontend does not get to it). */

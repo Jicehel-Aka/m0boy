@@ -20,8 +20,16 @@ Regenerate with every coverage file in `coverage/` plus new ones, e.g.
 
 META controls: D-pad, A, B; MENU = Start; HOME tap = Select; HOME held half
 a second opens the option menu (display mode, palette, frame skip, 48/72 MHz,
-back to the Gamebuino loader). The menu shows the emulated and drawn frames
+"Carte SD USB", back to the Gamebuino loader). The menu shows the emulated and drawn frames
 of the last second.
+
+`META_USB_MODE` in `build_flags`: 0 none, 1 serial, 2 SD, 3 serial and SD
+(default). "Carte SD USB" stops the game, flushes saves and exposes the card
+as a USB drive. A host eject request or cable disconnect returns to the game
+automatically; hold MENU+HOME on the META for half a second to exit manually
+after unmounting the drive on the computer.
+ZIP archives are extracted by `tools/meta-sd-usb/meta_sd.py` on the computer,
+not by the firmware.
 
 The firmware compiler is @COMPILER@. Override with `FIRMWARE_COMPILER=clang pio run`
 (or `gcc`). Clang uses the GNU ARM libraries/assembler/linker and requires

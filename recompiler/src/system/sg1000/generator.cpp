@@ -723,7 +723,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             /* files of an earlier generation that this one does not use */
             for (const char* name : { "gg_stream.c", "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h", "meta_sd_bus.cpp", "pokitto_sd.c" })
                 fs::remove(src / name);
-            if ((streamed || cart_on_card || states) && !esp) { /* gg.h's GG_CARD; SG-1000: the states */
+            if ((streamed || cart_on_card || states || o.target == TargetId::meta) && !esp) {
+                /* Every META firmware offers USB SD mode, even SG-1000 games
+                 * which otherwise need no card driver. */
                 if (gg) copy_template(tpl / "platform" / "gg_stream.c", src / "gg_stream.c");
                 for (const char* name : { "meta_sd.c", "meta_sd.h", "meta_fat.c", "meta_fat.h", "meta_card.h" })
                     copy_template(o.meta_templates / "platform" / "src" / name, src / name);
@@ -819,7 +821,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 }
             } else {
                 for (const char* name : { "meta_startup.c", "meta_clock.cpp", "meta_lcd.cpp", "meta_lcd_pack.h", "meta_lcd_queue.h",
-                                          "meta_dma.h", "meta_dma.cpp", "meta_spi.c", "meta_hw.h", "meta_usb.c", "meta_usb.h" })
+                                          "meta_dma.h", "meta_dma.cpp", "meta_spi.c", "meta_hw.h", "meta_usb.c", "meta_usb.h",
+                                          "meta_usb_msc.c", "meta_usb_msc.h" })
                     copy_template(platform / name, src / name);
                 write(o.output / "platformio.ini", replace(replace(read(platform / "platformio.ini.in"), "@NAME@", o.name), "@COMPILER@", o.compiler));
                 write(o.output / "gamebuino_meta.ld", replace(read(platform / "gamebuino_meta.ld.in"), "@NAME@", o.name));

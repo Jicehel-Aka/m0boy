@@ -73,12 +73,31 @@
 #define META_LCD_BGR 0
 #endif
 
-/* META_USB: 1 makes the firmware a USB serial port (meta_usb.c): the
- * 1200-baud touch of upload tools resets it into the bootloader (no double
- * press on RESET), and sam-ba's "R<addr>,<count>#" reads memory while the
- * game runs.  About 450 bytes of RAM and 2 KiB of flash. */
+/* META_USB_MODE: USB while playing and the menu's exclusive SD-reader mode.
+ * 0 none, 1 serial, 2 SD, 3 serial + SD (default on the META).  The SD mode
+ * stops the game, flushes saves and re-enumerates as Mass Storage until
+ * reset; it never gives the host and game simultaneous ownership of FAT.
+ * Legacy -DMETA_USB=0/1 selects mode 0/3 if MODE was not also set. */
+#define META_USB_NONE 0
+#define META_USB_SERIAL_ONLY 1
+#define META_USB_SD_ONLY 2
+#define META_USB_SERIAL_SD 3
+#ifndef META_USB_MODE
+#if defined(META_USB)
+#define META_USB_MODE ((META_USB) ? META_USB_SERIAL_SD : META_USB_NONE)
+#elif (defined(GBL_TARGET_POKITTO) && GBL_TARGET_POKITTO) || (defined(GBL_TARGET_ESPBOY) && GBL_TARGET_ESPBOY)
+#define META_USB_MODE META_USB_NONE
+#else
+#define META_USB_MODE META_USB_SERIAL_SD
+#endif
+#endif
+#if META_USB_MODE < 0 || META_USB_MODE > 3
+#error "META_USB_MODE must be 0 (none), 1 (serial), 2 (sd), or 3 (serial+sd)"
+#endif
+#define META_USB_SERIAL (META_USB_MODE & 1)
+#define META_USB_SD (META_USB_MODE & 2)
 #ifndef META_USB
-#define META_USB 1
+#define META_USB META_USB_SERIAL
 #endif
 
 /* META_LCD_DMA: 1 streams pixels with DMA while emulation continues (queue
