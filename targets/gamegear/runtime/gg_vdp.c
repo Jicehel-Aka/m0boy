@@ -441,12 +441,6 @@ void gg_render_indices(unsigned y, uint8_t *pixels) {
     for (unsigned i = 0; i < 256; i++) pixels[i] = line[8 + i] & 31;
 }
 
-void gg_render_line(unsigned y, uint16_t *out) {
-    sprite_t spr[8];
-    const unsigned n = (machine.vdp[1] & 0x40) ? line_sprites(y, spr) : 0;
-    render(y, out, spr, n);
-}
-
 /* a = (a + b) / 2 per channel, two pixels per word (rows are word-aligned) */
 static inline uint32_t rev16(uint32_t v) {
 #if GG_PANEL_SWAP && defined(__arm__)
@@ -465,18 +459,248 @@ static void average_rows(uint16_t *a, const uint16_t *b) {
     }
 }
 
+
+/* ---- TMS9918 modes (Korean 150-in-1) ----------------------------------------- *
+ *
+ * The cartridge's MSX games leave the VDP in Graphics I/II (reg 0 without M4):
+ * the Master System's VDP draws those modes like a TMS9918, with the colours
+ * of its own fixed palette.  Only that cartridge pays for the code: the other
+ * Master System firmwares never take this path (GG_KOREAN150 is constant).
+ * Sprites of the line are found from the table each time (no mask kept),
+ * the line goes through 256 colour indices and the same 5-in-8 filter. */
+typedef struct {
+    int16_t left;
+    uint16_t bits; /* pattern row, bit 15 = leftmost */
+    uint8_t color, width, shift;
+} tms_sprite_t;
+
+/* TMS colour -> Master System colour (--BBGGRR) as the VDP shows it */
+static const uint8_t tms_sms[16] = { 0x00, 0x00, 0x08, 0x0c, 0x10, 0x30, 0x01, 0x3c, 0x02, 0x03, 0x05, 0x0f, 0x04, 0x33, 0x15, 0x3f };
+static uint32_t tms_spal[16];
+static uint16_t tms_solid[16]; /* five equal output pixels */
+static uint8_t tms_ready;
+static void tms_palette(void) {
+    static const uint8_t c5[4] = { 0, 10, 21, 31 }, c6[4] = { 0, 21, 42, 63 };
+    for (unsigned i = 0; i < 16; i++) {
+        const unsigned c = tms_sms[i];
+        tms_spal[i] = spread((uint32_t)c5[c & 3] << 11 | (uint32_t)c6[(c >> 2) & 3] << 5 | c5[(c >> 4) & 3]);
+        tms_solid[i] = panel(fold(8 * tms_spal[i]));
+    }
+    tms_ready = 1;
+}
+
+/* The first four sprites on line y, with the fifth-sprite flag */
+static unsigned tms_sprites(unsigned y, tms_sprite_t *out) {
+    gg_t *m = &machine;
+    const uint8_t *vram = m->vram;
+    const unsigned table = (m->vdp[5] & 0x7fu) << 7, base = (m->vdp[6] & 7u) << 11;
+    const unsigned size = (m->vdp[1] & 2) ? 16 : 8, shift = m->vdp[1] & 1, span = size << shift;
+    unsigned count = 0, n = 0;
+    for (unsigned i = 0; i < 32; i++) {
+        const uint8_t *e = vram + table + i * 4;
+        if (e[0] == 208) break;
+        const int top = e[0] > 208 ? (int)e[0] - 255 : (int)e[0] + 1;
+        if ((unsigned)((int)y - top) >= span) continue;
+        if (++count == 5) {
+            if (!(m->vdp_status & 64)) m->vdp_status = (uint8_t)((m->vdp_status & 0xa0) | 64 | i);
+            break;
+        }
+        const unsigned color = e[3] & 15;
+        if (!color) continue;
+        const unsigned prow = (unsigned)((int)y - top) >> shift;
+        unsigned tile = e[2];
+        if (size == 16) tile &= ~3u;
+        const unsigned a = (base + tile * 8 + (prow & 7) + (prow >= 8 ? 8 : 0)) & 0x3fff;
+        tms_sprite_t *t = &out[n++];
+        t->left = (int16_t)((int)e[1] - ((e[3] & 128) ? 32 : 0));
+        t->bits = (uint16_t)((vram[a] << 8) | (size == 16 ? vram[(a + 16) & 0x3fff] : 0));
+        t->color = (uint8_t)color;
+        t->width = (uint8_t)size;
+        t->shift = (uint8_t)shift;
+    }
+    return n;
+}
+
+/* Coincidence: two opaque sprite pixels on the same screen pixel */
+static void tms_collisions(const tms_sprite_t *t, unsigned n) {
+    if (n < 2) return;
+    uint32_t used[9] = { 0 }; /* used[8]: past the right edge */
+    for (unsigned k = 0; k < n; k++) {
+        uint32_t w = 0;
+        for (unsigned b = 0; b < t[k].width; b++)
+            if (t[k].bits & (0x8000u >> b))
+                for (unsigned z = 0; z <= t[k].shift; z++) w |= 0x80000000u >> ((b << t[k].shift) + z);
+        int x = t[k].left;
+        if (x < 0) { if (x <= -32) continue; w <<= -x; x = 0; }
+        const unsigned word = (unsigned)x >> 5, off = (unsigned)x & 31;
+        const uint32_t a = w >> off, b = off ? w << (32 - off) : 0;
+        if ((used[word] & a) || (word < 7 && (used[word + 1] & b))) { machine.vdp_status |= 32; return; }
+        used[word] |= a;
+        if (word < 7) used[word + 1] |= b;
+    }
+}
+
+/* Colour numbers of the line into px[0..255]: Graphics I, II, text,
+ * multicolour, then the sprites (lower numbers on top) */
+static void tms_indices(unsigned y, uint8_t *px, const tms_sprite_t *t, unsigned n, uint32_t tiles) {
+    gg_t *m = &machine;
+    const uint8_t *vram = m->vram;
+    const unsigned backdrop = m->vdp[7] & 15;
+    if (!(m->vdp[1] & 0x40)) { memset(px, (int)backdrop, 256); return; }
+    const unsigned text = !!(m->vdp[1] & 16), multi = !!(m->vdp[1] & 8), graphics2 = !!(m->vdp[0] & 2);
+    const unsigned name = (m->vdp[2] & 15u) << 10, pattern = (m->vdp[4] & 7u) << 11, color = (unsigned)m->vdp[3] << 6;
+    if (text) { memset(px, (int)backdrop, 8); memset(px + 248, (int)backdrop, 8); }
+    const unsigned columns = text ? 40 : 32, width = text ? 6 : 8;
+    const unsigned rowname = name + (y / 8) * columns;
+    uint8_t *dest = px + (text ? 8 : 0);
+    for (unsigned tx = 0; tx < columns; tx++) {
+        if (tiles != 0xffffffffu && !(tx < 32 && (tiles >> tx & 1))) { dest += width; continue; }
+        const unsigned tile = vram[(rowname + tx) & 0x3fff];
+        unsigned bits = 0, colors;
+        if (text) {
+            bits = vram[(pattern + tile * 8 + (y & 7)) & 0x3fff];
+            colors = m->vdp[7];
+        } else if (multi) {
+            colors = vram[(pattern + tile * 8 + ((y & 31) >> 2)) & 0x3fff];
+            const unsigned hi = colors >> 4, lo = colors & 15;
+            memset(dest, (int)(hi ? hi : backdrop), 4);
+            memset(dest + 4, (int)(lo ? lo : backdrop), 4);
+            dest += 8;
+            continue;
+        } else {
+            unsigned offset = tile * 8 + (y & 7);
+            if (graphics2) {
+                offset |= (y & 0xc0) << 5;
+                bits = vram[((m->vdp[4] & 4u) << 11) | (offset & (((m->vdp[4] & 3u) << 11) | 0x7ff))];
+                colors = vram[((m->vdp[3] & 128u) << 6) | (offset & (((m->vdp[3] & 127u) << 6) | 63))];
+            } else {
+                bits = vram[(pattern + offset) & 0x3fff];
+                colors = vram[(color + (tile >> 3)) & 0x3fff];
+            }
+        }
+        unsigned hi = colors >> 4, lo = text ? backdrop : colors & 15;
+        if (!hi && !text) hi = backdrop;
+        if (!lo) lo = backdrop;
+        for (unsigned xx = 0; xx < width; xx++) { *dest++ = (uint8_t)((bits & 128) ? hi : lo); bits <<= 1; }
+    }
+    if (text) return;
+    for (unsigned k = n; k-- > 0;)
+        for (unsigned b = 0; b < t[k].width; b++) {
+            if (!(t[k].bits & (0x8000u >> b))) continue;
+            for (unsigned z = 0; z <= t[k].shift; z++) {
+                const int x = t[k].left + (int)((b << t[k].shift) + z);
+                if (x >= 0 && x < 256) px[x] = t[k].color;
+            }
+        }
+}
+
+/* Five output pixels of a background tile of two colours: the filter's
+ * weights (eighths of the foreground) follow the pattern bits */
+static inline void tms_tile(unsigned bits, unsigned hi, unsigned lo, uint16_t *o) {
+    if (!(bits & 0xff)) { for (unsigned i = 0; i < 5; i++) o[i] = tms_solid[lo]; return; }
+    if ((bits & 0xff) == 0xff) { for (unsigned i = 0; i < 5; i++) o[i] = tms_solid[hi]; return; }
+    const uint32_t f = tms_spal[hi], b = tms_spal[lo];
+    const unsigned b0 = bits >> 7 & 1, b1 = bits >> 6 & 1, b2 = bits >> 5 & 1, b3 = bits >> 4 & 1,
+                   b4 = bits >> 3 & 1, b5 = bits >> 2 & 1, b6 = bits >> 1 & 1, b7 = bits & 1;
+    const unsigned w0 = 5 * b0 + 3 * b1, w1 = 3 * b1 + 5 * b2, w3 = 5 * b5 + 3 * b6, w4 = 3 * b6 + 5 * b7;
+    o[0] = panel(fold(w0 * f + (8 - w0) * b));
+    o[1] = panel(fold(w1 * f + (8 - w1) * b));
+    o[2] = mean2(b3 ? f : b, b4 ? f : b);
+    o[3] = panel(fold(w3 * f + (8 - w3) * b));
+    o[4] = panel(fold(w4 * f + (8 - w4) * b));
+}
+
+static void tms_render(unsigned y, uint16_t *out, const tms_sprite_t *t, unsigned n) {
+    gg_t *m = &machine;
+    if (!tms_ready) tms_palette();
+    if (!(m->vdp[1] & 0x40)) { /* display off: backdrop */
+        for (unsigned i = 0; i < 160; i++) out[i] = tms_solid[m->vdp[7] & 15];
+        return;
+    }
+    const int slow_mode = (m->vdp[1] & 0x18) != 0; /* text, multicolour: all through indices */
+    uint32_t tiles = slow_mode ? 0xffffffffu : 0; /* tiles of the line drawn through indices */
+    for (unsigned k = 0; k < n && !slow_mode; k++) {
+        const int x0 = t[k].left, x1 = t[k].left + (int)(t[k].width << t[k].shift) - 1;
+        if (x1 < 0 || x0 > 255) continue;
+        const unsigned a = (unsigned)(x0 < 0 ? 0 : x0) >> 3, b = (unsigned)(x1 > 255 ? 255 : x1) >> 3;
+        tiles |= (0xffffffffu >> (31 - b)) & (0xffffffffu << a);
+    }
+    if (tiles != 0xffffffffu) {
+        const uint8_t *vram = m->vram;
+        const unsigned backdrop = m->vdp[7] & 15, graphics2 = m->vdp[0] & 2;
+        const unsigned rowname = ((m->vdp[2] & 15u) << 10) + (y >> 3) * 32;
+        const unsigned pattern = (m->vdp[4] & 7u) << 11, color = (unsigned)m->vdp[3] << 6;
+        const unsigned pmask = ((m->vdp[4] & 3u) << 11) | 0x7ff, cmask = ((m->vdp[3] & 127u) << 6) | 63;
+        const unsigned pbase = (m->vdp[4] & 4u) << 11, cbase = (m->vdp[3] & 128u) << 6;
+        for (unsigned tx = 0; tx < 32; tx++) {
+            if (tiles >> tx & 1) continue;
+            const unsigned tile = vram[(rowname + tx) & 0x3fff];
+            unsigned bits, colors;
+            if (graphics2) {
+                const unsigned offset = tile * 8 | (y & 0xc0) << 5 | (y & 7);
+                bits = vram[pbase | (offset & pmask)];
+                colors = vram[cbase | (offset & cmask)];
+            } else {
+                bits = vram[(pattern + tile * 8 + (y & 7)) & 0x3fff];
+                colors = vram[(color + (tile >> 3)) & 0x3fff];
+            }
+            unsigned hi = colors >> 4, lo = colors & 15;
+            if (!hi) hi = backdrop;
+            if (!lo) lo = backdrop;
+            tms_tile(bits, hi, lo, out + 5 * tx);
+        }
+    }
+    if (!tiles) return;
+    uint8_t px[256];
+    tms_indices(y, px, t, n, tiles);
+    for (unsigned g = 0; g < 32; g++) {
+        if (!(tiles >> g & 1)) continue;
+        uint32_t s[8];
+        for (unsigned i = 0; i < 8; i++) s[i] = tms_spal[px[8 * g + i] & 15];
+        uint16_t *o = out + 5 * g;
+        o[0] = panel(fold(5 * s[0] + 3 * s[1]));
+        o[1] = panel(fold(3 * s[1] + 5 * s[2]));
+        o[2] = mean2(s[3], s[4]);
+        o[3] = panel(fold(5 * s[5] + 3 * s[6]));
+        o[4] = panel(fold(3 * s[6] + 5 * s[7]));
+    }
+}
+
+void gg_render_line(unsigned y, uint16_t *out) {
+    if (GG_KOREAN150 && !(machine.vdp[0] & 4)) { /* TMS9918 modes, below */
+        tms_sprite_t t[4];
+        tms_render(y, out, t, (machine.vdp[1] & 0x40) ? tms_sprites(y, t) : 0);
+        return;
+    }
+    sprite_t spr[8];
+    const unsigned n = (machine.vdp[1] & 0x40) ? line_sprites(y, spr) : 0;
+    render(y, out, spr, n);
+}
+
 static void vdp_line(unsigned y) {
     gg_t *m = &machine;
     sprite_t spr[8];
+    tms_sprite_t tms[4];
     unsigned n = 0;
-    if (m->vdp[1] & 0x40) {
+    const int legacy = GG_KOREAN150 && !(m->vdp[0] & 4); /* Graphics I/II, text, multicolour */
+    if (legacy) {
+        if (m->vdp[1] & 0x40) {
+            n = tms_sprites(y, tms);
+            tms_collisions(tms, n);
+        }
+    } else if (m->vdp[1] & 0x40) {
         n = line_sprites(y, spr);
         collisions(spr, n);
     }
     if (y < GG_WIN_TOP || y >= GG_WIN_TOP + GG_WIN_LINES || !m->row || !m->row_out) return;
     const int draw = m->draw_line ? m->draw_line(m->platform, y) : 1;
     if (!draw) return;
-    if (draw == 2 && m->row_tmp) {
+    if (legacy) {
+        if (draw == 2 && m->row_tmp) {
+            tms_render(y, m->row_tmp, tms, n);
+            average_rows(m->row_out, m->row_tmp);
+        } else tms_render(y, m->row_out, tms, n);
+    } else if (draw == 2 && m->row_tmp) {
         render(y, m->row_tmp, spr, n);
         average_rows(m->row_out, m->row_tmp);
     } else render(y, m->row_out, spr, n);

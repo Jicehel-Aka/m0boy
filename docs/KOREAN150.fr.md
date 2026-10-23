@@ -62,3 +62,35 @@ Le choix automatique du budget de code utilise maintenant aussi la chaîne
 Xtensa de `PLATFORMIO_CORE_DIR` lorsqu'il est défini ; sans cela, une
 installation isolée ne retrouvait pas `xtensa-lx106-elf-size` et abandonnait
 après le premier dépassement de flash au lieu de réajuster le code.
+
+## Jeux MSX : modes TMS9918 du VDP
+
+Les tables de pages ci-dessus ne sont pas en cause quand seul le premier jeu
+(Teddy Boy) s'affiche : les jeux MSX de la cartouche (la grande majorité des
+entrées) programment le VDP en Graphics I/II (registre 0 sans M4, `02` ; Teddy
+Boy est en mode 4, `26`), que le VDP Game Gear/Master System du runtime ne
+dessinait pas : écran de tuiles lues comme du mode 4. Le VDP de la Master
+System dessine ces modes comme un TMS9918, avec sa palette fixe (les seize
+couleurs TMS converties en `--BBGGRR`, table dans `gg_vdp.c`).
+
+`gg_vdp.c` ajoute, pour ce seul mapper (`GG_KOREAN150` est une constante dans
+les projets générés, le code disparaît des autres firmwares : le firmware de
+Sonic Blast GG est identique octet pour octet), Graphics I et II, le texte et
+le multicolore, les sprites 8x8 et 16x16 agrandis ou non, la limite de quatre
+sprites par ligne avec le drapeau du cinquième, et la coïncidence. Les tuiles
+sans sprite sont filtrées de 256 à 160 colonnes directement depuis leur motif
+et leurs deux couleurs ; les groupes sous un sprite, le texte et le
+multicolore passent par des indices de couleur et le même filtre. Les deux
+chemins donnent les mêmes images (comparées pixel pour pixel sur 256 états de
+lancement du menu, soit tous les couples mode/banque des jeux MSX).
+
+Validation : `test_gg_runtime` (tuile de quatre pixels blancs et quatre noirs
+en Graphics I et II, écran éteint) ; relevé d'images du harnais pour les jeux
+MSX de la cartouche (Knightmare, Goonies, Wonder Boy, Galaxian, Hyper Rally,
+Mr. Chin, etc. s'affichent). Non vérifié : les jeux sur console (la META n'a
+pas encore tourné avec ce rendu), les couleurs contre un matériel réel (la
+table des couleurs vient de la documentation de la communauté, pas d'une
+mesure), le son des jeux MSX (PSG AY ou SCC éventuels, non pris en charge : le
+runtime n'émule que le SN76489), et le débit : un jeu MSX tourne presque
+entièrement dans l'interpréteur tant qu'aucune session de jeu ne l'a profilé.
+

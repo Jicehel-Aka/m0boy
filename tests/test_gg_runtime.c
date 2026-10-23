@@ -131,6 +131,44 @@ static int rendering(int sms) {
     return 0;
 }
 
+/* Korean 150-in-1: its MSX games draw in the TMS9918's Graphics I/II.  The
+ * Master System VDP shows those with its fixed palette (white 3F, black 00,
+ * dark red 01): a tile of four white then four black pixels, the filter's
+ * five output pixels of the group, and a sprite over it. */
+static void vdp_register(unsigned r, unsigned v) { gg_vdp_control_write((uint8_t)v); gg_vdp_control_write((uint8_t)(0x80 | r)); }
+static void vram_write(unsigned address, uint8_t v) {
+    gg_vdp_control_write((uint8_t)address); gg_vdp_control_write((uint8_t)(0x40 | (address >> 8)));
+    gg_vdp_data_write(v);
+}
+static int tms_modes(void) {
+    for (unsigned graphics2 = 0; graphics2 < 2; graphics2++) {
+        gg_init_system(rom, sizeof rom, 0, 1);
+        machine.mapper = M0_MAPPER_KOREAN150;
+        gg_reset();
+        vdp_register(0, graphics2 ? 0x02 : 0x00); /* no M4: legacy modes */
+        vdp_register(1, 0xe0);                    /* display, 16K, 8x8 sprites */
+        vdp_register(2, 0x0e); vdp_register(5, 0x76); vdp_register(7, 0x04);
+        if (graphics2) { vdp_register(3, 0xff); vdp_register(4, 0x03); }
+        else { vdp_register(3, 0x80); vdp_register(4, 0x00); }
+        for (unsigned i = 0; i < 0x4000; i++) vram_write(i, 0);
+        vram_write(0x3800, 0); /* tile 0 at the top left */
+        const unsigned pattern = 0x0000, colours = 0x2000;
+        vram_write(pattern + 1, 0xf0);                         /* row 1: four on, four off */
+        vram_write(colours + (graphics2 ? 1 : 0), 0xf1);       /* white on black */
+        vram_write(0x3b00, 208);                               /* sprite table: terminator first */
+        uint16_t out[GG_ROW_STRIDE] = { 0 };
+        gg_render_line(1, out + GG_ROW_PAD);
+        const uint16_t *o = out + GG_ROW_PAD;
+        REQUIRE(o[0] == 0xffffu && o[1] == 0xffffu); /* host panel order */
+        REQUIRE(o[3] == 0 && o[4] == 0);
+        REQUIRE(o[2] != 0 && o[2] != 0xffffu);
+        vdp_register(1, 0xa0); /* display off: the backdrop, dark blue */
+        gg_render_line(1, out + GG_ROW_PAD);
+        REQUIRE(o[0] != 0 && o[0] == o[7] && o[0] == o[159]);
+    }
+    return 0;
+}
+
 static uint8_t korean_rom[0x200000];
 static uint8_t korean_state[sizeof(gg_t)];
 static int korean_load_state;
@@ -187,7 +225,7 @@ static int korean150(void) {
 }
 
 int main(void) {
-    REQUIRE(!korean150());
+    REQUIRE(!korean150()); REQUIRE(!tms_modes());
     REQUIRE(!counters()); REQUIRE(!rendering(0)); REQUIRE(!rendering(1)); REQUIRE(!ram_outx());
     unsigned shown = 0;
     for (unsigned y = 0; y < GG_ACTIVE; y++) {
