@@ -171,3 +171,98 @@ def fixture():
 if __name__ == '__main__':
     import sys
     open(sys.argv[1], 'wb').write(fixture())
+
+
+# ---- banked cartridges ------------------------------------------------------
+# Unit u (8 KiB) of the ROM starts with `ld a,u; ret`; the code, in unit 0
+# (4000-5FFF, which every mapper shows at power on), selects units through each
+# mapper's registers and calls into them, keeping the results in RAM.
+
+MAPPERS = {
+    # name: (register of the window 8000, of A000 (None: the pair of the first), of 6000 (None: always unit 1))
+    'konami': (0x8000, 0xa000, 0x6000),
+    'konami-scc': (0x9000, 0xb000, 0x7000),
+    'ascii8': (0x7000, 0x7800, 0x6800),
+    'ascii16': (0x7000, None, None),
+}
+VALUES = (1, 2, 3, 5, 15, 9, 8)
+
+
+def mapper_source(name):
+    reg4, reg5, reg3 = MAPPERS[name]
+    lines = ['org 0x4000', 'db 0x41,0x42', 'dw init', 'dw 0', 'dw 0', 'dw 0', 'db 0,0,0,0,0,0',
+             'org 0x4010', 'init:', 'call 0x006f',      # INIT32
+             'ld a,1', 'ld h,0x80', 'call 0x0024',  # ENASLT: 8000-BFFF on the cartridge
+             'ld hl,0x3800+40', 'ld a,0x41', 'call 0x004d']
+    for i, v in enumerate(VALUES):
+        lines += [f'ld a,{v}', f'ld ({reg4:#x}),a', 'call 0x8000', f'ld (0xe100+{i}),a']
+        if reg5 is not None:
+            lines += [f'ld a,{v + 1}', f'ld ({reg5:#x}),a']
+        lines += ['call 0xa000', f'ld (0xe110+{i}),a']
+    if reg3 is not None:
+        lines += ['ld a,3', f'ld ({reg3:#x}),a']
+    lines += ['ld a,(0x6000)', 'ld (0xe120),a', 'ei', 'main:', 'ld a,(0xe000)', 'inc a', 'ld (0xe000),a',
+              'ld hl,0xe200', 'ld (hl),a', 'ld a,(0x8000)', 'ld (0xe121),a', 'halt', 'jr main']
+    return '\n'.join(lines)
+
+
+def mapper_fixture(name, units=32):
+    """a ROM of `units` 8 KiB units for the mapper (FF filler: it packs well)"""
+    code = bytes(Asm(0x10000).assemble(mapper_source(name))[0x4000:0x6000])
+    rom = bytearray(b'\xff' * (units * 0x2000))
+    rom[:0x2000] = code
+    for u in range(1, units):
+        rom[u * 0x2000:u * 0x2000 + 3] = bytes([0x3e, u, 0xc9])
+    return bytes(rom)
+
+
+def mapper_expected(name, units=32):
+    """RAM contents the fixture leaves: {address: value}"""
+    expected = {}
+    for i, v in enumerate(VALUES):
+        low, high = ((2 * v) % units, (2 * v + 1) % units) if name == 'ascii16' else (v % units, (v + 1) % units)
+        expected[0xe100 + i] = low
+        expected[0xe110 + i] = high
+    expected[0xe120] = 0x3e          # the byte at 6000: the first of a unit
+    expected[0xe121] = 0x3e          # and the first byte of the unit 8000 shows
+    return expected
+
+
+TEXT_SOURCE = r"""
+org 0x4000
+    db 0x41,0x42
+    dw init
+    dw 0
+    dw 0
+    dw 0
+    db 0,0,0,0,0,0
+org 0x4010
+init:
+    call 0x006f            ; INIT32: screen 1 with the BIOS font
+    ld hl,msg
+next:
+    ld a,(hl)
+    or a
+    jr z,done
+    push hl
+    call 0x00a2            ; CHPUT
+    pop hl
+    inc hl
+    jr next
+done:
+    ld hl,0x0503           ; POSIT: column 5, row 3
+    call 0x00c6
+    ld a,0x5a
+    call 0x00a2
+    ei
+spin:
+    halt
+    jr spin
+msg:
+    db 0x48,0x49,13,10,0x4f,0x4b,0
+"""
+
+
+def text_fixture():
+    """CHPUT and POSIT in screen 1: "HI", a new line, "OK", then a Z at column 5, row 3"""
+    return bytes(Asm(0x10000).assemble(TEXT_SOURCE)[0x4000:0x4100])

@@ -95,7 +95,18 @@ int main() {
             write(rom);
             require(!sg1000::inspect_msx(path, error), "MSX cartridge without header accepted");
             write(std::vector<uint8_t>(0x8001, 0));
-            require(!sg1000::inspect_msx(path, error), "MSX mapper cartridge accepted");
+            require(!sg1000::inspect_msx(path, error), "MSX cartridge without header accepted");
+            std::vector<uint8_t> big(0x40000, 0xff); /* 256 KiB, writes to 8000 and A000: Konami */
+            big[0] = 'A'; big[1] = 'B'; big[2] = 0x31; big[3] = 0x40;
+            for (size_t at = 0x100; at < 0x120; at += 8) { big[at] = 0x32; big[at + 1] = 0x00; big[at + 2] = 0x80; big[at + 3] = 0x32; big[at + 4] = 0x00; big[at + 5] = 0xa0; }
+            write(big);
+            auto mapped = sg1000::inspect_msx(path, error);
+            require(mapped && mapped->mapper == "konami" && mapped->rom_bytes == 0x40000, "MSX Konami cartridge misread");
+            big[0x101] = 0x00; big[0x102] = 0x70; big[0x104] = 0x00; big[0x105] = 0x70; big[0x109] = 0x00; big[0x10a] = 0x70; big[0x10c] = 0x00; big[0x10d] = 0x70;
+            big[0x111] = 0x00; big[0x112] = 0x70; big[0x114] = 0x00; big[0x115] = 0x70; big[0x119] = 0x00; big[0x11a] = 0x70; big[0x11c] = 0x00; big[0x11d] = 0x70;
+            write(big);
+            mapped = sg1000::inspect_msx(path, error);
+            require(mapped && mapped->mapper == "ascii16", "MSX ASCII16 cartridge misread");
             std::filesystem::remove(path);
         }
     } catch (const std::exception& e) {

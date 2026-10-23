@@ -31,7 +31,7 @@ l'ESPboy, une image à flasher).
 | SG-1000 | oui | oui | oui |
 | Game Gear | oui | oui | oui |
 | Master System | oui | oui | oui |
-| MSX (ROM simples, expérimental) | oui | oui | — |
+| MSX1 (mappers ASCII8/16, Konami ; expérimental) | oui | oui | — |
 | PICO-8 | oui | — | oui |
 
 Chaque cœur a le même menu d'options (HOME maintenu ; C sur la Pokitto) :

@@ -49,6 +49,23 @@ int main(int argc, char **argv) {
     CHECK(machine.vram[0x3b00] == 60 && machine.vram[0x3b02] == 0, "sprite attributes");
     CHECK(machine.ay_reg[0] == 0xfe && machine.ay_reg[3] == 1 && machine.ay_reg[7] == 0xb8 && machine.ay_reg[13] == 0x0e && machine.ay_reg[15] == 0x8f, "AY registers");
     CHECK(machine.ppi_a == 0xf4, "PPI A");
+    if (argc > 2) { /* the text fixture: CHPUT, POSIT and the font */
+        f = fopen(argv[2], "rb");
+        if (!f) { perror(argv[2]); return 2; }
+        const size_t text_size = fread(rom, 1, sizeof rom, f);
+        fclose(f);
+        for (size_t i = text_size; i < sizeof rom; i++) rom[i] = 0xff;
+        frames = 0;
+        machine.stop = 0;
+        sg1000_init(rom, text_size, 0);
+        machine.row = row; machine.row_out = out_row; machine.frame = frame;
+        sg1000_run();
+        CHECK(machine.vram[0x1800] == 'H' && machine.vram[0x1801] == 'I', "CHPUT at the cursor");
+        CHECK(machine.vram[0x1800 + 32] == 'O' && machine.vram[0x1800 + 33] == 'K', "CR LF");
+        CHECK(machine.vram[0x1800 + 2 * 32 + 4] == 'Z', "POSIT then CHPUT");
+        CHECK(machine.vram['H' * 8 + 2] == 0xf8 && machine.vram['H' * 8 + 3] == 0x88, "the font is loaded: %02x %02x", machine.vram['H' * 8 + 2], machine.vram['H' * 8 + 3]);
+        CHECK(sg1000_read(0xf3dd) == 6 && sg1000_read(0xf3dc) == 3, "cursor variables");
+    }
     printf(failures ? "msx runtime: %d failure(s)\n" : "msx runtime: ok\n", failures);
     return failures != 0;
 }

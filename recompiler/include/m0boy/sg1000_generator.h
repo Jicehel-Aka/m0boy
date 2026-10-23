@@ -17,7 +17,8 @@ struct GenerateOptions {
     unsigned sync_cycles = 0;      ///< EmitOptions::sync_cycles (40: bounded interrupt latency)
     bool gamegear = false;         ///< Game Gear cartridge (Sega mapper, VDP mode 4)
     bool mastersystem = false;     ///< with gamegear: a Master System cartridge
-    bool msx = false;              ///< MSX1 cartridge (unbanked ROM, simulated BIOS, TMS9918A, AY-3-8910)
+    bool msx = false;              ///< MSX1 cartridge (simulated BIOS, TMS9918A, AY-3-8910)
+    int msx_mapper = -1;           ///< msx: M0_MSX_* to force, -1: detect from the ROM
     std::string compiler = "gcc";  ///< firmware compiler: gcc or clang
     size_t code_budget_bytes = 0;  ///< 0: the flash left by the runtime and the ROM
     size_t bytes_per_instruction = 0; ///< flash per compiled instruction; 0: the default estimate

@@ -108,6 +108,11 @@ typedef struct {
     uint8_t *wr_win[8];
     uint8_t ppi_a, ppi_c, ay_latch, ay_reg[16];
     uint16_t msx_base, msx_init;  /* address of the cartridge's first byte, its INIT routine */
+    /* Cartridge banks: the 8 KiB unit each window (2..5: 4000, 6000, 8000, A000) shows,
+     * which windows show the cartridge, the mapper (M0_MSX_*, 0: unbanked) and the units */
+    uint16_t page[6], rom_units;
+    uint8_t cart_vis, cart_mask, msx_mapper;
+    uint32_t coverage_size;       /* host profiling of banked cartridges: locations (page << 16 | pc) */
     /* AY-3-8910 sample generation (msx_ay.c) */
     uint16_t ay_count[3], ay_noise_count, ay_env_count;
     uint8_t ay_out[3], ay_env_pos, ay_env_attack, ay_env_hold, ay_env_final;
@@ -135,11 +140,15 @@ static inline uint8_t sg1000_read(uint16_t a) {
     const uint8_t *w = machine.rd_win[a >> 13];
     return w ? m0_load_u8(w + (a & 0x1fff)) : msx_read_slow(a);
 }
+void msx_mapper_write(uint16_t a, uint8_t v);
 static inline void sg1000_write(uint16_t a, uint8_t v) {
     uint8_t *w = machine.wr_win[a >> 13];
     if (w) w[a & 0x1fff] = v;
+    else if (machine.msx_mapper) msx_mapper_write(a, v);
 }
 static inline void sg1000_write_cart(uint16_t a, uint8_t v) { (void)a; (void)v; }
+void msx_set_mapper(int mapper);     /* before sg1000_init: force the mapper (-1: detect) */
+int msx_mapper_forced(void);
 void msx_remap(void);
 uint8_t msx_vdp_in(uint8_t port);        /* the TMS9918A data and status ports */
 void msx_vdp_out(uint8_t port, uint8_t value);

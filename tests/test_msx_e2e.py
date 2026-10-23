@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from msx_fixture import fixture  # noqa: E402
+from msx_fixture import fixture, text_fixture, mapper_fixture, mapper_expected, MAPPERS  # noqa: E402
 
 
 def run(*args):
@@ -37,7 +37,9 @@ def main():
         root = Path(temporary)
         rom = root / 'synthetic.mx1'
         rom.write_bytes(fixture())
-        assert 'ok' in run(args.runtime_test, rom)
+        text = root / 'text.mx1'
+        text.write_bytes(text_fixture())
+        assert 'ok' in run(args.runtime_test, rom, text)
         info = run(args.recompiler, rom, '--info')
         assert 'system=msx' in info and 'rom_bytes=16384' in info and 'mapper=unbanked 4000-BFFF' in info, info
         # a ROM without the AB header is refused, not run
@@ -98,6 +100,41 @@ def main():
                 assert len(binary) < 0x39000
                 assert sum(struct.unpack_from('<8I', binary)) & 0xffffffff == 0
             print(target + ': precise native = interpreter (hashes, pixels, audio, fallback); default build runs')
+        for name in MAPPERS:
+            banked(args, root, name)
+
+
+def banked(args, root, name):
+    """a 256 KiB cartridge on one mapper: bank registers, code in banked windows, the packed
+    ROM of the consoles (it does not fit their flash raw) and the interpreter fallback"""
+    rom = root / (name + '.mx1')
+    rom.write_bytes(mapper_fixture(name))
+    expected = mapper_expected(name)
+    peeks = [a for address in sorted(expected) for a in ('--peek', address)]
+    common = ('--frames', 12, '--mapper', name, *peeks)
+    coverage = root / (name + '.cov')
+    baseline = run(args.host, rom, *common, '--coverage', coverage)
+    for address, value in expected.items():
+        assert f'peek {address:04x}={value:02x}' in baseline, (name, hex(address), value, baseline)
+    assert '# bank-shift 13' in coverage.read_text()
+    assert f'mapper={name}' in run(args.recompiler, rom, '--info', '--msx-mapper', name) or name in run(args.recompiler, rom, '--info')
+    for target in ('desktop', 'meta', 'pokitto'):
+        output = root / (name + '-' + target)
+        run(args.recompiler, rom, '--target', target, '--coverage', coverage, '--meta-precise',
+            '--msx-mapper', name, '--output-prefix', 'synthetic', '-o', output)
+        host = output / 'host/build'
+        run('cmake', '-G', 'Ninja', '-S', output / 'host', '-B', host)
+        run('ninja', '-C', host)
+        exe = host / 'synthetic_host'
+        native = run(exe, '--frames', 12, *peeks)
+        interpreted = run(exe, '--frames', 12, '--interp', *peeks)
+        assert fingerprint(native) == fingerprint(interpreted)
+        for address, value in expected.items():
+            assert f'peek {address:04x}={value:02x}' in native, (name, target, hex(address), native)
+        assert int(re.search(r'compiled=(\d+)', native)[1]) > 0 and 'out_mismatch=0' in native
+        config = (output / 'src/sg_config.h').read_text()
+        assert ('#define SG_MSX_PACKED ' + ('0' if target == 'desktop' else '1')) in config
+        print(name + ' ' + target + ': banked, precise native = interpreter' + ('' if target == 'desktop' else ', ROM packed in flash'))
 
 
 if __name__ == '__main__':

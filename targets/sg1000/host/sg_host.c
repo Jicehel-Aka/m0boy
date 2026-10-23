@@ -24,9 +24,17 @@ static FILE *audio;
 static uint32_t audio_samples;
 static int audio_error;
 static unsigned frames = 300, buttons, start_frame = ~0u, pause_frame = ~0u, explore_frames;
+#if SG_MSX
+/* banked cartridges: locations are page << 16 | pc, allocated once the ROM is known */
+static uint16_t peek_at[64]; /* --peek ADDR: bytes of the address space printed after the run */
+static unsigned peeks;
+static uint32_t *hits, *coverage_order;
+static uint8_t *entries;
+#else
 static uint32_t hits[65536];
 static uint8_t entries[65536];
 static uint32_t coverage_order[65536];
+#endif
 
 /* --input / --random: parsing and RNG live in m0_host_util.h, these are the
  * harness's own knobs */
@@ -156,6 +164,16 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--shot") && i + 1 < argc) shot = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav_path = argv[++i];
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) cov_path = argv[++i];
+#if SG_MSX
+        else if (!strcmp(argv[i], "--peek") && i + 1 < argc && peeks < 64) peek_at[peeks++] = (uint16_t)strtoul(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "--mapper") && i + 1 < argc) {
+            int found = -1;
+            for (int m = 0; m < 5; m++) if (!strcmp(argv[i + 1], m0_msx_mapper_name((unsigned)m))) found = m;
+            if (found < 0) { fprintf(stderr, "Unknown mapper %s (plain, ascii8, ascii16, konami, konami-scc)\n", argv[i + 1]); return 1; }
+            msx_set_mapper(found);
+            i++;
+        }
+#endif
         else if (!strcmp(argv[i], "--buttons") && i + 1 < argc) buttons = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--start-frame") && i + 1 < argc) start_frame = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--pause-frame") && i + 1 < argc) pause_frame = (unsigned)strtoul(argv[++i], 0, 0);
@@ -186,6 +204,7 @@ int main(int argc, char **argv) {
     if (!file) { perror(rom_path); return 1; }
 #if SG_MSX
     loaded = m0_rom_load(file, M0_MSX_MAX_ROM, 1, &size); /* padded with FF to whole pages */
+    if (loaded && !m0_msx_layout(loaded, size).valid) { fprintf(stderr, "Not a MSX ROM (\"AB\" header, INIT in the cartridge)\n"); free(loaded); return 1; }
 #else
     loaded = m0_rom_load(file, 0xc000, 0, &size); /* unbanked: no page padding */
 #endif
@@ -203,6 +222,15 @@ int main(int argc, char **argv) {
     machine.row_out = out_row;
     machine.ref_row = ref_row;
     machine.frame = frame;
+#if SG_MSX
+    if (coverage) {
+        machine.coverage_size = machine.msx_mapper ? (uint32_t)machine.rom_units << 16 : 65536u;
+        hits = calloc(machine.coverage_size, sizeof *hits);
+        entries = calloc(machine.coverage_size, 1);
+        coverage_order = malloc(machine.coverage_size * sizeof *coverage_order);
+        if (!hits || !entries || !coverage_order) { perror("coverage"); free(loaded); return 1; }
+    }
+#endif
     if (coverage) { machine.coverage = hits; machine.entries = entries; }
     if (wav_path) {
         audio = fopen(wav_path, "wb");
@@ -223,14 +251,20 @@ int main(int argc, char **argv) {
         /* v2: every address line carries its execution count, so the
          * recompiler ranks heat across sessions instead of file order */
 #if SG_MSX
+        const unsigned width = machine.msx_mapper ? 6 : 4;
         fprintf(coverage, "# m0boy.msx.coverage.v2\n");
+        if (machine.msx_mapper) fprintf(coverage, "# bank-shift 13\n# mapper %u\n", machine.msx_mapper);
+        fprintf(coverage, "# frames %u\n", machine.frames);
+        for (uint32_t loc = 0; loc < machine.coverage_size; loc++) /* dynamic jump targets: region entries */
+            if (entries[loc]) fprintf(coverage, "# entry %0*x\n", (int)width, loc);
+        if (m0_coverage_dump(coverage, hits, coverage_order, machine.coverage_size, width) < 0) { fclose(coverage); free(loaded); return 1; }
 #else
         fprintf(coverage, "# m0boy.sg1000.coverage.v2\n");
-#endif
         if (machine.cart_ram_used) fprintf(coverage, "# cart-ram\n");
         for (unsigned pc = 0; pc < 65536; pc++) /* dynamic jump targets: region entries */
             if (entries[pc]) fprintf(coverage, "# entry %04x\n", pc);
         if (m0_coverage_dump(coverage, hits, coverage_order, 65536, 4) < 0) { fclose(coverage); free(loaded); return 1; }
+#endif
         if (fclose(coverage)) { perror("coverage"); free(loaded); return 1; }
     }
     if (shot) {
@@ -245,6 +279,9 @@ int main(int argc, char **argv) {
             }
         if (fclose(f)) { free(loaded); return 1; }
     }
+#if SG_MSX
+    for (unsigned k = 0; k < peeks; k++) printf("peek %04x=%02x\n", peek_at[k], sg1000_read(peek_at[k]));
+#endif
     printf("frames=%u cycles=%u pc=%04x compiled=%u interpreted=%u out_mismatch=%u run_hash=%08x\n",
            machine.frames, machine.cyc, machine.cpu.pc, machine.compiled, machine.interpreted, out_mismatch, run_hash());
     free(loaded);

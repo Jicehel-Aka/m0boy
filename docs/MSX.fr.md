@@ -1,4 +1,4 @@
-# MSX1 : cartouches ROM simples
+# MSX1 : cartouches ROM
 
 `--system msx` (extensions `.mx1`, `.msx`, ou `.rom` commençant par `AB`)
 recompile une cartouche MSX1 vers la META, la Pokitto ou le PC (`desktop`).
@@ -10,13 +10,23 @@ Pokitto, avant et après).
 
 ## Ce qui est pris en charge
 
-- **Cartouches** : ROM non paginée de 1 à 32 Kio avec l'en-tête `AB` et une
-  routine INIT dans la cartouche. Une ROM de 16 Kio est placée en 4000-7FFF,
-  ou en 8000-BFFF si INIT s'y trouve ; au-delà, en 4000-BFFF
-  (`targets/common/runtime/m0_msx_layout.h`, une seule règle pour le
-  recompilateur et le runtime). Une ROM sans en-tête, sans INIT (extension
-  BASIC) ou plus grande est refusée avec un message (les mappers ASCII8/16 et
-  Konami ne sont pas pris en charge).
+- **Cartouches** : ROM de 1 octet à 1 Mio avec l'en-tête `AB` et une routine
+  INIT dans la cartouche (`targets/common/runtime/m0_msx_layout.h`, une seule
+  règle pour le recompilateur et le runtime). Jusqu'à 32 Kio, ROM non paginée :
+  une ROM de 16 Kio est en 4000-7FFF, ou en 8000-BFFF si INIT s'y trouve, au-delà
+  en 4000-BFFF. Au-delà de 32 Kio, un mapper (la ROM vue en unités de 8 Kio à
+  travers quatre fenêtres 4000/6000/8000/A000) : **ASCII8**, **ASCII16**,
+  **Konami** et **Konami SCC** (sans le SCC). Le mapper est deviné par les
+  écritures `LD (nn),A` aux registres de banque (ASCII16 en cas d'égalité) ;
+  `--msx-mapper plain|ascii8|ascii16|konami|konami-scc` (et `msx_host --mapper`)
+  le force. Ces ROM sont recompilées comme la Game Gear (un emplacement est une
+  page et une adresse, le code revient au répartiteur quand une fenêtre change).
+  Une ROM sans en-tête ou sans INIT (extension BASIC) est refusée.
+- **ROM en flash** : brute si elle tient ; sinon (la META ou la Pokitto avec
+  une ROM de 256 Kio) compressée par secteurs de 512 octets (LZSS ou brut, comme
+  le pool de la Game Gear) et décodée à la demande dans un cache de 3 (META) ou
+  4 secteurs. Le streaming depuis la carte SD n'est pas disponible pour le MSX :
+  une ROM qui ne tient pas compressée est refusée.
 - **Mémoire** : quatre pages de 16 Kio dans quatre slots primaires choisis par
   le PPI (port A8) : slot 0 BIOS, slot 1 cartouche, slot 2 vide, slot 3 RAM.
   Au départ : page 0 BIOS, la page de la cartouche sur le slot 1, RAM au-dessus.
@@ -43,15 +53,28 @@ Pokitto, avant et après).
   système usuelles (RGnSAV, STATFL, FORCLR, BAKCLR, BDRCLR, SCRMOD, NAMBAS...,
   JIFFY, RAMADn, crochets) sont initialisées comme après le démarrage du BIOS.
 
+## Le BIOS : licence
+
+Le BIOS d'origine est protégé et n'est ni utilisé ni fourni. Le BIOS est
+simulé (ci-dessus) ; la seule donnée tierce est la **police** des modes texte,
+reprise de [C-BIOS](https://cbios.sourceforge.net) 0.28 (BIOS libre sous licence
+BSD à deux clauses, redistribuable avec des émulateurs) : la table des 256
+glyphes de `font_us.asm` de Eric Boon, `targets/msx/runtime/msx_font.h`, qui
+garde l'avis de copyright et la licence. `CHPUT` (écran 0 et 1 : retour chariot,
+saut de ligne, effacement, défilement), `POSIT`, `INITXT` et `INIT32` s'en
+servent. C-BIOS lui-même (du Z80 à exécuter à la place du BIOS simulé) n'est pas
+embarqué : il demande 64 Kio de RAM pour sa détection de mémoire.
+
 ## Ce qui manque
 
-Aucun BIOS ni police n'est fourni (il serait protégé) : **les modes texte
-n'affichent aucun glyphe**, `CHPUT` et les autres routines de texte sont des
-`RET`, tout ce qui touche à la cassette, à l'imprimante, aux disques, au BASIC
-et au clavier complet (hors les touches ci-dessus) est absent. MSX2 et plus
-(VDP V9938, mappers, RAM paginée) ne sont pas pris en charge. Un jeu qui
-appelle une routine du BIOS non listée, ou qui attend une touche autre que
-celles-là, ne fonctionnera pas.
+Les modes graphiques n'ont pas de routine de texte (`GRPPRT`), et tout ce qui
+touche à la cassette, à l'imprimante, aux disques, au BASIC et au clavier
+complet (hors les touches ci-dessus) est absent. **MSX2 et plus** (VDP V9938 et
+ses 128 Kio de VRAM, modes 4 à 8, RAM paginée, horloge) ne sont pas pris en
+charge : la VRAM de 128 Kio ne tient pas dans la SRAM de la META (32 Kio).
+`Aleste (1988)(Compile)` en est un : il écrit les registres R#14 et R#15 du
+V9938. Un jeu qui appelle une routine du BIOS non listée, ou qui attend une
+touche autre que celles-là, ne fonctionnera pas.
 
 ## Utilisation
 
@@ -80,7 +103,15 @@ le SG-1000. Le profil est un fichier `# m0boy.msx.coverage.v2`. Le
 - Registres, tables VRAM, joystick et clavier, slots, JIFFY et crochet H.TIMI
   de la cartouche synthétique relus dans l'état de la machine.
 
-Non vérifié : aucun jeu MSX réel n'a été essayé (aucune ROM MSX dans le dépôt,
+- Cartouches synthétiques de 256 Kio pour chacun des quatre mappers
+  (`mapper_fixture`) : registres de banque, appels dans les fenêtres paginées,
+  lecture de données ; native précise = interpréteur sur `desktop`, `meta` et
+  `pokitto` (ROM compressée en flash sur les deux consoles). Firmware META
+  construit : RAM 30 652 / 32 768 octets (ROM compressée, cache de 3 secteurs),
+  flash 98 940 octets.
+- Texte : `CHPUT`, `POSIT` et la police chargée (`tests/test_msx_runtime.c`).
+
+Non vérifié : aucun jeu MSX1 réel n'a été essayé (la seule ROM MSX fournie, Aleste, est MSX2 ;
 hors les jeux de la Super Game 150, qui tournent sur un autre matériel) ; ni
 l'exécution sur console (META, Pokitto) ni sous gm0 ; le son contre un AY réel
 (niveaux et cadence de l'enveloppe issus de la documentation de la

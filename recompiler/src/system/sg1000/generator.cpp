@@ -82,12 +82,12 @@ struct Profile {
  * else by its share of the run's executions, averaged over the runs, so the
  * code of a long game session outranks the logos and menus that every run
  * repeats.  Otherwise the first occurrence wins. */
-Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sms, unsigned bank_shift, bool msx = false) {
+Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sms, unsigned bank_shift, bool msx = false, bool banked_msx = false) {
     Profile profile;
     std::set<Loc> seen;
     std::map<Loc, double> score;
     bool counted = true, rated = true;
-    const unsigned long limit = gamegear ? 0xffffff : 0xffff;
+    const unsigned long limit = gamegear || banked_msx ? 0xffffff : 0xffff;
     const std::string base = msx ? "msx" : sms ? "sms" : gamegear ? "gg" : "sg1000";
     for (const auto& path : files) {
         std::ifstream file(path);
@@ -171,7 +171,7 @@ constexpr size_t runtime_bytes = 30 * 1024; /* drivers, runtime and, since 0.10.
                                             * menu (meta_menu.cpp, meta_font.h, sg_menu.h: about 6 KiB — left
                                             * unbudgeted it pushed the hot instructions to the interpreter:
                                             * Ristar's first level at 16 fps on the device, 2026-10-20) */
-constexpr size_t msx_state_bytes = 17440; /* sizeof(sg1000_t) with SG_MSX, less its RAM (host build: an upper bound for the ARM one) */
+constexpr size_t msx_state_bytes = 17600; /* sizeof(sg1000_t) with SG_MSX, less its RAM (host build: an upper bound for the ARM one) */
 constexpr size_t bytes_per_instruction = 32; /* measured 13-27 with GCC 7.2 -O2 */
 constexpr size_t gg_bytes_per_instruction = 36; /* Game Gear: paged reads, measured 28-33 */
 constexpr double gg_interpreted_cycles = 300;   /* an interpreted instruction costs about this much more than a compiled one (gm0 profiles) */
@@ -211,13 +211,18 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
     m0_msx_layout_t msx_layout{};
     if (msx) {
         if (rom.empty() || rom.size() > M0_MSX_MAX_ROM) {
-            error = "MSX cartridge must contain 1 to 32768 bytes; larger cartridges use a mapper (ASCII, Konami), not supported";
+            error = "MSX cartridge must contain 1 byte to 1 MiB";
             return false;
         }
         msx_layout = m0_msx_layout(rom.data(), rom.size());
         if (!msx_layout.valid) {
-            error = "Not a plain MSX ROM: an \"AB\" header and an INIT routine inside the cartridge are required";
+            error = "Not a MSX ROM: an \"AB\" header and an INIT routine inside the cartridge are required";
             return false;
+        }
+        if (o.msx_mapper >= 0) {
+            msx_layout.mapper = static_cast<unsigned>(o.msx_mapper);
+            if (rom.size() > M0_MSX_MAX_UNBANKED && !msx_layout.mapper) { error = "A ROM larger than 32 KiB needs a mapper"; return false; }
+            if (msx_layout.mapper) msx_layout.base = 0x4000;
         }
         if (!msx_layout.init) {
             error = "MSX cartridge has no INIT routine (a BASIC extension, not a game)";
@@ -237,7 +242,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             throw std::runtime_error(system_name + " templates missing next to targets/meta");
         const unsigned mapper = gg ? m0_sega_mapper(rom.data(), rom.size()) : 0;
         const unsigned bank_shift = mapper == M0_MAPPER_KOREAN150 ? 13 : 14;
-        const Profile profile = read_coverage(o.coverage, gg, o.mastersystem, bank_shift, msx);
+        const bool msx_banked = msx && msx_layout.mapper != M0_MSX_PLAIN;
+        const Profile profile = read_coverage(o.coverage, gg, o.mastersystem, msx_banked ? 13 : bank_shift, msx, msx_banked);
         const auto& hot = profile.hot;
         const auto& entries = profile.entries;
         const auto& reads = profile.reads;
@@ -268,6 +274,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const auto src = o.output / "src";
 
         EmitOptions eo;
+        bool o_aggressive = o.aggressive_scan, o_infer = o.infer_data_zones;
         eo.precise = o.precise;
         eo.sync_cycles = o.sync_cycles;
         eo.cart_ram = cart_ram;
@@ -277,9 +284,18 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             eo.rom_start = msx_layout.base;
             eo.msx_ram = msx_ram;
             eo.msx_init = msx_layout.init;
+            if (msx_banked) { /* the ROM as 8 KiB units seen through four windows: the Game Gear's paged model */
+                eo.banked = true;
+                eo.fixed_kib = false;
+                eo.bank_shift = 13;
+                eo.msx_mapper = msx_layout.mapper;
+                eo.sync_stores = true; /* a store may reach a bank register: sync, then look the code up again */
+                o_aggressive = false;
+                o_infer = false;
+            }
         }
-        eo.aggressive_scan = o.aggressive_scan;
-        eo.infer_data_zones = o.infer_data_zones;
+        eo.aggressive_scan = o_aggressive;
+        eo.infer_data_zones = o_infer;
         eo.entries.assign(entries.begin(), entries.end());
         /* Codemasters boards: checksum and its complement at 7FE6/7FE8 */
         if (gg) {
@@ -289,6 +305,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             if (mapper == M0_MAPPER_KOREAN150) eo.sync_stores = true;
         }
         size_t budget = 0;
+        bool msx_packed = false; /* MSX: the ROM does not fit raw in flash: LZSS sectors decoded on demand */
+        std::vector<rom::Block> msx_blocks;
+        size_t msx_packed_budget = 0;
         /* Game Gear ROMs larger than the flash leave some of it on the card.
          * With a rated profile, page 0 (the fixed KiB, always) stays and the
          * rest of the flash goes to the instructions compiled and the ROM
@@ -322,6 +341,20 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             const size_t all_code = o.code_budget_bytes ? o.code_budget_bytes : hot.size() * per_instruction + 16 * 1024;
             const size_t code_need = std::min(all_code, free / 2);
             const bool raw_fits = pages == 1 || rom::fits_raw(area, runtime_bytes, rom_size, all_code);
+            if (msx_banked && !raw_fits) {
+                size_t packed_bytes = 0;
+                for (size_t sector = 0; sector < rom_size / 512; sector++) {
+                    msx_blocks.push_back(rom::encode(rom.data() + sector * 512, 512));
+                    packed_bytes += msx_blocks.back().bytes.size();
+                }
+                const size_t metadata = (rom_size / 512 + 1) * 4 + 2;
+                if (!rom::fits_raw(area, runtime_bytes + rom::lzss_decoder_bytes + metadata + 512 * 4, packed_bytes, all_code)) {
+                    error = "MSX ROM does not fit the flash even compressed (" + std::to_string(packed_bytes) + " bytes packed); streaming from the SD card is not available for MSX";
+                    return false;
+                }
+                msx_packed = true;
+                msx_packed_budget = free - rom::lzss_decoder_bytes - metadata - packed_bytes;
+            }
             /* Like GB --meta-pack: try all cold ROM in flash before requiring
              * a card. Every sector keeps its independent raw/LZSS choice. */
             if (gg && !raw_fits) {
@@ -507,6 +540,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 budget = free - 0x4000 - (pool.size() - fill_sectors) * 512 - pages * 32;
         }
         const bool pool_packed = std::any_of(pool_blocks.begin(), pool_blocks.end(), [](const auto& b) { return b.codec != rom::Codec::raw; });
+        if (msx_packed) budget = msx_packed_budget;
         if (o.code_budget_bytes) budget = o.target == TargetId::desktop ? o.code_budget_bytes : std::min(budget, o.code_budget_bytes);
         const bool streamed = !page_index.empty();
         if (budget) eo.max_instructions = budget / per_instruction;
@@ -516,11 +550,11 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         for (Loc loc : hot) hot_counts.push_back({ loc, profile.hits.at(loc) });
         /* MSX: the emitter addresses the image like the Z80 bus */
         std::vector<uint8_t> emit_image;
-        if (msx) {
+        if (msx && !msx_banked) {
             emit_image.assign(msx_layout.base, 0xff);
             emit_image.insert(emit_image.end(), rom.begin(), rom.end());
         }
-        write(src / "sg_gen.c", emit_code(msx ? std::span<const uint8_t>(emit_image) : std::span<const uint8_t>(rom), hot_counts, eo, es));
+        write(src / "sg_gen.c", emit_code(msx && !msx_banked ? std::span<const uint8_t>(emit_image) : std::span<const uint8_t>(rom), hot_counts, eo, es));
         { /* the instructions the firmware runs natively: their fetches never
            * reach the ROM (tools/profile traces the others, --rom-trace-skip) */
             std::ostringstream list;
@@ -616,6 +650,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         else if (msx) config << "/* Generated by m0recomp --system msx. */\n#pragma once\n" << code_in_sram
                << "#define SG_SYSTEM_GG 0 /* sg_gen.h: the MSX slots, through the table of windows */\n"
                << "#define SG_MSX 1\n"
+               << "#define SG_MSX_MAPPER " << msx_layout.mapper << " /* " << m0_msx_mapper_name(msx_layout.mapper) << " */\n"
+               << "#define SG_MSX_BASE " << msx_layout.base << "\n#define SG_MSX_INIT " << msx_layout.init << "\n"
+               << "#define SG_MSX_PACKED " << (msx_packed ? 1 : 0) << " /* ROM sectors in flash, LZSS or raw */\n"
+               << "#define MSX_CACHE_SECTORS " << (o.target == TargetId::meta ? 3 : 4) << " /* decoded sectors of packed ROM kept in RAM */\n"
                << "#define SG_MSX_RAM " << msx_ram << " /* bytes, at the top of the address space */\n"
                << "#define SG_MSX_STATE_BYTES " << msx_state_bytes + msx_ram << "\n"
                << "#define SG_ROM_SIZE " << rom_size << "u\n"
@@ -679,6 +717,24 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 stats.pool_bytes += block.bytes.size();
                 stats.packed_sectors += block.codec != rom::Codec::raw;
             }
+        } else if (msx_packed) { /* sg_rom is a stub: the runtime reads the sectors below */
+            data << "0};\nconst size_t sg_rom_size = " << rom_size << ";\nconst uint32_t msx_rom_records[" << msx_blocks.size() + 1 << "] = {";
+            std::vector<uint8_t> blob;
+            for (const auto& block : msx_blocks) {
+                data << (blob.empty() ? "" : "") << (static_cast<uint32_t>(blob.size()) | (static_cast<uint32_t>(block.codec) << 30)) << "u,";
+                blob.insert(blob.end(), block.bytes.begin(), block.bytes.end());
+            }
+            data << blob.size() << "u};\n";
+            blob.push_back(0); blob.push_back(0); /* the decoder's lookahead */
+            data << "const uint8_t msx_rom_blob[" << blob.size() << "] = {";
+            for (uint8_t byte : blob) data << (count++ % 32 ? "" : "\n") << unsigned(byte) << ",";
+            data << "\n};\n";
+            for (const auto& block : msx_blocks) {
+                stats.pool_bytes += block.bytes.size();
+                stats.packed_sectors += block.codec != rom::Codec::raw;
+            }
+            stats.pool_sectors = msx_blocks.size();
+            stats.packed = true;
         } else {
             for (auto byte : rom) data << (count++ % 32 ? "" : "\n") << unsigned(byte) << ",";
             data << "\n};\nconst size_t sg_rom_size = sizeof(sg_rom);\n";
@@ -709,7 +765,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         if (gg) copy_template(common_dir / "runtime/m0_sega_mapper.h", src / "m0_sega_mapper.h");
         copy_template(common_dir / "runtime/m0_rom_codec.h", src / "m0_rom_codec.h");
         copy_template(common_dir / "runtime/m0_rom_lzss.inc", src / "m0_rom_lzss.inc");
-        if (gg) copy_template(common_dir / "runtime/m0_rom_lzss.S", src / "m0_rom_lzss.S");
+        if (gg || msx_packed) copy_template(common_dir / "runtime/m0_rom_lzss.S", src / "m0_rom_lzss.S");
         if (gg) /* the cache's and the pool's fixed-size copies */
             for (const char* name : { "m0_copy.h", "m0_copy.inc", "m0_copy.S" }) copy_template(common_dir / "runtime" / name, src / name);
         if (gg) { /* the card cache shared with the Game Boy */
@@ -732,7 +788,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const std::string generated_sources = "${SRC}/sg_gen.c ${SRC}/sg_rom.c";
         const std::string render_asm = gg ? "gg_render_asm.S" : "sg_render_asm.S";
         const std::string firmware_sources = core_sources + " " + generated_sources + " ${SRC}/" + main_cpp +
-                                              " ${SRC}/" + render_asm + (gg ? " ${SRC}/m0_rom_lzss.S ${SRC}/m0_copy.S" : "") +
+                                              " ${SRC}/" + render_asm + (gg ? " ${SRC}/m0_rom_lzss.S ${SRC}/m0_copy.S" : msx_packed ? " ${SRC}/m0_rom_lzss.S" : "") +
                                               " ${SRC}/meta_menu.cpp" +
                                               (states ? " ${SRC}/meta_state.cpp" : "");
         std::string host_sources = host_c + " " + core_sources + " " + generated_sources;

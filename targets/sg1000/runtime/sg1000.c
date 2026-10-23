@@ -14,6 +14,16 @@ static inline void sg_native_write(z80_t *c, uint16_t a, uint8_t v) { (void)c; s
 
 sg1000_t machine;
 
+#if SG_MSX
+/* Profiling location of a pc: banked cartridges count page << 16 | pc (the
+ * recompiler's Loc), the others the address; ~0 outside the cartridge. */
+static uint32_t msx_location(uint16_t pc) {
+    if (!machine.msx_mapper) return pc;
+    const unsigned w = pc >> 13;
+    return pc >= 0x4000 && pc < 0xc000 && (machine.cart_vis >> w & 1) ? (uint32_t)machine.page[w] << 16 | pc : ~0u;
+}
+#endif
+
 /* Read by gm0 --record-input, which finds it by its tag in the firmware:
  * the frame counter and the buttons the game receives (player 1, pause),
  * so that a session played in gm0 replays in the host harness (--input).
@@ -149,9 +159,18 @@ void sg1000_init(const uint8_t *rom, size_t size, uint8_t *cart_ram) {
     (void)cart_ram;
     m->cart_ram = 0;
     {
+#ifdef SG_MSX_MAPPER /* generated projects: fixed at generation (the ROM may not be in memory) */
+        m->msx_base = SG_MSX_BASE;
+        m->msx_init = SG_MSX_INIT;
+        m->msx_mapper = SG_MSX_MAPPER;
+#else
         const m0_msx_layout_t layout = m0_msx_layout(rom, size);
         m->msx_base = layout.base;
         m->msx_init = layout.init;
+        m->msx_mapper = (uint8_t)layout.mapper;
+#endif
+        if (msx_mapper_forced() >= 0) m->msx_mapper = (uint8_t)msx_mapper_forced();
+        m->rom_units = (uint16_t)((size + M0_MSX_PAGE - 1) / M0_MSX_PAGE);
     }
 #else
     /* Cartridge RAM sits at 8000-BFFF only on boards of up to 32 KiB of
@@ -352,7 +371,14 @@ static void note_dynamic(const z80_decoded_t *d, uint16_t sp, uint16_t pc) {
     if (!ret && !(d->group == 0 && op == 0xe9)) return;
     while (m->irq_depth && sp > m->irq_sp[m->irq_depth - 1]) m->irq_depth--; /* unwound */
     if (ret && m->irq_depth && sp == m->irq_sp[m->irq_depth - 1]) { m->irq_depth--; return; }
+#if SG_MSX
+    {
+        const uint32_t loc = msx_location(pc);
+        if (loc < m->coverage_size) m->entries[loc] = 1;
+    }
+#else
     m->entries[pc] = 1;
+#endif
 }
 
 static int interp_one(void) {
@@ -360,7 +386,14 @@ static int interp_one(void) {
     z80_t *c = &m->cpu;
     if ((int32_t)(m->cyc - m->next_evt) >= 0 && sg_event(c->pc)) return 0;
     uint16_t pc = c->pc;
-    if (m->coverage) m->coverage[pc]++;
+    if (m->coverage) {
+#if SG_MSX
+        const uint32_t loc = msx_location(pc);
+        if (loc < m->coverage_size) m->coverage[loc]++;
+#else
+        m->coverage[pc]++;
+#endif
+    }
     int jumped;
     const int fast = z80_fast(c, &jumped); /* common opcodes without decoding */
     if (fast >= 0) {

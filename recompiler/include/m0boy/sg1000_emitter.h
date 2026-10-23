@@ -45,6 +45,7 @@ struct EmitOptions {
     unsigned rom_start = 0;    ///< msx: address of the first ROM byte
     unsigned msx_ram = 0x2000; ///< msx: bytes of RAM at the top of the address space
     unsigned msx_init = 0;     ///< msx: INIT routine, a code entry
+    unsigned msx_mapper = 0;   ///< msx: bank mapper (m0_msx_layout.h, 0: unbanked); with `banked`, 8 KiB units (bank_shift 13)
     std::string io_out = "sg1000_out", io_in = "sg1000_in";
     size_t max_instructions = 6000; ///< flash budget, in instructions
     size_t max_region_instructions = 200;

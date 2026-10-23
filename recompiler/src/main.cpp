@@ -5,6 +5,7 @@
 
 #include "m0boy/system.h"
 #include "m0boy/sg1000.h"
+#include "m0_msx_layout.h"
 #include "m0boy/sg1000_generator.h"
 #include "m0boy/pico8_generator.h"
 #include "m0boy/cpu/z80/decoder.h"
@@ -2004,6 +2005,7 @@ int main(int argc, char* argv[]) {
     size_t meta_fill = 0;
     fs::path rom_plan;
     fs::path meta_dir;
+    std::string msx_mapper_name;
     
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -2194,6 +2196,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--meta-sync-cycles") {
             if (i + 1 < argc) g_meta_sync_cycles = std::stol(argv[++i]);
+        } else if (arg == "--msx-mapper") {
+            if (i + 1 < argc) msx_mapper_name = argv[++i];
         } else if (arg == "--meta-dir") {
             if (i + 1 < argc) {
                 meta_dir = argv[++i];
@@ -2342,6 +2346,15 @@ int main(int argc, char* argv[]) {
         options.gamegear = gamegear;
         options.mastersystem = mastersystem;
         options.msx = msx;
+        if (!msx_mapper_name.empty()) {
+            int found = -1;
+            for (int m = 0; m < 5; m++) if (msx_mapper_name == m0_msx_mapper_name(static_cast<unsigned>(m))) found = m;
+            if (found < 0 || !msx) {
+                std::cerr << "Error: --msx-mapper takes plain, ascii8, ascii16, konami or konami-scc, with a MSX cartridge\n";
+                return 1;
+            }
+            options.msx_mapper = found;
+        }
         options.target = *m0boy::parse_target(target);
         options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string()) : output_prefix;
         if (options.name.empty() || sanitize_prefix(options.name) != options.name) {

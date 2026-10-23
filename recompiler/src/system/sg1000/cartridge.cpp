@@ -84,7 +84,7 @@ std::optional<CartridgeInfo> inspect_msx(const std::filesystem::path& path, std:
     if (!file) { error = "Cannot read MSX cartridge: " + path.string(); return std::nullopt; }
     const auto size = static_cast<size_t>(file.tellg());
     if (!size || size > M0_MSX_MAX_ROM) {
-        error = "MSX cartridge must contain 1 to 32768 bytes (larger ones use a mapper, not supported): " + path.string();
+        error = "MSX cartridge must contain 1 byte to 1 MiB: " + path.string();
         return std::nullopt;
     }
     std::vector<uint8_t> bytes(size);
@@ -99,7 +99,8 @@ std::optional<CartridgeInfo> inspect_msx(const std::filesystem::path& path, std:
         return std::nullopt;
     }
     return CartridgeInfo{SystemId::msx, path.stem().string(), size, 0,
-                         layout.base == 0x8000 ? "unbanked 8000-BFFF" : "unbanked 4000-BFFF"};
+                         layout.mapper ? m0_msx_mapper_name(layout.mapper)
+                                       : layout.base == 0x8000 ? "unbanked 8000-BFFF" : "unbanked 4000-BFFF"};
 }
 std::optional<CartridgeInfo> inspect_mastersystem(const std::filesystem::path& path, std::string& error) {
     auto info = inspect_gamegear(path, error);

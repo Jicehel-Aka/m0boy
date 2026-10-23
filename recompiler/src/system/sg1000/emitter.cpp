@@ -12,6 +12,7 @@
 #include "m0boy/sg1000_emitter.h"
 #include "m0boy/code_scan.h"
 #include "z80.h"
+#include "m0_msx_layout.h"
 #include <algorithm>
 #include <cstring>
 #include <deque>
@@ -93,7 +94,8 @@ struct Sandbox {
      * at their usual pages; RAM reads 0. */
     uint8_t read(uint16_t a) const {
         const size_t n = rom.size();
-        if (msx) return a >= 0xc000 ? 0 : a >= rom_start && a < n ? rom[a] : 0xff;
+        if (msx && !banked) return a >= 0xc000 ? 0 : a >= rom_start && a < n ? rom[a] : 0xff;
+        if (msx && a < rom_start) return a >= 0xc000 ? 0 : 0xff; /* the BIOS */
         if (!banked) {
             if (a >= 0xc000) return 0;
             if (n && !(n & (n - 1))) return rom[a & (n - 1)];
@@ -330,7 +332,10 @@ private:
 
     static uint16_t addr_of(Loc l) { return static_cast<uint16_t>(l); }
     static unsigned page_of(Loc l) { return l >> 16; }
-    int slot_of(uint16_t a) const { return (a < 0x400 && opt_.fixed_kib) || a >= 0xc000 ? -1 : a >> opt_.bank_shift; }
+    int slot_of(uint16_t a) const {
+        if (opt_.msx && a < opt_.rom_start) return -1;
+        return (a < 0x400 && opt_.fixed_kib) || a >= 0xc000 ? -1 : a >> opt_.bank_shift;
+    }
     /* ROM byte at a location (bus semantics of the runtime) */
     uint8_t rom_at(Loc l) const {
         const uint16_t a = addr_of(l);
@@ -350,7 +355,7 @@ private:
     }
     /* Constant reads that can be folded: unbanked ROM, or the fixed first KiB */
     bool rom_const(uint16_t a) const {
-        if (opt_.msx) return a >= opt_.rom_start && a < rom_.size();
+        if (opt_.msx && !opt_.banked) return a >= opt_.rom_start && a < rom_.size();
         if (opt_.banked) return opt_.fixed_kib && a < 0x400 && a < rom_.size();
         return a < (opt_.cart_ram ? 0x8000u : 0xc000u);
     }
@@ -397,6 +402,7 @@ Dest Emitter::resolve(const Ins& from, uint16_t a) const {
     Dest d;
     if (!opt_.banked) { if (a < 0xc000 && a >= opt_.rom_start) d.loc = a; return d; }
     if (a >= 0xc000) return d;
+    if (opt_.msx && a < opt_.rom_start) return d; /* the BIOS: the interpreter */
     if (a < 0x400 && opt_.fixed_kib) { d.loc = a; return d; }
     const int s = a >> opt_.bank_shift;
     if (slot_of(from.addr) == s) { d.loc = (Loc(page_of(from.loc)) << 16) | a; return d; }
@@ -411,6 +417,10 @@ Dest Emitter::resolve(const Ins& from, uint16_t a) const {
  * FFFD slot 0, FFFE slot 1, FFFF and FFFC (cartridge RAM) slot 2;
  * Codemasters: 0000, 4000, 8000. */
 bool Emitter::remaps(uint16_t pc, uint16_t a, unsigned n) const {
+    if (opt_.msx && opt_.banked) { /* a bank register, from code in any window */
+        for (unsigned k = 0; k < n; k++) if (m0_msx_is_register(opt_.msx_mapper, static_cast<uint16_t>(a + k))) return true;
+        return false;
+    }
     const int s = opt_.banked ? slot_of(pc) : -1;
     if (s < 0) return false;
     for (unsigned k = 0; k < n; k++) {
@@ -1098,7 +1108,7 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
         for (const HotLoc& h : hot) { const int s = slot_of(addr_of(h.loc)); if (s >= 0) count[s][page_of(h.loc)] += h.hits; }
         for (int s = 0; s < (0xc000 >> opt_.bank_shift); s++) {
             uint64_t best = 0;
-            defaults_[s] = s; /* power-on mapping */
+            defaults_[s] = opt_.msx ? (s >= 2 ? static_cast<int>(m0_msx_initial_unit(opt_.msx_mapper, static_cast<unsigned>(s))) : -1) : s; /* power-on mapping */
             for (auto& [page, n] : count[s]) if (n > best) { best = n; defaults_[s] = static_cast<int>(page); }
         }
     }
@@ -1129,7 +1139,8 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
     };
     auto reach = [&](Loc a) { if (a != NOLOC && !ins_.count(a) && in_rom(a) && !padding(a)) add(a, false, 0); };
     for (Loc v : { 0x0000u, 0x0038u, 0x0066u }) reach(v);
-    if (opt_.msx && opt_.msx_init) reach(opt_.msx_init);
+    if (opt_.msx && opt_.msx_init)
+        reach(opt_.banked ? (Loc(m0_msx_initial_unit(opt_.msx_mapper, opt_.msx_init >> 13)) << 16) | opt_.msx_init : Loc(opt_.msx_init));
     auto drain = [&]() {
         while (!work.empty()) {
             Ins in = ins_[work.front()];
@@ -1244,7 +1255,12 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
     if (entries.empty()) o << "0";
     o << "\n};\n"
       << "sg_fn sg_gen_lookup(uint16_t pc) {\n";
-    if (opt_.banked) /* the location of pc under the current mapping; RAM: interpreter */
+    if (opt_.banked && opt_.msx) /* the unit each window shows, while the slots show the cartridge there */
+        o << "    if (pc >= 0xc000 || pc < 0x4000 || !(machine.cart_vis >> (pc >> 13) & 1)) return 0;\n"
+          << "    const uint32_t loc = (uint32_t)machine.page[pc >> 13] << 16 | pc;\n"
+          << "    static uint32_t cache_pc[32];\n    static sg_fn cache_fn[32];\n"
+          << "    unsigned h = (loc ^ (loc >> 5) ^ (loc >> 16)) & 31;\n";
+    else if (opt_.banked) /* the location of pc under the current mapping; RAM: interpreter */
         o << "    if (pc >= 0xc000) return 0;\n"
           << (opt_.fixed_kib ? "    const uint32_t loc = pc < 0x400 ? pc : (uint32_t)machine.page[pc >> " + std::to_string(opt_.bank_shift) + "] << 16 | pc;\n"
                              : "    const uint32_t loc = (uint32_t)machine.page[pc >> " + std::to_string(opt_.bank_shift) + "] << 16 | pc;\n")
