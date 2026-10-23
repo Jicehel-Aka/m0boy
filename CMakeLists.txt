@@ -75,6 +75,10 @@ if(BUILD_TESTS)
     add_executable(test_gg_runtime tests/test_gg_runtime.c)
     target_link_libraries(test_gg_runtime PRIVATE m0boy_gg_runtime)
     add_test(NAME gg_sms_runtime_reference COMMAND test_gg_runtime)
+    add_test(NAME korean150_native_end_to_end
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_korean150_e2e.py"
+                --recompiler "$<TARGET_FILE:m0recomp>" --host "$<TARGET_FILE:gg_host>")
+    set_tests_properties(korean150_native_end_to_end PROPERTIES TIMEOUT 300)
     add_test(NAME sg1000_native_end_to_end
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_sg1000_e2e.py"
                 --recompiler "$<TARGET_FILE:m0recomp>" --host "$<TARGET_FILE:sg1000_host>")

@@ -205,12 +205,15 @@ def session_kind(sid):
 def parse_cov(path, system):
     """{rom offset: executions}, data chunk reads {chunk: n}, frames or None."""
     code, reads, frames = {}, {}, None
+    bank_shift = 14
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
             if line.startswith('#'):
                 parts = line.split()
                 if len(parts) == 3 and parts[1] == 'frames':
                     frames = int(parts[2])
+                elif len(parts) == 3 and parts[1] == 'bank-shift':
+                    bank_shift = int(parts[2])
                 elif len(parts) == 4 and parts[1] == 'read':  # GG/SMS: 512-byte sector, frames read
                     sector = int(parts[2], 16)
                     for c in (sector * 2, sector * 2 + 1):
@@ -230,7 +233,7 @@ def parse_cov(path, system):
                 pc = loc & 0xffff
                 if pc >= 0xc000:  # Z80 RAM
                     continue
-                off = (loc >> 16) * BANK + (pc & 0x3fff) if system in ('gg', 'sms') else pc
+                off = ((loc >> 16) << bank_shift) + (pc & ((1 << bank_shift) - 1)) if system in ('gg', 'sms') else pc
                 hits = int(parts[1]) if len(parts) > 1 else 1
             code[off] = code.get(off, 0) + hits
     return code, reads, frames

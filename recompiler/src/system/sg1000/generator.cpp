@@ -3,6 +3,7 @@
  * shared with the Game Boy frontend. */
 #include <cctype>
 #include "m0boy/sg1000_generator.h"
+#include "m0_sega_mapper.h"
 #include "m0boy/rom_storage.h"
 #include "m0boy/sg1000.h"
 #include "m0boy/sg1000_emitter.h"
@@ -80,7 +81,7 @@ struct Profile {
  * else by its share of the run's executions, averaged over the runs, so the
  * code of a long game session outranks the logos and menus that every run
  * repeats.  Otherwise the first occurrence wins. */
-Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sms) {
+Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sms, unsigned bank_shift) {
     Profile profile;
     std::set<Loc> seen;
     std::map<Loc, double> score;
@@ -96,8 +97,15 @@ Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sm
         std::vector<std::pair<Loc, uint64_t>> run;
         std::vector<std::pair<uint32_t, uint32_t>> run_reads;
         uint64_t total = 0, frames = 0;
+        bool bank_format = bank_shift == 14;
         while (std::getline(file, line)) {
             if (line.empty()) continue;
+            if (line.rfind("# bank-shift ", 0) == 0) {
+                if (std::stoul(line.substr(13)) != bank_shift)
+                    throw std::runtime_error("Coverage mapper differs: replay " + path.string());
+                bank_format = true;
+                continue;
+            }
             if (line == "# cart-ram") { profile.cart_ram = true; continue; }
             if (line.rfind("# entry ", 0) == 0) { /* target of a RET or JP (HL) */
                 size_t used = 0;
@@ -138,6 +146,7 @@ Profile read_coverage(const std::vector<fs::path>& files, bool gamegear, bool sm
             if (seen.insert(static_cast<Loc>(value)).second) profile.hot.push_back(static_cast<Loc>(value));
         }
         if (!file.eof()) throw std::runtime_error("Cannot read coverage");
+        if (!bank_format) throw std::runtime_error("Old coverage lacks the 8 KiB mapper: replay " + path.string());
         if (!frames) rated = false;
         if (counted && total) for (const auto& [loc, count] : run) {
             score[loc] += static_cast<double>(count) / static_cast<double>(total);
@@ -201,7 +210,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         const auto common_dir = o.meta_templates.parent_path() / "common";
         if (!fs::is_regular_file(common_dir / "runtime" / "sg_gen.h"))
             throw std::runtime_error(system_name + " templates missing next to targets/meta");
-        const Profile profile = read_coverage(o.coverage, gg, o.mastersystem);
+        const unsigned mapper = gg ? m0_sega_mapper(rom.data(), rom.size()) : 0;
+        const unsigned bank_shift = mapper == M0_MAPPER_KOREAN150 ? 13 : 14;
+        const Profile profile = read_coverage(o.coverage, gg, o.mastersystem, bank_shift);
         const auto& hot = profile.hot;
         const auto& entries = profile.entries;
         const auto& reads = profile.reads;
@@ -238,12 +249,12 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         eo.infer_data_zones = o.infer_data_zones;
         eo.entries.assign(entries.begin(), entries.end());
         /* Codemasters boards: checksum and its complement at 7FE6/7FE8 */
-        bool codemasters = false;
-        if (gg && rom_size >= 0x8000) {
-            const unsigned sum = rom[0x7fe6] | rom[0x7fe7] << 8, inverse = rom[0x7fe8] | rom[0x7fe9] << 8;
-            codemasters = sum && !((sum + inverse) & 0xffff);
+        if (gg) {
+            eo.banked = true; eo.fixed_kib = mapper == M0_MAPPER_SEGA;
+            eo.bank_shift = bank_shift; eo.io_out = "gg_out"; eo.io_in = "gg_in";
+            /* A mapper write can move every slot, including the vectors. */
+            if (mapper == M0_MAPPER_KOREAN150) eo.precise = true;
         }
-        if (gg) { eo.banked = true; eo.fixed_kib = !codemasters; eo.io_out = "gg_out"; eo.io_in = "gg_in"; }
         size_t budget = 0;
         /* Game Gear ROMs larger than the flash leave some of it on the card.
          * With a rated profile, page 0 (the fixed KiB, always) stays and the
@@ -321,7 +332,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 auto sector_of = [&](Loc l) -> int64_t { /* ROM sector of an instruction, -1: not in the ROM */
                     const uint32_t pc = l & 0xffff, page = l >> 16;
                     if (pc >= 0xc000) return -1;
-                    const uint32_t offset = pc < 0x400 && page == 0 ? pc : page * 0x4000u + (pc & 0x3fffu);
+                    const uint32_t offset = eo.fixed_kib && pc < 0x400 && page == 0 ? pc
+                        : (page << bank_shift) + (pc & ((1u << bank_shift) - 1u));
                     return offset / 512 < pages * 32 ? static_cast<int64_t>(offset / 512) : -1;
                 };
                 std::vector<double> data_rate(pages * 32, 0.0), code_rate(pages * 32, 0.0);
@@ -502,11 +514,11 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                << "#define SG_SYSTEM_GG 1 /* sg_gen.h: paged ROM, ports through gg_write */\n"
                << "#define SG_ROM_SIZE " << rom_size << "u\n"
                << "#define SG_CART_RAM " << (cart_ram ? 1 : 0) << "\n"
-               << "#define SG_PRECISE " << (o.precise ? 1 : 0) << "\n"
+               << "#define SG_PRECISE " << (eo.precise ? 1 : 0) << "\n"
                << "#define GG_PANEL_SWAP " << (swap_panel ? 1 : 0) << " /* META SPI: high byte first */\n"
                << esp_id << (esp ? "#define GG_CART_RAM_8K 1 /* ESPboy: 8 KiB in RAM, mirrored */\n" : "")
                << "#define SG_ROM_STREAM " << (streamed ? 1 : 0) << "\n"
-               << "#define GG_MAPPER " << (codemasters ? 1 : 0) << " /* 0 Sega, 1 Codemasters */\n"
+               << "#define GG_MAPPER " << mapper << " /* 0 Sega, 1 Codemasters, 2 Korean 150-in-1 */\n"
                << "#define GG_CART_SD " << (cart_on_card ? 1 : 0) << " /* cartridge RAM in the save file */\n"
                << "#define GG_SMS " << (o.mastersystem ? 1 : 0) << " /* Master System */\n";
         /* The game's files on the card share the .BIN's 8.3 base; the
@@ -638,6 +650,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
          * include (sg_psg.h) */
         for (const char* name : { "sg_gen.h", "sg_psg.h" })
             copy_template(common_dir / "runtime" / name, src / name);
+        if (gg) copy_template(common_dir / "runtime/m0_sega_mapper.h", src / "m0_sega_mapper.h");
         copy_template(common_dir / "runtime/m0_rom_codec.h", src / "m0_rom_codec.h");
         copy_template(common_dir / "runtime/m0_rom_lzss.inc", src / "m0_rom_lzss.inc");
         if (gg) copy_template(common_dir / "runtime/m0_rom_lzss.S", src / "m0_rom_lzss.S");
@@ -829,7 +842,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
               "Run: host/build/" + o.name + "_host --frames 300 [--interp] [--shot image.ppm]\n\n" +
               (o.target == TargetId::pokitto ? "Firmware: cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake && ninja -C build\n"
                : o.target == TargetId::meta ? "Firmware: pio run\n" : "") +
-              (gg ? std::string("\nSega mapper (16 KiB pages), 8 KiB RAM, VDP mode 4 (160x144 window), SN76489.\n")
+              (gg ? std::string(mapper == M0_MAPPER_KOREAN150
+                        ? "\nKorean 150-in-1 mapper (six 8 KiB windows), precise native dispatch, 8 KiB RAM, SN76489.\n"
+                        : "\nSega/Codemasters mapper (16 KiB pages), 8 KiB RAM, VDP mode 4, SN76489.\n")
                   : std::string("\nBaseline NTSC, unbanked cartridge (optional 8 KiB cartridge RAM), TMS9918A, SN76489.\n")));
         return true;
     } catch (const std::exception& e) {

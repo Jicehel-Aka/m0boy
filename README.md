@@ -21,7 +21,7 @@ on the ESPboy, an image to flash).
 | Memory | 32 KiB RAM, 240 KiB flash for the game | 36 KiB RAM, 228 KiB flash | 80 KiB RAM, 4 MiB flash |
 | Screen | 160×128 | 220×176 | 128×128 |
 | Storage | SD card | SD card | flash only |
-| Runtime version | 0.10.36 | 0.10.30 | 0.3.6 |
+| Runtime version | 0.10.37 | 0.10.31 | 0.3.7 |
 
 ## What runs where
 
@@ -192,7 +192,10 @@ Boy Color boot palettes are built in (hold a direction at boot, as on a GBC).
 
 The Z80 recompiler handles banked code (an instruction is a page and an
 address; code returns to the dispatcher when the mapper moves its page), Sega
-and Codemasters mappers. The TMS9918A and the mode 4 VDP are drawn line by
+and Codemasters mappers, plus Super Game 150's six-window 8 KiB mapper.
+The latter uses precise native dispatch; its old Sega-mapped profiles are
+refreshed. See [mapper validation](docs/KOREAN150.fr.md).
+The TMS9918A and the mode 4 VDP are drawn line by
 line when the program touches them; the SG-1000 and Master System pictures are
 filtered 8-to-5 onto the small screens. The Z80 core passes ZEXDOC and 66 of
 67 ZEXALL tests (**checked**). In gm0 at 48 MHz, 67 of 68 SG-1000 games run at

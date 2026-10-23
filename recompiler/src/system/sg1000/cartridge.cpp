@@ -1,5 +1,6 @@
 #include "m0boy/sg1000.h"
 #include "m0boy/system.h"
+#include "m0_sega_mapper.h"
 #include <fstream>
 
 namespace m0boy::sg1000 {
@@ -65,7 +66,16 @@ std::optional<CartridgeInfo> inspect_gamegear(const std::filesystem::path& path,
         return std::nullopt;
     }
     const size_t rom_bytes = static_cast<size_t>(size) - copier_header_skip(static_cast<size_t>(size));
-    return CartridgeInfo{SystemId::gamegear, path.stem().string(), rom_bytes, 0, "sega"};
+    std::ifstream file(path, std::ios::binary);
+    if (!file) { error = "Cannot read cartridge: " + path.string(); return std::nullopt; }
+    file.seekg(static_cast<std::streamoff>(copier_header_skip(static_cast<size_t>(size))));
+    std::vector<uint8_t> bytes(rom_bytes);
+    if (!file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
+        error = "Incomplete cartridge read: " + path.string(); return std::nullopt;
+    }
+    const unsigned mapper = m0_sega_mapper(bytes.data(), bytes.size());
+    return CartridgeInfo{SystemId::gamegear, path.stem().string(), rom_bytes, 0,
+                         mapper == M0_MAPPER_KOREAN150 ? "korean150" : mapper == M0_MAPPER_CODEMASTERS ? "codemasters" : "sega"};
 }
 std::optional<CartridgeInfo> inspect_mastersystem(const std::filesystem::path& path, std::string& error) {
     auto info = inspect_gamegear(path, error);

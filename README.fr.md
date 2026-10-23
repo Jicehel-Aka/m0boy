@@ -21,7 +21,7 @@ l'ESPboy, une image à flasher).
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le jeu | 36 Kio de RAM, 228 Kio de flash | 80 Kio de RAM, 4 Mio de flash |
 | Écran | 160×128 | 220×176 | 128×128 |
 | Stockage | carte SD | carte SD | flash seulement |
-| Version du runtime | 0.10.36 | 0.10.30 | 0.3.6 |
+| Version du runtime | 0.10.37 | 0.10.31 | 0.3.7 |
 
 ## Ce qui tourne où
 
@@ -203,7 +203,10 @@ maintenue au démarrage, comme sur une GBC).
 
 Le recompilateur Z80 gère le code paginé (une instruction est une page et une
 adresse ; le code rend la main au dispatcher quand le mapper déplace sa page),
-mappers Sega et Codemasters. Le TMS9918A et le VDP mode 4 sont dessinés ligne
+mappers Sega et Codemasters, et celui de Super Game 150 à six fenêtres de
+8 Kio. Ce dernier utilise le dispatch natif précis ; ses anciens profils
+faits avec le mapper Sega sont refaits. [Détails et validation](docs/KOREAN150.fr.md).
+Le TMS9918A et le VDP mode 4 sont dessinés ligne
 par ligne quand le programme y touche ; les images SG-1000 et Master System
 sont filtrées de 8 en 5 sur les petits écrans. Le cœur Z80 passe ZEXDOC et 66
 des 67 tests ZEXALL (**vérifié**). Dans gm0 à 48 MHz, 67 des 68 jeux SG-1000

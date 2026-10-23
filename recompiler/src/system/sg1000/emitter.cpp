@@ -81,9 +81,10 @@ std::string hexloc(Loc a) { return a > 0xffff ? hex(a, 6) : hex(a); }
 struct Sandbox {
     std::span<const uint8_t> rom;
     bool banked = false, fixed_kib = true;
+    unsigned bank_shift = 14;
     unsigned page = 0;      ///< page of the decoded instruction's slot
     int slot = -1;          ///< its slot (-1: fixed area)
-    int defaults[3] = { 0, 1, 2 };
+    int defaults[6] = { 0, 1, 2, 3, 4, 5 };
     /* Bus of the decoded instruction: its own slot at its page, the others
      * at their usual pages; RAM reads 0. */
     uint8_t read(uint16_t a) const {
@@ -95,9 +96,9 @@ struct Sandbox {
         }
         if (a >= 0xc000) return 0;
         if (a < 0x400 && fixed_kib) return a < n ? rom[a] : 0xff;
-        const int s = a >> 14;
+        const int s = a >> bank_shift;
         const unsigned page = s == slot ? this->page : static_cast<unsigned>(defaults[s] < 0 ? s : defaults[s]);
-        const size_t off = static_cast<size_t>(page) * 0x4000 + (a & 0x3fff);
+        const size_t off = (static_cast<size_t>(page) << bank_shift) + (a & ((1u << bank_shift) - 1));
         return n ? rom[off % n] : 0xff;
     }
 };
@@ -144,7 +145,7 @@ static bool z80_scan_step(const void* ctxp, size_t pc, size_t end, m0boy::ScanSt
     const EmitOptions& opt = *ctx->opt;
     const uint16_t addr = static_cast<uint16_t>(ctx->addr_base + pc);
     auto slot_of = [&](uint16_t a) {
-        return (a < 0x400 && opt.fixed_kib) || a >= 0xc000 ? -1 : a >> 14;
+        return (a < 0x400 && opt.fixed_kib) || a >= 0xc000 ? -1 : a >> opt.bank_shift;
     };
     ctx->sb->slot = opt.banked ? slot_of(addr) : -1;
     ctx->sb->page = ctx->page;
@@ -290,6 +291,7 @@ public:
         sb_.rom = rom;
         sb_.banked = opt.banked;
         sb_.fixed_kib = opt.fixed_kib;
+        sb_.bank_shift = opt.bank_shift;
     }
     std::string run(const std::vector<HotLoc>& hot, EmitStats& stats);
 
@@ -299,7 +301,7 @@ private:
     Sandbox sb_;
     std::map<Loc, Ins> ins_;
     std::vector<std::vector<Loc>> regions_;
-    int defaults_[3] = { -1, -1, -1 }; ///< usual page of each slot (banked), -1: unknown
+    int defaults_[6] = { -1, -1, -1, -1, -1, -1 }; ///< usual page of each slot (banked), -1: unknown
     uint32_t pend_cy_ = 0, pend_rf_ = 0;
     /* Sites of the instruction being emitted expand the out-of-line helpers
      * (sg_gen.h) when it ran this hot: PUSH/POP/RD/WR are the same bodies
@@ -318,14 +320,14 @@ private:
 
     static uint16_t addr_of(Loc l) { return static_cast<uint16_t>(l); }
     static unsigned page_of(Loc l) { return l >> 16; }
-    int slot_of(uint16_t a) const { return (a < 0x400 && opt_.fixed_kib) || a >= 0xc000 ? -1 : a >> 14; }
+    int slot_of(uint16_t a) const { return (a < 0x400 && opt_.fixed_kib) || a >= 0xc000 ? -1 : a >> opt_.bank_shift; }
     /* ROM byte at a location (bus semantics of the runtime) */
     uint8_t rom_at(Loc l) const {
         const uint16_t a = addr_of(l);
         if (!opt_.banked) return sb_.read(a);
         const size_t n = rom_.size();
         if (a < 0x400 && opt_.fixed_kib) return a < n ? rom_[a] : 0xff;
-        const size_t off = static_cast<size_t>(page_of(l)) * 0x4000 + (a & 0x3fff);
+        const size_t off = (static_cast<size_t>(page_of(l)) << opt_.bank_shift) + (a & ((1u << opt_.bank_shift) - 1));
         return n ? rom_[off % n] : 0xff;
     }
     bool in_rom(Loc l) const {
@@ -333,7 +335,7 @@ private:
         if (a >= 0xc000) return false;
         if (!opt_.banked) return a < rom_.size();
         if (a < 0x400 && opt_.fixed_kib) return a < rom_.size();
-        return static_cast<size_t>(page_of(l)) * 0x4000 < rom_.size();
+        return (static_cast<size_t>(page_of(l)) << opt_.bank_shift) < rom_.size();
     }
     /* Constant reads that can be folded: unbanked ROM, or the fixed first KiB */
     bool rom_const(uint16_t a) const {
@@ -384,7 +386,7 @@ Dest Emitter::resolve(const Ins& from, uint16_t a) const {
     if (!opt_.banked) { if (a < 0xc000) d.loc = a; return d; }
     if (a >= 0xc000) return d;
     if (a < 0x400 && opt_.fixed_kib) { d.loc = a; return d; }
-    const int s = a >> 14;
+    const int s = a >> opt_.bank_shift;
     if (slot_of(from.addr) == s) { d.loc = (Loc(page_of(from.loc)) << 16) | a; return d; }
     if (defaults_[s] < 0) return d;
     d.loc = (Loc(defaults_[s]) << 16) | a;
@@ -401,6 +403,7 @@ bool Emitter::remaps(uint16_t pc, uint16_t a, unsigned n) const {
     if (s < 0) return false;
     for (unsigned k = 0; k < n; k++) {
         const uint16_t b = static_cast<uint16_t>(a + k);
+        if (opt_.bank_shift == 13) { if (b == 0xfff3 || b == 0xfffc) return true; continue; }
         if (!opt_.fixed_kib) { if (b < 0xc000 && !(b & 0x3fff) && (b >> 14) == s) return true; continue; }
         if (b < 0xfffc) continue;
         if ((b == 0xfffd ? 0 : b == 0xfffe ? 1 : 2) == s) return true;
@@ -413,7 +416,7 @@ bool Emitter::decode(Loc loc, Ins& in) {
     if (!in_rom(loc)) return false;
     sb_.slot = opt_.banked ? slot_of(addr) : -1;
     sb_.page = page_of(loc);
-    for (int s = 0; s < 3; s++) sb_.defaults[s] = defaults_[s];
+    for (int s = 0; s < (0xc000 >> opt_.bank_shift); s++) sb_.defaults[s] = defaults_[s];
     z80_t c{};
     c.user = &sb_; c.read = sb_read;
     c.pc = addr;
@@ -611,7 +614,7 @@ std::string Emitter::mem_read(uint16_t a) const {
 }
 std::string Emitter::mem_write(uint16_t a, const std::string& v) const {
     if (opt_.banked) {
-        if (a >= 0xc000 && a < 0xfffc) return "machine.ram[" + hex(a & 8191u) + "] = " + v + ";";
+        if (a >= 0xc000 && a < 0xfffc && !(opt_.bank_shift == 13 && a == 0xfff3)) return "machine.ram[" + hex(a & 8191u) + "] = " + v + ";";
         return "sg_wr(" + hex(a) + ", " + v + ");";
     }
     if (rom_const(a)) return "/* ROM */";
@@ -1068,9 +1071,9 @@ void Emitter::emit_region(std::ostringstream& o, int r) {
 std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
     stats_ = &stats;
     if (opt_.banked) { /* usual page of each slot: the most played one */
-        std::map<unsigned, uint64_t> count[3];
+        std::map<unsigned, uint64_t> count[6];
         for (const HotLoc& h : hot) { const int s = slot_of(addr_of(h.loc)); if (s >= 0) count[s][page_of(h.loc)] += h.hits; }
-        for (int s = 0; s < 3; s++) {
+        for (int s = 0; s < (0xc000 >> opt_.bank_shift); s++) {
             uint64_t best = 0;
             defaults_[s] = s; /* power-on mapping */
             for (auto& [page, n] : count[s]) if (n > best) { best = n; defaults_[s] = static_cast<int>(page); }
@@ -1130,14 +1133,15 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
         scan_options.min_instructions = 2;
         scan_options.pointer_lo = 0x0000;
         scan_options.pointer_hi = 0xc000;
-        const size_t page_count = opt_.banked ? (rom_.size() + 0x3fff) / 0x4000 : 1;
+        const size_t page_bytes = size_t(1) << opt_.bank_shift;
+        const size_t page_count = opt_.banked ? (rom_.size() + page_bytes - 1) / page_bytes : 1;
         for (size_t pi = 0; pi < page_count; pi++) {
-            const size_t base = opt_.banked ? pi * 0x4000 : 0;
-            const size_t size = opt_.banked ? std::min<size_t>(0x4000, rom_.size() - base) : rom_.size();
+            const size_t base = opt_.banked ? pi * page_bytes : 0;
+            const size_t size = opt_.banked ? std::min<size_t>(page_bytes, rom_.size() - base) : rom_.size();
             SweptRegion region;
             region.page = opt_.banked ? static_cast<unsigned>(pi) : 0;
             region.slot = opt_.banked ? (pi == 0 ? 0 : 1) : -1;
-            region.addr_base = opt_.banked && pi > 0 ? 0x4000 : 0x0000;
+            region.addr_base = opt_.banked && pi > 0 ? static_cast<uint16_t>(page_bytes) : 0x0000;
             Z80ScanCtx ctx{&sb_, &opt_, rom_.size(), region.page, region.slot, region.addr_base};
             m0boy::ScanAdapter adapter{&ctx, z80_scan_step};
             m0boy::scan_region(rom_.data() + base, size, adapter, scan_options, region.scan);
@@ -1218,8 +1222,8 @@ std::string Emitter::run(const std::vector<HotLoc>& hot, EmitStats& stats) {
       << "sg_fn sg_gen_lookup(uint16_t pc) {\n";
     if (opt_.banked) /* the location of pc under the current mapping; RAM: interpreter */
         o << "    if (pc >= 0xc000) return 0;\n"
-          << (opt_.fixed_kib ? "    const uint32_t loc = pc < 0x400 ? pc : (uint32_t)machine.page[pc >> 14] << 16 | pc;\n"
-                             : "    const uint32_t loc = (uint32_t)machine.page[pc >> 14] << 16 | pc;\n")
+          << (opt_.fixed_kib ? "    const uint32_t loc = pc < 0x400 ? pc : (uint32_t)machine.page[pc >> " + std::to_string(opt_.bank_shift) + "] << 16 | pc;\n"
+                             : "    const uint32_t loc = (uint32_t)machine.page[pc >> " + std::to_string(opt_.bank_shift) + "] << 16 | pc;\n")
           << "    static uint32_t cache_pc[32];\n    static sg_fn cache_fn[32];\n" /* RAM is short */
           << "    unsigned h = (loc ^ (loc >> 5) ^ (loc >> 16)) & 31;\n";
     else

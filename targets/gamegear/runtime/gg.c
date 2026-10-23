@@ -5,8 +5,9 @@ void gg_rom_trace_fetch(uint32_t offset);
 void gg_rom_trace_insn(uint32_t offset); /* an instruction starts: its bytes are traced unless compiled */
 void gg_cart_trace(uint32_t offset, unsigned write);
 static inline int gg_rom_offset(uint16_t a, uint32_t *offset) {
-    if (a < 0x400) *offset = a;
-    else if (a < 0xc000 && !(a >= 0x8000 && (machine.ram_ctl & 8))) *offset = (uint32_t)machine.page[a >> 14] * 0x4000 + (a & 0x3fff);
+    if (a < 0x400 && GG_FIXED_KIB) *offset = a;
+    else if (a < 0xc000 && (GG_KOREAN150 || !(a >= 0x8000 && (machine.ram_ctl & 8))))
+        *offset = ((uint32_t)machine.page[a >> GG_BANK_SHIFT] << GG_BANK_SHIFT) + (a & GG_BANK_MASK);
     else return 0;
     return 1;
 }
@@ -86,9 +87,29 @@ static void map_slot(unsigned s, uint8_t value) {
 #endif
 }
 
+/* All six windows can move together, including the interrupt vectors.
+ * page2 is the FFF3 bank register, ram_ctl the FFFC mode register. */
+static void korean150_remap(void) {
+    gg_t *m = &machine;
+    if (!GG_KOREAN150) return;
+    const unsigned count = m->rom_pages * 2u;
+    for (unsigned s = 0; s < GG_SLOTS; s++) {
+        unsigned page = m0_korean150_page(m->ram_ctl, m->page2, s);
+        page = count ? page % count : 0;
+        m->page[s] = (uint8_t)page;
+#if GG_STREAM
+        const unsigned index = gg_page_index[page >> 1];
+        m->slot[s] = index == 0xffu ? 0 : m->rom + (size_t)index * 0x4000u + (page & 1u) * 0x2000u;
+#else
+        m->slot[s] = m->rom + (size_t)page * 0x2000u;
+#endif
+    }
+}
+
 /* The slots' pointers again, after the pages changed behind our back (a save
  * state's load): slot 2 shows the ROM page behind the cartridge RAM. */
 void gg_remap(void) {
+    if (GG_KOREAN150) { korean150_remap(); return; }
     for (unsigned s = 0; s < 3; s++) {
         const uint8_t pg = s == 2 && (machine.ram_ctl & 8) ? machine.page2 : machine.page[s];
 #if GG_STREAM
@@ -280,6 +301,15 @@ void gg_cart_store(uint32_t offset, uint8_t v) { cache_ram_store(offset, v); }
  * byte is written as well, by gg_write). */
 void gg_mapper_write(uint16_t a, uint8_t v) {
     gg_t *m = &machine;
+    if (GG_KOREAN150) {
+        if (a == 0xfffc) m->ram_ctl = v & 0xf0u;
+        else if (a == 0xfff3) m->page2 = v & 0x3fu;
+        else return;
+        korean150_remap();
+        m->remapped = 1;
+        m->next_evt = m->cyc;
+        return;
+    }
     if (GG_CODEMASTERS) { map_slot(a >> 14, v); return; } /* 0000, 4000, 8000 */
     if (a == 0xfffc) {
 #if GG_CART_ON_CARD
@@ -402,11 +432,7 @@ void gg_init_system(const uint8_t *rom, size_t size, uint8_t *cart_ram, int sms)
      * array -- past the end of flash when it is full (device, 2026-10-17:
      * HardFault at boot). */
 #ifndef GG_MAPPER
-    if (size >= 0x8000) {
-        const unsigned sum = m0_load_u8(rom + 0x7fe6) | m0_load_u8(rom + 0x7fe7) << 8,
-                       inverse = m0_load_u8(rom + 0x7fe8) | m0_load_u8(rom + 0x7fe9) << 8;
-        m->mapper = sum && !((sum + inverse) & 0xffff);
-    }
+    m->mapper = (uint8_t)m0_sega_mapper(rom, size);
 #else
     m->mapper = GG_MAPPER;
 #endif
@@ -433,7 +459,8 @@ void gg_reset(void) {
     memset(m->cram, 0, sizeof m->cram);
     if (m->cart_ram) memset(m->cart_ram, 0, GG_CART_RAM_SIZE);
     m->ram_ctl = 0;
-    for (unsigned s = 0; s < 3; s++) map_slot(s, (uint8_t)s);
+    if (GG_KOREAN150) { m->page2 = 0; korean150_remap(); }
+    else for (unsigned s = 0; s < 3; s++) map_slot(s, (uint8_t)s);
     /* VDP registers as left by the boot ROM */
     static const uint8_t regs[11] = { 0x36, 0x80, 0xff, 0xff, 0xff, 0xff, 0xfb, 0x00, 0x00, 0x00, 0xff };
     memset(m->vdp, 0, sizeof m->vdp);

@@ -25,6 +25,13 @@
 #include "sg_config.h"
 #endif
 #endif
+#include "m0_sega_mapper.h"
+/* Normal generated projects keep their original three-slot layout. */
+#if !defined(GG_MAPPER) || GG_MAPPER == 2
+#define GG_SLOTS 6
+#else
+#define GG_SLOTS 3
+#endif
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -176,14 +183,14 @@ typedef struct {
     const uint8_t *rom;
     uint32_t rom_size;
     uint16_t rom_pages;      /* 16 KiB pages (size rounded up) */
-    const uint8_t *slot[3];  /* 0000-3FFF (above the fixed KiB), 4000-7FFF, 8000-BFFF;
+    const uint8_t *slot[GG_SLOTS];  /* 16 KiB Sega/Codemasters or six 8 KiB Korean windows;
                               * NULL: a page read from the SD card */
-    uint8_t page[3];         /* their pages; slot 2 reads FF while cartridge RAM is
+    uint8_t page[GG_SLOTS];  /* their pages; slot 2 reads FF while cartridge RAM is
                               * mapped there (no compiled code matches it) */
     uint8_t page2;           /* ROM page of slot 2 behind the cartridge RAM */
     uint8_t remapped;        /* a page changed since the last event: code may have moved */
     uint8_t ram_ctl;         /* FFFC: bit 3 cartridge RAM at 8000-BFFF */
-    uint8_t mapper;          /* 0 Sega, 1 Codemasters (pages written at 0000/4000/8000, no fixed KiB) */
+    uint8_t mapper;          /* M0_MAPPER_*; Korean: ram_ctl = mode, page2 = bank register */
     uint8_t sms;             /* Master System */
     uint8_t io_ctl;          /* Master System port 3F: TH directions and levels */
     uint8_t *cart_ram;       /* GG_CART_RAM_SIZE, or NULL */
@@ -249,9 +256,14 @@ void gg_run(void);
  * detects it at gg_init. */
 #ifdef GG_MAPPER
 #define GG_CODEMASTERS (GG_MAPPER == 1)
+#define GG_KOREAN150 (GG_MAPPER == 2)
 #else
 #define GG_CODEMASTERS (machine.mapper == 1)
+#define GG_KOREAN150 (machine.mapper == 2)
 #endif
+#define GG_FIXED_KIB (!GG_CODEMASTERS && !GG_KOREAN150)
+#define GG_BANK_SHIFT (GG_KOREAN150 ? 13u : 14u)
+#define GG_BANK_MASK ((1u << GG_BANK_SHIFT) - 1u)
 void gg_mapper_write(uint16_t a, uint8_t v);
 #if GG_STREAM
 extern const uint8_t gg_page_index[]; /* flash slot of each page, 0xff: on the card */
@@ -277,13 +289,13 @@ extern uint32_t gg_stream_misses;
 uintptr_t gg_cache_lend(void);
 void gg_cache_unlend(void);
 static inline uint8_t gg_slot_read(uint16_t a) {
-    const uint8_t *p = machine.slot[a >> 14];
-    if (__builtin_expect(p != 0, 1)) return m0_load_u8(p + (a & 0x3fff));
-    const unsigned s = a >> 14, page = s == 2 ? machine.page2 : machine.page[s];
-    return gg_stream_read((uint32_t)page * 0x4000u + (a & 0x3fff));
+    const uint8_t *p = machine.slot[a >> GG_BANK_SHIFT];
+    if (__builtin_expect(p != 0, 1)) return m0_load_u8(p + (a & GG_BANK_MASK));
+    const unsigned s = a >> GG_BANK_SHIFT, page = !GG_KOREAN150 && s == 2 ? machine.page2 : machine.page[s];
+    return gg_stream_read(((uint32_t)page << GG_BANK_SHIFT) + (a & GG_BANK_MASK));
 }
 #else
-static inline uint8_t gg_slot_read(uint16_t a) { return m0_load_u8(machine.slot[a >> 14] + (a & 0x3fff)); }
+static inline uint8_t gg_slot_read(uint16_t a) { return m0_load_u8(machine.slot[a >> GG_BANK_SHIFT] + (a & GG_BANK_MASK)); }
 #endif
 #if GG_CART_ON_CARD
 uint8_t gg_cart_read(uint32_t offset);
@@ -309,20 +321,20 @@ void gg_trace_read(uint16_t a);
 static inline uint8_t gg_read(uint16_t a) {
     if (a >= 0xc000) return machine.ram[a & 8191];
     gg_trace_read(a);
-    if (a < 0x400 && !GG_CODEMASTERS) return m0_load_u8(machine.rom + a);
-    if (a >= 0x8000 && (machine.ram_ctl & 8) && GG_HAS_CART_RAM) return gg_cart_byte(a);
+    if (a < 0x400 && GG_FIXED_KIB) return m0_load_u8(machine.rom + a);
+    if (!GG_KOREAN150 && a >= 0x8000 && (machine.ram_ctl & 8) && GG_HAS_CART_RAM) return gg_cart_byte(a);
     return gg_slot_read(a);
 }
 void gg_write_cart(uint16_t a, uint8_t v);
 static inline void gg_write(uint16_t a, uint8_t v) {
     if (a >= 0xc000) {
         machine.ram[a & 8191] = v;
-        if (a >= 0xfffc && !GG_CODEMASTERS) gg_mapper_write(a, v);
+        if (GG_KOREAN150 ? a == 0xfff3 || a == 0xfffc : a >= 0xfffc && !GG_CODEMASTERS) gg_mapper_write(a, v);
     } else if (GG_CODEMASTERS && !(a & 0x3fff)) gg_mapper_write(a, v);
-    else if (a >= 0x8000 && (machine.ram_ctl & 8)) gg_write_cart(a, v);
+    else if (!GG_KOREAN150 && a >= 0x8000 && (machine.ram_ctl & 8)) gg_write_cart(a, v);
 }
 static inline uint32_t gg_location(uint16_t pc) {
-    return (pc < 0x400 && !GG_CODEMASTERS) || pc >= 0xc000 ? pc : (uint32_t)machine.page[pc >> 14] << 16 | pc;
+    return (pc < 0x400 && GG_FIXED_KIB) || pc >= 0xc000 ? pc : (uint32_t)machine.page[pc >> GG_BANK_SHIFT] << 16 | pc;
 }
 uint8_t gg_in(uint8_t port);
 void gg_out(uint8_t port, uint8_t v);

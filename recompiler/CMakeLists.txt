@@ -1,6 +1,7 @@
 # Source CPU, source system and output backend are independent build layers.
 add_library(m0boy_common INTERFACE)
-target_include_directories(m0boy_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(m0boy_common INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../targets/common/runtime)
 find_package(ZLIB REQUIRED)
 add_library(m0boy_rom_storage STATIC src/rom_storage.cpp)
 target_link_libraries(m0boy_rom_storage PUBLIC m0boy_common ZLIB::ZLIB)

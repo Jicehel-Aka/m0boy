@@ -49,7 +49,7 @@ static int rom_trace_skip_load(const char *path, uint32_t size) {
     while (rom_trace_skip && fgets(line, sizeof line, f)) {
         unsigned loc;
         if (line[0] == '#' || sscanf(line, "%x", &loc) != 1) continue;
-        const uint32_t pc = loc & 0xffff, offset = (loc >> 16) * 0x4000u + (pc & 0x3fff);
+        const uint32_t pc = loc & 0xffff, offset = ((loc >> 16) << GG_BANK_SHIFT) + (pc & GG_BANK_MASK);
         if (pc < 0xc000 && offset < size) rom_trace_skip[offset] = 1;
     }
     fclose(f);
@@ -200,6 +200,10 @@ static uint32_t run_hash(void) {
                         s->cram_latch, s->line_irq, s->lc_count, s->cpu.irq, s->cpu.nmi, s->cpu.fault,
                         s->page[0], s->page[1], s->page[2], s->ram_ctl };
     h = m0_hash_bytes(h, flags, sizeof flags);
+    if (GG_KOREAN150) {
+        h = m0_hash_bytes(h, s->page + 3, 3);
+        h = m0_hash_bytes(h, &s->page2, 1);
+    }
     uint32_t counters[] = { s->cyc, s->frames, s->render_line, s->vdp_address };
     h = m0_hash_bytes(h, counters, sizeof counters);
     h = m0_hash_bytes(h, s->ram, sizeof s->ram);
@@ -274,7 +278,12 @@ int main(int argc, char **argv) {
     rom = loaded;
 #endif
     FILE *coverage = 0;
-    const uint32_t locations = (uint32_t)((size + 0x3fff) / 0x4000) << 16;
+#ifdef GG_MAPPER
+    machine.mapper = GG_MAPPER;
+#else
+    machine.mapper = (uint8_t)m0_sega_mapper(rom, size);
+#endif
+    const uint32_t locations = (uint32_t)((size + GG_BANK_MASK) >> GG_BANK_SHIFT) << 16;
     if (cov_path) {
         coverage = fopen(cov_path, "w");
         hits = calloc(locations, sizeof *hits);
@@ -328,6 +337,7 @@ int main(int argc, char **argv) {
         /* v2: every address line carries its execution count, so the
          * recompiler ranks heat across sessions instead of file order */
         fprintf(coverage, GG_IS_SMS ? "# m0boy.sms.coverage.v2\n" : "# m0boy.gg.coverage.v2\n");
+        fprintf(coverage, "# bank-shift %u\n", GG_BANK_SHIFT);
         if (machine.cart_ram_used) fprintf(coverage, "# cart-ram\n");
         fprintf(coverage, "# frames %u\n", machine.frames);
         for (uint32_t loc = 0; loc < locations; loc++) /* dynamic jump targets: region entries */

@@ -131,7 +131,63 @@ static int rendering(int sms) {
     return 0;
 }
 
+static uint8_t korean_rom[0x200000];
+static uint8_t korean_state[sizeof(gg_t)];
+static int korean_load_state;
+static void korean_io(void *data, uint32_t bytes, void *ctx) {
+    (void)ctx;
+    if (korean_load_state) memcpy(data, korean_state, bytes);
+    else memcpy(korean_state, data, bytes);
+}
+
+static int korean150(void) {
+    /* An independent table of the hardware's six windows. Test mode and
+     * bank masks, both parity patterns, vectors and every slot boundary. */
+    static const char *layout[8][2] = {
+        {"0101zz", "2323zz"}, {"0123zz", "0123zz"},
+        {"uv01zz", "uv23zz"}, {"uvyz01", "uvyz23"},
+        {"uv0110", "uv2332"}, {"uv0123", "uv2301"},
+        {"zzzzzz", "zzzzzz"}, {"zzzzzz", "zzzzzz"}
+    };
+    for (unsigned p = 0; p < 256; p++)
+        for (unsigned b = 0; b < 8192; b++) korean_rom[p * 8192 + b] = (uint8_t)(p ^ b);
+    gg_init_system(korean_rom, sizeof korean_rom, 0, 1);
+    machine.mapper = M0_MAPPER_KOREAN150;
+    gg_reset();
+    REQUIRE(machine.page[0] == 0 && machine.page[1] == 1 && machine.page[2] == 0 && machine.page[5] == 255);
+    for (unsigned mode = 0; mode < 256; mode++) for (unsigned bank = 0; bank < 256; bank++) {
+        gg_write(0xfffc, (uint8_t)mode);
+        gg_write(0xfff3, (uint8_t)bank);
+        REQUIRE(machine.ram[0x1ffc] == mode && machine.ram[0x1ff3] == bank);
+        const char *pattern = layout[mode >> 5][bank & 1];
+        const unsigned base = ((mode & 0x10) << 3) + ((bank & 0x3e) << 1);
+        for (unsigned slot = 0; slot < 6; slot++) {
+            char c = pattern[slot];
+            unsigned page = c >= '0' && c <= '3' ? base + c - '0'
+                          : c == 'u' ? 0x80 : c == 'v' ? 0x81 : c == 'y' ? 0xfe : 0xff;
+            REQUIRE(machine.page[slot] == page);
+            for (unsigned offset = 0; offset <= 0x1fff; offset += 0x1fff) {
+                uint16_t address = (uint16_t)(slot * 8192 + offset);
+                REQUIRE(gg_read(address) == (uint8_t)(page ^ offset));
+                REQUIRE(gg_location(address) == (page << 16 | address));
+            }
+        }
+        unsigned selected = machine.page[0];
+        gg_write(0xfffd, 77); /* Sega bank registers are ordinary RAM here. */
+        REQUIRE(machine.page[0] == selected);
+    }
+    gg_write(0xfffc, 0xa0); gg_write(0xfff3, 0x21);
+    uint8_t pages[6]; memcpy(pages, machine.page, 6);
+    korean_load_state = 0; gg_state_io(korean_io, 0, korean_load_state);
+    gg_write(0xfffc, 0); gg_write(0xfff3, 0);
+    korean_load_state = 1; gg_state_io(korean_io, 0, korean_load_state);
+    REQUIRE(!memcmp(pages, machine.page, 6));
+    for (unsigned s = 0; s < 6; s++) REQUIRE(gg_read((uint16_t)(s * 8192)) == pages[s]);
+    return 0;
+}
+
 int main(void) {
+    REQUIRE(!korean150());
     REQUIRE(!counters()); REQUIRE(!rendering(0)); REQUIRE(!rendering(1)); REQUIRE(!ram_outx());
     unsigned shown = 0;
     for (unsigned y = 0; y < GG_ACTIVE; y++) {

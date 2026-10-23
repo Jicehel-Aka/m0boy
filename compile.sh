@@ -855,6 +855,10 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   # automatic sessions once, and honour changes to their count or duration.
   # Manual recordings are not touched. Publish the stamp only after success.
   local profile_config="v2 $auto_frames $seeds $explorers $explore_frames"
+  # Old Super Game 150 sessions used the Sega map and never left its menu.
+  if [ "$sys" = sms ] && "$GBRECOMP" "$rom_path" --info | grep -q '^mapper=korean150$'; then
+    profile_config="v3-korean150 $auto_frames $seeds $explorers $explore_frames"
+  fi
   # GG/SMS : un profil sans « # frames » (ancien format) ne dit pas combien de fois chaque instruction
   # s'exécute : le générateur ne peut pas arbitrer code compilé et secteurs gardés en flash, on le refait ;
   # de même, toutes plateformes, un profil sans exploration (coverage-explore*.cov, voir plus bas).
@@ -950,8 +954,8 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   local sg_build="$out_dir/build" gen_log build_log bpi="" fill="" tries=0 rc text compiled sg_extra="" esp_stack=""
   [ "$FIRMWARE_COMPILER" = clang ] && sg_build="$out_dir/build-clang"
   local size_bin
-  if [ "$TARGET" = espboy ]; then size_bin="$HOME/.platformio/packages/toolchain-xtensa/bin/xtensa-lx106-elf-size"
-  else size_bin=$(command -v arm-none-eabi-size || echo "$HOME/.platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size"); fi
+  if [ "$TARGET" = espboy ]; then size_bin="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/packages/toolchain-xtensa/bin/xtensa-lx106-elf-size"
+  else size_bin=$(command -v arm-none-eabi-size || echo "${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size"); fi
   sg_build_once() { # 0 ok, 1 flash full, 2 error
     gen_log=$("$GBRECOMP" "$rom_path" --system "$sys" --target "$TARGET" --output-prefix "$prefix" --sd-name "$sd_name" \
       --meta-compiler "$FIRMWARE_COMPILER" "${cov_args[@]}" "${rom_plan[@]}" ${bpi:+--meta-bytes-per-instruction "$bpi"} ${fill:+--meta-fill-bytes "$fill"} \
