@@ -237,14 +237,14 @@ static void frame(void *) {
     meta_audio_frame();
     meta_lcd_end_frame();
     uint8_t keys = 0, pause = 0;
-    const uint8_t raw = SG_PAD_RAW();
+    const uint8_t mb = META_PAD(SG_PAD_RAW());
+    /* the Sega pad: 1 up, 2 down, 4 left, 8 right, 16 button 1, 32 button 2 */
+    keys = ((mb & META_MB_UP) ? 1 : 0) | ((mb & META_MB_DOWN) ? 2 : 0) | ((mb & META_MB_LEFT) ? 4 : 0) |
+           ((mb & META_MB_RIGHT) ? 8 : 0) | (mb & (META_MB_A | META_MB_B));
 #if META_TARGET_POKITTO
-    keys = ((raw & POKITTO_UP) ? 1 : 0) | ((raw & POKITTO_DOWN) ? 2 : 0) | ((raw & POKITTO_LEFT) ? 4 : 0) |
-           ((raw & POKITTO_RIGHT) ? 8 : 0) | ((raw & POKITTO_A) ? 16 : 0) | ((raw & POKITTO_B) ? 32 : 0);
     if (pause_frames) { pause = 1; pause_frames--; }
 #else
-    keys = ((raw & 8) ? 1 : 0) | ((raw & 1) ? 2 : 0) | ((raw & 2) ? 4 : 0) | ((raw & 4) ? 8 : 0) | (raw & 48);
-    pause = raw & 64;
+    pause = mb & META_MB_MENU;
     SG_PAD_WDT();
 #endif
 #if META_TARGET_ESPBOY && SG_CART_RAM
@@ -253,7 +253,7 @@ static void frame(void *) {
     sg1000_buttons(0, keys);
     sg1000_pause(pause);
     sg_menu_frame();
-    sg_menu_poll(raw);
+    sg_menu_poll(mb);
     sg_menu_tick();
     SG_PACE_FRAME(deadline, skip_video, skipped_run, SG_MAX_SKIP);
 }
