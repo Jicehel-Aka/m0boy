@@ -14,10 +14,18 @@ des registres sont aussi écrits dans la RAM de travail, comme les autres
 
 La recompilation utilise des localisations `page_8k << 16 | adresse_cpu`,
 des régions qui restent dans leur fenêtre et des gardes de page à l'entrée
-et après les appels. Le mode précis est imposé pour cette cartouche : une
-écriture indirecte peut déplacer simultanément le code courant, les données
-et les vecteurs d'interruption, et doit être observée dès l'instruction
-suivante. Cela privilégie la correction ; aucun débit matériel n'est annoncé.
+et après les appels. Une écriture peut déplacer simultanément le code
+courant, les données et les vecteurs d'interruption : après chaque
+instruction qui écrit en mémoire (hors pile : PUSH, CALL, RST, EX (SP),HL),
+le code natif synchronise, et le répartiteur reprend sous le nouveau mapping.
+Les écritures statiques sur FFF3 et FFFC sortent de la région. Le reste est
+le mode rapide des autres jeux (synchronisation en tête de boucle) ; le mode
+précis (`--meta-precise`, une synchronisation avant chaque instruction) reste
+disponible. Le mode précis coûtait 99 octets de flash par instruction
+compilée (paramètre du générateur ; 76 mesurés dans `sg_gen.o`) contre 50 ici :
+1896 instructions compilées au lieu de 1084 dans la même flash. Les autres
+cartouches ne passent pas par ce chemin : le code généré de Ristar (GG) et de
+Sonic (SMS) est identique octet pour octet avant et après.
 Le stockage physique conserve ses secteurs de 512 octets et ses pages
 résidentes de 16 Kio ; une fenêtre de 8 Kio peut viser l'une ou l'autre moitié.
 

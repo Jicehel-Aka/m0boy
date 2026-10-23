@@ -45,9 +45,9 @@ def fixture():
     boot = bytes((0xf3, 0x31, 0xf0, 0xdf, 0x21, 0x00, 0x04,
                       0x11, 0x00, 0xc0, 0x01, len(payload) & 255, len(payload) >> 8,
                       0xed, 0xb0, 0x3e, 0x20, 0x32, 0xfc, 0xff,
-                      0x3e, 0x02, 0x32, 0xf3, 0xff))
+                      0x3e, 0x02, 0x21, 0xf3, 0xff, 0x77))  # LD HL,FFF3; LD (HL),A: an indirect store
     rom[:len(boot)] = boot
-    # This native store moves the very code being executed. Its successor
+    # This native (indirect) store moves the very code being executed. Its successor
     # must come from page 4, not the already decoded page-0 instruction.
     rom[len(boot):len(boot)+8] = bytes.fromhex('3e ee 32 09 db c3 00 c0')
     at = 4 * 8192 + len(boot)
@@ -112,12 +112,14 @@ with tempfile.TemporaryDirectory(prefix='korean150_') as temporary:
     bad = subprocess.run([a.recompiler, str(rom), '--target', 'desktop', '--coverage', str(old),
                           '-o', str(root / 'old')], capture_output=True, text=True)
     assert bad.returncode and '8 KiB mapper' in bad.stderr + bad.stdout
-    for target in ('desktop', 'espboy'):
-        project = root / target
-        run(a.recompiler, rom, '--target', target, '--coverage', cov, '--meta-precise',
+    # precise: a sync before every instruction; fast (the default): a sync after each store that may reach
+    # a mapper register, nowhere else beyond the loop heads
+    for target, precise in (('desktop', True), ('espboy', True), ('desktop', False)):
+        project = root / (target + ('' if precise else '-fast'))
+        run(a.recompiler, rom, '--target', target, '--coverage', cov, *(['--meta-precise'] if precise else []),
             '--no-scan', '--no-infer-data', '--output-prefix', 'synthetic', '-o', project)
         config = (project / 'src/sg_config.h').read_text()
-        assert '#define GG_MAPPER 2' in config and '#define SG_PRECISE 1' in config
+        assert '#define GG_MAPPER 2' in config and f'#define SG_PRECISE {int(precise)}' in config
         if target == 'espboy':
             assert (project / 'rom.bin').stat().st_size == rom.stat().st_size - 16384
         build = project / 'host/build'
@@ -128,4 +130,4 @@ with tempfile.TemporaryDirectory(prefix='korean150_') as temporary:
         interpreted = run(exe, '--frames', 10, '--interp')
         assert fingerprint(native) == fingerprint(interpreted) == fingerprint(reference), (native, interpreted, reference)
         assert int(re.search(r'compiled=(\d+)', native)[1]) > 0
-        print(target + ': six-window native/streamed mapper matches interpreter')
+        print(target + (' precise' if precise else ' fast') + ': six-window native/streamed mapper matches interpreter')

@@ -253,7 +253,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             eo.banked = true; eo.fixed_kib = mapper == M0_MAPPER_SEGA;
             eo.bank_shift = bank_shift; eo.io_out = "gg_out"; eo.io_in = "gg_in";
             /* A mapper write can move every slot, including the vectors. */
-            if (mapper == M0_MAPPER_KOREAN150) eo.precise = true;
+            if (mapper == M0_MAPPER_KOREAN150) eo.sync_stores = true;
         }
         size_t budget = 0;
         /* Game Gear ROMs larger than the flash leave some of it on the card.
@@ -843,7 +843,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
               (o.target == TargetId::pokitto ? "Firmware: cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake && ninja -C build\n"
                : o.target == TargetId::meta ? "Firmware: pio run\n" : "") +
               (gg ? std::string(mapper == M0_MAPPER_KOREAN150
-                        ? "\nKorean 150-in-1 mapper (six 8 KiB windows), precise native dispatch, 8 KiB RAM, SN76489.\n"
+                        ? "\nKorean 150-in-1 mapper (six 8 KiB windows), native code synced after stores, 8 KiB RAM, SN76489.\n"
                         : "\nSega/Codemasters mapper (16 KiB pages), 8 KiB RAM, VDP mode 4, SN76489.\n")
                   : std::string("\nBaseline NTSC, unbanked cartridge (optional 8 KiB cartridge RAM), TMS9918A, SN76489.\n")));
         return true;

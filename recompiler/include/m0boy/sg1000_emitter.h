@@ -32,6 +32,11 @@ struct EmitOptions {
     bool banked = false;
     bool fixed_kib = true; ///< banked: 0000-03FF always page 0 (Sega); false: Codemasters
     unsigned bank_shift = 14; ///< 16 KiB pages; Korean 150-in-1 uses six 8 KiB slots (13)
+    /// Without precise: a sync right after each store that may reach a mapper
+    /// register (any write but the stack's), so that the code that follows is
+    /// looked up under the mapping it wrote.  Korean 150-in-1: a register
+    /// write moves every window, the running code included.
+    bool sync_stores = false;
     bool mastersystem = false; ///< ports 3E/3F instead of the Game Gear 00-06 registers
     std::string io_out = "sg1000_out", io_in = "sg1000_in";
     size_t max_instructions = 6000; ///< flash budget, in instructions

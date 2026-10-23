@@ -43,6 +43,7 @@ struct Ins {
     uint16_t target = 0;
     Dest next_dest, target_dest;
     bool remap = false;              ///< writes a mapper register: leave the region after it
+    bool stores = false;             ///< sync_stores: writes memory (not the stack), a sync follows it
     unsigned cycles = 0, taken = 0; ///< not taken (or only) / taken
     uint8_t use = 0, def = 0;
     bool timed = false;              ///< observes machine.cyc or R: flush before
@@ -85,6 +86,7 @@ struct Sandbox {
     unsigned page = 0;      ///< page of the decoded instruction's slot
     int slot = -1;          ///< its slot (-1: fixed area)
     int defaults[6] = { 0, 1, 2, 3, 4, 5 };
+    bool wrote = false;     ///< the measured instruction wrote memory
     /* Bus of the decoded instruction: its own slot at its page, the others
      * at their usual pages; RAM reads 0. */
     uint8_t read(uint16_t a) const {
@@ -103,7 +105,7 @@ struct Sandbox {
     }
 };
 uint8_t sb_read(void* u, uint16_t a) { return static_cast<Sandbox*>(u)->read(a); }
-void sb_write(void*, uint16_t, uint8_t) {}
+void sb_write(void* u, uint16_t, uint8_t) { static_cast<Sandbox*>(u)->wrote = true; }
 uint8_t sb_in(void*, uint16_t) { return 0xff; }
 void sb_out(void*, uint16_t, uint8_t) {}
 
@@ -456,7 +458,11 @@ bool Emitter::decode(Loc loc, Ins& in) {
     in.next_dest = resolve(in, next);
     if (in.jumps() || in.calls()) in.target_dest = resolve(in, in.target);
     /* Cycles from the interpreter: both outcomes of a condition. */
+    sb_.wrote = false;
     Run a = measure(sb_, d, addr, 0x00, 0x0101), b = measure(sb_, d, addr, 0xff, 0x0201);
+    /* PUSH, CALL, RST and EX (SP),HL write the stack, which does not alias the mapper registers */
+    const bool stack_write = d.group == 0 && ((x == 3 && (z == 5 || z == 7)) || op == 0xe3);
+    in.stores = opt_.sync_stores && sb_.wrote && !stack_write;
     switch (in.flow) {
     case Flow::JumpCond: case Flow::CallCond: case Flow::RetCond: case Flow::Djnz: {
         const bool a_taken = a.pc != next, b_taken = b.pc != next;
@@ -521,7 +527,7 @@ void Emitter::plan() {
                 for (size_t k = reg.size(); k-- > 0;) {
                     Ins& in = ins_[reg[k]];
                     uint8_t out = 0;
-                    if (opt_.precise || in.calls() || in.remap || in.flow == Flow::Ei || in.flow == Flow::Bad) out = FALL;
+                    if (opt_.precise || in.calls() || in.remap || in.stores || in.flow == Flow::Ei || in.flow == Flow::Bad) out = FALL;
                     if (in.falls()) {
                         Ins* n = find(in.next_dest.loc);
                         out |= (n && n->region == in.region) ? n->live_in : FALL;
@@ -1038,6 +1044,8 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
         return;
     }
     }
+    /* A store that may have moved the windows: the sync takes the dispatcher back if so. */
+    if (in.stores && !opt_.precise && in.flow == Flow::Seq && !in.remap) { flush(o); o << "    SYNC(" << hex(next) << ");\n"; }
     /* Fall through to the next instruction, inline or by transfer. */
     if (in.remap) { /* the mapper may have moved this code: back to the dispatcher */
         flush(o);
