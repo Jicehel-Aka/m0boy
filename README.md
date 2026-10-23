@@ -1,0 +1,84 @@
+# META SD USB
+
+Firmware autonome pour la Gamebuino META (SAMD21G18A). Il expose **toute la
+carte microSD comme un lecteur USB Mass Storage** : lecture et écriture de
+secteurs de 512 octets. Le PC gère le système de fichiers. Le script
+`meta_sd.py` donne à un agent une interface de transfert avec réponses JSON.
+Un `put` de fichier `.zip` extrait automatiquement son contenu à la racine
+de la carte, ou dans le dossier choisi ; `--raw` copie le ZIP sans extraction.
+
+Le firmware ne monte aucun FAT lui-même. La décompression ZIP s'exécute sur
+le PC par le script, après montage du lecteur USB. Une copie directe d'un ZIP
+avec l'explorateur de fichiers laisse le ZIP tel quel sur la carte. Le script
+accepte les ZIP `stored` et `deflate` de Python, vérifie leurs CRC, refuse
+les chemins sortant de la carte et les liens symboliques.
+
+## Compiler et démarrer
+
+Depuis ce dossier :
+
+```sh
+pio run
+```
+
+Le résultat est `.pio/build/meta/firmware.bin`. Une copie prête à utiliser
+est disponible dans `../../out/meta-sd-usb/META_SD_USB.BIN` depuis la racine
+du dépôt parent. Cette copie est générée localement, exclue de Git selon les
+règles du dépôt parent. Copiez `META_SD_USB.BIN` sur la carte avec un lecteur
+microSD, lancez-le depuis le loader Gamebuino, puis branchez le port USB de
+la console à l'ordinateur. L'ordinateur doit voir un périphérique de stockage
+amovible « META SD Bridge ». La carte doit déjà contenir un système de
+fichiers reconnu par l'ordinateur (habituellement FAT32). Une carte absente
+au démarrage est signalée comme support indisponible ; insérez-la puis
+redémarrez le firmware.
+
+Le firmware utilise l'horloge nominale à 48 MHz, le bus SD à 12 MHz et le
+pilote USB matériel du SAMD21. Il reste indépendant du runtime des jeux.
+
+## Transferts pilotables par agent
+
+Montez le lecteur USB sur le PC, puis indiquez son point de montage. Les
+commandes rendent du JSON sur stdout et un code de sortie non nul en cas
+d'erreur. `META_SD_MOUNT` peut remplacer `--root`.
+
+```sh
+python3 meta_sd.py --root /media/$USER/META ls
+python3 meta_sd.py --root /media/$USER/META put jeu.zip
+python3 meta_sd.py --root /media/$USER/META put jeu.zip JEUX/MonJeu
+python3 meta_sd.py --root /media/$USER/META put notes.txt DOCUMENTS
+python3 meta_sd.py --root /media/$USER/META get JEUX/MonJeu/README.txt ./README.txt
+python3 meta_sd.py --root /media/$USER/META mkdir SAUVEGARDES
+python3 meta_sd.py --root /media/$USER/META rm SAUVEGARDES/ancien.sav
+```
+
+`put` accepte aussi un dossier et le copie récursivement. `unzip archive.zip
+[dossier]` explicite l'extraction. Les chemins côté carte sont relatifs à la
+racine ; `.` désigne celle-ci. Pour copier le ZIP lui-même : `put jeu.zip .
+--raw`.
+
+Éjectez/démontez proprement le volume sur l'ordinateur avant de débrancher
+la console ou de retourner au loader. Ne montez pas simultanément la même
+carte dans un autre lecteur. Les fichiers extraits sont écrits dans des
+fichiers temporaires du même dossier, puis remplacés individuellement ; une
+archive interrompue peut donc laisser les fichiers précédents en place.
+
+## Vérification et portée
+
+```sh
+python3 -m unittest discover -s tests -v
+pio run
+```
+
+Le build local produit un binaire de moins de 10 KiB de flash et moins de
+2 KiB de RAM statique. Les tests Python couvrent l'extraction à la racine et
+dans un dossier, le rejet de `../` et des liens symboliques. **Le transport
+USB MSC et les écritures SD ne sont pas encore validés sur une console
+physique** ; le binaire est expérimental. Le système de fichiers du PC doit
+être éjecté proprement après toute écriture. Le protocole prend en charge
+INQUIRY, TEST UNIT READY, REQUEST SENSE, READ CAPACITY, READ/WRITE(10), MODE
+SENSE et les commandes de synchronisation usuelles ; les cartes qui exigent
+exFAT dépendent du support exFAT de l'ordinateur.
+
+Les fichiers `src/startup.c`, `include/meta_hw.h`, `gamebuino_meta.ld` et
+`boards/gamebuino_meta.json` proviennent du dépôt m0boy (pilote META bare
+metal). Ils sont recopiés ici pour rendre ce projet Git autonome.
