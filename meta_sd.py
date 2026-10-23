@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Agent-friendly operations on the mounted META SD mass-storage volume."""
 import argparse
+import ctypes
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -68,10 +69,40 @@ def unzip(root: Path, archive: Path, destination: str) -> dict:
     return {"files": count, "bytes": size, "destination": str(base)}
 
 
+def bootloader() -> dict:
+    """Send the bridge's explicit vendor request (requires USB write access)."""
+    usb = ctypes.CDLL("libusb-1.0.so.0")
+    usb.libusb_init.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    usb.libusb_open_device_with_vid_pid.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_uint16]
+    usb.libusb_open_device_with_vid_pid.restype = ctypes.c_void_p
+    usb.libusb_control_transfer.argtypes = [ctypes.c_void_p, ctypes.c_uint8,
+                                             ctypes.c_uint8, ctypes.c_uint16,
+                                             ctypes.c_uint16, ctypes.c_void_p,
+                                             ctypes.c_uint16, ctypes.c_uint]
+    usb.libusb_close.argtypes = [ctypes.c_void_p]
+    usb.libusb_exit.argtypes = [ctypes.c_void_p]
+    context = ctypes.c_void_p()
+    if usb.libusb_init(ctypes.byref(context)) != 0:
+        raise OSError("libusb initialization failed")
+    try:
+        handle = usb.libusb_open_device_with_vid_pid(context, 0x2341, 0x804d)
+        if not handle:
+            raise OSError("META SD Bridge inaccessible; check USB permissions")
+        try:
+            result = usb.libusb_control_transfer(handle, 0x40, 0x5a, 0x424c, 0,
+                                                  None, 0, 1000)
+            if result != 0:
+                raise OSError(f"bootloader USB request failed ({result})")
+        finally:
+            usb.libusb_close(handle)
+    finally:
+        usb.libusb_exit(context)
+    return {"bootloader": True}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--root", type=Path, default=os.environ.get("META_SD_MOUNT"),
-                    required="META_SD_MOUNT" not in os.environ,
                     help="mount point of the META SD card (or META_SD_MOUNT)")
     sub = ap.add_subparsers(dest="command", required=True)
     ls = sub.add_parser("ls"); ls.add_argument("path", nargs="?", default=".")
@@ -83,7 +114,13 @@ def main() -> None:
     rm = sub.add_parser("rm"); rm.add_argument("path")
     uz = sub.add_parser("unzip"); uz.add_argument("archive", type=Path)
     uz.add_argument("destination", nargs="?", default=".")
+    sub.add_parser("bootloader")
     args = ap.parse_args()
+    if args.command == "bootloader":
+        print(json.dumps({"ok": True, **bootloader()}))
+        return
+    if args.root is None:
+        raise ValueError("--root or META_SD_MOUNT is required")
     root = args.root.resolve(strict=True)
     if not root.is_dir() or not os.path.ismount(root):
         raise ValueError(f"not a mounted volume: {root}")

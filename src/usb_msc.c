@@ -16,7 +16,8 @@ static uint8_t ep0_in[64] __attribute__((aligned(4)));
 static uint8_t bulk_out[64] __attribute__((aligned(4)));
 static uint8_t bulk_in[64] __attribute__((aligned(4)));
 static uint8_t sector[512];
-static uint8_t configured, state, sense_key, sense_asc;
+static volatile uint8_t configured, bootloader_request;
+static uint8_t state, sense_key, sense_asc;
 static uint32_t tag, residue, current_lba, remaining_blocks;
 static uint16_t fill;
 
@@ -123,7 +124,10 @@ static void setup(void) {
             USB->DEVICE.DADD.reg = (uint8_t)(USB_DEVICE_DADD_ADDEN | (value & 127u));
             return;
         case 6: descriptor(value, length); return;
-        case 8: control_in(&configured, 1, length); return;
+        case 8: {
+            uint8_t c = configured;
+            control_in(&c, 1, length); return;
+        }
         case 9:
             configured = (uint8_t)value;
             if (configured) configure();
@@ -139,6 +143,11 @@ static void setup(void) {
             EP(EP_IN).EPSTATUSCLR.reg = USB_DEVICE_EPSTATUSCLR_STALLRQ1;
             arm_out(); control_ack(); return;
         }
+    } else if (type == 0x40 && req == 0x5a && value == 0x424c && length == 0) {
+        /* Explicit host request; never triggered by normal MSC traffic. */
+        control_ack();
+        bootloader_request = 1;
+        return;
     }
     control_stall();
 }
@@ -298,7 +307,7 @@ static void scsi(const uint8_t *b) {
         if (current_lba > sd_sectors() || remaining_blocks > sd_sectors() - current_lba) {
             fail(5, 0x21); return;
         }
-        if (residue != remaining_blocks * 512u || (in != (c[0] == 0x28))) {
+        if (residue != remaining_blocks * 512u || (!!in != (c[0] == 0x28))) {
             fail(5, 0x24); return;
         }
         if (c[0] == 0x2a) {
@@ -316,6 +325,12 @@ static void scsi(const uint8_t *b) {
     }
 }
 void usb_msc_poll(void) {
+    if (bootloader_request) {
+        delay(50);
+        USB->DEVICE.CTRLB.reg = USB_DEVICE_CTRLB_DETACH;
+        *(volatile uint32_t *)0x20007ffcu = 0x3aecfd88u;
+        NVIC_SystemReset();
+    }
     if (!configured || !(EP(EP_OUT).EPINTFLAG.reg & USB_DEVICE_EPINTFLAG_TRCPT0)) return;
     EP(EP_OUT).EPINTFLAG.reg = USB_DEVICE_EPINTFLAG_TRCPT0;
     unsigned n = desc[EP_OUT].DeviceDescBank[0].PCKSIZE.bit.BYTE_COUNT;

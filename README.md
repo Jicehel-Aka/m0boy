@@ -56,6 +56,11 @@ python3 meta_sd.py --root /media/$USER/META rm SAUVEGARDES/ancien.sav
 racine ; `.` désigne celle-ci. Pour copier le ZIP lui-même : `put jeu.zip .
 --raw`.
 
+Après démontage du volume, `python3 meta_sd.py bootloader` demande au firmware
+de redémarrer en mode sam-ba pour un nouveau téléversement. Cette requête USB
+nécessite l'accès en écriture au périphérique USB (règle udev ou exécution
+avec privilèges). Le double appui sur RESET reste une solution sans règle udev.
+
 Éjectez/démontez proprement le volume sur l'ordinateur avant de débrancher
 la console ou de retourner au loader. Ne montez pas simultanément la même
 carte dans un autre lecteur. Les fichiers extraits sont écrits dans des
