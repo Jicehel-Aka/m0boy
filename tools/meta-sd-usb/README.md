@@ -85,6 +85,30 @@ carte dans un autre lecteur. Les fichiers extraits sont écrits dans des
 fichiers temporaires du même dossier, puis remplacés individuellement ; une
 archive interrompue peut donc laisser les fichiers précédents en place.
 
+## Coût dans m0boy
+
+Dans les firmwares de jeu de m0boy (0.10.39), le mode lecteur USB du menu
+(`META_USB_MODE`, `meta_usb_msc.c`) réutilise le pilote USB, l'init SD et
+l'horloge du jeu : il ne reprend ni le démarrage, ni le chargeur d'horloges de
+ce firmware autonome. Mesuré avec `arm-none-eabi-size` (flash = text + data,
+RAM statique = data + bss) sur le même projet META (Super Game 150, Master
+System), seul `META_USB_MODE` changeant :
+
+| `META_USB_MODE` | Flash | RAM statique | Écart avec 0 |
+|---|---|---|---|
+| 0, sans USB | 239 248 o | 31 424 o | |
+| 1, port série de débogage seul | 241 828 o | 31 844 o | +2 580 o, +420 o |
+| 2, lecteur SD seul | 243 088 o | 31 876 o | +3 840 o, +452 o |
+| 3, série et lecteur SD (défaut) | 245 728 o | 31 908 o | +6 480 o, +484 o |
+
+Le lecteur SD ajouté au série coûte donc **environ 3,9 Ko de flash et 64 octets
+de RAM** ; seul, il coûte 3,8 Ko de flash et 452 octets de RAM (le pilote USB
+est alors à lui seul). Le firmware autonome de ce dossier occupe 9 692 octets
+de flash et 1 012 octets de RAM, démarrage et horloges compris. La flash des
+jeux est pleine à 99,9 % : ces 3,8 à 3,9 Ko représentent environ 75 instructions
+Z80 compilées en moins par jeu (à 52 octets chacune). Une mesure, un projet,
+une cible : le chiffre varie un peu d'un jeu à l'autre.
+
 ## Vérification et portée
 
 ```sh
