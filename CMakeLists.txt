@@ -134,6 +134,10 @@ if(BUILD_TESTS)
                     "$<TARGET_FILE:sg1000_host>")
     endif()
     if(TARGET p8c)
+        add_test(NAME nes_end_to_end
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_nes_e2e.py"
+        )
+        set_tests_properties(nes_end_to_end PROPERTIES TIMEOUT 300)
         add_test(NAME pico8_native_end_to_end
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_pico8_e2e.py"
                     --recompiler "$<TARGET_FILE:m0recomp>")
@@ -146,7 +150,7 @@ if(BUILD_TESTS)
     target_link_libraries(test_sm83_reader PRIVATE m0boy_cpu_sm83)
     add_test(NAME sm83_console_independent_reader COMMAND test_sm83_reader)
     add_executable(test_cpu_decoders tests/test_cpu_decoders.cpp)
-    target_link_libraries(test_cpu_decoders PRIVATE m0boy_cpu_sm83 m0boy_cpu_z80)
+    target_link_libraries(test_cpu_decoders PRIVATE m0boy_cpu_sm83 m0boy_cpu_z80 m0boy_cpu_6502)
     add_test(NAME sm83_z80_shared_encoding COMMAND test_cpu_decoders)
     add_test(NAME source_system_cli
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_source_cli.py"
@@ -328,6 +332,24 @@ set(GBL_COMMON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/common")
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_espboy_target.py"
                 --gbrecomp "$<TARGET_FILE:gbrecomp>")
     set_tests_properties(meta_espboy_target PROPERTIES TIMEOUT 300)
+
+    # PC (SDL2): the firmware is built and run head first on the CI machine;
+    # the build is skipped when SDL2 is missing.
+    add_test(NAME meta_pc_target
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_pc_target.py"
+                "$<TARGET_FILE:gbrecomp>")
+    set_tests_properties(meta_pc_target PROPERTIES TIMEOUT 600)
+
+    # ODROID-GO and Gamebuino AKA: project ownership and host parity; the
+    # real ESP32 build runs when ODROID_PIO / AKA_PIO points at pio.
+    add_test(NAME meta_odroid_target
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_odroid_target.py"
+                "$<TARGET_FILE:gbrecomp>")
+    set_tests_properties(meta_odroid_target PROPERTIES TIMEOUT 600)
+    add_test(NAME meta_aka_target
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_aka_target.py"
+                "$<TARGET_FILE:gbrecomp>")
+    set_tests_properties(meta_aka_target PROPERTIES TIMEOUT 600)
 
     # Pokitto firmware also links when arm-none-eabi-gcc exists.
     add_test(NAME meta_pokitto_target

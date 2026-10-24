@@ -8,6 +8,9 @@
 #include "m0_msx_layout.h"
 #include "m0boy/sg1000_generator.h"
 #include "m0boy/pico8_generator.h"
+#include "m0boy/nes_generator.h"
+#include "m0boy/cpu/huc6280/decoder.h"
+#include "m0boy/cpu/m6502/decoder.h"
 #include "m0boy/cpu/z80/decoder.h"
 #include "recompiler/rom.h"
 #include "recompiler/decoder.h"
@@ -47,6 +50,15 @@ namespace fs = std::filesystem;
 #endif
 #ifndef GBRECOMP_POKITTO_VERSION
 #define GBRECOMP_POKITTO_VERSION "0.0.0"
+#endif
+#ifndef GBRECOMP_PC_VERSION
+#define GBRECOMP_PC_VERSION "0.1.0"
+#endif
+#ifndef GBRECOMP_ODROID_VERSION
+#define GBRECOMP_ODROID_VERSION "0.1.0"
+#endif
+#ifndef GBRECOMP_AKA_VERSION
+#define GBRECOMP_AKA_VERSION "0.1.0"
 #endif
 
 static void print_version_json() {
@@ -153,15 +165,19 @@ void print_usage(const char* program) {
     std::cout << "  --trace               Trace execution analysis (very verbose)\n";
     std::cout << "  --limit <n>           Limit analysis to n instructions\n";
     std::cout << "  -j, --jobs <n>        Parallel workers for codegen and batch generation (0=auto)\n";
-    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8  Source console (default auto; legacy GB fallback)\n";
-    std::cout << "  --cpu sm83|z80       Check the CPU required by the source console\n";
+    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8|msx|nes|pce  Source console (default auto; legacy GB fallback)\n";
+    std::cout << "  --cpu sm83|z80|6502|huc6280  Check the CPU required by the source console\n";
     std::cout << "  --list-systems       List source consoles, CPUs and available pipelines\n";
+    std::cout << "  --list-targets       List destination consoles and their hardware facts\n";
     std::cout << "  --info               Inspect a cartridge without generating code\n";
     std::cout << "  --target meta         Emit a compact gbl project for the Gamebuino META\n";
     std::cout << "                        (coverage-driven; see targets/meta/README.md)\n";
     std::cout << "  --target espboy       ESP8266, 128x128 LCD, no SD, 4 MiB flash (1 MiB firmware, ROM above 256 KiB beside it)\n";
     std::cout << "  --target pokitto      Same gbl project for the Pokitto (bare-metal Makefile build;\n";
     std::cout << "                        every --meta-* option applies)\n";
+    std::cout << "  --target pc           PC: the same firmware as a SDL2 window (SD card as a file image)\n";
+    std::cout << "  --target odroid       ODROID-GO (ESP32, ILI9341 320x240, SD, 4 MiB PSRAM)\n";
+    std::cout << "  --target aka          Gamebuino AKA (ESP32-S3, 320x240, SD, 8 MiB PSRAM)\n";
     std::cout << "  --coverage <file>     gbl coverage profile for --target meta (repeatable)\n";
     std::cout << "  --meta-compiler <gcc|clang>  Firmware compiler (default gcc)\n";
     std::cout << "  --meta-thumb          Experimental register-IR / Thumb-1 code generation\n";
@@ -1804,15 +1820,34 @@ static size_t g_meta_resident = 0;              /* --meta-rom-resident-kib */
 static bool g_meta_pack = false;                /* --meta-pack */
 static std::string g_sd_name;                   /* --sd-name */
 
+/* Refuse a (system, target) pair: when the hardware cannot run the runtime,
+ * say so with the numbers; otherwise name the missing pipeline. */
+static int refuse_target(const m0boy::SystemDescriptor& source, m0boy::TargetId id,
+                         const std::string& target) {
+    const auto& facts = m0boy::target_descriptor(id);
+    const std::string misfit = m0boy::target_misfit_reason(source, facts);
+    if (!misfit.empty()) {
+        std::cerr << "Error: --target " << target << " cannot run " << source.name
+                  << ": " << misfit << "\n";
+        return 1;
+    }
+    std::cerr << "Error: " << source.name << " code generation is not available for --target "
+              << target << "\n";
+    return 1;
+}
+
 static int run_meta_target(const char* argv0, const std::string& rom_path,
                            const std::string& output_dir, const std::string& output_prefix,
                            const fs::path& explicit_meta_dir,
                            const std::vector<fs::path>& coverage_paths, bool precise,
                            bool static_coverage, size_t bytes_per_instruction,
-                           bool emit_comments, bool pokitto, bool espboy, bool thumb, const std::string& compiler) {
+                           bool emit_comments, m0boy::TargetId target_id, bool thumb, const std::string& compiler) {
     gbrecomp::MetaTargetOptions options;
-    options.pokitto = pokitto;
-    options.espboy = espboy;
+    options.pokitto = target_id == m0boy::TargetId::pokitto;
+    options.espboy = target_id == m0boy::TargetId::espboy;
+    options.pc = target_id == m0boy::TargetId::pc;
+    options.odroid = target_id == m0boy::TargetId::odroid;
+    options.aka = target_id == m0boy::TargetId::aka;
     options.template_dir = resolve_meta_dir(argv0, explicit_meta_dir);
     if (options.template_dir.empty()) {
         std::cerr << "Error: could not locate targets/meta. Use --meta-dir or GBRECOMP_META_DIR.\n";
@@ -1829,7 +1864,7 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
                                          : output_prefix;
     options.sd_name = g_sd_name;
     options.output_dir = output_dir.empty()
-                             ? fs::path(fs::path(rom_path).stem().string() + (espboy ? "_espboy" : pokitto ? "_pokitto" : "_meta"))
+                             ? fs::path(fs::path(rom_path).stem().string() + ("_" + std::string(m0boy::target_descriptor(target_id).name)))
                              : fs::path(output_dir);
     options.coverage_files = coverage_paths;
     options.bytes_per_instruction = bytes_per_instruction;
@@ -1893,10 +1928,14 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
                      "and regenerate with --coverage <file> (see targets/meta/README.md).\n";
     }
     const size_t cart_ram = rom->header().ram_size_bytes;
-    if (cart_ram > 4096 && !espboy) {
+    if (cart_ram > 4096 && options.espboy) {
         std::cout << "Warning: " << cart_ram << " bytes of cartridge RAM are allocated in the "
-                  << (pokitto ? "Pokitto's 32 KiB; check the link map.\n"
-                              : "META's 32 KiB; check the PlatformIO RAM report.\n");
+                  << "ESPboy's 80 KiB; check the PlatformIO RAM report.\n";
+    } else if (cart_ram > 4096 && (options.pokitto || options.espboy == false && options.pc == false &&
+                                   options.odroid == false && options.aka == false)) {
+        std::cout << "Warning: " << cart_ram << " bytes of cartridge RAM are allocated in the "
+                  << (options.pokitto ? "Pokitto's 32 KiB; check the link map.\n"
+                                      : "META's 32 KiB; check the PlatformIO RAM report.\n");
     }
     std::cout << std::dec;
     std::cout << "Flash budget: about " << stats.budget_instructions << " compiled instructions";
@@ -1928,8 +1967,11 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
               << (!stats.pack_note.empty() ? "  --meta-pack:        not applied, " + stats.pack_note + "\n"
                                            : std::string())
               << (precise ? "  mode:               precise (interrupt poll per instruction)\n" : "")
-              << (pokitto ? "Build firmware:  make -C " : "Build firmware:  pio run -d ")
-              << options.output_dir.string() << "\n"
+              << (options.pc ? std::string("Build firmware:  cmake -B ") + (options.output_dir / "build").string() +
+                                  " -S " + options.output_dir.string() + " && cmake --build " +
+                                  (options.output_dir / "build").string() + "\n"
+                     : options.pokitto ? "Build firmware:  make -C " + options.output_dir.string() + "\n"
+                                       : "Build firmware:  pio run -d " + options.output_dir.string() + "\n")
               << "Build host test: cmake -G Ninja -S " << (options.output_dir / "host").string()
               << " -B " << (options.output_dir / "host" / "build").string() << "\n";
     return 0;
@@ -1956,6 +1998,18 @@ int main(int argc, char* argv[]) {
     }
     if (argc == 2 && std::string(argv[1]) == "--pokitto-version") {
         std::cout << GBRECOMP_POKITTO_VERSION << "\n";
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--pc-version") {
+        std::cout << GBRECOMP_PC_VERSION << "\n";
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--odroid-version") {
+        std::cout << GBRECOMP_ODROID_VERSION << "\n";
+        return 0;
+    }
+    if (argc == 2 && std::string(argv[1]) == "--aka-version") {
+        std::cout << GBRECOMP_AKA_VERSION << "\n";
         return 0;
     }
     if (argc == 2 && std::string(argv[1]) == "--version-json") {
@@ -1993,6 +2047,7 @@ int main(int argc, char* argv[]) {
     std::string system_name = "auto";
     std::optional<m0boy::CpuId> requested_cpu;
     bool list_systems = false;
+    bool list_targets = false;
     bool info_only = false;
     std::string target = "desktop";
     std::vector<fs::path> coverage_paths;
@@ -2145,6 +2200,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--list-systems") {
             list_systems = true;
+        } else if (arg == "--list-targets") {
+            list_targets = true;
         } else if (arg == "--info") {
             info_only = true;
         } else if (arg == "--target") {
@@ -2218,10 +2275,28 @@ int main(int argc, char* argv[]) {
             std::cout << system.name << " cpu=" << m0boy::cpu_descriptor(system.cpu).name
                       << " inspect=yes disasm="
                       << (m0boy::cpu_descriptor(system.cpu).decoder_available ? "yes" : "no")
-                      << " codegen="
-                      << (system.id == m0boy::SystemId::pico8 ? "desktop,meta,pokitto" : system.supports(m0boy::TargetId::desktop) ? "desktop,meta,pokitto" : "unavailable")
-                      << (system.id != m0boy::SystemId::pico8 && system.supports(m0boy::TargetId::espboy) ? ",espboy" : "")
-                      << "\n";
+                      << " codegen=";
+            bool any = false;
+            for (const auto& facts : m0boy::targets()) {
+                if (!system.supports(facts.id)) continue;
+                std::cout << (any ? "," : "") << facts.name;
+                any = true;
+            }
+            if (!any) std::cout << "unavailable";
+            std::cout << "\n";
+        }
+        return 0;
+    }
+    if (list_targets) {
+        for (const auto& facts : m0boy::targets()) {
+            std::cout << facts.name
+                      << (facts.host ? " host=yes" : " host=no")
+                      << " ram=" << facts.ram_bytes / 1024 << "K"
+                      << " psram=" << facts.psram_bytes / 1024 << "K"
+                      << " flash=" << facts.flash_app_bytes / 1024 << "K"
+                      << " screen=" << facts.screen_cols << "x" << facts.screen_rows
+                      << " sd=" << (facts.has_sd ? "yes" : "no")
+                      << " \"" << facts.description << "\"\n";
         }
         return 0;
     }
@@ -2230,8 +2305,10 @@ int main(int argc, char* argv[]) {
         print_usage(argv[0]);
         return 1;
     }
-    if (target != "desktop" && target != "meta" && target != "pokitto" && target != "espboy") {
-        std::cerr << "Error: unknown --target '" << target << "' (expected desktop, meta, pokitto or espboy)\n";
+    if (!m0boy::parse_target(target)) {
+        std::cerr << "Error: unknown --target '" << target << "' (expected";
+        for (const auto& facts : m0boy::targets()) std::cerr << " " << facts.name;
+        std::cerr << ")\n";
         return 1;
     }
     // Resolve the source before invoking any Game Boy parser or emitter.
@@ -2292,6 +2369,74 @@ int main(int argc, char* argv[]) {
         }
         return 0;
     }
+    if (disasm_only && source.id == m0boy::SystemId::nes && !analyze_only) {
+        /* the iNES header and the trainer are not code: the PRG banks
+         * follow, mapped from $8000 (the vectors close the last one) */
+        std::ifstream file(rom_path, std::ios::binary);
+        uint8_t header[16];
+        if (!file.read(reinterpret_cast<char*>(header), 16)) {
+            std::cerr << "Error: truncated iNES header: " << rom_path << "\n";
+            return 1;
+        }
+        file.seekg((header[6] & 0x04) ? 512 : 0, std::ios::cur);
+        std::vector<uint8_t> prg(size_t(header[4]) * 16384);
+        if (prg.empty() || !file.read(reinterpret_cast<char*>(prg.data()), std::streamsize(prg.size()))) {
+            std::cerr << "Error: truncated PRG banks: " << rom_path << "\n";
+            return 1;
+        }
+        class PrgReader : public m0boy::ByteReader {
+        public:
+            const std::vector<uint8_t>* bytes;
+            uint8_t read_banked(m0boy::BankId, uint16_t address) const override {
+                const size_t at = address - 0x8000u;
+                return at < bytes->size() ? (*bytes)[at] : uint8_t(0xFF);
+            }
+        } reader;
+        reader.bytes = &prg;
+        m0boy::cpu::m6502::Decoder decoder(reader);
+        size_t offset = 0, count = 0;
+        while (offset < prg.size() && (!limit_instructions || count < limit_instructions)) {
+            const auto instruction = decoder.decode(uint16_t(0x8000u + offset));
+            std::cout << std::hex << std::uppercase << std::setw(4) << std::setfill('0')
+                      << (0x8000u + offset) << "  " << instruction.mnemonic;
+            if (instruction.target) std::cout << " $" << std::setw(4) << *instruction.target;
+            std::cout << std::dec << "\n";
+            offset += instruction.length;
+            ++count;
+        }
+        return 0;
+    }
+    if (disasm_only && source.id == m0boy::SystemId::pce && !analyze_only) {
+        /* a raw HuCard image seen linearly: the socle's view of the first
+         * bank, the vectors at the end of the address space come later */
+        std::ifstream file(rom_path, std::ios::binary);
+        std::vector<uint8_t> rom(std::min<size_t>(size_t(0x10000),
+            std::filesystem::file_size(rom_path) - (std::filesystem::file_size(rom_path) % 0x20000 == 128 ? 128 : 0)));
+        if (rom.empty() || !file.read(reinterpret_cast<char*>(rom.data()), std::streamsize(rom.size()))) {
+            std::cerr << "Error: cannot read " << rom_path << "\n";
+            return 1;
+        }
+        class RawReader : public m0boy::ByteReader {
+        public:
+            const std::vector<uint8_t>* bytes;
+            uint8_t read_banked(m0boy::BankId, uint16_t address) const override {
+                return address < bytes->size() ? (*bytes)[address] : uint8_t(0xFF);
+            }
+        } reader;
+        reader.bytes = &rom;
+        m0boy::cpu::huc6280::Decoder decoder(reader);
+        size_t offset = 0, count = 0;
+        while (offset < rom.size() && (!limit_instructions || count < limit_instructions)) {
+            const auto instruction = decoder.decode(uint16_t(offset));
+            std::cout << std::hex << std::uppercase << std::setw(4) << std::setfill('0')
+                      << offset << "  " << instruction.mnemonic;
+            if (instruction.target) std::cout << " $" << std::setw(4) << *instruction.target;
+            std::cout << std::dec << "\n";
+            offset += instruction.length;
+            ++count;
+        }
+        return 0;
+    }
     /* --sd-name: an 8.3 base, upper case (the FAT keeps short names so). */
     if (!g_sd_name.empty()) {
         for (char& c : g_sd_name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
@@ -2307,6 +2452,9 @@ int main(int argc, char* argv[]) {
             emit_android_project || !native_patch_manifest_path.empty() || specific_bank > 0) {
             std::cerr << "Error: unsupported PICO-8 option; a cartridge is compiled to C, use --target and --meta-compiler\n";
             return 1;
+        }
+        if (!source.supports(*m0boy::parse_target(target))) {
+            return refuse_target(source, *m0boy::parse_target(target), target);
         }
         m0boy::pico8::GenerateOptions options;
         options.target = *m0boy::parse_target(target);
@@ -2334,8 +2482,7 @@ int main(int argc, char* argv[]) {
         const bool gamegear = source.id == m0boy::SystemId::gamegear || mastersystem;
         const char* system_label = msx ? "MSX" : mastersystem ? "Master System" : gamegear ? "Game Gear" : "SG-1000";
         if (!source.supports(*m0boy::parse_target(target))) {
-            std::cerr << "Error: " << system_label << " code generation is not available for --target " << target << "\n";
-            return 1;
+            return refuse_target(source, *m0boy::parse_target(target), target);
         }
         if (analyze_only || meta_thumb || g_meta_pack ||
             g_meta_stream != -1 || !g_rom_profiles.empty() || g_meta_resident ||
@@ -2402,19 +2549,45 @@ int main(int argc, char* argv[]) {
                   << (meta_precise ? "  mode:               precise (sync per instruction)\n" : "");
         return 0;
     }
-    if (!source.supports(*m0boy::parse_target(target))) {
-        std::cerr << "Error: " << source.name << " cartridge inspection is available (--info); "
-                  << "Z80 disassembly is available (--disasm); "
-                  << "analysis and code generation are not implemented yet\n";
+    /* NES and PC Engine are at the inspection stage: --info (handled above)
+     * reads the cartridge; the code pipeline is under construction and no
+     * target is wired yet (see system.cpp's tables). */
+    if (source.id == m0boy::SystemId::nes) {
+        if (!source.supports(*m0boy::parse_target(target))) {
+            return refuse_target(source, *m0boy::parse_target(target), target);
+        }
+        m0boy::nes::GenerateOptions options;
+        options.target = *m0boy::parse_target(target);
+        options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string()) : output_prefix;
+        if (options.name.empty() || sanitize_prefix(options.name) != options.name) {
+            std::cerr << "Error: invalid NES output prefix\n";
+            return 1;
+        }
+        options.output = output_dir.empty() ? fs::path(options.name + "_nes_" + target) : fs::path(output_dir);
+        options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
+        options.compiler = meta_compiler;
+        std::string error;
+        if (!m0boy::nes::generate(rom_path, options, error)) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        std::cout << "Generated NES project for " << target << ": " << options.output << "\n";
+        return 0;
+    }
+    if (source.id == m0boy::SystemId::pce) {
+        std::cerr << "Error: PC Engine code generation is under construction; use --info and --disasm\n";
         return 1;
     }
-    if (target == "meta" || target == "pokitto" || target == "espboy") {
+    if (!source.supports(*m0boy::parse_target(target))) {
+        return refuse_target(source, *m0boy::parse_target(target), target);
+    }
+    if (target != "desktop") { /* every wired console of the Game Boy pipeline */
         return run_meta_target(argv[0], rom_path, output_dir, output_prefix, meta_dir,
                                coverage_paths, meta_precise, meta_static, meta_bpi, emit_comments,
-                               target == "pokitto", target == "espboy", meta_thumb, meta_compiler);
+                               *m0boy::parse_target(target), meta_thumb, meta_compiler);
     }
     if (!coverage_paths.empty() || meta_compiler != "gcc" || meta_thumb || meta_precise || meta_static || !meta_dir.empty()) {
-        std::cerr << "Error: --coverage, --meta-compiler, --meta-thumb, --meta-precise, --meta-static and --meta-dir require --target meta or pokitto\n";
+        std::cerr << "Error: --coverage, --meta-compiler, --meta-thumb, --meta-precise, --meta-static and --meta-dir require a console target (meta, pokitto, espboy, pc, odroid, aka)\n";
         return 1;
     }
     if (!emit_android_project && (!android_package.empty() || !android_app_name.empty())) {

@@ -19,6 +19,15 @@
 #include "espboy_hw.h"
 #elif M0_TARGET_POKITTO
 #include "pokitto_hw.h"
+#elif M0_TARGET_PC
+#include "pc_hw.h"
+#include <stdlib.h>
+#elif M0_TARGET_ESP32
+#if __has_include("odroid_hw.h")
+#include "odroid_hw.h"
+#else
+#include "aka_hw.h"
+#endif
 #else
 #include "meta_hw.h"
 #endif
@@ -142,17 +151,26 @@ static void bench_frame() {
 #endif
 static const char version[] __attribute__((used)) = "m0boy-gg-" M0_TARGET_NAME " " GBL_GEN_VERSION;
 
-#if GG_SMS
+#if M0_TARGET_PC
+/* The window is the VDP's own size (160x144 Game Gear, 256x192 in SMS
+ * mode): no resampling, no border crop. */
+static unsigned display_row(unsigned y) { return y; }
+#define GG_PAIRS 0
+#define GG_PANEL_ROW0(row) (row)
+#elif GG_SMS
 /* One source line per row (the 256 -> 160 filter is already the costly
  * part): the line nearest the row's centre. */
 static unsigned display_row(unsigned y) { return gg_sms_display_row(y); }
 /* Pokitto: the 120 rows drawn on 150, one in four twice */
 #define GG_PAIRS 0
+#define GG_PANEL_ROW0(row) ((row) + 4)
 #elif !M0_TARGET_POKITTO
 static unsigned display_row(unsigned y) { return gg_meta_display_row(y); }
 #define GG_PAIRS 1
+#define GG_PANEL_ROW0(row) ((row) + (GG_SMS ? 4 : 0))
 #else
 #define GG_PAIRS 0
+#define GG_PANEL_ROW0(row) (row)
 #endif
 #if !M0_TARGET_POKITTO
 static void wait_slot(unsigned slot) {
@@ -200,7 +218,7 @@ static void row(void *, unsigned y, uint16_t *pixels) {
     (void)y; (void)pixels;
     return;
 #endif
-    line_sequences[line_slot] = m0_lcd_send_rows(pixels, (uint8_t)(display_row(y) + (GG_SMS ? 4 : 0)), 1);
+    line_sequences[line_slot] = m0_lcd_send_rows(pixels, (uint8_t)GG_PANEL_ROW0(display_row(y)), 1);
     line_slot ^= 1;
     wait_slot(line_slot);
     machine.row_out = line_buffers[line_slot] + GG_ROW_PAD;
@@ -260,6 +278,10 @@ static unsigned start_frames; /* a HOME tap (the Pokitto's C) becomes Start */
         pokitto_enter_loader(); \
         m0_audio_init(); \
     } while (0)
+#elif M0_TARGET_PC
+#define SG_MENU_QUIT() do { exit(0); } while (0)
+#elif M0_TARGET_ESP32
+#define SG_MENU_QUIT() do { esp32_restart(); } while (0)
 #else
 /* Hand the console back to the Gamebuino loader in the state it expects
  * (the Game Boy frontend's enter_loader). */
@@ -378,6 +400,9 @@ static void frame(void *) {
 
 #if M0_TARGET_ESPBOY
 int espboy_main() {
+#elif M0_TARGET_ESP32
+extern "C" int m0boy_console_main(void); /* the console file's setup() */
+int m0boy_console_main() {
 #else
 int main() {
 #endif

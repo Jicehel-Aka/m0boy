@@ -31,6 +31,39 @@
 #define M0_TARGET_ESPBOY 0
 #endif
 
+/* The META is the default build (no GBL_TARGET_* written): its exclusive
+ * blocks (USB, the loader) test this instead of "none of the others". */
+#if M0_TARGET_ESPBOY || defined(GBL_TARGET_POKITTO) || defined(GBL_TARGET_PC) || \
+    defined(GBL_TARGET_ODROID) || defined(GBL_TARGET_AKA)
+#define M0_TARGET_META 0
+#else
+#define M0_TARGET_META 1
+#endif
+
+#if defined(GBL_TARGET_PC) && GBL_TARGET_PC
+#define M0_TARGET_PC 1
+#else
+#define M0_TARGET_PC 0
+#endif
+
+#if defined(GBL_TARGET_ODROID) && GBL_TARGET_ODROID
+#define M0_TARGET_ODROID 1
+#else
+#define M0_TARGET_ODROID 0
+#endif
+
+#if defined(GBL_TARGET_AKA) && GBL_TARGET_AKA
+#define M0_TARGET_AKA 1
+#else
+#define M0_TARGET_AKA 0
+#endif
+
+#if M0_TARGET_ODROID || M0_TARGET_AKA
+#define M0_TARGET_ESP32 1
+#else
+#define M0_TARGET_ESP32 0
+#endif
+
 #if M0_TARGET_ESPBOY
 #define M0_TARGET_POKITTO 0
 #define M0_TARGET_NAME "espboy"
@@ -59,6 +92,57 @@
 /* Panel colours: native RGB565 on the 16-bit bus. */
 #define M0_COLOR(rgb) \
     ((uint16_t)((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)))
+
+#elif defined(GBL_TARGET_PC) && GBL_TARGET_PC
+
+#define M0_TARGET_POKITTO 0
+#define M0_TARGET_PC 1
+#define M0_TARGET_NAME "pc"
+#define M0_LCD_ASYNC 0    /* rows land in a texture: nothing runs behind */
+/* The Game Boy picture goes through the META's 144->128 modes unchanged
+ * (gbl_display.c is built around them); the Sega frontends show their own
+ * native resolution (PC_COLS/PC_ROWS, sg_config.h). */
+#define M0_SCALED_MODES 1
+#ifndef M0_SCREEN_ROWS /* the Sega frontends' own panel: 192 or 144 rows */
+#define M0_SCREEN_ROWS 128
+#endif
+#define M0_SWAP_AB_DEFAULT 0 /* X is A on the keyboard already */
+/* The window has no clock to set; one rate. */
+#define M0_CLOCK_DEFAULT 240
+#ifndef PC_COLS
+#define PC_COLS 160
+#endif
+#ifndef PC_ROWS
+#define PC_ROWS 128
+#endif
+/* Panel colours: native RGB565 (the texture conversion is the driver's). */
+#define M0_COLOR(rgb) \
+    ((uint16_t)((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)))
+
+#elif M0_TARGET_ESP32
+
+/* ODROID-GO (ESP32-WROVER, ILI9341 320x240, SD, 16 MiB flash, 4 MiB PSRAM)
+ * and Gamebuino AKA (ESP32-S3, 320x240, SD, 8 MiB PSRAM): the shared ESP32
+ * core (targets/common/consoles/esp32) plays the console, each with its own
+ * pins and buttons.  The panel doubles the 160-column rows; RGB565
+ * byte-swapped on the wire like the META's strips. */
+#define M0_TARGET_POKITTO 0
+#if M0_TARGET_ODROID
+#define M0_TARGET_NAME "odroid"
+#else
+#define M0_TARGET_NAME "aka"
+#endif
+#define M0_LCD_ASYNC 0
+#define M0_SCALED_MODES 1
+#ifndef M0_SCREEN_ROWS /* the Sega frontends' own panel: 192 or 144 rows */
+#define M0_SCREEN_ROWS 128
+#endif
+#define M0_SWAP_AB_DEFAULT 0 /* the console's A is the right-hand button */
+#define M0_CLOCK_DEFAULT 240 /* 80 and 160 are menu choices */
+/* Panel colours: RGB565 byte-swapped (the SPI sends the high byte first). */
+#define M0_COLOR(rgb) ((uint16_t)( \
+    (((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) >> 8) | \
+    (((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) << 8)))
 
 #else
 

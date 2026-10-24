@@ -10,6 +10,14 @@
 #include <string.h>
 #if M0_TARGET_ESPBOY
 #include "espboy_hw.h"
+#elif M0_TARGET_PC
+#include "pc_hw.h"
+#elif M0_TARGET_ESP32
+#if __has_include("odroid_hw.h")
+#include "odroid_hw.h"
+#else
+#include "aka_hw.h"
+#endif
 #elif !M0_TARGET_POKITTO
 #include "meta_hw.h"
 #endif

@@ -1,8 +1,8 @@
 /* SG-1000 frontend for the Gamebuino META and the Pokitto: recompiled code
  * (sg_gen.c) on the shared runtime, the consoles' LCD, audio, clock and
  * button drivers. */
-#include "sg1000.h"
 #include "sg_config.h"
+#include "sg1000.h"
 #include "m0_target.h"
 #include "m0_clock.h"
 #include "m0_audio.h"
@@ -11,6 +11,15 @@
 #include "espboy_hw.h"
 #elif M0_TARGET_POKITTO
 #include "pokitto_hw.h"
+#elif M0_TARGET_PC
+#include "pc_hw.h"
+#include <stdlib.h>
+#elif M0_TARGET_ESP32
+#if __has_include("odroid_hw.h")
+#include "odroid_hw.h"
+#else
+#include "aka_hw.h"
+#endif
 #else
 #include "meta_hw.h"
 #endif
@@ -116,6 +125,10 @@ static unsigned pause_frames; /* a HOME tap (the Pokitto's C) becomes Pause */
         pokitto_enter_loader(); \
         m0_audio_init(); \
     } while (0)
+#elif M0_TARGET_PC
+#define SG_MENU_QUIT() do { exit(0); } while (0)
+#elif M0_TARGET_ESP32
+#define SG_MENU_QUIT() do { esp32_restart(); } while (0)
 #else
 #if META_USB_SERIAL
 #define SG_MENU_USB_STOP() meta_usb_stop()
@@ -187,7 +200,7 @@ static unsigned pause_frames; /* a HOME tap (the Pokitto's C) becomes Pause */
 #if defined(GG_STATE_NAME83)
 static int sg_card_open(void) {
     if (!m0_sd_init()) return 0;
-#if !M0_TARGET_POKITTO
+#if M0_TARGET_META
     m0_fat_dir = m0_fat_game_dir(m0_card_sector, SG_MENU_STATE_BUF(), GG_BIN_NAME83, META_APP_START);
 #endif
     return 1;
@@ -198,10 +211,19 @@ static int sg_card_open(void) {
 static unsigned display_row(unsigned y) {
 #if M0_TARGET_POKITTO
     return (y * 25) >> 5; /* 192 -> 150 */
+#elif M0_TARGET_PC
+    return y; /* the window is the TMS9918A's own 256x192 */
 #else
     return (y * 5) >> 3; /* 192 -> 120 */
 #endif
 }
+/* Where the drawn rows start on the panel: the 120-row consoles crop the
+ * TMS9918A's border (rows 4..123), the PC shows all 192 rows from 0. */
+#if M0_TARGET_PC
+#define SG_PANEL_ROW0(row) (row)
+#else
+#define SG_PANEL_ROW0(row) ((row) + 4)
+#endif
 /* Every source line counts: two lines that land on the same screen row are
  * drawn together as one row (the renderer averages them), so no line is
  * dropped (192 -> 120: rows of 2,2,1,2,1 lines; 192 -> 150 alike). */
@@ -218,7 +240,7 @@ static void row(void *, unsigned y, uint16_t *pixels) {
 #else
 static void flush_batch(void) {
     if (!batch_rows) return;
-    line_sequences[line_slot] = m0_lcd_send_rows(line_buffers[line_slot], (uint8_t)(batch_dest + 4), (uint8_t)batch_rows);
+    line_sequences[line_slot] = m0_lcd_send_rows(line_buffers[line_slot], (uint8_t)SG_PANEL_ROW0(batch_dest), (uint8_t)batch_rows);
     line_slot ^= 1;
     batch_rows = 0;
     while ((int32_t)(m0_lcd_done_seq() - line_sequences[line_slot]) < 0) {}
@@ -259,6 +281,9 @@ static void frame(void *) {
 }
 #if M0_TARGET_ESPBOY
 int espboy_main() {
+#elif M0_TARGET_ESP32
+extern "C" int m0boy_console_main(void); /* the console file's setup() */
+int m0boy_console_main() {
 #else
 int main() {
 #endif

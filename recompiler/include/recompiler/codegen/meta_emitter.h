@@ -33,6 +33,11 @@ struct MetaTargetOptions {
      * drivers in platform/pokitto, 228 KiB of flash below its loader). */
     bool pokitto = false;
     bool espboy = false; ///< ESP8266, 1 MiB flash, 256 KiB firmware, no SD
+    bool pc = false;     ///< SDL2 window, unlimited flash, the card as sd.img
+    bool odroid = false; ///< ODROID-GO: ESP32, ILI9341 320x240, SD, 16 MiB flash
+    bool aka = false;    ///< Gamebuino AKA: ESP32-S3, 320x240, SD, 8 MiB PSRAM
+    /// the ESP32 family shares its core (targets/common/consoles/esp32)
+    bool esp32_console() const { return odroid || aka; }
     std::vector<std::filesystem::path> coverage_files; ///< gbl coverage v1 files
     bool emit_comments = true;
     std::string compiler = "gcc"; ///< firmware C/C++ compiler: gcc or clang

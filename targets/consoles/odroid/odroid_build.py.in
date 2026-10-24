@@ -1,0 +1,9 @@
+"""Flash the raw ROM image beside the firmware (the partition table's `rom`
+slot at 0x380000), when the generator wrote one for ROMs too big for the
+application."""
+Import("env")
+from pathlib import Path
+
+rom = Path(env.subst("$PROJECT_DIR")) / "rom.bin"
+if rom.exists():
+    env.Append(FLASH_EXTRA_IMAGES=[("0x380000", str(rom))])

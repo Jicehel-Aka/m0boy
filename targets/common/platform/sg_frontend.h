@@ -31,6 +31,22 @@ extern char __StackTop;
         m0_lcd_init(); \
         m0_lcd_fill(0); \
     } while (0)
+#elif M0_TARGET_PC
+/* PC: pc_hw.c starts SDL in m0_lcd_init; main() is the frontend's own. */
+#define SG_PLATFORM_INIT() do { \
+        m0_clock_init(); \
+        m0_lcd_init(); \
+        m0_lcd_fill(0); \
+    } while (0)
+#elif M0_TARGET_ESP32
+/* ESP32 consoles: the Arduino core has started the chip; the emulation
+ * runs in setup() (the console's own file). */
+#define SG_PLATFORM_INIT() do { \
+        m0_clock_init(); \
+        m0_clock_set(M0_CLOCK_DEFAULT); \
+        m0_lcd_init(); \
+        m0_lcd_fill(0); \
+    } while (0)
 #elif M0_TARGET_POKITTO
 #define SG_PLATFORM_INIT() do { \
         pokitto_buttons_init(); \
@@ -71,6 +87,14 @@ extern char __StackTop;
 #if M0_TARGET_ESPBOY
 /* M0_MB_* bits, the library's order: what the frontends decode */
 #define SG_PAD_RAW() espboy_buttons()
+#define SG_PAD_WDT() do { } while (0)
+#elif M0_TARGET_PC
+/* pc_buttons (pc_hw.h): M0_MB_* bits, SDL keyboard */
+#define SG_PAD_RAW() pc_buttons()
+#define SG_PAD_WDT() do { } while (0)
+#elif M0_TARGET_ESP32
+/* esp32_buttons (the console's file): M0_MB_* bits */
+#define SG_PAD_RAW() esp32_buttons()
 #define SG_PAD_WDT() do { } while (0)
 #elif M0_TARGET_POKITTO
 #define SG_PAD_RAW() pokitto_buttons()
@@ -114,6 +138,23 @@ static uint8_t sg_menu_fast, sg_fast_draw;
 #if M0_TARGET_ESPBOY
 #define SG_STACK_PAINT() do { } while (0)
 #define SG_STACK_GUARD() do { sg_stack_limit = espboy_stack_floor() + 2560; } while (0)
+#elif M0_TARGET_PC
+/* PC: the process stack is the machine's, not the console's; keep the
+ * guard out of it by a wide margin (the count still works, the emulator
+ * never hits it). */
+#define SG_STACK_PAINT() do { } while (0)
+#define SG_STACK_GUARD() do { \
+        char here_; \
+        sg_stack_limit = (uintptr_t)&here_ - 262144u; \
+    } while (0)
+#elif M0_TARGET_ESP32
+/* The Arduino task's stack (grown by the project's build flags): the same
+ * margin as the ESPboy's continuation stack. */
+#define SG_STACK_PAINT() do { } while (0)
+#define SG_STACK_GUARD() do { \
+        char here_; \
+        sg_stack_limit = (uintptr_t)&here_ - 2560u; \
+    } while (0)
 #else
 #define SG_STACK_PAINT() do { \
         char here_; \

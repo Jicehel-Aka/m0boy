@@ -1,0 +1,6 @@
+# ODROID-GO (16 MiB flash): the application below 3.5 MiB, the raw ROM image
+# beside it up to 3 MiB (rom.bin, flashed at 0x380000), the rest free.
+nvs,      data, nvs,     0x9000,   0x5000
+otadata,  data, ota,     0xe000,   0x2000
+app0,     app,  ota_0,   0x10000,  0x370000
+rom,      data, 0x01,    0x380000, 0x300000

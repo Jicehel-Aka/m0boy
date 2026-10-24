@@ -1,0 +1,73 @@
+/* The NES machine: the 6502, the PPU and the APU around 2 KiB of RAM and
+ * an NROM cartridge (16 or 32 KiB of PRG mirrored per its size, 8 KiB of
+ * CHR ROM).  A frame runs line by line — the CPU gets its 341/3 cycles,
+ * then the PPU renders the line — so a mid-frame register write applies
+ * from the next line, which is when Super Mario Bros makes its own.
+ * One machine per firmware (as the Z80 runtime's own machine): the runtime
+ * owns it, the host feeds machine.input (the standard controller bit order)
+ * and draws through machine.row(). */
+#ifndef NES_RUNTIME_H
+#define NES_RUNTIME_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <stdint.h>
+
+#include "6502.h"
+#include "apu.h"
+#include "ppu.h"
+
+/* nes.input: bit 0 A, 1 B, 2 Select, 3 Start, 4 Up, 5 Down, 6 Left, 7 Right */
+#define NES_A 0x01
+#define NES_B 0x02
+#define NES_SELECT 0x04
+#define NES_START 0x08
+#define NES_UP 0x10
+#define NES_DOWN 0x20
+#define NES_LEFT 0x40
+#define NES_RIGHT 0x80
+
+typedef struct {
+    nes6502_t cpu;
+    nes_ppu_t ppu;
+    nes_apu_t apu;
+    uint8_t ram[2048];
+    uint8_t oam[256];
+    const uint8_t *prg;
+    uint32_t prg_size;
+    const uint8_t *chr;
+    uint8_t input;         /* the host writes it before each frame */
+    uint8_t shift[2];      /* the controllers' serial shifters */
+    uint8_t strobe;
+    uint32_t dots;         /* PPU dots into the current line's CPU slice */
+    uint32_t line;
+    uint32_t frames;       /* completed nes_frame calls (the m0input probe) */
+    void (*row)(void *host, unsigned line, const uint16_t *pixels);
+    /* optional: whether a source line reaches the panel (the console scales
+     * 240 lines down); the others skip composition, not the v walk */
+    int (*want_row)(void *host, unsigned line);
+    void *host;
+} nes_t;
+
+/* NROM: prg 16 or 32 KiB, chr 8 KiB, vertical_mirror from iNES flags 6. */
+extern nes_t machine;
+void nes_init(const uint8_t *prg, uint32_t prg_bytes,
+              const uint8_t *chr, uint32_t chr_bytes, int vertical_mirror);
+void nes_reset(void);
+/* one frame (262 lines): emulation, then the row callback has drawn 240
+ * lines (when rendering was on).  Call once per frame. */
+void nes_frame(void);
+/* the frame's sound: n samples of unsigned PCM at rate Hz */
+void nes_audio(uint8_t *dst, unsigned n, unsigned rate);
+/* the consoles' drivers' entry points (fixed 11025 Hz) */
+void nes_audio_set_rate(unsigned rate);
+void nes_audio_render(uint8_t *buffer, unsigned n);
+
+#endif
+
+
+#ifdef __cplusplus
+}
+#endif

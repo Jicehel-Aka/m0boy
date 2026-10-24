@@ -53,12 +53,16 @@
 
 static const char *const sg_volume_names[9] = {"0", "1", "2", "3", "4", "5", "6", "7", "8"};
 static const char *const sg_speed_names[2] = {"Normale", "Rapide"};
+#if !M0_TARGET_PC /* one rate on the PC: no clock line */
 #if M0_TARGET_ESPBOY
 static const char *const sg_clock_names[2] = {"80 MHz", "160 MHz"};
 #elif M0_TARGET_POKITTO
 static const char *const sg_clock_names[2] = {"48 MHz", "72 MHz"};
+#elif M0_TARGET_ESP32
+static const char *const sg_clock_names[2] = {"80 MHz", "240 MHz"};
 #else
 static const char *const sg_clock_names[2] = {"48 MHz", "70 MHz"}; /* meta_clock.cpp: 72 asked, 70 run */
+#endif
 #endif
 
 static char *sg_put_uint(char *p, unsigned v);
@@ -104,7 +108,7 @@ static void sg_menu_frame(void) {
     }
 }
 
-#if !M0_TARGET_ESPBOY
+#if !M0_TARGET_ESPBOY && !M0_TARGET_PC
 /* Free RAM painted at boot (sg_frontend.h), as the Game Boy's menu shows it. */
 static unsigned sg_stack_never_used(void) {
     const uint32_t *p = (const uint32_t *)(((uintptr_t)&end + 3u) & ~(uintptr_t)3u);
@@ -176,7 +180,11 @@ enum { SGM_RESUME, SGM_RESTART, SGM_SLOT, SGM_SAVE, SGM_LOAD, SGM_VOLUME, SGM_SP
 static void sg_option_menu(void) {
     uint8_t vol = m0_audio_volume();
     uint8_t fast = sg_menu_fast;
-    uint8_t mhz = m0_clock_mhz() == (M0_TARGET_ESPBOY ? 160 : 72);
+#if !M0_TARGET_PC
+    uint8_t mhz = m0_clock_mhz() == (M0_TARGET_ESPBOY ? 160 : M0_TARGET_ESP32 ? 240 : 72);
+#else
+    uint8_t mhz = 0;
+#endif
 #ifdef SG_MENU_STATE_SLOTS
     uint8_t slot = sg_state_slot;
 #endif
@@ -197,7 +205,9 @@ static void sg_option_menu(void) {
 #endif
     SG_ADD(SGM_VOLUME, "Volume", META_MENU_CHOICE, &vol, 9, sg_volume_names);
     SG_ADD(SGM_SPEED, "Vitesse", META_MENU_CHOICE, &fast, 2, sg_speed_names);
+#if !M0_TARGET_PC /* the PC has one rate: no "Processeur" line */
     SG_ADD(SGM_CLOCK, "Processeur", META_MENU_CHOICE, &mhz, 2, sg_clock_names);
+#endif
 #ifdef SG_MENU_BOOTLOADER
 #ifdef SG_MENU_USB_SD
     SG_ADD(SGM_USB_SD, "Carte SD USB", META_MENU_ACTION, 0, 0, 0);
@@ -218,7 +228,7 @@ static void sg_option_menu(void) {
     {
         char *p = sg_put_uint(info, sg_ips);
         memcpy(p, " ips, pile ", 11);
-#if M0_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY || M0_TARGET_PC
         p = sg_put_uint(p + 11, 0);
 #else
         p = sg_put_uint(p + 11, sg_stack_never_used());
@@ -238,7 +248,7 @@ static void sg_option_menu(void) {
     m0_audio_set_volume(vol);
     sg_menu_fast = fast;
     m0_lcd_end_frame(); /* no transfer while the clocks change */
-    m0_clock_set(M0_TARGET_ESPBOY ? (mhz ? 160 : 80) : (mhz ? 72 : 48));
+    m0_clock_set(M0_TARGET_ESPBOY ? (mhz ? 160 : 80) : M0_TARGET_ESP32 ? (mhz ? 240 : 80) : (mhz ? 72 : 48));
 #ifdef SG_MENU_STATE_SLOTS
     sg_state_slot = slot;
     if (action == SGM_SAVE || action == SGM_LOAD) {

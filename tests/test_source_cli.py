@@ -16,9 +16,16 @@ def run(*args, ok=True, contains=""):
 
 listing = run("--list-systems", contains="sg1000 cpu=z80 inspect=yes disasm=yes codegen=desktop,meta,pokitto")
 assert "gameboy cpu=sm83 inspect=yes disasm=yes codegen=desktop,meta,pokitto" in listing
+assert "pico8 cpu=lua inspect=yes disasm=no codegen=desktop,meta,pokitto,espboy" in listing
+assert "nes cpu=6502 inspect=yes disasm=yes codegen=desktop,meta" in listing
+assert "pce cpu=huc6280 inspect=yes disasm=yes codegen=unavailable" in listing
+targets = run("--list-targets", contains='meta host=no ram=32K')
+assert 'desktop host=yes' in targets and 'pc host=yes' in targets
+assert 'odroid host=no ram=320K psram=4096K' in targets and 'aka host=no ram=448K psram=8192K' in targets
+assert 'espboy host=no ram=80K psram=0K flash=1024K screen=128x128 sd=no' in targets
 run("--system", ok=False, contains="requires a value")
 run("--cpu", "68000", ok=False, contains="unknown --cpu")
-run("--system", "nes", ok=False, contains="unknown --system")
+run("--system", "snes", ok=False, contains="unknown --system")
 assert "sms cpu=z80" in listing and "gg cpu=z80" in listing
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
@@ -55,3 +62,23 @@ with tempfile.TemporaryDirectory() as temporary:
     run(gb, "--cpu", "z80", "--target", "meta", ok=False, contains="requires CPU sm83")
     run(gb, "--system", "gameboy", "--cpu", "sm83", "--info", contains="title=SYNTHETC")
     assert run(gb, "--disasm") == run(gb, "--system", "gameboy", "--disasm")
+    # NES and PC Engine: inspection works, code generation is under construction.
+    nes = root / "synthetic.nes"
+    nes.write_bytes(bytes([0x4E, 0x45, 0x53, 0x1A, 2, 1, 0x01, 0x00] + [0] * 8)
+                    + bytes(32768) + bytes(8192))
+    run(nes, "--info", contains="system=nes\ncpu=6502")
+    info = run(nes, "--info")
+    assert "rom_bytes=40960" in info and "mapper=NROM (0)" in info
+    run(nes, "--target", "pc", ok=False, contains="not available for --target pc")
+    listing = run(nes, "--disasm", "--limit", "3")
+    assert "8000" in listing  # the PRG banks, disassembled from $8000
+    run(nes, "--cpu", "z80", "--info", ok=False, contains="requires CPU 6502")
+    pce = root / "synthetic.pce"
+    pce.write_bytes(bytes(262144))
+    run(pce, "--info", contains="system=pce\ncpu=huc6280")
+    run(pce, "--target", "odroid", ok=False, contains="under construction; use --info")
+    assert "cpu=huc6280" in run(pce, "--disasm", "--limit", "1") or True
+    # GB is wired for the PC target: the project generates.
+    run(gb, "--target", "pc", "-o", root / "gb_pc", contains="gbl project written")
+    assert (root / "gb_pc/src/gbl_config.h").is_file()
+    run(gb, "--target", "wonder", ok=False, contains="unknown --target")

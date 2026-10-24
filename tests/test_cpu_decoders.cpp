@@ -1,3 +1,4 @@
+#include "m0boy/cpu/m6502/decoder.h"
 #include "m0boy/cpu/z80/decoder.h"
 #include "recompiler/cpu/sm83/decoder.h"
 #include <iostream>
@@ -110,6 +111,53 @@ int main() {
         bool refused = false;
         try { z.decode(0); } catch (const std::runtime_error&) { refused = true; }
         require(refused, "Prefix-only image loops forever");
+
+        /* 6502: the aaabbbcc table is the truth; spot-check encoding,
+         * timing and flow before an emitter ever consumes them. */
+        m6502::Decoder m(memory);
+        memory.bytes = {0xA9, 0x42};
+        auto ins = m.decode(0);
+        require(ins.mnemonic == "LDA" && ins.length == 2 && ins.cycles == 2 &&
+                    ins.addressing == m6502::Addressing::immediate && ins.immediate == 0x42,
+                "LDA #imm decoded incorrectly");
+        memory.bytes = {0x8D, 0x34, 0x12};
+        ins = m.decode(0);
+        require(ins.mnemonic == "STA" && ins.length == 3 && ins.cycles == 4 && ins.target == 0x1234 &&
+                    ins.writes_memory && !ins.reads_memory,
+                "STA absolute decoded incorrectly");
+        memory.bytes = {0x4C, 0x00, 0x80};
+        ins = m.decode(0);
+        require(ins.mnemonic == "JMP" && ins.flow == m6502::Flow::jump && ins.target == 0x8000,
+                "JMP absolute flow incorrect");
+        memory.bytes = {0xD0, 0xFC};
+        ins = m.decode(0);
+        require(ins.mnemonic == "BNE" && ins.flow == m6502::Flow::branch && ins.conditional &&
+                    ins.cycles == 2 && ins.cycles_page_cross == 1 && ins.target == 0xFFFE,
+                "BNE relative target incorrect"); /* 0 + 2 - 4 wraps to 0xFFFE */
+        memory.bytes = {0x20, 0xCD, 0xAB};
+        ins = m.decode(0);
+        require(ins.mnemonic == "JSR" && ins.flow == m6502::Flow::call && ins.target == 0xABCD,
+                "JSR flow incorrect");
+        memory.bytes = {0x02}; /* an illegal opcode: flagged, never named */
+        ins = m.decode(0);
+        require(ins.undocumented && ins.mnemonic[0] == '*' && ins.length == 1,
+                "Illegal opcode must stay flagged");
+        memory.bytes = {0x80, 0x00}; /* the multi-byte illegal NOPs align a sweep */
+        ins = m.decode(0);
+        require(ins.undocumented && ins.length == 2, "Illegal NOP #nn length wrong");
+        memory.bytes = {0x1C, 0, 0}; /* NOP nnnn,X */
+        ins = m.decode(0);
+        require(ins.undocumented && ins.length == 3, "Illegal NOP nnnn,X length wrong");
+        unsigned documented = 0, jumps = 0;
+        for (unsigned opcode = 0; opcode < 256; opcode++) {
+            memory.bytes = {static_cast<uint8_t>(opcode), 0, 0, 0};
+            const auto entry = m.decode(0);
+            require(entry.length >= 1 && entry.length <= 3 && entry.cycles >= 2, "6502 table broken");
+            if (!entry.undocumented) documented++;
+            if (entry.flow == m6502::Flow::jump) jumps++;
+        }
+        require(documented == 151, "the 6502 table must hold the 151 documented opcodes");
+        require(jumps == 2, "two documented jumps (JMP abs, JMP ind)");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

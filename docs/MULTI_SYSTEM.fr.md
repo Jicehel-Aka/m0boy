@@ -38,6 +38,12 @@ lesquelles les firmwares Game Boy s’exécutent.
   `sg_gen.h` pour le code généré). `targets/sg1000/platform/` : frontend des
   consoles, qui réutilise les pilotes écran, son, horloge, démarrage et
   boutons de META/Pokitto. `targets/sg1000/host/` : harness et lecteur SDL.
+ `targets/nes/platform/`
+  : frontend META (256×240 → 160×128, lignes entières conservées, colonnes
+  échantillonnées ; l’ordre des octets du panneau est appliqué là, par
+  `m0_panel`, la palette du runtime restant du RGB565 natif).
+  `targets/nes/host/` : harness (PPM, WAV, `--input`). Génération :
+  `recompiler/src/system/nes/generator.cpp` (META et harness hôte).
 - `targets/gamegear/` : runtime Game Gear (`gg.c` bus, mapper, ports et
   moteur ; `gg_vdp.c` VDP mode 4 ; `gg_psg.c` ; `gg_render_asm.S` ;
   `sg_gen.h` pour le code généré), frontend des consoles
@@ -55,6 +61,47 @@ répartition, vivacité des drapeaux, cycles par lots, synchronisation aux
 têtes de boucle) sans la partager encore : une couche commune (instruction
 décodée, flux, cibles, cycles, drapeaux lus et écrits) est l’étape suivante
 pour unifier les deux. Le runtime `gbl` reste propre à la Game Boy.
+
+## Consoles de destination et matrice de capacités
+
+Le registre des cibles (`system.h`/`system.cpp`) décrit chaque console de
+destination par ses faits matériels (`TargetFacts` : RAM contiguë, PSRAM,
+flash d'application, écran, carte SD) ; chaque console d'origine déclare
+ce que son runtime exige (`min_ram_bytes` : RAM invitée + VRAM + tampons).
+Une génération est possible quand un pipeline est **câblé** (une ligne
+`codegen_targets`) **et** que le matériel tient le runtime
+(`target_fits`) : `--list-systems` affiche le résultat, `--list-targets`
+la table des faits, et un refus dit lequel des deux manque et pourquoi
+(`target_misfit_reason`, avec les chiffres).
+
+| système | câblé sur | hors hardware |
+|---|---|---|
+| gameboy, sg1000, gg, sms | desktop, meta, pokitto, espboy, pc, odroid, aka | — |
+| msx | desktop, meta, pokitto | (espboy et pc non câblés) |
+| pico8 | desktop, meta, pokitto, espboy | (pc non câblé) |
+| nes | desktop, meta (interprète 6502, pas encore de code recompilé) | pce > 32 Kio RAM |
+
+Les cibles pc (fenêtre SDL2, la carte en fichier `sd.img`), odroid
+(ODROID-GO : ESP32, ILI9341 320×240, carte SD, DAC) et aka (Gamebuino
+AKA : ESP32-S3, 320×240, carte SD, I2S — pins de travail, la console
+n'étant pas documentée) partagent le noyau ESP32 de
+`targets/common/consoles/esp32/` et les frontends communs
+(`targets/common/platform/`) ; chaque console n'apporte que ses pilotes
+propres dans `targets/consoles/<nom>/` (une ligne dans
+`recompiler/src/target_info.cpp` et les listes de copie des générateurs).
+
+Ajouter une console de destination : `targets/consoles/<nom>/` (pilotes
+`m0_lcd/m0_audio/m0_clock/pad` + templates `*.in` + `VERSION`), une
+branche dans `m0_target.h`, une ligne dans `target_info.cpp`, les
+branches des générateurs (GB : `meta_emitter.cpp` ; Sega :
+`sg1000/generator.cpp`), l'entrée `recompiler/CMakeLists.txt` pour le
+VERSION, la ligne dans `system.cpp` (`target_table` + listes câblées), un
+`tests/test_<nom>_target.py` sur le modèle de l'ESPboy. Ajouter une
+console d'origine : une ligne CPU si nécessaire (le 6502 sert le NES,
+l'HuC6280 l'étend pour la PC Engine — table à recouper sur matériel avant
+qu'un émetteur lui fasse confiance), `inspect()` dans
+`recompiler/src/system/<nom>/`, la ligne `system_table` avec
+`min_ram_bytes` honnête, et la matrice décide du reste.
 
 ## Utilisation
 

@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.16)
+project(@NAME@_pc C CXX)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_CXX_STANDARD 11)
+
+# Every source the generator put in src/ (runtime, frontend, PC drivers);
+# m0_sd.c is the SPI card protocol a real bus would drive — the PC's card is
+# a file (pc_sd.c).
+file(GLOB SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
+list(FILTER SOURCES EXCLUDE REGEX "m0_sd\\.c$")
+add_executable(@NAME@ ${SOURCES})
+target_include_directories(@NAME@ PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+find_package(SDL2 REQUIRED)
+target_link_libraries(@NAME@ PRIVATE SDL2::SDL2)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(@NAME@ PRIVATE m)
+endif()

@@ -1,0 +1,20 @@
+# @NAME@ — PC (SDL2)
+
+The same firmware the consoles run, as a SDL2 window: the emulation, the
+option menu (hold Escape), the save states and the SD card are those of the
+shared frontend. The card is the file `sd.img` in the working directory —
+`dd if=/dev/zero of=sd.img bs=1M count=8 && mkfs.fat -F 16 sd.img` makes one
+(put the game's `.GB`/`.SAV` files on it as compile.sh does for the META).
+Without it the game still runs; saves and states need the image.
+
+- Window: the source console's native resolution, scaled to the window.
+- Pad: arrows, X = A, Z = B, Return = Menu, Escape = Home (hold: options).
+
+Build and run:
+
+```
+cmake -B build . && cmake --build build && ./build/@NAME@
+```
+
+`M0_FRAMES=<n>` exits after n frames (dumping the last one to `M0_PPM=path`),
+which is what the automated test runs.

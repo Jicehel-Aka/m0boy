@@ -1,0 +1,10 @@
+# @NAME@ — Gamebuino AKA
+
+The shared firmware on the Gamebuino AKA (ESP32-S3, 16 MiB flash, 8 MiB
+octal PSRAM, 320x240 panel, I2S speaker, microSD).  Buttons: D-pad, A, B,
+Menu (start), Home held half a second (the option menu).  Games, saves and
+states live on the card (FAT16/FAT32); `pio run -d . -t upload` flashes.
+
+The console is not documented publicly yet: the pin assignment is a working
+assumption, gathered in `aka_hw.cpp` and `esp32_config.h` — correct them
+there when the real schematic is known.

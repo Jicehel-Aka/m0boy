@@ -97,6 +97,25 @@ Espressif SDK by function: time there is an estimate. `ESPBOY_GM0=/path/to/gm0`
 makes `tests/test_espboy_target.py` and `tests/test_sega_espboy.py` run each
 built firmware in it (`ESPBOY_PIO` for the build).
 
+- New output targets: pc (SDL2 window, the card as `sd.img`; the firmware
+  builds and runs head first in CI — `tests/test_pc_target.py`, SDL2
+  required), odroid (ODROID-GO, ESP32) and aka (Gamebuino AKA, ESP32-S3)
+  share `targets/common/consoles/esp32/` and build through PlatformIO
+  (`ODROID_PIO`/`AKA_PIO` env vars for the real build; gm0 does not
+  emulate the ESP32, device checks are manual). Which system may generate
+  for which console comes from the capability matrix in
+  `recompiler/src/system.cpp` (`TargetFacts` vs `min_ram_bytes`) — see
+  `--list-systems`/`--list-targets` and `docs/MULTI_SYSTEM.fr.md`.
+- NES generates interpreter projects (`--target meta` and the desktop
+  harness, `recompiler/src/system/nes/generator.cpp`, runtime in
+  `targets/nes/runtime/`): 6502 with cycles, per-line 2C02 with sprite-0
+  and loopy v/t, NROM only. The e2e (`tests/test_nes_e2e.py`) holds a
+  stable `run_hash`; SMB must render identically through the harness
+  before and after a runtime change (hashes + PPM captures). PC Engine is
+  still at the inspection stage (`--info`, `--disasm` with the
+  6502/HuC6280 decoders in `recompiler/src/cpu/`); no pipeline is wired.
+  The AKA's pins are a working assumption (`targets/consoles/aka/`).
+
 ## Hygiene
 
 - No ROMs, built firmwares or ROM-derived data in the repository or in a

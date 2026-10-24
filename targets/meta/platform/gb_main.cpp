@@ -40,6 +40,16 @@
 #include "espboy_hw.h"
 #elif M0_TARGET_POKITTO
 #include "pokitto_hw.h"
+#elif M0_TARGET_PC
+#include "pc_hw.h"
+#include <stdlib.h>
+#elif M0_TARGET_ESP32
+#if __has_include("odroid_hw.h")
+#include "odroid_hw.h"
+#else
+#include "aka_hw.h"
+#endif
+#include <stdlib.h>
 #else
 #include "meta_hw.h"
 #if META_USB_SERIAL
@@ -114,6 +124,16 @@ static int close_frame(void) {
 #if M0_TARGET_ESPBOY
 static void enter_loader(void) { gbl_save_flush(); espboy_restart(); }
 static uint8_t meta_buttons(void) { return M0_PAD(espboy_buttons()); }
+#elif M0_TARGET_PC
+/* PC: "Quitter" leaves the emulator; unsaved cartridge RAM is written to
+ * the card image first, if there is one. */
+static void enter_loader(void) { gbl_save_flush(); exit(0); }
+static uint8_t meta_buttons(void) { return M0_PAD(pc_buttons()); }
+#elif M0_TARGET_ESP32
+/* ESP32 consoles: "Quitter" restarts into the firmware's start, saves on
+ * the card first. */
+static void enter_loader(void) { gbl_save_flush(); esp32_restart(); }
+static uint8_t meta_buttons(void) { return M0_PAD(esp32_buttons()); }
 #elif !M0_TARGET_POKITTO
 
 /* Hand the console back to the Gamebuino loader in the state it expects:
@@ -335,6 +355,10 @@ static const char *const speed_names[2] = {"Normale", "Rapide"};
 static const char *const clock_names[2] = {"80 MHz", "160 MHz"};
 #elif M0_TARGET_POKITTO
 static const char *const clock_names[2] = {"48 MHz", "72 MHz"};
+#elif M0_TARGET_PC
+static const char *const clock_names[2] = {"-", "-"}; /* one rate: no line */
+#elif M0_TARGET_ESP32
+static const char *const clock_names[2] = {"80 MHz", "240 MHz"};
 #else
 static const char *const clock_names[2] = {"48 MHz", "70 MHz"}; /* meta_clock.cpp: 72 asked, 70 run */
 #endif
@@ -415,6 +439,10 @@ extern "C" void gbl_platform_pool(void) { m0_stack_pool_run(&stack_pool); }
 static unsigned stack_never_used(void) {
 #if M0_TARGET_ESPBOY
     return espboy_free_stack();
+#elif M0_TARGET_PC
+    return 0; /* the process stack is the machine's; the count means nothing */
+#elif M0_TARGET_ESP32
+    return 0; /* the Arduino task's stack; not painted */
 #else
 #if GBL_CACHE_DYN
     const uint32_t *p = (const uint32_t *)((gbl_cache_top() + 3u) & ~(uintptr_t)3u);
@@ -442,7 +470,7 @@ enum { M_RESUME, M_RESTART, M_SLOT, M_SAVE, M_LOAD, M_VOLUME, M_AUDIO, M_SCREEN,
 
 static void option_menu(void) {
     uint8_t mode = gbl_display_mode(), pal = gbl_display_palette(), skip = skip_mode;
-    uint8_t fast = fast_mode, mhz = m0_clock_mhz() == (M0_TARGET_ESPBOY ? 160 : 72), vol = m0_audio_volume();
+    uint8_t fast = fast_mode, mhz = m0_clock_mhz() == (M0_TARGET_ESPBOY ? 160 : M0_TARGET_ESP32 ? 240 : 72), vol = m0_audio_volume();
     uint8_t slot = state_slot;
     meta_menu_item items[14];
     uint8_t ids[14];
@@ -462,8 +490,10 @@ static void option_menu(void) {
     ADD(M_PALETTE, "Palette", META_MENU_CHOICE, &pal, META_PALETTE_COUNT, gbl_palette_names);
     ADD(M_SKIP, "Images", META_MENU_CHOICE, &skip, FSKIP_MODES, skip_names);
     ADD(M_SPEED, "Vitesse", META_MENU_CHOICE, &fast, 2, speed_names);
+#if !M0_TARGET_PC /* one rate on the PC: no "Processeur" line */
     ADD(M_CLOCK, "Processeur", META_MENU_CHOICE, &mhz, 2, clock_names);
-#if !M0_TARGET_POKITTO && !M0_TARGET_ESPBOY
+#endif
+#if M0_TARGET_META
 #if META_USB_SD
     ADD(M_USB_SD, "Carte SD USB", META_MENU_ACTION, 0, 0, 0);
 #endif
@@ -503,7 +533,7 @@ static void option_menu(void) {
     int line = m0_menu_run(GBL_TITLE, items, n, meta_buttons, n > 13 ? 0 : info);
     m0_audio_pause(0);
     int action = line >= 0 ? ids[line] : -1;
-#if !M0_TARGET_POKITTO && !M0_TARGET_ESPBOY
+#if M0_TARGET_META
 #if META_USB_SD
     if (action == M_USB_SD) {
         m0_lcd_end_frame();
@@ -539,7 +569,7 @@ static void option_menu(void) {
     state_slot = slot;
     m0_audio_set_volume(vol);
     m0_lcd_end_frame(); /* no transfer while the clocks change */
-    m0_clock_set(M0_TARGET_ESPBOY ? (mhz ? 160 : 80) : (mhz ? 72 : 48));
+    m0_clock_set(M0_TARGET_ESPBOY ? (mhz ? 160 : 80) : M0_TARGET_ESP32 ? (mhz ? 240 : 80) : (mhz ? 72 : 48));
     if (pal != gbl_display_palette()) gbl_display_set_palette(pal);
     gbl_display_set_mode(mode); /* also redraws the whole picture */
     skipped_run = 0;
@@ -697,7 +727,7 @@ static void __attribute__((unused)) boot_error(uint16_t colour) {
     for (;;) {
 #if !M0_TARGET_POKITTO
         m0_watchdog_feed();
-#if M0_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY || M0_TARGET_PC || M0_TARGET_ESP32
         uint8_t m = meta_buttons();
 #else
         uint8_t m = meta_pad_read();
@@ -729,10 +759,13 @@ static void stream_error_screen(int err) {
 
 #if M0_TARGET_ESPBOY
 int espboy_main(void) {
+#elif M0_TARGET_ESP32
+extern "C" int m0boy_console_main(void); /* the console file's setup() calls it */
+int m0boy_console_main(void) {
 #else
 int main(void) {
 #endif
-#if !M0_TARGET_ESPBOY
+#if !M0_TARGET_ESPBOY && !M0_TARGET_PC && !M0_TARGET_ESP32
     { /* stack_never_used: paint the free RAM, 128 bytes below this frame */
         char here;
         uint32_t *p = (uint32_t *)(((uintptr_t)&DATA_END + 3u) & ~(uintptr_t)3u);
@@ -752,7 +785,7 @@ int main(void) {
     /* Like the Gamebuino library's SD.begin at boot: the loader relies on
      * the card being in SPI mode when HOME brings it back. */
     int card_ok = m0_sd_init();
-#if !M0_TARGET_POKITTO && !M0_TARGET_ESPBOY
+#if M0_TARGET_META
     /* The game's files (ROM, save, states) are the ones in the folder of
      * its own .BIN: other games' folders may hold files of the same name. */
     if (card_ok) {

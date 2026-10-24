@@ -1,0 +1,171 @@
+/* NES host harness: an iNES cartridge in the machine, N frames out, the
+ * last frame as a PPM, the sound as a WAV, and the run's fingerprint
+ * (CPU, RAM, VRAM, palette, OAM — the same contract shape as the other
+ * runtimes, one engine only until a recompiler joins). */
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "../runtime/nes.h"
+#ifdef NES_EMBEDDED
+#include "../src/nes_config.h"
+extern const uint8_t nes_prg[];
+extern const uint8_t nes_chr[];
+#endif
+
+#define AUDIO_RATE 11025u
+
+static uint16_t frame[240][256];
+static void on_row(void *host, unsigned line, const uint16_t *pixels) {
+    (void)host;
+    /* the row is the fetched stream: screen pixel c lives at c + fine x */
+    if (line < 240)
+        for (unsigned x = 0; x < 256; x++)
+            frame[line][x] = pixels[x + machine.ppu.x];
+}
+
+static uint32_t fnv(const void *data, size_t n, uint32_t h) {
+    const uint8_t *p = data;
+    for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u;
+    return h;
+}
+
+int main(int argc, char **argv) {
+    const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0;
+    unsigned frames = 60;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) ppm = argv[++i];
+        else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
+        else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_path = argv[++i];
+        else rom_path = argv[i];
+    }
+    uint8_t header[16] = {0};
+    uint8_t *prg, *chr;
+    uint32_t prg_bytes, chr_bytes;
+    if (!rom_path) {
+#ifdef NES_EMBEDDED
+        prg = (uint8_t *)nes_prg; chr = (uint8_t *)nes_chr;
+        prg_bytes = NES_PRG_SIZE; chr_bytes = NES_CHR_SIZE;
+        header[6] = (uint8_t)(NES_VERTICAL_MIRROR ? 1 : 0);
+#else
+        fprintf(stderr, "usage: nes_host rom.nes [--frames n] [--ppm f] [--wav f] [--input f]\n");
+        return 2;
+#endif
+    } else {
+    FILE *file = fopen(rom_path, "rb");
+    if (!file) { fprintf(stderr, "cannot read %s\n", rom_path); return 2; }
+    if (fread(header, 1, 16, file) != 16 || memcmp(header, "NES\x1a", 4)) {
+        fprintf(stderr, "not an iNES image: %s\n", rom_path);
+        return 2;
+    }
+    prg_bytes = header[4] * 16384u; chr_bytes = header[5] * 8192u;
+    prg = malloc(prg_bytes); chr = malloc(chr_bytes ? chr_bytes : 8192);
+    if (fread(prg, 1, prg_bytes, file) != prg_bytes) { fprintf(stderr, "truncated PRG\n"); return 2; }
+    if (chr_bytes && fread(chr, 1, chr_bytes, file) != chr_bytes) { fprintf(stderr, "truncated CHR\n"); return 2; }
+    fclose(file);
+    }
+
+    nes_init(prg, prg_bytes, chr, chr_bytes, header[6] & 1);
+    machine.row = on_row;
+    /* a held-input script: "frame buttons" lines, buttons by name */
+    struct { unsigned frame; uint8_t buttons; } script[4096];
+    unsigned script_n = 0;
+    if (input_path) {
+        FILE *in = fopen(input_path, "r");
+        if (!in) { fprintf(stderr, "cannot read %s\n", input_path); return 2; }
+        unsigned at; char names[64];
+        while (script_n < 4096 && fscanf(in, "%u %63[^\n]\n", &at, names) == 2) {
+            uint8_t b = 0;
+            if (strstr(names, "start")) b |= NES_START;
+            if (strstr(names, "a")) b |= NES_A;
+            if (strstr(names, "b")) b |= NES_B;
+            if (strstr(names, "up")) b |= NES_UP;
+            if (strstr(names, "down")) b |= NES_DOWN;
+            if (strstr(names, "left")) b |= NES_LEFT;
+            if (strstr(names, "right")) b |= NES_RIGHT;
+            if (strstr(names, "select")) b |= NES_SELECT;
+            script[script_n].frame = at;
+            script[script_n++].buttons = b;
+        }
+        fclose(in);
+    }
+    FILE *audio = wav ? fopen(wav, "wb") : 0;
+    if (audio) { /* the header is patched once the length is known */
+        const char silence[44] = {0};
+        fwrite(silence, 1, 44, audio);
+    }
+    uint32_t audio_bytes = 0;
+    for (unsigned f = 0; f < frames; f++) {
+        machine.input = 0;
+        for (unsigned i = 0; i < script_n; i++)
+            if (script[i].frame == f) machine.input = script[i].buttons;
+        nes_frame();
+        if (audio) {
+            uint8_t samples[256];
+            /* 29780.5 CPU cycles per frame: the samples that covers */
+            static unsigned carry;
+            carry += AUDIO_RATE * 29780u;
+            unsigned count = carry / 1789773u;
+            carry %= 1789773u;
+            if (count > sizeof samples) count = sizeof samples;
+            nes_audio(samples, count, AUDIO_RATE);
+            fwrite(samples, 1, count, audio);
+            audio_bytes += count;
+        }
+    }
+    if (audio) {
+        fseek(audio, 0, SEEK_SET);
+        fprintf(audio, "RIFF");
+        const uint32_t riff = 36 + audio_bytes;
+        fwrite(&riff, 4, 1, audio);
+        fprintf(audio, "WAVEfmt ");
+        const uint32_t fmt = 16;
+        fwrite(&fmt, 4, 1, audio);
+        const uint16_t pcm = 1, ch = 1;
+        fwrite(&pcm, 2, 1, audio);
+        fwrite(&ch, 2, 1, audio);
+        const uint32_t rate = AUDIO_RATE, byte_rate = AUDIO_RATE;
+        fwrite(&rate, 4, 1, audio);
+        fwrite(&byte_rate, 4, 1, audio);
+        const uint16_t block = 1, bits = 8;
+        fwrite(&block, 2, 1, audio);
+        fwrite(&bits, 2, 1, audio);
+        fprintf(audio, "data");
+        fwrite(&audio_bytes, 4, 1, audio);
+        fclose(audio);
+    }
+    if (ppm) {
+        FILE *out = fopen(ppm, "wb");
+        if (out) {
+            fprintf(out, "P6\n256 240\n255\n");
+            for (unsigned y = 0; y < 240; y++)
+                for (unsigned x = 0; x < 256; x++) {
+                    const uint16_t c = frame[y][x];
+                    const uint8_t px[3] = {(uint8_t)(c >> 8 & 0xF8), (uint8_t)(c >> 3 & 0xFC), (uint8_t)(c << 3 & 0xF8)};
+                    fwrite(px, 1, 3, out);
+                }
+            fclose(out);
+        }
+    }
+    uint32_t h = 2166136261u;
+    /* registers field by field: the struct now carries the bus's fast-path
+     * pointers, and hashing its bytes would hash addresses and padding */
+    const uint8_t regs[12] = {
+        machine.cpu.a, machine.cpu.x, machine.cpu.y, machine.cpu.s, machine.cpu.p,
+        (uint8_t)machine.cpu.pc, (uint8_t)(machine.cpu.pc >> 8),
+        (uint8_t)machine.cpu.cycles, (uint8_t)(machine.cpu.cycles >> 8),
+        (uint8_t)(machine.cpu.cycles >> 16), (uint8_t)(machine.cpu.cycles >> 24),
+        (uint8_t)(machine.ppu.frame & 0xFFu),
+    };
+    h = fnv(regs, sizeof regs, h);
+    h = fnv(machine.ram, sizeof machine.ram, h);
+    h = fnv(machine.ppu.nametable, 2048, h);
+    h = fnv(machine.ppu.palette, 32, h);
+    h = fnv(machine.oam, 256, h);
+    h = fnv(frame, sizeof frame, h);
+    printf("frames=%u cycles=%u pc=%04x frame=%u run_hash=%08x\n",
+           frames, (unsigned)machine.cpu.cycles, machine.cpu.pc, machine.ppu.frame, h);
+    return 0;
+}

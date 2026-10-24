@@ -14,6 +14,12 @@ set_target_properties(m0boy_cpu_sm83 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(m0boy_cpu_z80 STATIC src/cpu/z80/decoder.cpp)
 target_link_libraries(m0boy_cpu_z80 PUBLIC m0boy_common)
 set_target_properties(m0boy_cpu_z80 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(m0boy_cpu_6502 STATIC src/cpu/m6502/decoder.cpp)
+target_link_libraries(m0boy_cpu_6502 PUBLIC m0boy_common)
+set_target_properties(m0boy_cpu_6502 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(m0boy_cpu_huc6280 STATIC src/cpu/huc6280/decoder.cpp)
+target_link_libraries(m0boy_cpu_huc6280 PUBLIC m0boy_cpu_6502)
+set_target_properties(m0boy_cpu_huc6280 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(m0boy_frontends STATIC
     src/system.cpp
@@ -21,6 +27,8 @@ add_library(m0boy_frontends STATIC
     src/system/gameboy/frontend.cpp
     src/system/sg1000/cartridge.cpp
     src/system/pico8/cartridge.cpp
+    src/system/nes/cartridge.cpp
+    src/system/pce/cartridge.cpp
 )
 target_link_libraries(m0boy_frontends PUBLIC m0boy_common)
 set_target_properties(m0boy_frontends PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -34,6 +42,7 @@ add_library(gbrecomp_core STATIC
     src/system/sg1000/generator.cpp
     src/system/sg1000/emitter.cpp
     src/system/pico8/generator.cpp
+    src/system/nes/generator.cpp
     src/symbol_table.cpp
     src/native_patch.cpp
     src/generator.cpp
@@ -42,6 +51,7 @@ add_library(gbrecomp_core STATIC
     src/codegen/c_emitter.cpp
     src/codegen/register_ir.cpp
     src/codegen/meta_emitter.cpp
+    src/target_info.cpp
 )
 
 target_link_libraries(gbrecomp_core PUBLIC m0boy_frontends m0boy_cpu_sm83 m0boy_cpu_z80 m0boy_z80_runtime m0boy_rom_storage)
@@ -63,15 +73,24 @@ target_include_directories(gbrecomp_core
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../targets/consoles/espboy/VERSION" GBRECOMP_ESPBOY_VERSION LIMIT_COUNT 1)
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../targets/meta/VERSION" GBRECOMP_META_VERSION LIMIT_COUNT 1)
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../targets/consoles/pokitto/VERSION" GBRECOMP_POKITTO_VERSION LIMIT_COUNT 1)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../targets/consoles/pc/VERSION" GBRECOMP_PC_VERSION LIMIT_COUNT 1)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../targets/consoles/odroid/VERSION" GBRECOMP_ODROID_VERSION LIMIT_COUNT 1)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/../targets/consoles/aka/VERSION" GBRECOMP_AKA_VERSION LIMIT_COUNT 1)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/../targets/meta/VERSION"
     "${CMAKE_CURRENT_SOURCE_DIR}/../targets/consoles/pokitto/VERSION"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../targets/consoles/espboy/VERSION")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../targets/consoles/espboy/VERSION"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../targets/consoles/pc/VERSION"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../targets/consoles/odroid/VERSION"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../targets/consoles/aka/VERSION")
 target_compile_definitions(gbrecomp_core PRIVATE
     GBRECOMP_VERSION="${PROJECT_VERSION}"
     GBRECOMP_META_VERSION="${GBRECOMP_META_VERSION}"
     GBRECOMP_POKITTO_VERSION="${GBRECOMP_POKITTO_VERSION}"
     GBRECOMP_ESPBOY_VERSION="${GBRECOMP_ESPBOY_VERSION}"
+    GBRECOMP_PC_VERSION="${GBRECOMP_PC_VERSION}"
+    GBRECOMP_ODROID_VERSION="${GBRECOMP_ODROID_VERSION}"
+    GBRECOMP_AKA_VERSION="${GBRECOMP_AKA_VERSION}"
 )
 
 # Enable position-independent code for shared library support
@@ -94,8 +113,8 @@ add_library(m0boy_cli OBJECT src/main.cpp)
 target_link_libraries(m0boy_cli PRIVATE gbrecomp_core m0boy_cpu_z80)
 add_executable(m0recomp $<TARGET_OBJECTS:m0boy_cli>)
 add_executable(gbrecomp $<TARGET_OBJECTS:m0boy_cli>)
-target_link_libraries(m0recomp PRIVATE gbrecomp_core m0boy_cpu_z80)
-target_link_libraries(gbrecomp PRIVATE gbrecomp_core m0boy_cpu_z80)
+target_link_libraries(m0recomp PRIVATE gbrecomp_core m0boy_cpu_z80 m0boy_cpu_6502 m0boy_cpu_huc6280)
+target_link_libraries(gbrecomp PRIVATE gbrecomp_core m0boy_cpu_z80 m0boy_cpu_6502 m0boy_cpu_huc6280)
 target_compile_definitions(m0boy_cli PRIVATE
     GBRECOMP_DEFAULT_RUNTIME_DIR="${PROJECT_SOURCE_DIR}/runtime"
     GBRECOMP_DEFAULT_META_DIR="${PROJECT_SOURCE_DIR}/targets/meta"
@@ -103,6 +122,9 @@ target_compile_definitions(m0boy_cli PRIVATE
     GBRECOMP_META_VERSION="${GBRECOMP_META_VERSION}"
     GBRECOMP_POKITTO_VERSION="${GBRECOMP_POKITTO_VERSION}"
     GBRECOMP_ESPBOY_VERSION="${GBRECOMP_ESPBOY_VERSION}"
+    GBRECOMP_PC_VERSION="${GBRECOMP_PC_VERSION}"
+    GBRECOMP_ODROID_VERSION="${GBRECOMP_ODROID_VERSION}"
+    GBRECOMP_AKA_VERSION="${GBRECOMP_AKA_VERSION}"
 )
 
 # PICO-8: the cartridge reader and the Lua 5.2 (PICO-8 flavour, fix32 numbers)

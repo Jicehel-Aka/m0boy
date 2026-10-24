@@ -1,0 +1,13 @@
+# @NAME@ — ODROID-GO
+
+The shared firmware on the original ODROID-GO (ESP32-WROVER, 16 MiB flash,
+4 MiB PSRAM): the ILI9341 320x240 panel and the microSD share one SPI bus,
+the speaker is the ESP32's internal DAC, and the d-pad is read as the two
+analog axes it physically is. Buttons: A / B, Start = Menu, Select (or the
+Menu key) held half a second = the option menu.
+
+- Games, saves and states live on the microSD card (FAT16/FAT32).
+- Build and upload: `pio run -d . -t upload`.
+
+The firmware records its version as "m0boy-odroid <version>"; the facts of
+the console are in `esp32_config.h` and `odroid_hw.cpp`.

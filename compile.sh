@@ -207,7 +207,9 @@ TARGET="${TARGET:-}"
 if [ -z "$TARGET" ] && [ -t 0 ]; then
   printf 'Console : méta (entrée), p = pokitto, d = les deux : '
   read -r t
-  case "$t" in p|pokitto) TARGET=pokitto ;; d|deux|both|all) TARGET=both ;; *) TARGET=meta ;; esac
+  case "$t" in p|pokitto) TARGET=pokitto ;; d|deux|both|all) TARGET=both ;;
+    e|espboy) TARGET=espboy ;; pc) TARGET=pc ;; odroid) TARGET=odroid ;; aka) TARGET=aka ;;
+    *) TARGET=meta ;; esac
 fi
 TARGET="${TARGET:-meta}"
 
@@ -273,8 +275,8 @@ if [ "$TARGET" = both ] || [ "$TARGET" = all ]; then
   exit $rc
 fi
 case "$TARGET" in
-  meta|pokitto|espboy) ;;
-  *) echo "TARGET=$TARGET inconnu (meta, pokitto, espboy ou both)."; exit 1 ;;
+  meta|pokitto|espboy|pc|odroid|aka) ;;
+  *) echo "TARGET=$TARGET inconnu (meta, pokitto, espboy, pc, odroid, aka ou both)."; exit 1 ;;
 esac
 SRC_DIR="${1:-./roms}"
 SOURCE="${SOURCE:-0}"
@@ -981,6 +983,8 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
       build_log=$(ninja -C "$sg_build" -j"$NPROC" 2>&1) && return 0
     elif [ "$TARGET" = espboy ]; then
       espboy_pio_run "$out_dir" "${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG}" && return 0
+    elif [ "$TARGET" = pc ]; then
+      build_log=$(cmake -B "$out_dir/build" -S "$out_dir" >/dev/null && cmake --build "$out_dir/build" -j"$NPROC" 2>&1) && return 0
     else
       build_log=$(PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}${RELEASE_FLAG:+ $RELEASE_FLAG}" pio run -d "$out_dir" 2>&1) && return 0
     fi
@@ -1464,6 +1468,8 @@ PY
       build_log=$(make -C "$out_dir" -j"$NPROC" COMPILER="$FIRMWARE_COMPILER" EXTRA_CFLAGS="${extra_flags:-}" 2>&1) && return 0
     elif [ "$TARGET" = espboy ]; then
       espboy_pio_run "$out_dir" "${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" && return 0
+    elif [ "$TARGET" = pc ]; then
+      build_log=$(cmake -B "$out_dir/build" -S "$out_dir" >/dev/null && cmake --build "$out_dir/build" -j"$NPROC" 2>&1) && return 0
     else
       build_log=$(FIRMWARE_COMPILER="$FIRMWARE_COMPILER" PLATFORMIO_BUILD_FLAGS="${PLATFORMIO_BUILD_FLAGS:+$PLATFORMIO_BUILD_FLAGS }${OVERCLOCK_FLAG:-}" pio run -d "$out_dir" 2>&1) && return 0
     fi

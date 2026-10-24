@@ -33,11 +33,14 @@
         mb_; \
     })
 #else
-/* META and ESPboy: the library's order, the M0_MB_* values as the
- * drivers return them.  META_BUTTONS_LAPINOU_ORDER (gbl_board.h): the
- * homebrew pads read their own order out of the same shift register
- * (left, right, up, A, B, MENU, down, HOME), decoded here. */
-#ifdef META_BUTTONS_LAPINOU_ORDER
+/* META, ESPboy, PC and the ESP32 consoles: the drivers hand out the
+ * M0_MB_* values as the frontends decode them.  META_BUTTONS_LAPINOU_ORDER
+ * (gbl_board.h): the homebrew pads read their own order out of the same
+ * shift register (left, right, up, A, B, MENU, down, HOME), decoded here —
+ * the META only, every other driver returns M0_MB_* bits directly. */
+#if M0_TARGET_PC || M0_TARGET_ESPBOY || M0_TARGET_ESP32
+#define M0_PAD(raw) ((uint8_t)(raw))
+#elif defined(META_BUTTONS_LAPINOU_ORDER)
 #define M0_PAD(raw) \
     __extension__({ \
         uint8_t pk_ = (uint8_t)(raw); \

@@ -3,6 +3,7 @@
  * shared with the Game Boy frontend. */
 #include <cctype>
 #include "m0boy/sg1000_generator.h"
+#include "m0boy/target_info.h"
 #include "m0_msx_layout.h"
 #include "m0_sega_mapper.h"
 #include "m0boy/rom_storage.h"
@@ -258,7 +259,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         bool cart_ram = profile.cart_ram;
         const size_t rom_size = rom.size();
         /* consoles: no room for 8 KiB more, the RAM lives in a save file */
-        const bool cart_on_card = gg && cart_ram && o.target != TargetId::desktop && o.target != TargetId::espboy;
+        const bool cart_on_card = gg && cart_ram && o.target != TargetId::desktop && o.target != TargetId::espboy &&
+                                  o.target != TargetId::pc && o.target != TargetId::odroid && o.target != TargetId::aka;
         if (!gg) cart_ram = cart_ram && rom_size <= 0x8000 && !msx; /* 40/48 KiB boards: ROM at 8000 */
         /* MSX RAM: 16 KiB at C000 on the host; the consoles' SRAM holds the top 8 KiB */
         const unsigned msx_ram = o.target == TargetId::desktop ? 16384 : 8192;
@@ -343,7 +345,10 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 page_index[0] = 0;
                 budget = free > 0x4000 ? free - 0x4000 : 0;
             } else budget = free > rom_size ? free - rom_size : 0;
-        } else if (o.target != TargetId::desktop) {
+        } else if (o.target != TargetId::desktop && o.target != TargetId::pc && o.target != TargetId::odroid &&
+                   o.target != TargetId::aka) {
+            /* The PC and the ESP32 consoles embed the whole ROM, like the
+             * host build: no flash to share between code and data. */
             const size_t area = o.target == TargetId::pokitto ? 0x39000 : 240 * 1024;
             const size_t rt = msx ? msx_runtime_bytes : runtime_bytes;
             const size_t free = area > rt ? area - rt : 0;
@@ -643,7 +648,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
          * slots of the machine's bytes (gg_t or sg1000_t, the cartridge RAM
          * when the game has some in RAM).  m0_state_init refuses a machine
          * larger than a slot. */
-        const bool states = o.target == TargetId::meta || o.target == TargetId::pokitto;
+        const bool esp32 = o.target == TargetId::odroid || o.target == TargetId::aka;
+        const bool states = o.target == TargetId::meta || o.target == TargetId::pokitto ||
+                            o.target == TargetId::pc || esp32;
         if (states) {
             const size_t state_bytes = msx ? msx_state_bytes + msx_ram : (gg ? 25536u : 18216u) + (cart_ram ? 8192u : 0u); /* sizeof(gg_t), sizeof(sg1000_t) */
             config << "#define GG_STATE_NAME \"" << sd << ".ST8\"\n#define GG_STATE_NAME83 \""
@@ -661,6 +668,13 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             const size_t slots = std::min<size_t>(10, (0x03B000 / 4096 - ram_blocks) / slot_blocks);
             config << "#define GG_STATE_SLOTS " << slots << " /* in flash */\n#define GG_STATE_SLOT_SECTORS " << sectors << "\n";
         }
+        /* PC: the window is the source console's own resolution (pc_hw.c),
+         * and the SG-1000 keeps the TMS9918A's 256 columns where the
+         * consoles resample to their panel's 160. */
+        if (o.target == TargetId::pc)
+            config << "#define PC_COLS " << (gg ? 160 : 256) << "\n#define PC_ROWS " << (gg ? 144 : 192) << "\n"
+                   << "#define M0_SCREEN_ROWS " << (gg ? 144 : 192) << "\n"
+                   << (gg ? "" : "#define SG_OUT_WIDTH 256\n");
         /* Pokitto: the sector cache lives in the 2 KiB USB RAM bank, which
          * the Master System shares with its pair tables. */
         if (gg && (streamed || cart_on_card) && o.target == TargetId::pokitto && !o.mastersystem)
@@ -881,9 +895,20 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             const auto consoles = o.meta_templates.parent_path() / "consoles";
             const auto common_platform = o.meta_templates.parent_path() / "common" / "platform";
             /* files of an earlier generation that this one does not use */
-            for (const char* name : { "gg_stream.c", "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h", "meta_sd_bus.cpp", "pokitto_sd.c" })
+            for (const char* name : { "gg_stream.c", "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h",
+                                      "meta_sd_bus.cpp", "pokitto_sd.c", "pc_hw.c", "pc_hw.h", "pc_sd.c" })
                 fs::remove(src / name);
-            if ((streamed || cart_on_card || states || o.target == TargetId::meta) && !esp) {
+            if (esp32) {
+                /* the card on the ESP32's SPI bus: m0_sd.c over the shared
+                 * core's hooks (esp32_sd.cpp) */
+                for (const char* name : { "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h" })
+                    copy_template(common_platform / name, src / name);
+            } else if (o.target == TargetId::pc) {
+                /* the PC's card is the file sd.img: the FAT reader over the
+                 * sector calls of pc_sd.c, no SPI protocol (m0_sd.c stays out) */
+                for (const char* name : { "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h" })
+                    copy_template(common_platform / name, src / name);
+            } else if ((streamed || cart_on_card || states || o.target == TargetId::meta) && !esp) {
                 /* Every META firmware offers USB SD mode, even SG-1000 games
                  * which otherwise need no card driver. */
                 if (gg) copy_template(tpl / "platform" / "gg_stream.c", src / "gg_stream.c");
@@ -892,7 +917,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 const auto bus = o.target == TargetId::pokitto ? fs::path("pokitto/pokitto_sd.c") : fs::path("meta/meta_sd_bus.cpp");
                 copy_template(consoles / bus, src / bus.filename());
             }
-            const auto platform = consoles / (esp ? "espboy" : o.target == TargetId::pokitto ? "pokitto" : "meta");
+            /* the console's own directory (targets/consoles/<name>): the
+             * drivers to copy and the project templates both live there */
+            const auto platform = consoles / std::string(m0boy::consoles::find(o.target)->console_dir);
             for (const char* name : { "m0_target.h", "m0_lcd.h", "m0_clock.h", "m0_pad.h" })
                 copy_template(common_platform / name, src / name);
             /* the option menu (sg_menu.h runs it; meta_menu.cpp draws it) */
@@ -910,7 +937,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             auto audio_header = read(common_platform / "m0_audio.h");
             audio_header = replace(replace(audio_header, "70224u", "59736u"), "4194304u", "3579545u");
             write(src / "m0_audio.h", audio_header);
-            if (!esp) {
+            if (!esp && !esp32 && o.target != TargetId::pc) { /* PC: pc_hw.c; ESP32: the core */
                 const std::string audio_name = o.target == TargetId::pokitto ? "pokitto_audio.c" : "meta_audio.cpp";
                 auto audio = read(platform / audio_name);
                 audio = replace(audio, "#include \"gbl.h\"", "#include \"sg_audio.h\"");
@@ -919,13 +946,16 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             }
             /* One version stamp for all three frontends: the target console
              * runtime's version, compiled into gbrecomp from the VERSION
-             * files (targets/meta/VERSION, consoles/pokitto/VERSION) by
-             * CMake.  gbrecomp --meta-version/--pokitto-version print it and
-             * compile.sh reads it back from firmware.bin. */
+             * files (targets/meta/VERSION, consoles/<console>/VERSION) by
+             * CMake — one table, m0boy::consoles.  gbrecomp
+             * --meta-version/--pokitto-version print it and compile.sh reads
+             * it back from firmware.bin. */
             write(src / "gbl_config.h", "#pragma once\n#define GBL_TARGET_POKITTO " + std::to_string(o.target == TargetId::pokitto) +
                                         (esp ? "\n#define GBL_TARGET_ESPBOY 1" : "") +
-                                        "\n#define GBL_GEN_VERSION \"" +
-                                        (esp ? GBRECOMP_ESPBOY_VERSION : o.target == TargetId::pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) + "\"\n");
+                                        (o.target == TargetId::pc ? "\n#define GBL_TARGET_PC 1" : "") +
+                                        (o.target == TargetId::odroid ? "\n#define GBL_TARGET_ODROID 1" : "") +
+                                        (o.target == TargetId::aka ? "\n#define GBL_TARGET_AKA 1" : "") +
+                                        "\n#define GBL_GEN_VERSION \"" + std::string(m0boy::consoles::version(o.target)) + "\"\n");
             /* gbl_board.h carries the META's SPI rates and display pipeline
              * switches, shared with the Game Boy profile; only what this
              * build decides differently is written here. */
@@ -933,6 +963,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
              * Game Boy profile), off on the Pokitto unless POKITTO_HC. */
             const std::string overclock = o.target == TargetId::pokitto
                 ? "#ifndef META_OVERCLOCK\n#if defined(POKITTO_HC) && POKITTO_HC\n#define META_OVERCLOCK 1\n#else\n#define META_OVERCLOCK 0\n#endif\n#endif\n"
+                : o.target == TargetId::pc || esp32 ? "#define META_OVERCLOCK 0\n"
                 : "#ifndef META_OVERCLOCK\n#define META_OVERCLOCK 1\n#endif\n";
             /* META: one ring of META_AUDIO_RING samples of 2 bytes (512,
              * about 1.4 frames, lowered so the card cache can grow) feeds both
@@ -954,6 +985,32 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 copy_template(common_platform / "m0_menu.h", src / "m0_menu.h");
                 for (const char* name : { "platformio.ini", "espboy.ld", "espboy_build.py", "espboy_size.py" })
                     write(o.output / name, replace(read(platform / (std::string(name) + ".in")), "@NAME@", o.name));
+            } else if (esp32) {
+                /* the family's shared core (esp32_hw/esp32_sd) plus the
+                 * console's pins, buttons and audio path; PlatformIO builds
+                 * and flashes the project (every *.in rendered to the root). */
+                const auto core = o.meta_templates.parent_path() / "common" / "consoles" / "esp32";
+                for (const char* name : { "esp32_hw.cpp", "esp32_hw.h", "esp32_sd.cpp" })
+                    copy_template(core / name, src / name);
+                copy_template(platform / "esp32_config.h", src / "esp32_config.h");
+                const char *hw = o.target == TargetId::odroid ? "odroid_hw" : "aka_hw";
+                copy_template(platform / (std::string(hw) + ".cpp"), src / (std::string(hw) + ".cpp"));
+                copy_template(platform / (std::string(hw) + ".h"), src / (std::string(hw) + ".h"));
+                std::error_code list_error;
+                for (const auto& entry : fs::directory_iterator(platform, list_error)) {
+                    if (entry.is_directory() || entry.path().extension() != ".in") continue;
+                    write(o.output / entry.path().stem(), replace(read(entry.path()), "@NAME@", o.name));
+                }
+            } else if (o.target == TargetId::pc) {
+                /* SDL2 drivers (window, keyboard, audio, clock) and the card
+                 * as sd.img; the plain CMake project builds the executable. */
+                for (const char* name : { "pc_hw.c", "pc_hw.h", "pc_sd.c" })
+                    copy_template(platform / name, src / name);
+                std::error_code list_error;
+                for (const auto& entry : fs::directory_iterator(platform, list_error)) {
+                    if (entry.is_directory() || entry.path().extension() != ".in") continue;
+                    write(o.output / entry.path().stem(), replace(read(entry.path()), "@NAME@", o.name));
+                }
             } else if (o.target == TargetId::pokitto) {
                 for (const char* name : { "pokitto_startup.c", "pokitto_clock.c", "pokitto_buttons.c", "pokitto_lcd.c", "pokitto_hw.h", "lpc11u6x.h" })
                     copy_template(platform / name, src / name);

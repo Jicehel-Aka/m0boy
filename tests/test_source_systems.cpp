@@ -12,9 +12,51 @@ static void require(bool condition, const char* message) {
 int main() {
     using namespace m0boy;
     try {
-        require(systems().size() == 6, "Source registry incomplete");
+        require(systems().size() == 8, "Source registry incomplete");
+        require(targets().size() == 7, "Target registry incomplete");
+        require(parse_target("pc") == TargetId::pc && parse_target("odroid") == TargetId::odroid &&
+                parse_target("aka") == TargetId::aka, "New targets not parsed");
+        /* Hardware facts the capability matrix feeds on: consoles with 32 KiB
+         * of SRAM, the ESPboy's 80 KiB, hosts unlimited. */
+        require(target_descriptor(TargetId::meta).ram_bytes == 32768 &&
+                target_descriptor(TargetId::pokitto).ram_bytes == 32768 &&
+                target_descriptor(TargetId::espboy).ram_bytes == 81920 &&
+                target_descriptor(TargetId::desktop).host && target_descriptor(TargetId::pc).host,
+                "Target facts incorrect");
+        require(target_descriptor(TargetId::odroid).psram_bytes == 4194304 &&
+                target_descriptor(TargetId::aka).psram_bytes == 8388608,
+                "ESP32-class targets need their PSRAM recorded");
+        /* The matrix: a system runs on a target when a generator is wired AND
+         * the runtime fits the hardware.  Every 32 KiB console target fits the
+         * wired systems; the PC Engine's 64 KiB of video RAM excludes them and
+         * the ESPboy alike; NES would fit but nothing is wired yet. */
+        for (auto id : {SystemId::gameboy, SystemId::sg1000, SystemId::gamegear,
+                        SystemId::mastersystem, SystemId::msx, SystemId::pico8}) {
+            const auto& system = system_descriptor(id);
+            require(system.supports(TargetId::meta) && system.supports(TargetId::pokitto),
+                    "Wired console target lost");
+            require(target_fits(system, target_descriptor(TargetId::meta)),
+                    "Wired system no longer fits the META");
+        }
+        const auto& pce = system_descriptor(SystemId::pce);
+        require(!target_fits(pce, target_descriptor(TargetId::meta)) &&
+                !target_fits(pce, target_descriptor(TargetId::pokitto)) &&
+                !target_fits(pce, target_descriptor(TargetId::espboy)) &&
+                target_fits(pce, target_descriptor(TargetId::odroid)) &&
+                target_fits(pce, target_descriptor(TargetId::aka)) &&
+                target_fits(pce, target_descriptor(TargetId::pc)),
+                "PC Engine feasibility incorrect");
+        require(!target_misfit_reason(pce, target_descriptor(TargetId::meta)).empty() &&
+                target_misfit_reason(pce, target_descriptor(TargetId::pc)).empty(),
+                "Misfit explanation incorrect");
+        const auto& nes = system_descriptor(SystemId::nes);
+        require(!nes.wired(TargetId::pc) && nes.supports(TargetId::desktop) && nes.supports(TargetId::meta) &&
+                target_fits(nes, target_descriptor(TargetId::meta)),
+                "NES must be wired for the desktop harness and the META only");
         require(detect_system("game.sms") == SystemId::mastersystem && parse_system("sms") == SystemId::mastersystem,
                 "Master System detection failed");
+        require(detect_system("game.nes") == SystemId::nes && detect_system("game.PCE") == SystemId::pce,
+                "NES / PC Engine detection failed");
         const auto& gg = system_descriptor(SystemId::gamegear);
         require(gg.cpu == CpuId::z80 && gg.work_ram_bytes == 8192 && parse_system("gg") == SystemId::gamegear,
                 "Game Gear profile incorrect");
@@ -35,7 +77,7 @@ int main() {
         require(detect_system("game.SG") == SystemId::sg1000, "SG detection failed");
         require(detect_system("game.sgb") == SystemId::gameboy, "SGB is a GB cartridge");
         require(!detect_system("game.bin"), "Raw binary falsely identified");
-        require(!parse_cpu("arm") && !parse_system("nes"), "Unknown ids accepted");
+        require(!parse_cpu("arm") && !parse_system("snes"), "Unknown ids accepted");
         std::string error;
         require(!sg1000::Cartridge::from_bytes({}, error) && !error.empty(), "Empty ROM accepted");
         require(!sg1000::Cartridge::from_bytes(std::vector<uint8_t>(0xc001), error),

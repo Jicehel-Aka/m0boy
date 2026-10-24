@@ -77,9 +77,17 @@ def build(project, out_dir, frames, opt, input_file, extra, compiler="gcc"):
     src = os.path.join(project, "src")
     os.makedirs(out_dir, exist_ok=True)
     write_inputs(os.path.join(out_dir, "bench_input.h"), input_file, frames)
-    sources = sorted(os.path.join(src, f) for f in os.listdir(src)
-                     if (f.endswith(".c") or f.endswith(".S")) and (f.startswith("gbl_") or f.endswith("_gen.c") or f.endswith("_rom.c")))
-    sources.append(os.path.join(HERE, "bench_main.c"))
+    # NES projects have no gbl_* files: the interpreter runtime, the
+    # cartridge and a bench main of their own.
+    nes = os.path.isfile(os.path.join(src, "nes.c"))
+    if nes:
+        nes_sources = {"nes.c", "6502.c", "ppu.c", "apu.c", "nes_cart.c"}
+        sources = sorted(os.path.join(src, f) for f in os.listdir(src) if f in nes_sources)
+        sources.append(os.path.join(HERE, "bench_main_nes.c"))
+    else:
+        sources = sorted(os.path.join(src, f) for f in os.listdir(src)
+                         if (f.endswith(".c") or f.endswith(".S")) and (f.startswith("gbl_") or f.endswith("_gen.c") or f.endswith("_rom.c")))
+        sources.append(os.path.join(HERE, "bench_main.c"))
     # -DBENCH_META_DISPLAY=<mode>: the META display pipeline instead of the
     # benchmark's simple row policy.
     if any(f.startswith("-DBENCH_META_DISPLAY") for f in extra):
@@ -378,6 +386,12 @@ def main():
             groups["PPU"] += c
         elif name == "gbl_interp_block":
             groups["interpreter"] += c
+        elif name in ("nes6502_run", "nes_bus_read", "nes_bus_write"):
+            groups["6502 + bus"] += c
+        elif name.startswith("nes_ppu") or name == "render_line_nes":
+            groups["PPU"] += c
+        elif name.startswith("nes_apu"):
+            groups["APU"] += c
         else:
             groups["runtime/other"] += c
     print("\nshare by area:")

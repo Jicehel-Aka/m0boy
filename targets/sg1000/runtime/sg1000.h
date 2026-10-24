@@ -57,8 +57,12 @@ extern "C" {
 #define SG_LINE_CYCLES 228
 #define SG_FRAME_CYCLES (SG_LINES * SG_LINE_CYCLES)
 #define SG_VBLANK_CYCLES (SG_HEIGHT * SG_LINE_CYCLES)
-/* Device line: 256 -> 160 pixels, box filter (5 device pixels per tile). */
+/* Device line: 256 -> SG_OUT_WIDTH pixels, box filter (5 device pixels per
+ * tile).  The PC keeps the TMS9918A's own 256 (sg_config.h); the consoles
+ * resample to their panel's 160. */
+#ifndef SG_OUT_WIDTH
 #define SG_OUT_WIDTH 160
+#endif
 #define SG_CART_RAM_SIZE 8192
 
 typedef void (*sg_fn)(void);

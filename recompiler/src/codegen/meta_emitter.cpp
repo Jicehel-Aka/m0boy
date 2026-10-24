@@ -43,6 +43,15 @@
 #ifndef GBRECOMP_POKITTO_VERSION
 #define GBRECOMP_POKITTO_VERSION "unknown"
 #endif
+#ifndef GBRECOMP_PC_VERSION
+#define GBRECOMP_PC_VERSION "0.1.0"
+#endif
+#ifndef GBRECOMP_ODROID_VERSION
+#define GBRECOMP_ODROID_VERSION "0.1.0"
+#endif
+#ifndef GBRECOMP_AKA_VERSION
+#define GBRECOMP_AKA_VERSION "0.1.0"
+#endif
 
 namespace gbrecomp {
 
@@ -324,7 +333,8 @@ constexpr size_t kEspRuntime = 0x60000;    // Arduino core + runtime, before gen
 class Generator {
 public:
     Generator(const ROM& rom, const MetaTargetOptions& opt) : rom_(rom), opt_(opt) {
-        stream_ = !opt.espboy && (opt.stream == 1 || (opt.stream < 0 && rom.size() >= 0x40000) || opt.pack);
+        stream_ = !opt.espboy && !opt.pc && !opt.odroid && !opt.aka &&
+                  (opt.stream == 1 || (opt.stream < 0 && rom.size() >= 0x40000) || opt.pack);
         pack_ = opt.espboy ? rom.size() > kEspEmbed : opt.pack;
         if (opt.espboy) stream_ = pack_;
     }
@@ -401,8 +411,13 @@ private:
     std::vector<bool> packed_keep_;
     size_t stream_code_budget_ = 0, resident_budget_ = 0;
     /* Flash for the application: META 240 KiB above its 16 KiB loader,
-     * Pokitto 228 KiB below its loader at 0x39000. */
-    size_t app_flash() const { return opt_.espboy ? kEspApp : opt_.pokitto ? 0x39000 : 245760; }
+     * Pokitto 228 KiB below its loader at 0x39000; the PC embeds everything
+     * in an executable and knows no budget. */
+    size_t app_flash() const {
+        return opt_.pc ? SIZE_MAX : opt_.espboy ? kEspApp
+             : opt_.odroid || opt_.aka ? 0x370000
+             : opt_.pokitto ? 0x39000 : 245760;
+    }
     std::vector<std::vector<uint8_t>> packed_sector_; /* per ROM sector (banks 1+) */
     std::vector<uint64_t> chunk_weight_; /* per 4 KiB ROM chunk */
     std::vector<int> resident_index_;    /* per chunk: slot in flash, -1 on the card */
@@ -2096,8 +2111,13 @@ std::string Generator::emit_config(std::string& error) const {
                                                   : std::string())
                   : std::string())
       /* The console; its optimisation switches are in gbl_profile.h. */
-      << (opt_.espboy ? "#define GBL_TARGET_ESPBOY 1\n#define GBL_ERAM_ON_SD 0\n" : "")
+      << (opt_.espboy
+              ? "#define GBL_TARGET_ESPBOY 1\n#define GBL_ERAM_ON_SD 0\n"
+              : std::string())
+      << (opt_.pc ? "#define GBL_TARGET_PC 1\n#define GBL_ERAM_ON_SD 0\n" : std::string())
       << (opt_.pokitto ? "#define GBL_TARGET_POKITTO 1\n" : "")
+      << (opt_.odroid ? "#define GBL_TARGET_ODROID 1\n" : "")
+      << (opt_.aka ? "#define GBL_TARGET_AKA 1\n" : "")
       << "#define GBL_TITLE \"" << [&] {
              std::string t;
              for (char c : h.title)
@@ -2130,7 +2150,9 @@ std::string Generator::emit_config(std::string& error) const {
              cgb_generic_palettes(s);
              return s;
          }()
-      << "#define GBL_GEN_VERSION \"" << (opt_.espboy ? GBRECOMP_ESPBOY_VERSION : opt_.pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) << "\"\n"
+      << "#define GBL_GEN_VERSION \"" << (opt_.espboy ? GBRECOMP_ESPBOY_VERSION : opt_.pc ? GBRECOMP_PC_VERSION
+                       : opt_.odroid ? GBRECOMP_ODROID_VERSION : opt_.aka ? GBRECOMP_AKA_VERSION
+                       : opt_.pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) << "\"\n"
       << "#endif\n";
     return o.str();
 }
@@ -2192,12 +2214,20 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         error = "firmware compiler must be gcc or clang";
         return false;
     }
-    if (options.espboy && options.pokitto) {
+    if (options.espboy + options.pokitto + options.pc + options.odroid + options.aka > 1) {
         error = "choose one destination console";
         return false;
     }
     if (options.espboy && (options.stream == 1 || options.thumb || options.compiler != "gcc")) {
         error = "ESPboy requires portable C/GCC and a flash-resident ROM (no SD or --meta-thumb)";
+        return false;
+    }
+    if (options.pc && (options.stream == 1 || options.thumb)) {
+        error = "the PC embeds the whole ROM in its executable (no SD streaming, no --meta-thumb)";
+        return false;
+    }
+    if (options.esp32_console() && (options.stream == 1 || options.thumb)) {
+        error = "the ESP32 consoles embed the ROM in their application partition (no SD streaming yet, no --meta-thumb)";
         return false;
     }
     Generator gen(rom, options);
@@ -2226,7 +2256,9 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
      * before they became m0_*) are removed: the builds compile every source
      * in src/.  So is the Arduino variant directory of META projects
      * generated before the firmware went bare metal.  */
-    const char* console = options.espboy ? "espboy" : options.pokitto ? "pokitto" : "meta";
+    const char* console = options.espboy ? "espboy" : options.pc ? "pc"
+                         : options.odroid ? "odroid" : options.aka ? "aka"
+                         : options.pokitto ? "pokitto" : "meta";
     const fs::path consoles = tpl.parent_path() / "consoles";
     const fs::path common = tpl.parent_path() / "common";
     const fs::path platform_tpl = consoles / console;
@@ -2237,7 +2269,7 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         error = "cannot create " + out.string() + ": " + ec.message();
         return false;
     }
-    for (const char* other : {"meta", "pokitto", "espboy"}) {
+    for (const char* other : {"meta", "pokitto", "espboy", "pc", "odroid", "aka"}) {
       if (std::string(other) == console) continue;
       for (const auto& entry : fs::directory_iterator(consoles / other, ec)) {
         const fs::path name = entry.path().filename();
@@ -2256,7 +2288,8 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         for (const auto& entry : fs::directory_iterator(src, ec)) {
             const std::string n = entry.path().filename().string();
             const bool templated = n.rfind("gbl_", 0) == 0 || n.rfind("meta_", 0) == 0 || n.rfind("m0_", 0) == 0 || n.rfind("gb_", 0) == 0 ||
-                                   n.rfind("pokitto_", 0) == 0 || n.rfind("espboy_", 0) == 0 || n == "lpc11u6x.h";
+                                   n.rfind("pokitto_", 0) == 0 || n.rfind("espboy_", 0) == 0 || n.rfind("pc_", 0) == 0 ||
+                                   n.rfind("esp32_", 0) == 0 || n.rfind("odroid_", 0) == 0 || n.rfind("aka_", 0) == 0 || n == "lpc11u6x.h";
             if (templated && n != "gbl_config.h" && !fresh.count(n)) stale.push_back(entry.path());
         }
         for (const auto& path : stale) fs::remove(path, ec);
@@ -2266,6 +2299,11 @@ bool generate_meta_project(const ROM& rom, const MetaTargetOptions& options,
         !copy_dir_files(common / "platform", src, error) ||
         !copy_dir_files(platform_tpl, src, error))
         return false;
+    if (options.esp32_console()) { /* the family's shared core (esp32_hw,
+        * esp32_sd) the two consoles build on */
+        if (!copy_dir_files(tpl.parent_path() / "common" / "consoles" / "esp32", src, error))
+            return false;
+    }
     if (options.pokitto) /* its own display modes (pokitto_display.c): the GB
                          * scaled modes' C and layout stay out */
         for (const char* name : {"gbl_display.c", "gbl_display_layout.h"}) fs::remove(src / name, ec);
