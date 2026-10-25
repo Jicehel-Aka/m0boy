@@ -54,6 +54,7 @@ extern "C" void m0_watchdog_feed(void) {}
  * panel rows its band covers, streamed as it arrives like the ESPboy's.
  * The colours are RGB565 byte-swapped in memory order (M0_COLOR), which the
  * ILI9341/ST7789 want on the wire. */
+#if !M0_TARGET_AKA
 static SPIClass *spi;
 void *esp32_lcd_bus(void) { return spi; }
 static uint32_t lcd_seq;
@@ -137,6 +138,8 @@ extern "C" void m0_lcd_fill(uint16_t c) {
     }
     esp32_lcd_cs(1);
 }
+
+#endif /* !M0_TARGET_AKA: AKA uses its i80 panel driver. */
 
 /* ---- audio ---------------------------------------------------------------
  * Unsigned 8-bit PCM at 11025 Hz in a ring the console's path drains (the

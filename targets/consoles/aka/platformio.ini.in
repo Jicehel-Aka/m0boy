@@ -1,16 +1,17 @@
-; Gamebuino AKA (ESP32-S3, 16 MiB flash, 8 MiB octal PSRAM): the board file
+[platformio]
+boards_dir = boards
+
+; Gamebuino AKA (ESP32-S3, 8 MiB flash, octal PSRAM): the board file
 ; beside this project (boards/gamebuino_aka.json), application below 3.5 MiB.
 [env:aka]
 platform = espressif32@6.9.0
 board = gamebuino_aka
 framework = arduino
 board_build.f_cpu = 240000000L
-board_upload.flash_size = 16MB
+board_upload.flash_size = 8MB
 board_build.partitions = aka.csv
 build_flags = -Os -Wno-unused-label
     -DCORE_DEBUG_LEVEL=0
-    -DCONFIG_ARDUINO_LOOP_STACK_SIZE=32768
 build_src_filter = +<*> -<*.S>
 extra_scripts = pre:aka_build.py
     post:aka_size.py
-boards_dir = boards

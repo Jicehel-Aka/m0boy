@@ -1,10 +1,19 @@
-# @NAME@ — Gamebuino AKA
+# @NAME@ — Gamebuino AKA CORE v1.4
 
-The shared firmware on the Gamebuino AKA (ESP32-S3, 16 MiB flash, 8 MiB
-octal PSRAM, 320x240 panel, I2S speaker, microSD).  Buttons: D-pad, A, B,
-Menu (start), Home held half a second (the option menu).  Games, saves and
-states live on the card (FAT16/FAT32); `pio run -d . -t upload` flashes.
+ESP32-S3 at 240 MHz, 8 MiB flash, octal PSRAM, 320×240 display on an
+8-bit i80 bus, four-bit SDMMC card and TAS2505 audio codec. Wiring is based
+on the official jmp42/Gamebuino_AKA_lib, not the earlier assumed SPI panel.
 
-The console is not documented publicly yet: the pin assignment is a working
-assumption, gathered in `aka_hw.cpp` and `esp32_config.h` — correct them
-there when the real schematic is known.
+Build and flash: `pio run -t upload`. The application partition is 0x370000
+bytes. RGB565 rows are doubled horizontally and scaled vertically to 240
+lines. Saves and states use the FAT16/FAT32 card. Cartridge RAM stays in
+RAM; battery saves are written to the card.
+
+D-pad or joystick, A, B; RUN or D is Start, MENU or C opens options (hold
+half a second). L1/R1 are currently unused. Return to launcher currently
+restarts the chip: there is no verified AKA launcher handoff protocol.
+
+The build also emits firmware.sym from its exact ELF for gm0.
+The ELF can run in gm0's experimental AKA machine. Timing there is estimated.
+Hardware checks (panel colours/orientation, audio, SD, joystick) remain
+necessary; a successful build is not device validation.

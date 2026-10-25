@@ -101,8 +101,9 @@ built firmware in it (`ESPBOY_PIO` for the build).
   builds and runs head first in CI — `tests/test_pc_target.py`, SDL2
   required), odroid (ODROID-GO, ESP32) and aka (Gamebuino AKA, ESP32-S3)
   share `targets/common/consoles/esp32/` and build through PlatformIO
-  (`ODROID_PIO`/`AKA_PIO` env vars for the real build; gm0 does not
-  emulate the ESP32, device checks are manual). Which system may generate
+  (`ODROID_PIO`/`AKA_PIO` env vars for the real build; `AKA_GM0` exercises
+  the experimental AKA application machine with an ELF or matching symbols;
+  ODROID is not emulated, device checks remain manual). Which system may generate
   for which console comes from the capability matrix in
   `recompiler/src/system.cpp` (`TargetFacts` vs `min_ram_bytes`) — see
   `--list-systems`/`--list-targets` and `docs/MULTI_SYSTEM.fr.md`.
@@ -114,7 +115,8 @@ built firmware in it (`ESPBOY_PIO` for the build).
   before and after a runtime change (hashes + PPM captures). PC Engine is
   still at the inspection stage (`--info`, `--disasm` with the
   6502/HuC6280 decoders in `recompiler/src/cpu/`); no pipeline is wired.
-  The AKA's pins are a working assumption (`targets/consoles/aka/`).
+  The AKA CORE v1.4 wiring follows the official Gamebuino_AKA_lib
+  (`targets/consoles/aka/`, `docs/AKA.fr.md`).
 
 ## Hygiene
 

@@ -12,6 +12,10 @@
  * (CMD24).
  */
 #include "m0_sd.h"
+#if __has_include("gbl_config.h")
+#include "gbl_config.h"
+#endif
+#if !defined(GBL_TARGET_AKA) || !GBL_TARGET_AKA
 
 static uint8_t block_addressing; /* SDHC/SDXC: sector numbers, else bytes */
 static uint32_t card_sectors;
@@ -192,3 +196,5 @@ static int write_once(uint32_t lba, const uint8_t *src) {
 int m0_sd_write(uint32_t lba, const uint8_t *src) {
     return write_once(lba, src) || (reinit() && write_once(lba, src));
 }
+
+#endif /* !M0_TARGET_AKA: native SDMMC sector driver */

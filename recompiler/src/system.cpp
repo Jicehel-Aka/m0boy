@@ -64,8 +64,7 @@ constexpr std::array system_table = {
  * 32 KiB (the Pokitto adds two 2 KiB banks the audio ring and the SD cache
  * use); espboy: the ESP8266's 80 KiB heap holds firmware and ROM cache;
  * odroid: ESP32-WROVER, 16 MiB flash of which 2 MiB for the app, 4 MiB
- * PSRAM for the ROM; aka: ESP32-S3, same plan with 8 MiB of octal PSRAM
- * (supposition, the console is not documented yet). */
+ * PSRAM for the ROM; aka: ESP32-S3, 8 MiB flash and octal PSRAM (official CORE v1.4 library). */
 constexpr std::array target_table = {
     TargetFacts{TargetId::desktop, "desktop", true, 0, 0, 0, 0, 0, false,
                 "host process (harnesses, unlimited)"},
@@ -79,8 +78,8 @@ constexpr std::array target_table = {
                 "PC (SDL2 window, SD card as a file image)"},
     TargetFacts{TargetId::odroid, "odroid", false, 327680, 4194304, 2097152, 320, 240, true,
                 "ODROID-GO (ESP32-WROVER, ILI9341, 16 MiB flash, 4 MiB PSRAM)"},
-    TargetFacts{TargetId::aka, "aka", false, 458752, 8388608, 2097152, 320, 240, true,
-                "Gamebuino AKA (ESP32-S3, 16 MiB flash, 8 MiB PSRAM)"},
+    TargetFacts{TargetId::aka, "aka", false, 327680, 8388608, 0x370000, 320, 240, true,
+                "Gamebuino AKA (ESP32-S3, 8 MiB flash, octal PSRAM, i80 LCD, SDMMC)"},
 };
 }
 

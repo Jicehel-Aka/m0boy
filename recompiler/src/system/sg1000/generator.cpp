@@ -276,7 +276,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             throw std::runtime_error("Output directory is not an " + system_name + " project; choose a fresh directory");
         // A project owns one platform and cannot silently mix drivers.
         const bool esp = o.target == TargetId::espboy;
-        const std::string target = o.target == TargetId::meta ? "meta" : o.target == TargetId::pokitto ? "pokitto" : esp ? "espboy" : "desktop";
+        const std::string target(m0boy::target_descriptor(o.target).name);
         if (fs::exists(marker) && read(marker) != target + "\n")
             throw std::runtime_error("Use a separate output directory for each destination");
         fs::create_directories(o.output / "src");
@@ -899,6 +899,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                                       "meta_sd_bus.cpp", "pokitto_sd.c", "pc_hw.c", "pc_hw.h", "pc_sd.c" })
                 fs::remove(src / name);
             if (esp32) {
+                if (gg) copy_template(tpl / "platform" / "gg_stream.c", src / "gg_stream.c");
                 /* the card on the ESP32's SPI bus: m0_sd.c over the shared
                  * core's hooks (esp32_sd.cpp) */
                 for (const char* name : { "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h" })
@@ -996,6 +997,11 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 const char *hw = o.target == TargetId::odroid ? "odroid_hw" : "aka_hw";
                 copy_template(platform / (std::string(hw) + ".cpp"), src / (std::string(hw) + ".cpp"));
                 copy_template(platform / (std::string(hw) + ".h"), src / (std::string(hw) + ".h"));
+                if (o.target == TargetId::aka) {
+                    fs::create_directories(o.output / "boards");
+                    copy_template(platform / "boards" / "gamebuino_aka.json",
+                                  o.output / "boards" / "gamebuino_aka.json");
+                }
                 std::error_code list_error;
                 for (const auto& entry : fs::directory_iterator(platform, list_error)) {
                     if (entry.is_directory() || entry.path().extension() != ".in") continue;

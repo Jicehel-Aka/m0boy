@@ -21,7 +21,7 @@ assert "nes cpu=6502 inspect=yes disasm=yes codegen=desktop,meta" in listing
 assert "pce cpu=huc6280 inspect=yes disasm=yes codegen=unavailable" in listing
 targets = run("--list-targets", contains='meta host=no ram=32K')
 assert 'desktop host=yes' in targets and 'pc host=yes' in targets
-assert 'odroid host=no ram=320K psram=4096K' in targets and 'aka host=no ram=448K psram=8192K' in targets
+assert 'odroid host=no ram=320K psram=4096K' in targets and 'aka host=no ram=320K psram=8192K' in targets
 assert 'espboy host=no ram=80K psram=0K flash=1024K screen=128x128 sd=no' in targets
 run("--system", ok=False, contains="requires a value")
 run("--cpu", "68000", ok=False, contains="unknown --cpu")

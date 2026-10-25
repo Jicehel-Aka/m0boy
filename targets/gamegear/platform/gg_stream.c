@@ -58,7 +58,7 @@ int gg_stream_open(const uint8_t *rom, uint32_t rom_size, uint8_t *buf) {
 #else
     if (!m0_sd_init()) return M0_CARD_NO_CARD;
     uint32_t dir = M0_FAT_ANY_DIR;
-#if !M0_TARGET_POKITTO
+#if M0_TARGET_META
     /* The game's files are the ones in the folder of its own .BIN: other
      * games' folders may hold files of the same name. */
     dir = m0_fat_game_dir(m0_card_sector, buf, GG_BIN_NAME83, META_APP_START);

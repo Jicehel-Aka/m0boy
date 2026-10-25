@@ -1,6 +1,6 @@
 {
   "build": {
-    "arduino": { "ldscript": "esp32s3_out.ld", "partitions": "aka.csv" },
+    "arduino": { "ldscript": "esp32s3_out.ld", "partitions": "aka.csv", "memory_type": "dio_opi" },
     "core": "esp32",
     "extra_flags": [
       "-DARDUINO_GAMEBUINO_AKA",
@@ -12,19 +12,18 @@
     ],
     "f_cpu": "240000000L",
     "f_flash": "80000000L",
-    "flash_mode": "qio",
-    "hwids": [["0x2886", "0x0051"]],
+    "flash_mode": "dio",
     "mcu": "esp32s3",
     "variant": "esp32s3"
   },
   "connectivity": ["wifi"],
   "debug": { "default_tool": "esp-builtin" },
   "frameworks": ["arduino", "espidf"],
-  "name": "Gamebuino AKA (N16R8)",
+  "name": "Gamebuino AKA (8 MiB flash, octal PSRAM)",
   "upload": {
-    "flash_size": "16MB",
+    "flash_size": "8MB",
     "maximum_ram_size": 327680,
-    "maximum_size": 16777216,
+    "maximum_size": 8388608,
     "protocol": "esptool",
     "require_upload_port": true,
     "speed": 921600

@@ -2117,7 +2117,7 @@ std::string Generator::emit_config(std::string& error) const {
       << (opt_.pc ? "#define GBL_TARGET_PC 1\n#define GBL_ERAM_ON_SD 0\n" : std::string())
       << (opt_.pokitto ? "#define GBL_TARGET_POKITTO 1\n" : "")
       << (opt_.odroid ? "#define GBL_TARGET_ODROID 1\n" : "")
-      << (opt_.aka ? "#define GBL_TARGET_AKA 1\n" : "")
+      << (opt_.aka ? "#define GBL_TARGET_AKA 1\n#define GBL_ERAM_ON_SD 0\n" : "")
       << "#define GBL_TITLE \"" << [&] {
              std::string t;
              for (char c : h.title)

@@ -1,4 +1,4 @@
-# Gamebuino AKA (16 MiB flash): the application below 3.5 MiB, the raw ROM
+# Gamebuino AKA (8 MiB flash): the application below 3.5 MiB, the raw ROM
 # image beside it (rom.bin at 0x380000) when the generator writes one.
 nvs,      data, nvs,     0x9000,   0x5000
 otadata,  data, ota,     0xe000,   0x2000

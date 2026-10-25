@@ -350,6 +350,10 @@ set(GBL_COMMON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/targets/common")
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_aka_target.py"
                 "$<TARGET_FILE:gbrecomp>")
     set_tests_properties(meta_aka_target PROPERTIES TIMEOUT 600)
+    add_test(NAME sega_aka_target
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_sega_aka_target.py"
+                "$<TARGET_FILE:gbrecomp>")
+    set_tests_properties(sega_aka_target PROPERTIES TIMEOUT 600)
 
     # Pokitto firmware also links when arm-none-eabi-gcc exists.
     add_test(NAME meta_pokitto_target

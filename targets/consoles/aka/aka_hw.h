@@ -1,6 +1,4 @@
-/* Gamebuino AKA (ESP32-S3, 16 MiB flash, 8 MiB PSRAM): the pins, the
- * buttons and the I2S path the shared ESP32 drivers call.  Pin assignment
- * is the working assumption of an undocumented console (esp32_config.h). */
+/* Gamebuino AKA CORE v1.4: official wiring, i80 LCD, SDMMC and TAS2505. */
 #ifndef AKA_HW_H
 #define AKA_HW_H
 

@@ -558,7 +558,28 @@ export_source() { # $1 projet généré, $2 dossier du jeu, $3 options pio de ce
   fi
   printf '%s\n' "$4" > "$src/BUILD.txt"
   rm -f "$2"/*.BIN "$2/firmware.bin" "$2/firmware.sym" "$2/FLASH.txt" "$2/README.md" "$2/$(basename "$2").bin"
+  if [ "$TARGET" = aka ]; then rm -f "$2/bootloader.bin" "$2/partitions.bin" "$2/boot_app0.bin"; fi
   echo "[i] Source prête à compiler : $(basename "$2")/source ($4)"
+}
+
+# AKA loader layout and gm0 symbol sidecar. The serial-flash files also make
+# the archive usable on a board without the AKA launcher installed.
+aka_package() { # project, game directory, title
+  local project="$1" game="$2" title="$3" built="$1/.pio/build/aka"
+  local boot_app="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin"
+  for file in firmware.bin firmware.sym bootloader.bin partitions.bin; do
+    cp "$built/$file" "$game/$file" || return 1
+  done
+  cp "$boot_app" "$game/boot_app0.bin" || return 1
+  cp "$project/README.md" "$game/README.md" || return 1
+  python3 - "$game/meta.json" "$title" "$CUR_VERSION" <<'PY'
+import datetime, json, sys
+from pathlib import Path
+Path(sys.argv[1]).write_text(json.dumps(dict(title=sys.argv[2], author='m0boy',
+    description='Converted with m0boy', version=sys.argv[3], date=str(datetime.date.today())),
+    ensure_ascii=False, indent=2)+'\n')
+PY
+  printf 'esptool.py --chip esp32s3 --port PORT write_flash --flash_mode dio --flash_freq 80m --flash_size 8MB 0x0000 bootloader.bin 0x8000 partitions.bin 0xe000 boot_app0.bin 0x10000 firmware.bin\n' > "$game/FLASH.txt"
 }
 
 # ESPboy : la pile de continuation (CONT_STACKSIZE, 12 Kio par défaut) cède
@@ -970,6 +991,7 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
   [ "$FIRMWARE_COMPILER" = clang ] && sg_build="$out_dir/build-clang"
   local size_bin
   if [ "$TARGET" = espboy ]; then size_bin="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/packages/toolchain-xtensa/bin/xtensa-lx106-elf-size"
+  elif [ "$TARGET" = aka ]; then size_bin="${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/packages/toolchain-xtensa-esp32s3/bin/xtensa-esp32s3-elf-size"
   else size_bin=$(command -v arm-none-eabi-size || echo "${PLATFORMIO_CORE_DIR:-$HOME/.platformio}/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-size"); fi
   sg_build_once() { # 0 ok, 1 flash full, 2 error
     gen_log=$("$GBRECOMP" "$rom_path" --system "$sys" --target "$TARGET" --output-prefix "$prefix" --sd-name "$sd_name" \
@@ -1094,6 +1116,11 @@ build_sg_game() { # SG-1000 and Game Gear own their generator, profiles and buil
     else
       printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin\n' > "$game_dir/FLASH.txt"
     fi
+  elif [ "$TARGET" = aka ]; then
+    firmware="$out_dir/.pio/build/$PIO_ENV/firmware.bin"
+    aka_package "$out_dir" "$game_dir" "$game_name" || return 1
+    fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" "$icons" || true
+    [ ! -f "$game_dir/TITLESCREEN.BMP" ] || make_bmp "$game_dir/TITLESCREEN.BMP" "$game_dir/screen.bmp" 160 120 || true
   else
     firmware="$out_dir/.pio/build/$PIO_ENV/firmware.bin"
     cp "$firmware" "$game_dir/$sd_name.BIN" || return 1
@@ -1531,12 +1558,17 @@ PY
       else
         printf 'esptool.py --chip esp8266 --port PORT write_flash 0x00000 firmware.bin\n' > "$game_dir/FLASH.txt"
       fi
+    elif [ "$TARGET" = aka ]; then
+      aka_package "$out_dir" "$game_dir" "$game_name" || return 1
     else
       cp "$out_dir/.pio/build/$PIO_ENV/firmware.bin" "$game_dir/$sd_name.BIN"
     fi
     # Icônes du loader (PNG libretro -> BMP 24 bits), sans bloquer le jeu.
     [ "$TARGET" = espboy ] || fetch_icons "$game_dir" "$game_name" "$(basename "$rom_path")" "$gbc" \
       || echo "[i] (jeu conservé sans icône)"
+    if [ "$TARGET" = aka ] && [ -f "$game_dir/TITLESCREEN.BMP" ]; then
+      make_bmp "$game_dir/TITLESCREEN.BMP" "$game_dir/screen.bmp" 160 120 || true
+    fi
   fi
   # Sauvegarde (cartouche à pile) ou grande RAM de cartouche : un fichier
   # .SAV de la taille de cette RAM, à mettre sur la carte à côté du .bin.
@@ -1580,7 +1612,7 @@ PY
   } > "$game_dir/.gbrmeta.json"
   local fw_ver
   if [ "$TARGET" = pokitto ]; then fw_ver=$(firmware_version "$game_dir/$game_name.bin")
-  elif [ "$TARGET" = espboy ]; then fw_ver=$(firmware_version "$game_dir/firmware.bin")
+  elif [ "$TARGET" = espboy ] || [ "$TARGET" = aka ]; then fw_ver=$(firmware_version "$game_dir/firmware.bin")
   else fw_ver=$(firmware_version "$game_dir/$sd_name.BIN"); fi
   [ -n "$fw_ver" ] || fw_ver="$CUR_VERSION (pas de marqueur : gbrecomp trop ancien)"
   echo "[i] Firmware produit par gbrecomp v$fw_ver"

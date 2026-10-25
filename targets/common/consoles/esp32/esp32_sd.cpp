@@ -12,6 +12,44 @@ extern "C" {
 
 #include "esp32_config.h"
 
+#include "m0_target.h"
+#if M0_TARGET_AKA
+#include <driver/sdmmc_host.h>
+#include <sdmmc_cmd.h>
+static sdmmc_card_t card;
+static bool ready;
+extern "C" int m0_sd_init(void) {
+    if (ready) return 1;
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
+    host.max_freq_khz = 20000;
+    slot.width = 4;
+    slot.clk = (gpio_num_t)ESP32_SD_SCK;
+    slot.cmd = (gpio_num_t)ESP32_SD_CMD;
+    slot.d0 = (gpio_num_t)ESP32_SD_D0;
+    slot.d1 = (gpio_num_t)ESP32_SD_D1;
+    slot.d2 = (gpio_num_t)ESP32_SD_D2;
+    slot.d3 = (gpio_num_t)ESP32_SD_D3;
+    slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    if (sdmmc_host_init() != ESP_OK) return 0;
+    if (sdmmc_host_init_slot(host.slot, &slot) != ESP_OK ||
+        sdmmc_card_init(&host, &card) != ESP_OK) {
+        sdmmc_host_deinit();
+        return 0;
+    }
+    ready = true;
+    return 1;
+}
+extern "C" uint32_t meta_sd_sectors(void) { return ready ? card.csd.capacity : 0; }
+extern "C" int m0_sd_read(uint32_t lba, uint8_t *dst) {
+    return ready && lba < card.csd.capacity && sdmmc_read_sectors(&card, dst, lba, 1) == ESP_OK;
+}
+extern "C" int m0_sd_write(uint32_t lba, const uint8_t *src) {
+    return ready && lba < card.csd.capacity && sdmmc_write_sectors(&card, src, lba, 1) == ESP_OK;
+}
+/* Callers release the old SPI bus before leaving the application. */
+extern "C" void m0_sd_deselect(void) {}
+#else
 static SPIClass *spi;
 static uint32_t bus_hz = ESP32_SD_HZ_INIT;
 static uint32_t slower_at;
@@ -57,3 +95,5 @@ extern "C" int meta_sd_slower(void) {
     return bus_hz > 10000000 ? (bus_hz = 10000000, 1) : 0;
 }
 extern "C" uint32_t meta_sd_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
+
+#endif /* M0_TARGET_AKA */

@@ -9,3 +9,30 @@ def check_size(source, target, env):
         raise RuntimeError("AKA firmware: %d bytes exceeds the 3.4 MiB application partition" % size)
 
 env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", check_size)
+
+def write_symbols(source, target, env):
+    """A sidecar from this exact ELF lets gm0 load firmware.bin or its ZIP."""
+    import struct
+    from pathlib import Path
+    elf = Path(env.subst("$BUILD_DIR/${PROGNAME}.elf")).read_bytes()
+    shoff, = struct.unpack_from('<I', elf, 32)
+    shentsize, shnum = struct.unpack_from('<HH', elf, 46)
+    lines = []
+    for i in range(shnum):
+        sh = shoff + i * shentsize
+        if struct.unpack_from('<I', elf, sh + 4)[0] != 2:
+            continue
+        off, size, link = struct.unpack_from('<III', elf, sh + 16)
+        stroff, = struct.unpack_from('<I', elf, shoff + link * shentsize + 16)
+        for k in range(0, size, 16):
+            name, value, _, info, _, _ = struct.unpack_from('<IIIBBH', elf, off + k)
+            if not name or not value:
+                continue
+            text = elf[stroff + name:elf.index(b'\0', stroff + name)].decode('ascii', 'replace')
+            # Local ring symbols are needed for audio; absolute ROM symbols
+            # and global/local functions are needed for service interception.
+            if text and len(text) < 160 and not any(c.isspace() for c in text):
+                lines.append('%08x %s' % (value, text))
+    Path(env.subst("$BUILD_DIR/firmware.sym")).write_text('\n'.join(lines) + '\n')
+
+env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", write_symbols)

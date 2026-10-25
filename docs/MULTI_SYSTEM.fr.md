@@ -83,8 +83,8 @@ la table des faits, et un refus dit lequel des deux manque et pourquoi
 
 Les cibles pc (fenêtre SDL2, la carte en fichier `sd.img`), odroid
 (ODROID-GO : ESP32, ILI9341 320×240, carte SD, DAC) et aka (Gamebuino
-AKA : ESP32-S3, 320×240, carte SD, I2S — pins de travail, la console
-n'étant pas documentée) partagent le noyau ESP32 de
+AKA CORE v1.4 : ESP32-S3, 8 Mio flash, écran i80 320×240, SDMMC,
+expandeurs I²C, codec TAS2505 — voir `docs/AKA.fr.md`) partagent le noyau ESP32 de
 `targets/common/consoles/esp32/` et les frontends communs
 (`targets/common/platform/`) ; chaque console n'apporte que ses pilotes
 propres dans `targets/consoles/<nom>/` (une ligne dans
