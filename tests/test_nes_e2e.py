@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """NES end to end, on synthetic NROM cartridges.
 
-1. The picture: one striped tile over a blue backdrop, generated as an
-   interpreter-only host project; two runs give the same run_hash and the
-   capture shows the tile over the backdrop.
+1. The picture: one striped tile over a blue backdrop, sprite 0 over it,
+   generated as an interpreter-only host project; two runs give the same
+   run_hash, the capture shows the tile over the backdrop, and the panel
+   renderer (160x128) equals the reference lines' box filter on every row
+   with the same sprite-0 hits, every frame shown or one in two left out.
 2. The recompiler: a program that exercises the documented instructions
    (ADC/SBC, shifts, BIT, page-crossing indexed reads, (zp),Y and (zp,X),
    JSR/RTS, JMP through RAM, PHP/PLP, the NMI and RTI, OAM DMA, a routine
@@ -18,7 +20,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 GBRECOMP = ROOT / "build" / "bin" / "gbrecomp"
 
-# reset at $8000: no NMI, backdrop $22, tile 1 at $2000, rendering on, idle
+# reset at $8000: no NMI, backdrop $22, tile 1 at $2000, sprite 0 over it,
+# rendering on, idle
 PRG = bytes([
     0x78, 0xD8,                                     # SEI CLD
     0xA9, 0x00, 0x8D, 0x00, 0x20,                   # LDA #0 STA $2000
@@ -28,8 +31,13 @@ PRG = bytes([
     0xA9, 0x20, 0x8D, 0x06, 0x20,                   # LDA #$20 STA $2006
     0xA9, 0x00, 0x8D, 0x06, 0x20,                   # LDA #0  STA $2006
     0xA9, 0x01, 0x8D, 0x07, 0x20,                   # LDA #1  STA $2007
-    0xA9, 0x0A, 0x8D, 0x01, 0x20,                   # LDA #$0A STA $2001
-    0x4C, 0x2A, 0x80,                               # JMP $802A (idle, past STA $2001)
+    0xA9, 0x00, 0x8D, 0x03, 0x20,                   # LDA #0  STA $2003: sprite 0 ...
+    0xA9, 0x02, 0x8D, 0x04, 0x20,                   # y 2 (lines 3-10)
+    0xA9, 0x01, 0x8D, 0x04, 0x20,                   # tile 1, over the background's tile 1
+    0xA9, 0x00, 0x8D, 0x04, 0x20,                   # in front, palette 4
+    0xA9, 0x04, 0x8D, 0x04, 0x20,                   # x 4: sprite 0 hits
+    0xA9, 0x1E, 0x8D, 0x01, 0x20,                   # LDA #$1E STA $2001 (both layers, both left columns)
+    0x4C, 0x43, 0x80,                               # JMP $8043 (idle, past STA $2001)
 ]).ljust(32768, b"\xEA")                            # NOP fill
 # vectors at the end of the last 16 KiB bank
 PRG = PRG[:-6] + bytes([0x00, 0x80, 0x00, 0x80, 0x00, 0x80])  # NMI, RESET, IRQ
@@ -272,6 +280,13 @@ def run_hash(text):
     return [t for t in text.split() if t.startswith("run_hash=")][0]
 
 
+def panel_ok(text, rows):
+    """the harness's panel check: every row equal to the reference's"""
+    fields = dict(t.split("=", 1) for t in text.split() if "=" in t)
+    assert fields.get("out_mismatch") == "0" and fields.get("hit_mismatch") == "0", text
+    assert int(fields["panel_rows"]) == rows, text
+
+
 def project(rom, out, *options):
     run(GBRECOMP, "--system", "nes", rom, "--target", "desktop", "--output-prefix", "synth", "-o", out, *options)
     build = out / "host" / "build"
@@ -284,7 +299,10 @@ def picture(work):
     rom = work / "synthetic.nes"
     rom.write_bytes(ROM)
     host = project(rom, work / "proj", "--nes-interp")
-    h1 = run_hash(run(host, "--frames", "60"))
+    out = run(host, "--frames", "60")
+    panel_ok(out, 60 * 128)
+    panel_ok(run(host, "--frames", "60", "--skip", "2"), 30 * 128)
+    h1 = run_hash(out)
     h2 = run_hash(run(host, "--frames", "60"))
     assert h1 == h2 and h1 != "run_hash=00000000", f"unstable hash: {h1} {h2}"
 
@@ -307,7 +325,9 @@ def recompiler(work):
     frames = ("--frames", "120")
     host = project(rom, work / "precise", "--meta-precise")
     reference = run_hash(run(host, *frames, "--interp"))
-    native = run_hash(run(host, *frames))
+    out = run(host, *frames)
+    panel_ok(out, 120 * 128)
+    native = run_hash(out)
     assert native == reference, f"precise static walk {native} != interpreter {reference}"
     coverage = work / "exercise.cov"
     run(host, *frames, "--coverage", coverage)

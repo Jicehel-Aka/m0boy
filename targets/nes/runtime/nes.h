@@ -5,7 +5,8 @@
  * from the next line, which is when Super Mario Bros makes its own.
  * One machine per firmware (as the Z80 runtime's own machine): the runtime
  * owns it, the host feeds machine.input (the standard controller bit order)
- * and draws through machine.row(). */
+ * and takes the 160x128 picture through machine.ppu.panel/panel_out (ppu.h),
+ * machine.ppu.skip leaving a frame out. */
 #ifndef NES_RUNTIME_H
 #define NES_RUNTIME_H
 
@@ -44,10 +45,11 @@ typedef struct {
     uint32_t dots;         /* PPU dots into the current line's CPU slice */
     uint32_t line;
     uint32_t frames;       /* completed nes_frame calls (the m0input probe) */
+#ifdef NES_PPU_REFERENCE
+    /* the reference renderer's lines (the host harness), 264 pixels in
+     * fetch order: screen pixel c at c + ppu.x */
     void (*row)(void *host, unsigned line, const uint16_t *pixels);
-    /* optional: whether a source line reaches the panel (the console scales
-     * 240 lines down); the others skip composition, not the v walk */
-    int (*want_row)(void *host, unsigned line);
+#endif
     void *host;
 } nes_t;
 
@@ -56,12 +58,12 @@ extern nes_t machine;
 void nes_init(const uint8_t *prg, uint32_t prg_bytes,
               const uint8_t *chr, uint32_t chr_bytes, int vertical_mirror);
 void nes_reset(void);
-/* one frame (262 lines): emulation, then the row callback has drawn 240
- * lines (when rendering was on).  Call once per frame. */
+/* one frame (262 lines): emulation, the panel rows as their lines are
+ * done.  Call once per frame. */
 void nes_frame(void);
 /* the frame's sound: n samples of unsigned PCM at rate Hz */
 void nes_audio(uint8_t *dst, unsigned n, unsigned rate);
-/* the consoles' drivers' entry points (fixed 11025 Hz) */
+/* the consoles' drivers' entry points (the rate set, 11025 Hz until then) */
 void nes_audio_set_rate(unsigned rate);
 void nes_audio_render(uint8_t *buffer, unsigned n);
 

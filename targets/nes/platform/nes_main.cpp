@@ -2,8 +2,8 @@
  * cartridge (nes_cart.c) on the runtime in ../runtime, the consoles' LCD,
  * audio, clock and button drivers.
  *
- * The 256x240 picture is scaled to the panel by dropping whole rows
- * (240 -> 128) and sampling the columns (256 -> 160).  Buttons: the d-pad,
+ * The 256x240 picture is scaled to the panel by the PPU (ppu.h: pairs of
+ * lines blended, 240 -> 128; the 5-in-8 box filter, 256 -> 160).  Buttons: the d-pad,
  * A = A, B = B, MENU = Start, HOME = Select; HOME held half a second opens
  * the option menu (sg_menu.h, as in the other frontends). */
 #include "nes_config.h"
@@ -30,16 +30,12 @@
 #endif
 #include "m0_pad.h"
 #include "sg_frontend.h"
-/* The panel's byte order lives here, not in the runtime: ppu.c keeps its
- * palette as native RGB565 and every console's frontend converts on the way
- * out (META/ESP32's SPI takes the high byte first, Pokitto/PC the low one). */
-#define M0_PANEL_SWAP NES_PANEL_SWAP
-#include "m0_scale.h"
 extern "C" {
 extern const uint8_t nes_prg[];
 extern const uint8_t nes_chr[];
 }
-/* one displayed row at a time: 160 columns sampled from the 256 of a row */
+/* one panel row at a time: the PPU writes it, the DMA sends it while the
+ * next one is built */
 static uint16_t line_buffer[2][160] __attribute__((aligned(4)));
 static uint32_t line_sequence[2];
 static unsigned line_slot;
@@ -51,39 +47,14 @@ static int skip_video;
 static unsigned skipped_run;
 static const char version[] __attribute__((used)) = "m0boy-nes-" M0_TARGET_NAME " " GBL_GEN_VERSION;
 
-/* 240 -> 128 rows: eight panel rows hold fifteen source lines, the first
- * line of each group is kept (the nearest line of each row: groups of two
- * lines, of one when the source line is a multiple of 15).  ARMv6-M has no
- * multiply-high, so dividing would call __aeabi_uidiv; the run is walked
- * instead.  The 112 lines the panel drops still walk v and keep sprite-0
- * honest, they just skip composing the pixels. */
-static unsigned next_line, shown_rows;
-static int want_row(void *host, unsigned y) {
+/* The PPU scales the picture itself (ppu.h: 15 lines -> 8 rows, the 5-in-8
+ * box filter across), straight into the row being filled. */
+static void panel_row(void *host, unsigned r) {
     (void)host;
-    if (skip_video) return 0;
-    if (y == 0) { next_line = 0; shown_rows = 0; }
-    if (y != next_line) return 0;
-    next_line += (++shown_rows & 7u) ? 2u : 1u;
-    return 1;
-}
-/* 240 -> 128 rows: m0_nearest's column pattern (x*256 + 80)/160 keeps five
- * source columns of every eight, 0 2 3 5 6, so no division is needed. */
-static void row(void *host, unsigned y, const uint16_t *pixels) {
-    (void)host;
-    (void)y;
-    if (skip_video) return;
-    const uint16_t *src = pixels + machine.ppu.x; /* the stream from fine x */
-    uint16_t *dst = line_buffer[line_slot];
-    for (unsigned x = 0, s = 0; x < 160; x += 5, s += 8) {
-        dst[x + 0] = m0_panel(src[s + 0]);
-        dst[x + 1] = m0_panel(src[s + 2]);
-        dst[x + 2] = m0_panel(src[s + 3]);
-        dst[x + 3] = m0_panel(src[s + 5]);
-        dst[x + 4] = m0_panel(src[s + 6]);
-    }
-    line_sequence[line_slot] = m0_lcd_send_rows(dst, (uint8_t)(shown_rows - 1), 1);
+    line_sequence[line_slot] = m0_lcd_send_rows(line_buffer[line_slot], (uint8_t)r, 1);
     line_slot ^= 1;
     while ((int32_t)(m0_lcd_done_seq() - line_sequence[line_slot]) < 0) {}
+    machine.ppu.panel_out = line_buffer[line_slot];
 }
 
 /* ---- option menu (sg_menu.h) ---- */
@@ -180,12 +151,13 @@ static void frame(void *) {
 int main() {
     SG_PLATFORM_INIT();
     nes_init(nes_prg, NES_PRG_SIZE, NES_CHR_SIZE ? nes_chr : 0, NES_CHR_SIZE, NES_VERTICAL_MIRROR);
-    machine.row = row;
-    machine.want_row = want_row;
+    machine.ppu.panel = panel_row;
+    machine.ppu.panel_out = line_buffer[0];
     m0_audio_init();
     deadline = m0_micros();
     __asm__ volatile("" : : "r"(version));
     for (;;) {
+        machine.ppu.skip = (uint8_t)skip_video;
         nes_frame();
         frame(0);
     }

@@ -5,14 +5,15 @@
  *                m0_box58_fast): the SG-1000's TMS9918A (tms9918.c) and the
  *                Game Gear/Master System VDP's mode 4 and TMS9918 modes
  *                (gg_vdp.c) both send five device pixels per eight screen
- *                pixels, each the box of the source pixels it covers;
+ *                pixels, each the box of the source pixels it covers, and
+ *                so does the NES's 2C02 (ppu.c, m0_box58_fast);
  *   160 -> 128   nearest neighbour, m0_nearest (the ESPboy's ST7735 adapter,
  *                espboy_hw.cpp, whatever the core that feeds it);
  *   vertical     each frontend's line policy (meta_display.c's modes,
  *                gg_display.h's tables, sg_main.cpp's display_row); where
  *                two source lines land on one row they are blended with
  *                m0_box58_pair (lines summed before the filter) or
- *                m0_avg2_panel (two rendered rows).
+ *                m0_avg2_panel (two rendered rows: the NES, 240 -> 128).
  *
  * The device renderer and the reference renderer of a console must agree
  * pixel for pixel, so both go through these: a console picks its method

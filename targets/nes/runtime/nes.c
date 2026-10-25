@@ -41,6 +41,7 @@ void nes_bus_write(uint16_t at, uint8_t value) {
         for (unsigned i = 0; i < 256; i++)
             nes->oam[(unsigned)((nes->ppu.oam_addr + i) & 0xFF)] = nes_bus_read((uint16_t)((value << 8) | i));
         nes6502_stall(&nes->cpu, 513);
+        nes->ppu.oam_dirty = 1;
         return;
     }
     if (at == 0x4016) {
@@ -54,15 +55,12 @@ void nes_bus_write(uint16_t at, uint8_t value) {
     if (at < 0x4018) { nes_apu_write(&nes->apu, at - 0x4000, value); return; }
 }
 
+#ifdef NES_PPU_REFERENCE
 static void row_bridge(void *host, unsigned line) {
     nes_t *nes = (nes_t *)host;
     if (nes->row) nes->row(nes->host, line, nes->ppu.row);
 }
-
-static int want_bridge(void *host, unsigned line) {
-    nes_t *nes = (nes_t *)host;
-    return nes->want_row ? nes->want_row(nes->host, line) : 1;
-}
+#endif
 
 void nes_init(const uint8_t *prg, uint32_t prg_bytes,
               const uint8_t *chr, uint32_t chr_bytes, int vertical_mirror) {
@@ -84,11 +82,13 @@ void nes_init(const uint8_t *prg, uint32_t prg_bytes,
     nes->ppu.oam = nes->oam;
     nes->ppu.chr = nes->chr;
     nes->ppu.vertical_mirror = vertical_mirror != 0;
+#ifdef NES_PPU_REFERENCE
     nes->ppu.render_row = row_bridge;
-    nes->ppu.want_row = want_bridge;
-    nes->ppu.host = nes;
     nes->row = 0;
-    nes->want_row = 0;
+#endif
+    nes->ppu.panel = 0;
+    nes->ppu.skip = 0;
+    nes->ppu.host = nes;
     nes->host = 0;
     nes_reset();
 }
@@ -129,8 +129,10 @@ void nes_audio(uint8_t *dst, unsigned n, unsigned rate) {
 }
 
 /* the consoles' audio drivers (meta_audio.cpp and its like) call these two
- * without knowing the machine */
-void nes_audio_set_rate(unsigned rate) { (void)rate; }
+ * without knowing the machine; the samples are rendered at the rate the
+ * driver plays (the META's 22049 Hz: a frame asks for 367 of them) */
+static unsigned audio_rate = 11025u;
+void nes_audio_set_rate(unsigned rate) { audio_rate = rate ? rate : 11025u; }
 void nes_audio_render(uint8_t *buffer, unsigned n) {
-    nes_apu_render(&machine.apu, buffer, n, 11025u);
+    nes_apu_render(&machine.apu, buffer, n, audio_rate);
 }

@@ -120,7 +120,11 @@ built firmware in it (`ESPBOY_PIO` for the build).
   with a ROM, SMB precise = interpreter with an input script. Regions never
   tail-call (Thumb-1 GCC does not): every exit returns to the dispatcher.
   SMB must render identically through the harness before and after a
-  runtime change (hashes + PPM captures); APU changes: identical `--wav`. PC Engine is
+  runtime change (hashes + PPM captures), with `out_mismatch=0` and
+  `hit_mismatch=0` (the 160x128 panel renderer against the reference
+  lines, also with `--skip 2`); `ppu_asm.S` is compared with its C on the
+  estimator (`BENCH_PIXEL_HASH`, `NES_NO_PPU_ASM`); APU changes: identical
+  `--wav`. PC Engine is
   still at the inspection stage (`--info`, `--disasm` with the
   6502/HuC6280 decoders in `recompiler/src/cpu/`); no pipeline is wired.
   The AKA CORE v1.4 wiring follows the official Gamebuino_AKA_lib

@@ -39,11 +39,10 @@ lesquelles les firmwares Game Boy s’exécutent.
   consoles, qui réutilise les pilotes écran, son, horloge, démarrage et
   boutons de META/Pokitto. `targets/sg1000/host/` : harness et lecteur SDL.
  `targets/nes/platform/`
-  : frontend META (256×240 → 160×128, lignes entières conservées, colonnes
-  échantillonnées ; l’ordre des octets du panneau est appliqué là, par
-  `m0_panel`, la palette du runtime restant du RGB565 natif).
+  : frontend META ; l’image 160×128 vient du PPU lui-même (voir « Rendu
+  NES sur le panneau »).
   `targets/nes/host/` : harness (PPM, WAV, `--input`, `--interp`,
-  `--coverage`). Génération : `recompiler/src/system/nes/generator.cpp`
+  `--coverage`, `--skip`). Génération : `recompiler/src/system/nes/generator.cpp`
   (META et harness hôte), code 6502 recompilé par
   `recompiler/src/system/nes/emitter.cpp` (voir « Recompilation 6502 »).
 - `targets/gamegear/` : runtime Game Gear (`gg.c` bus, mapper, ports et
@@ -260,6 +259,51 @@ Mesures (SMB, 400 images avec entrées, estimateur m0bench, estimations) :
 0,2 M ; le PPU (1,3 M) domine désormais. Dans gm0 (temps estimé), SMB en
 jeu passe d'environ 14 à 22 images/s, l'APU ayant été rendu en forme close
 (sortie identique, `--wav`).
+
+### Rendu NES sur le panneau
+
+Le PPU (`ppu.c`) produit directement les 128 lignes de 160 pixels du META,
+dans l'ordre d'octets du panneau. Une ligne NES devient une rangée
+d'indices de palette (fond par une table d'expansion et une rangée de tuiles
+décodée une fois pour ses huit lignes ; sprites par masques par ligne de
+l'OAM, refaits quand l'OAM ou la taille change). Horizontalement,
+`m0_box58_fast` (256 → 160) par tables de paires de pixels ; verticalement,
+15 lignes → 8 rangées : sept paires de lignes moyennées (`m0_avg2_panel`)
+puis une ligne seule. Raccourcis exacts : un groupe d'une seule couleur, un
+groupe égal sur les deux lignes. Les boucles sont en Thumb-1 (`ppu_asm.S`,
+en flash : le code en SRAM a fauté sur META surcadencé), la version C de
+`ppu.c` leur sert de référence. Une image que le cadenceur saute ne rend
+rien : seules les lignes où le sprite 0 peut toucher calculent leur fond.
+
+Le harness compile aussi l'ancien rendu 256 pixels (`NES_PPU_REFERENCE`) et
+compare chaque rangée du panneau au filtre de ses lignes : `out_mismatch`
+(rangées différentes) et `hit_mismatch` (lignes dont le sprite 0 diffère)
+doivent valoir 0, aussi avec `--skip n` (une image sur n non affichée).
+L'asm se compare au C sur l'estimateur (`--cflag=-DBENCH_PIXEL_HASH`, puis
+`--cflag=-DNES_NO_PPU_ASM`) ; le banc rend aussi le son comme le pilote
+META (22049 Hz).
+
+Mesures du 25 octobre 2026 (SMB, profil des sessions enregistrées) :
+
+| | avant | après |
+| --- | --- | --- |
+| estimateur, 48 MHz, 1 attente, sans son (cycles/image) | 1,74 M (PPU 1,40 M) | 0,83 M (PPU 0,61 M) |
+| estimateur, 70 MHz, 2 attentes, son compris | — | 1,00 M (PPU 0,65 M, APU 0,09 M) |
+| gm0, 1-1 en courant (images de jeu/s, temps estimé) | 20,6 | 60 (≈11 % d'attente) |
+| META réel, 1-1 en courant (compteur du jeu lu par USB) | — | 59,9 |
+
+Les chiffres de l'estimateur sont des estimations ; seule la dernière ligne
+est une mesure sur console (vitesse du jeu, pas de profil). Le META tourne
+par défaut à 70 MHz (`META_OVERCLOCK`).
+
+Le son : le pilote META joue à 22049 Hz mais le runtime rendait toujours à
+11025 Hz (son deux fois trop rapide) ; les pulses avançaient d'un pas par
+`timer + 1` cycles CPU au lieu de `2 × (timer + 1)` (une octave trop haut).
+Le LFSR du bruit saute jusqu'à 14 pas d'un coup, la table de réciproques de
+`timer_run` arrondit enfin au supérieur (elle débordait en non signé et la
+boucle de correction rattrapait le quotient, jusqu'à ~16 000 tours), et les
+voix sont rendues l'une après l'autre par blocs, une voix muette n'avançant
+que de marque en marque du séquenceur.
 
 ## Vérification
 

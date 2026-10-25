@@ -14,7 +14,7 @@ extern "C" {
 
 typedef struct {
     uint16_t timer[4];    /* the loaded period (noise: in CPU cycles too) */
-    uint16_t counter[4];  /* the running period countdown */
+    uint16_t counter[4];  /* the running period countdown, in CPU cycles */
     uint8_t length[4];    /* the length counters */
     uint8_t seq[4];       /* duty position (pulses), step (triangle) */
     uint8_t enable;

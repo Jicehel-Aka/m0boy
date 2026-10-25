@@ -81,7 +81,7 @@ def build(project, out_dir, frames, opt, input_file, extra, compiler="gcc"):
     # cartridge and a bench main of their own.
     nes = os.path.isfile(os.path.join(src, "nes.c"))
     if nes:
-        nes_sources = {"nes.c", "6502.c", "ppu.c", "apu.c", "nes_cart.c", "nes_gen.c"}
+        nes_sources = {"nes.c", "6502.c", "ppu.c", "ppu_asm.S", "apu.c", "nes_cart.c", "nes_gen.c"}
         sources = sorted(os.path.join(src, f) for f in os.listdir(src) if f in nes_sources)
         sources.append(os.path.join(HERE, "bench_main_nes.c"))
         if os.path.isfile(os.path.join(src, "nes_gen.c")):  # recompiled 6502 code

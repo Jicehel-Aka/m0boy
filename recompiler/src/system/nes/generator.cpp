@@ -137,9 +137,11 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
                << "#define NES_PANEL_SWAP " << (o.target == TargetId::meta ? 1 : 0) << "\n";
         write(src / "nes_config.h", config.str());
 
-        for (const char* name : { "6502.c", "6502.h", "nes_native.h", "ppu.c", "ppu.h", "apu.c", "apu.h",
+        for (const char* name : { "6502.c", "6502.h", "nes_native.h", "ppu.c", "ppu.h", "ppu_asm.S", "apu.c", "apu.h",
                                   "nes.c", "nes.h", "nes_gen.h" })
             copy_template(tpl / "runtime" / name, src / name);
+        /* the panel renderer's box filter (ppu.c, and the harness's check) */
+        copy_template(common_dir / "runtime" / "m0_scale.h", src / "m0_scale.h");
 
         /* the recompiled 6502 code: the vectors, the profile, what they
          * reach; on a console, as much as the flash budget holds, played
@@ -151,10 +153,11 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             emit.precise = o.precise;
             const unsigned bpi = o.bytes_per_instruction ? o.bytes_per_instruction : 24u;
             /* the META's 256 KiB: the bootloader's 16, the runtime and the
-             * drivers, the cartridge (PRG, CHR) and the lookup tables */
+             * drivers (66, the panel renderer's loops included), the
+             * cartridge (PRG, CHR) and the lookup tables */
             const size_t budget = o.code_budget_bytes ? o.code_budget_bytes
                                 : o.target == TargetId::desktop ? 0
-                                : size_t(256 - 16 - 58) * 1024 - prg_size - chr_size;
+                                : size_t(256 - 16 - 66) * 1024 - prg_size - chr_size;
             emit.max_instructions = budget ? budget / bpi : 0;
             EmitStats es;
             write(src / "nes_gen.c", emit_code(prg, read_coverage(o.coverage), emit, es));
@@ -175,7 +178,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
               "add_executable(" + o.name + "_host nes_host.c ${SRC}/nes.c ${SRC}/6502.c ${SRC}/ppu.c ${SRC}/apu.c ${SRC}/nes_cart.c" +
               (native ? " ${SRC}/nes_gen.c" : "") + ")\n"
               "target_include_directories(" + o.name + "_host PRIVATE ${SRC})\n"
-              "target_compile_definitions(" + o.name + "_host PRIVATE NES_EMBEDDED NES_COVERAGE" +
+              "target_compile_definitions(" + o.name + "_host PRIVATE NES_EMBEDDED NES_COVERAGE NES_PPU_REFERENCE" +
               (native ? " NES_NATIVE" : "") + ")\n"
               "target_compile_options(" + o.name + "_host PRIVATE -w)\ntarget_link_libraries(" + o.name + "_host PRIVATE m)\n");
 
@@ -187,7 +190,6 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             const auto shared = o.meta_templates.parent_path() / "common" / "platform";
             for (const char* name : { "m0_target.h", "m0_lcd.h", "m0_clock.h", "m0_pad.h" })
                 copy_template(shared / name, src / name);
-            copy_template(common_dir / "runtime" / "m0_scale.h", src / "m0_scale.h");
             copy_template(shared / "m0_menu.h", src / "m0_menu.h");
             copy_template(shared / "m0_font.h", src / "m0_font.h");
             copy_template(shared / "m0_menu.cpp", src / "m0_menu.cpp");

@@ -3,13 +3,19 @@
  * (CPU, RAM, VRAM, palette, OAM — the same contract shape as the other
  * runtimes).  Built with the recompiled code (NES_NATIVE), --interp runs
  * the interpreter instead: the reference a precise project must match.
- * --coverage writes the interpreter's executions per PRG address. */
+ * --coverage writes the interpreter's executions per PRG address.
+ * Built with NES_PPU_REFERENCE: every panel row (160x128, ppu.h) is checked
+ * against the reference lines it comes from (out_mismatch, rows that
+ * differ; hit_mismatch, lines whose sprite-0 differs); --skip n leaves out
+ * one frame in n from the panel, as a console's pacing does. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "../runtime/nes.h"
+#define M0_PANEL_SWAP 0 /* the harness's projects are desktop ones (nes_config.h) */
+#include "m0_scale.h"
 #ifdef NES_EMBEDDED
 #include "../src/nes_config.h"
 extern const uint8_t nes_prg[];
@@ -35,6 +41,28 @@ static void on_row(void *host, unsigned line, const uint16_t *pixels) {
             frame[line][x] = pixels[x + machine.ppu.x];
 }
 
+/* the panel row against its reference lines: each through m0_box58_fast,
+ * the two of a pair averaged */
+static uint16_t panel[160];
+static uint32_t out_rows, out_mismatch;
+static void on_panel(void *host, unsigned r) {
+    (void)host;
+    const unsigned g = r >> 3, k = r & 7, a = 15 * g + 2 * k;
+    uint16_t want[160], other[160];
+    for (unsigned x = 0; x < 256; x += 8) {
+        uint32_t s[8];
+        for (unsigned i = 0; i < 8; i++) s[i] = m0_spread565(frame[a][x + i]);
+        m0_box58_fast(s, want + x / 8 * 5);
+        if (k == 7) continue;
+        for (unsigned i = 0; i < 8; i++) s[i] = m0_spread565(frame[a + 1][x + i]);
+        m0_box58_fast(s, other + x / 8 * 5);
+    }
+    if (k < 7)
+        for (unsigned i = 0; i < 160; i++) want[i] = m0_avg2_panel(want[i], other[i]);
+    out_rows++;
+    if (memcmp(want, panel, sizeof want)) out_mismatch++;
+}
+
 static uint32_t fnv(const void *data, size_t n, uint32_t h) {
     const uint8_t *p = data;
     for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u;
@@ -44,13 +72,14 @@ static uint32_t fnv(const void *data, size_t n, uint32_t h) {
 int main(int argc, char **argv) {
     const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0, *coverage = 0;
     int interp = 0;
-    unsigned frames = 60;
+    unsigned frames = 60, skip = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) ppm = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_path = argv[++i];
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) coverage = argv[++i];
+        else if (!strcmp(argv[i], "--skip") && i + 1 < argc) skip = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--interp")) interp = 1;
         else rom_path = argv[i];
     }
@@ -90,6 +119,8 @@ int main(int argc, char **argv) {
     (void)interp;
     nes_init(prg, prg_bytes, chr, chr_bytes, header[6] & 1);
     machine.row = on_row;
+    machine.ppu.panel = on_panel;
+    machine.ppu.panel_out = panel;
     /* a held-input script: "frame buttons" lines, buttons by name */
     struct { unsigned frame; uint8_t buttons; } script[4096];
     unsigned script_n = 0;
@@ -122,6 +153,7 @@ int main(int argc, char **argv) {
         machine.input = 0;
         for (unsigned i = 0; i < script_n; i++)
             if (script[i].frame == f) machine.input = script[i].buttons;
+        machine.ppu.skip = skip && f % skip == skip - 1;
         nes_frame();
         if (audio) {
             uint8_t samples[256];
@@ -206,5 +238,7 @@ int main(int argc, char **argv) {
 #endif
     printf("frames=%u cycles=%u pc=%04x frame=%u run_hash=%08x\n",
            frames, (unsigned)machine.cpu.cycles, machine.cpu.pc, machine.ppu.frame, h);
+    printf("panel_rows=%u out_mismatch=%u hit_mismatch=%u\n", (unsigned)out_rows, (unsigned)out_mismatch,
+           (unsigned)machine.ppu.hit_mismatch);
     return 0;
 }
