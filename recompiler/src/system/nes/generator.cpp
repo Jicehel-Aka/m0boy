@@ -2,8 +2,10 @@
  * data (nes_prg[], nes_chr[]), the host harness or the console drivers
  * shared with the other frontends (the PICO-8 generator's plan). */
 #include "m0boy/nes_generator.h"
+#include "m0boy/nes_emitter.h"
 #include <cctype>
 #include <cstring>
+#include <map>
 #include <fstream>
 #include <vector>
 #include <sstream>
@@ -47,7 +49,34 @@ std::string rom_data(const uint8_t* data, size_t n) {
 
 } // namespace
 
-bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& error) {
+/* the harness's coverage files: "addr hits [d]" lines, summed */
+std::vector<CoverageEntry> read_coverage(const std::vector<fs::path>& files) {
+    std::map<uint16_t, CoverageEntry> sum;
+    for (const auto& path : files) {
+        std::ifstream in(path);
+        if (!in) throw std::runtime_error("Cannot read coverage file: " + path.string());
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            std::istringstream fields(line);
+            std::string addr, flag;
+            uint64_t hits = 0;
+            if (!(fields >> addr >> hits)) throw std::runtime_error("Bad coverage line in " + path.string() + ": " + line);
+            fields >> flag;
+            const unsigned long pc = std::stoul(addr, nullptr, 16);
+            if (pc < 0x8000 || pc > 0xFFFF) continue;
+            auto& e = sum[uint16_t(pc)];
+            e.pc = uint16_t(pc);
+            e.hits = uint32_t(std::min<uint64_t>(uint64_t(e.hits) + hits, 0xFFFFFFFFu));
+            e.dynamic = e.dynamic || flag == "d";
+        }
+    }
+    std::vector<CoverageEntry> out;
+    for (const auto& [pc, e] : sum) out.push_back(e);
+    return out;
+}
+
+bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats& stats, std::string& error) {
     error.clear();
     try {
         if (o.target != TargetId::meta && o.target != TargetId::desktop)
@@ -109,8 +138,31 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
         write(src / "nes_config.h", config.str());
 
         for (const char* name : { "6502.c", "6502.h", "nes_native.h", "ppu.c", "ppu.h", "apu.c", "apu.h",
-                                  "nes.c", "nes.h" })
+                                  "nes.c", "nes.h", "nes_gen.h" })
             copy_template(tpl / "runtime" / name, src / name);
+
+        /* the recompiled 6502 code: the vectors, the profile, what they
+         * reach; on a console, as much as the flash budget holds, played
+         * code first */
+        const bool native = !o.interpret;
+        if (native) {
+            EmitOptions emit;
+            emit.prg_size = prg_size;
+            emit.precise = o.precise;
+            const unsigned bpi = o.bytes_per_instruction ? o.bytes_per_instruction : 24u;
+            /* the META's 256 KiB: the bootloader's 16, the runtime and the
+             * drivers, the cartridge (PRG, CHR) and the lookup tables */
+            const size_t budget = o.code_budget_bytes ? o.code_budget_bytes
+                                : o.target == TargetId::desktop ? 0
+                                : size_t(256 - 16 - 58) * 1024 - prg_size - chr_size;
+            emit.max_instructions = budget ? budget / bpi : 0;
+            EmitStats es;
+            write(src / "nes_gen.c", emit_code(prg, read_coverage(o.coverage), emit, es));
+            stats.compiled = es.compiled;
+            stats.covered = es.covered;
+            stats.regions = es.regions;
+            stats.entries = es.entries;
+        }
 
         /* the harness sits next to src/ in a generated project, not next to
          * ../runtime as in the checkout */
@@ -120,9 +172,11 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
               "cmake_minimum_required(VERSION 3.20)\nproject(" + o.name + "_nes_host C)\nset(CMAKE_C_STANDARD 11)\n"
               "if(NOT CMAKE_BUILD_TYPE)\n    set(CMAKE_BUILD_TYPE Release)\nendif()\n"
               "set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src)\n"
-              "add_executable(" + o.name + "_host nes_host.c ${SRC}/nes.c ${SRC}/6502.c ${SRC}/ppu.c ${SRC}/apu.c ${SRC}/nes_cart.c)\n"
+              "add_executable(" + o.name + "_host nes_host.c ${SRC}/nes.c ${SRC}/6502.c ${SRC}/ppu.c ${SRC}/apu.c ${SRC}/nes_cart.c" +
+              (native ? " ${SRC}/nes_gen.c" : "") + ")\n"
               "target_include_directories(" + o.name + "_host PRIVATE ${SRC})\n"
-              "target_compile_definitions(" + o.name + "_host PRIVATE NES_EMBEDDED)\n"
+              "target_compile_definitions(" + o.name + "_host PRIVATE NES_EMBEDDED NES_COVERAGE" +
+              (native ? " NES_NATIVE" : "") + ")\n"
               "target_compile_options(" + o.name + "_host PRIVATE -w)\ntarget_link_libraries(" + o.name + "_host PRIVATE m)\n");
 
         if (o.target == TargetId::meta) {
@@ -164,7 +218,9 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 copy_template(platform / name, src / name);
             /* the picture's columns are sampled 256 -> 160: the panel's full
              * width, the meta_lcd.cpp column window patch is not needed */
-            write(o.output / "platformio.ini", replace(replace(read(platform / "platformio.ini.in"), "@NAME@", o.name), "@COMPILER@", o.compiler));
+            auto ini = replace(replace(read(platform / "platformio.ini.in"), "@NAME@", o.name), "@COMPILER@", o.compiler);
+            if (native) ini = replace(ini, "build_flags = ", "build_flags = -DNES_NATIVE ");
+            write(o.output / "platformio.ini", ini);
             write(o.output / "gamebuino_meta.ld", replace(read(platform / "gamebuino_meta.ld.in"), "@NAME@", o.name));
             fs::create_directories(o.output / "boards");
             copy_template(platform / "boards" / "gamebuino_meta.json", o.output / "boards" / "gamebuino_meta.json");
@@ -174,9 +230,13 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
         }
         write(marker, target + "\n");
         write(o.output / "README.md",
-              "# NES project: " + o.name + "\n\nThe cartridge interpreted on the 2A03/2C02 runtime.\n\n"
+              "# NES project: " + o.name + "\n\n" +
+              (native ? std::string("The cartridge's 6502 code recompiled to C (src/nes_gen.c) on the 2A03/2C02 runtime,\n"
+                                    "the interpreter for the rest.  A profile: host/build/" + o.name + "_host --interp --coverage cov.txt\n"
+                                    "(then gbrecomp --system nes ... --coverage cov.txt).\n\n")
+                      : std::string("The cartridge interpreted on the 2A03/2C02 runtime.\n\n")) +
               "Host: cmake -G Ninja -S host -B host/build && ninja -C host/build\n"
-              "Run: host/build/" + o.name + "_host --frames 300 [--ppm shot.ppm] [--input script.txt]\n\n" +
+              "Run: host/build/" + o.name + "_host --frames 300 [--ppm shot.ppm] [--input script.txt] [--interp] [--coverage f]\n\n" +
               (o.target == TargetId::meta ? "Firmware: pio run  (flash with pio run -t upload)\n" : ""));
         return true;
     } catch (const std::exception& e) {

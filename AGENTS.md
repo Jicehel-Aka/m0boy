@@ -107,12 +107,20 @@ built firmware in it (`ESPBOY_PIO` for the build).
   for which console comes from the capability matrix in
   `recompiler/src/system.cpp` (`TargetFacts` vs `min_ram_bytes`) — see
   `--list-systems`/`--list-targets` and `docs/MULTI_SYSTEM.fr.md`.
-- NES generates interpreter projects (`--target meta` and the desktop
-  harness, `recompiler/src/system/nes/generator.cpp`, runtime in
+- NES (`--target meta` and the desktop harness,
+  `recompiler/src/system/nes/generator.cpp`, runtime in
   `targets/nes/runtime/`): 6502 with cycles, per-line 2C02 with sprite-0
-  and loopy v/t, NROM only. The e2e (`tests/test_nes_e2e.py`) holds a
-  stable `run_hash`; SMB must render identically through the harness
-  before and after a runtime change (hashes + PPM captures). PC Engine is
+  and loopy v/t, NROM only. The 6502 code is recompiled to C
+  (`recompiler/src/system/nes/emitter.cpp`, `nes_gen.h`; the dispatcher
+  and its interpreter fallback in `6502.c` under `NES_NATIVE`;
+  `--nes-interp` for an interpreter-only project); profiles come from the
+  harness (`--interp --coverage f`, then `--coverage f`). Rule: a
+  `--meta-precise` project prints the `--interp` run_hash, from the static
+  walk and with a profile (`tests/test_nes_e2e.py`, synthetic cartridges);
+  with a ROM, SMB precise = interpreter with an input script. Regions never
+  tail-call (Thumb-1 GCC does not): every exit returns to the dispatcher.
+  SMB must render identically through the harness before and after a
+  runtime change (hashes + PPM captures); APU changes: identical `--wav`. PC Engine is
   still at the inspection stage (`--info`, `--disasm` with the
   6502/HuC6280 decoders in `recompiler/src/cpu/`); no pipeline is wired.
   The AKA CORE v1.4 wiring follows the official Gamebuino_AKA_lib

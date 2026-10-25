@@ -183,6 +183,7 @@ void print_usage(const char* program) {
     std::cout << "  --meta-thumb          Experimental register-IR / Thumb-1 code generation\n";
     std::cout << "  --meta-precise        Poll interrupts before every instruction (differential tests)\n";
     std::cout << "  --meta-sync-cycles <n>  SG-1000/GG/SMS: also poll once n T-states ran since the last poll (default 40, 0: loop heads only)\n";
+    std::cout << "  --nes-interp          NES: no recompiled 6502 code, the interpreter only\n";
     std::cout << "  --meta-static         Add the code found by static analysis (no play session needed)\n";
     std::cout << "  --meta-bytes-per-instruction <n>  Flash estimate per compiled instruction (default 20)\n";
     std::cout << "  --meta-fill-bytes <n>  Game Gear/SMS: spend n more bytes of flash on ROM sectors (code unchanged)\n";
@@ -2054,6 +2055,7 @@ int main(int argc, char* argv[]) {
     std::string meta_compiler = "gcc";
     bool meta_thumb = false;
     bool meta_precise = false;
+    bool nes_interp = false;
     bool meta_static = false;
     size_t meta_bpi = 20;
     bool meta_bpi_set = false;
@@ -2226,6 +2228,8 @@ int main(int argc, char* argv[]) {
             meta_thumb = true;
         } else if (arg == "--meta-precise") {
             meta_precise = true;
+        } else if (arg == "--nes-interp") {
+            nes_interp = true;
         } else if (arg == "--meta-static") {
             meta_static = true;
         } else if (arg == "--meta-bytes-per-instruction") {
@@ -2566,12 +2570,24 @@ int main(int argc, char* argv[]) {
         options.output = output_dir.empty() ? fs::path(options.name + "_nes_" + target) : fs::path(output_dir);
         options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
         options.compiler = meta_compiler;
+        options.coverage = coverage_paths;
+        options.precise = meta_precise;
+        options.interpret = nes_interp;
+        options.code_budget_bytes = g_meta_code_budget;
+        if (meta_bpi_set) options.bytes_per_instruction = meta_bpi;
         std::string error;
-        if (!m0boy::nes::generate(rom_path, options, error)) {
+        m0boy::nes::GenerateStats stats;
+        if (!m0boy::nes::generate(rom_path, options, stats, error)) {
             std::cerr << "Error: " << error << "\n";
             return 1;
         }
         std::cout << "Generated NES project for " << target << ": " << options.output << "\n";
+        if (nes_interp)
+            std::cout << "  mode:               interpreter only (--nes-interp)\n";
+        else
+            std::cout << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played)\n"
+                      << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
+                      << (meta_precise ? "  mode:               precise (budget checked after every instruction)\n" : "");
         return 0;
     }
     if (source.id == m0boy::SystemId::pce) {

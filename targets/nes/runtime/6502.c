@@ -87,7 +87,25 @@ void nes6502_stall(nes6502_t *cpu, uint32_t cycles) { cpu->stall_pending += cycl
 #define ROL(m) nes_rol(cpu, m)
 #define ROR(m) nes_ror(cpu, m)
 
-void nes6502_run(nes6502_t *cpu, uint32_t until) {
+#ifdef NES_NATIVE
+#define NES_INTERP_FN static void nes6502_interp
+#else
+#define NES_INTERP_FN void nes6502_run
+#endif
+#ifdef NES_COVERAGE
+/* the harness's --coverage: executions per PRG address, and the addresses
+ * a dynamic transfer (RTS, RTI, JMP (ind)) landed on — the recompiler's
+ * entries the static walk cannot see */
+uint32_t nes_coverage_hits[0x8000];
+uint8_t nes_coverage_dynamic[0x8000];
+#define COVER(pc) do { if ((pc) >= 0x8000u) nes_coverage_hits[(pc) - 0x8000u]++; } while (0)
+#define COVER_DYNAMIC(pc) do { if ((pc) >= 0x8000u) nes_coverage_dynamic[(pc) - 0x8000u] = 1; } while (0)
+#else
+#define COVER(pc) do { } while (0)
+#define COVER_DYNAMIC(pc) do { } while (0)
+#endif
+
+NES_INTERP_FN(nes6502_t *cpu, uint32_t until) {
     /* signed: an instruction runs past `until`, the budget goes negative
      * and the overshoot stays in cpu->cycles, as `cycles += left` did */
     int32_t budget = (int32_t)(until - cpu->cycles);
@@ -106,15 +124,18 @@ void nes6502_run(nes6502_t *cpu, uint32_t until) {
         if (cpu->nmi_edge) {
             cpu->nmi_edge = 0;
             INTERRUPT(cpu, 0xFFFA, 0);
+            COVER_DYNAMIC(pc_);
             budget -= 7;
             continue;
         }
         if (cpu->irq_line && !(P & NES_P_I)) {
             INTERRUPT(cpu, 0xFFFE, 0);
+            COVER_DYNAMIC(pc_);
             budget -= 7;
             continue;
         }
         {
+            COVER(pc_);
             const uint8_t op = rd(cpu, pc_);
             left = 2;
             switch (op) {
@@ -302,17 +323,17 @@ void nes6502_run(nes6502_t *cpu, uint32_t until) {
             const uint16_t ptr = A_ABS();
             const uint16_t tgt = (uint16_t)(rd(cpu, ptr) |
                 (rd(cpu, (uint16_t)((ptr & 0xFF00) | ((ptr + 1) & 0xFF))) << 8));
-            pc_ = tgt; left = 5; break; }
+            pc_ = tgt; COVER_DYNAMIC(pc_); left = 5; break; }
         case 0x20: { const uint16_t ret = (uint16_t)(pc_ + 2);
             push(cpu, (uint8_t)(ret >> 8));
             push(cpu, (uint8_t)ret);
             pc_ = A_ABS(); left = 6; break; }
         case 0x60: { const uint8_t lo8 = pop(cpu), hi8 = pop(cpu);
-            pc_ = (uint16_t)((lo8 | (hi8 << 8)) + 1); left = 6; break; }
+            pc_ = (uint16_t)((lo8 | (hi8 << 8)) + 1); COVER_DYNAMIC(pc_); left = 6; break; }
         case 0x40: { P = (uint8_t)((pop(cpu) & ~NES_P_B) | NES_P_U);
             { const uint8_t lo8 = pop(cpu), hi8 = pop(cpu);
               pc_ = (uint16_t)(lo8 | (hi8 << 8)); }
-            left = 6; break; }
+            COVER_DYNAMIC(pc_); left = 6; break; }
         case 0x00: pc_++; INTERRUPT(cpu, 0xFFFE, 1); left = 7; break;
         /* flags */
         case 0x18: P &= ~NES_P_C; pc_ += 1; left = 2; break;
@@ -355,3 +376,58 @@ void nes6502_run(nes6502_t *cpu, uint32_t until) {
     cpu->s = s_;
     cpu->cycles = until - budget;
 }
+
+#ifdef NES_NATIVE
+/* Recompiled code (nes_gen.c) in front of the interpreter.  The loop is the
+ * interpreter's own — DMA stall, NMI, IRQ, then one step — except that a
+ * step is a call into the recompiled entry at pc when there is one: it runs
+ * until the slice is spent (precisely: after the instruction that spends
+ * it, the same boundary as the interpreter; otherwise at its next check),
+ * or until a transfer it cannot follow.  Anything else — code in RAM, code
+ * left out of the flash budget, undocumented opcodes — is interpreted one
+ * instruction at a time.  nes_native = 0 is the reference (--interp). */
+#include "nes_gen.h"
+
+int nes_native = 1;
+#ifdef NES_GEN_STATS
+uint32_t nes_gen_calls, nes_gen_steps; /* the harness prints them */
+#define GEN_STAT(n) ((n)++)
+#else
+#define GEN_STAT(n) ((void)0)
+#endif
+
+void nes6502_run(nes6502_t *cpu, uint32_t until) {
+    if (!nes_native) { nes6502_interp(cpu, until); return; }
+    int32_t budget = (int32_t)(until - cpu->cycles);
+    while (budget > 0) {
+        if (cpu->stall_pending) {
+            budget -= (int32_t)cpu->stall_pending;
+            cpu->stall_pending = 0;
+            if (budget <= 0) break;
+        }
+        if (cpu->nmi_edge || (cpu->irq_line && !(cpu->p & NES_P_I))) {
+            const uint16_t vector = cpu->nmi_edge ? 0xFFFAu : 0xFFFEu;
+            cpu->nmi_edge = 0;
+            nes_push(cpu, (uint8_t)(cpu->pc >> 8));
+            nes_push(cpu, (uint8_t)cpu->pc);
+            nes_push(cpu, (uint8_t)(cpu->p | NES_P_U));
+            cpu->p |= NES_P_I;
+            cpu->pc = (uint16_t)(nes_rd(cpu, vector) | (nes_rd(cpu, (uint16_t)(vector + 1)) << 8));
+            budget -= 7;
+            continue;
+        }
+        const int entry = nes_gen_lookup(cpu->pc);
+        if (entry >= 0) {
+            GEN_STAT(nes_gen_calls);
+            budget = nes_gen_enter(entry, budget);
+            continue;
+        }
+        /* one instruction: a budget of one cycle is spent by any of them */
+        GEN_STAT(nes_gen_steps);
+        cpu->cycles = until - (uint32_t)budget;
+        nes6502_interp(cpu, cpu->cycles + 1u);
+        budget = (int32_t)(until - cpu->cycles);
+    }
+    cpu->cycles = until - (uint32_t)budget;
+}
+#endif

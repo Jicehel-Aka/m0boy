@@ -42,6 +42,7 @@ add_library(gbrecomp_core STATIC
     src/system/sg1000/generator.cpp
     src/system/sg1000/emitter.cpp
     src/system/pico8/generator.cpp
+    src/system/nes/emitter.cpp
     src/system/nes/generator.cpp
     src/symbol_table.cpp
     src/native_patch.cpp

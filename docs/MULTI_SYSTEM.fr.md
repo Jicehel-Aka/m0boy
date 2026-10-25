@@ -42,8 +42,10 @@ lesquelles les firmwares Game Boy s’exécutent.
   : frontend META (256×240 → 160×128, lignes entières conservées, colonnes
   échantillonnées ; l’ordre des octets du panneau est appliqué là, par
   `m0_panel`, la palette du runtime restant du RGB565 natif).
-  `targets/nes/host/` : harness (PPM, WAV, `--input`). Génération :
-  `recompiler/src/system/nes/generator.cpp` (META et harness hôte).
+  `targets/nes/host/` : harness (PPM, WAV, `--input`, `--interp`,
+  `--coverage`). Génération : `recompiler/src/system/nes/generator.cpp`
+  (META et harness hôte), code 6502 recompilé par
+  `recompiler/src/system/nes/emitter.cpp` (voir « Recompilation 6502 »).
 - `targets/gamegear/` : runtime Game Gear (`gg.c` bus, mapper, ports et
   moteur ; `gg_vdp.c` VDP mode 4 ; `gg_psg.c` ; `gg_render_asm.S` ;
   `sg_gen.h` pour le code généré), frontend des consoles
@@ -79,7 +81,7 @@ la table des faits, et un refus dit lequel des deux manque et pourquoi
 | gameboy, sg1000, gg, sms | desktop, meta, pokitto, espboy, pc, odroid, aka | — |
 | msx | desktop, meta, pokitto | (espboy et pc non câblés) |
 | pico8 | desktop, meta, pokitto, espboy | (pc non câblé) |
-| nes | desktop, meta (interprète 6502, pas encore de code recompilé) | pce > 32 Kio RAM |
+| nes | desktop, meta (6502 recompilé, interpréteur de repli) | pce > 32 Kio RAM |
 
 Les cibles pc (fenêtre SDL2, la carte en fichier `sd.img`), odroid
 (ODROID-GO : ESP32, ILI9341 320×240, carte SD, DAC) et aka (Gamebuino
@@ -223,6 +225,41 @@ Le PSG produit ses échantillons par blocs : un passage de Bresenham par bloc
 donne les ticks de chaque échantillon, partagés par les quatre canaux ; un
 canal muet n'avance que son compteur (une division). La sortie est identique
 au calcul échantillon par échantillon.
+
+## Recompilation 6502 (NES)
+
+Le code NES suit le même plan que le Z80, avec un runtime plus simple :
+NROM ne change jamais de banque, la PRG est une constante.
+
+- **Sélection** : les vecteurs (RESET, NMI, IRQ), les adresses du profil
+  (harness `--interp --coverage f`, lignes `adresse exécutions [d]`, `d`
+  pour une adresse atteinte par RTS, RTI, `JMP (ind)` ou une interruption),
+  puis ce qu'elles atteignent statiquement ; sur console, les jouées
+  d'abord, dans la limite de la flash (24 octets estimés par instruction,
+  `--meta-code-budget`, `--meta-bytes-per-instruction`). Les opcodes non
+  documentés, BRK et le code en RAM restent à l'interpréteur.
+- **Régions** : instructions voisines en fonctions C, `goto` internes,
+  `switch` sur l'entrée. Toute sortie revient au répartiteur (GCC Thumb-1
+  ne fait jamais d'appel terminal : une chaîne d'appels ferait grandir la
+  pile C) ; une cible connue d'une autre région est laissée en indice,
+  vérifié contre `pc` avant la table de hachage.
+- **État** : A, X, Y, S en variables locales, P éclaté (N et Z du dernier
+  résultat, C, V, I/D) et recomposé à la sortie.
+- **Sémantique** : celle de l'interpréteur (`6502.c`), cycle pour cycle :
+  mêmes comptes, mêmes pénalités de page, mêmes accès au bus dans le même
+  ordre ; les lectures de PRG à adresse constante sont repliées, la RAM est
+  indexée directement, le reste passe par `nes_bus_read`/`nes_bus_write`.
+- **Temps** : `--meta-precise` vérifie le budget après chaque instruction
+  (la tranche finit sur la même instruction que l'interpréteur, même
+  `run_hash`) ; le mode normal ne le vérifie qu'aux étiquettes et au plus
+  tous les 48 cycles, une tranche débordant d'autant. Une écriture dans
+  `$4014` (DMA OAM), CLI et PLP (IRQ) rendent la main au répartiteur.
+
+Mesures (SMB, 400 images avec entrées, estimateur m0bench, estimations) :
+2,55 M → 1,64 M cycles/image, la part 6502 passant d'environ 1,12 M à
+0,2 M ; le PPU (1,3 M) domine désormais. Dans gm0 (temps estimé), SMB en
+jeu passe d'environ 14 à 22 images/s, l'APU ayant été rendu en forme close
+(sortie identique, `--wav`).
 
 ## Vérification
 

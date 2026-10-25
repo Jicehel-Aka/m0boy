@@ -1,7 +1,9 @@
 /* NES host harness: an iNES cartridge in the machine, N frames out, the
  * last frame as a PPM, the sound as a WAV, and the run's fingerprint
  * (CPU, RAM, VRAM, palette, OAM — the same contract shape as the other
- * runtimes, one engine only until a recompiler joins). */
+ * runtimes).  Built with the recompiled code (NES_NATIVE), --interp runs
+ * the interpreter instead: the reference a precise project must match.
+ * --coverage writes the interpreter's executions per PRG address. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +17,14 @@ extern const uint8_t nes_chr[];
 #endif
 
 #define AUDIO_RATE 11025u
+
+#ifdef NES_NATIVE
+extern int nes_native;
+#endif
+#ifdef NES_COVERAGE
+extern uint32_t nes_coverage_hits[0x8000];
+extern uint8_t nes_coverage_dynamic[0x8000];
+#endif
 
 static uint16_t frame[240][256];
 static void on_row(void *host, unsigned line, const uint16_t *pixels) {
@@ -32,13 +42,16 @@ static uint32_t fnv(const void *data, size_t n, uint32_t h) {
 }
 
 int main(int argc, char **argv) {
-    const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0;
+    const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0, *coverage = 0;
+    int interp = 0;
     unsigned frames = 60;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) ppm = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_path = argv[++i];
+        else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) coverage = argv[++i];
+        else if (!strcmp(argv[i], "--interp")) interp = 1;
         else rom_path = argv[i];
     }
     uint8_t header[16] = {0};
@@ -67,6 +80,14 @@ int main(int argc, char **argv) {
     fclose(file);
     }
 
+#ifdef NES_NATIVE
+    /* the profile counts the interpreter's steps: every instruction then */
+    nes_native = !(interp || coverage);
+#endif
+#ifndef NES_COVERAGE
+    if (coverage) { fprintf(stderr, "built without NES_COVERAGE\n"); return 2; }
+#endif
+    (void)interp;
     nes_init(prg, prg_bytes, chr, chr_bytes, header[6] & 1);
     machine.row = on_row;
     /* a held-input script: "frame buttons" lines, buttons by name */
@@ -149,6 +170,17 @@ int main(int argc, char **argv) {
             fclose(out);
         }
     }
+#ifdef NES_COVERAGE
+    if (coverage) {
+        FILE *out = fopen(coverage, "w");
+        if (!out) { fprintf(stderr, "cannot write %s\n", coverage); return 2; }
+        fprintf(out, "# m0boy NES coverage: address executions [d = reached by RTS/RTI/JMP (ind)/interrupt]\n");
+        for (unsigned i = 0; i < 0x8000; i++)
+            if (nes_coverage_hits[i])
+                fprintf(out, "%04X %u%s\n", 0x8000u + i, (unsigned)nes_coverage_hits[i], nes_coverage_dynamic[i] ? " d" : "");
+        fclose(out);
+    }
+#endif
     uint32_t h = 2166136261u;
     /* registers field by field: the struct now carries the bus's fast-path
      * pointers, and hashing its bytes would hash addresses and padding */
@@ -165,6 +197,13 @@ int main(int argc, char **argv) {
     h = fnv(machine.ppu.palette, 32, h);
     h = fnv(machine.oam, 256, h);
     h = fnv(frame, sizeof frame, h);
+#ifdef NES_GEN_STATS
+    {
+        extern uint32_t nes_gen_calls, nes_gen_steps;
+        printf("dispatch: %u calls into recompiled code, %u interpreted steps\n",
+               (unsigned)nes_gen_calls, (unsigned)nes_gen_steps);
+    }
+#endif
     printf("frames=%u cycles=%u pc=%04x frame=%u run_hash=%08x\n",
            frames, (unsigned)machine.cpu.cycles, machine.cpu.pc, machine.ppu.frame, h);
     return 0;

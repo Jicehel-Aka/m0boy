@@ -22,6 +22,14 @@ static const uint8_t length_table[32] = {
 };
 
 #define NES_APU_CPU_HZ 1789773u
+/* 128 + mix * 120 / 42: the sum's 43 values, no division per sample */
+static const uint8_t mix_level[43] = {
+#define L(m) (uint8_t)(128 + (m) * 120 / 42)
+    L(0), L(1), L(2), L(3), L(4), L(5), L(6), L(7), L(8), L(9), L(10), L(11), L(12), L(13), L(14),
+    L(15), L(16), L(17), L(18), L(19), L(20), L(21), L(22), L(23), L(24), L(25), L(26), L(27), L(28),
+    L(29), L(30), L(31), L(32), L(33), L(34), L(35), L(36), L(37), L(38), L(39), L(40), L(41), L(42),
+#undef L
+};
 
 void nes_apu_reset(nes_apu_t *apu) {
     for (unsigned i = 0; i < 4; i++) {
@@ -119,32 +127,64 @@ static void sweep_clock(nes_apu_t *apu, unsigned i) {
     }
 }
 
+/* A channel's timer over `run` cycles, in closed form: the per-cycle rule
+ * is "at 0, reload the period and step, else count down", so the first
+ * step comes after counter + 1 cycles and the next ones every timer + 1.
+ * Returns the steps taken; the counter is left where the cycles leave it. */
+static inline unsigned timer_run(uint16_t *counter, unsigned timer, unsigned run) {
+    unsigned c = *counter;
+    if (run <= c) { *counter = (uint16_t)(c - run); return 0; }
+    run -= c + 1;
+    unsigned steps = 1;
+    if (timer < 32) { /* short periods (or none: a silent voice's 0) divide */
+        steps += run / (timer + 1);
+        run %= timer + 1;
+    } else {
+        while (run > timer) { run -= timer + 1; steps++; }
+    }
+    *counter = (uint16_t)(timer - run);
+    return steps;
+}
+
 void nes_apu_render(nes_apu_t *apu, uint8_t *dst, unsigned n, unsigned rate) {
-    /* whole CPU cycles per sample, the remainder carried */
+    /* whole CPU cycles per sample, the remainder carried: the quotient and
+     * the remainder once, an add and a compare per sample (sample_frac
+     * stays below rate) */
+    const unsigned whole = NES_APU_CPU_HZ / rate, part = NES_APU_CPU_HZ % rate;
     for (unsigned s = 0; s < n; s++) {
-        apu->sample_frac += NES_APU_CPU_HZ;
-        unsigned cycles = apu->sample_frac / rate;
-        apu->sample_frac %= rate;
-        for (unsigned c = 0; c < cycles; c++) {
+        apu->sample_frac += part;
+        unsigned left = whole;
+        if (apu->sample_frac >= rate) { apu->sample_frac -= rate; left++; }
+        /* the channels run in closed form up to the next frame-sequencer
+         * mark, which then applies after that cycle's steps: the same
+         * order as clocking them cycle by cycle (1.8 million iterations a
+         * second, more than the SAMD21 has) */
+        while (left) {
+            unsigned run = left;
+            const unsigned to_env = NES_APU_CPU_HZ / 240 - apu->env_div;
+            const unsigned to_len = NES_APU_CPU_HZ / 120 - apu->len_div;
+            if (run > to_env) run = to_env;
+            if (run > to_len) run = to_len;
+            left -= run;
             /* the pulses and the triangle step when their period elapses */
-            for (unsigned i = 0; i < 2; i++) {
-                if (!apu->counter[i]--) { apu->counter[i] = apu->timer[i]; apu->seq[i]++; apu->seq[i] &= 7; }
-            }
-            if (!apu->counter[2]--) {
-                apu->counter[2] = apu->timer[2];
+            for (unsigned i = 0; i < 2; i++)
+                apu->seq[i] = (uint8_t)((apu->seq[i] + timer_run(&apu->counter[i], apu->timer[i], run)) & 7);
+            /* the triangle's step: its condition holds for the whole run
+             * (only the else branch changes it, and only to keep it false) */
+            const unsigned k = timer_run(&apu->counter[2], apu->timer[2], run);
+            if (k) {
                 if (apu->length[2] && (apu->triangle_linear || apu->triangle_reload))
-                    apu->seq[2] = (uint8_t)((apu->seq[2] + 1) & 31);
+                    apu->seq[2] = (uint8_t)((apu->seq[2] + k) & 31);
                 else if (!apu->triangle_halt) apu->triangle_reload = 0;
             }
-            if (!apu->counter[3]--) {
-                apu->counter[3] = apu->timer[3];
+            for (unsigned k = timer_run(&apu->counter[3], apu->timer[3], run); k; k--) {
                 const uint16_t bit = (uint16_t)((apu->lfsr ^ (apu->lfsr >> 1)) & 1);
                 apu->lfsr = (uint16_t)((apu->lfsr >> 1) | (bit << 14));
             }
             /* the frame rates: 240 Hz envelopes, 120 Hz lengths and sweeps */
-            apu->env_div++;
+            apu->env_div += run;
             if (apu->env_div >= NES_APU_CPU_HZ / 240) { apu->env_div = 0; envelope_clock(apu); }
-            apu->len_div++;
+            apu->len_div += run;
             if (apu->len_div >= NES_APU_CPU_HZ / 120) {
                 apu->len_div = 0;
                 for (unsigned i = 0; i < 4; i++) {
@@ -164,6 +204,6 @@ void nes_apu_render(nes_apu_t *apu, uint8_t *dst, unsigned n, unsigned rate) {
         if (apu->length[2]) mix += triangle_steps[apu->seq[2]] >> 1;
         if (apu->length[3] && !(apu->lfsr & 1)) mix += apu->envelope3_const ? apu->envelope3_vol : apu->envelope3;
         /* two pulses up to 15, the triangle up to 7, the noise up to 15 */
-        dst[s] = (uint8_t)(128 + (mix > 42 ? 42 : mix) * 120 / 42);
+        dst[s] = mix_level[mix > 42 ? 42 : mix];
     }
 }

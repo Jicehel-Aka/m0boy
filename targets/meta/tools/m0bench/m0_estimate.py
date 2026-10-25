@@ -81,9 +81,11 @@ def build(project, out_dir, frames, opt, input_file, extra, compiler="gcc"):
     # cartridge and a bench main of their own.
     nes = os.path.isfile(os.path.join(src, "nes.c"))
     if nes:
-        nes_sources = {"nes.c", "6502.c", "ppu.c", "apu.c", "nes_cart.c"}
+        nes_sources = {"nes.c", "6502.c", "ppu.c", "apu.c", "nes_cart.c", "nes_gen.c"}
         sources = sorted(os.path.join(src, f) for f in os.listdir(src) if f in nes_sources)
         sources.append(os.path.join(HERE, "bench_main_nes.c"))
+        if os.path.isfile(os.path.join(src, "nes_gen.c")):  # recompiled 6502 code
+            extra = extra + ["-DNES_NATIVE"]
     else:
         sources = sorted(os.path.join(src, f) for f in os.listdir(src)
                          if (f.endswith(".c") or f.endswith(".S")) and (f.startswith("gbl_") or f.endswith("_gen.c") or f.endswith("_rom.c")))
@@ -377,7 +379,8 @@ def main():
                     f.write("%d %.0f\n" % (i + 1, b - a))
     groups = collections.Counter()
     for name, c in per_func.items():
-        if name.startswith("r") and "_" in name and name[1:].split("_")[0].isdigit():
+        if (name.startswith("r") and "_" in name and name[1:].split("_")[0].isdigit()) or \
+                (name.startswith("r_") and name[2:].isdigit()):  # NES regions: r_<n>
             groups["generated code"] += c
         elif name.startswith(("pokitto_", "gbl_platform_line", "meta_display", "meta_smooth", "smooth_")) or \
                 name in ("at", "command", "data", "reg", "strip_slot", "claim_strip"):
@@ -386,7 +389,8 @@ def main():
             groups["PPU"] += c
         elif name == "gbl_interp_block":
             groups["interpreter"] += c
-        elif name in ("nes6502_run", "nes_bus_read", "nes_bus_write"):
+        elif name in ("nes6502_run", "nes6502_interp", "nes_bus_read", "nes_bus_write",
+                      "nes_gen_lookup", "nes_gen_enter"):
             groups["6502 + bus"] += c
         elif name.startswith("nes_ppu") or name == "render_line_nes":
             groups["PPU"] += c

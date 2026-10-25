@@ -95,6 +95,7 @@ void nes_init(const uint8_t *prg, uint32_t prg_bytes,
 
 void nes_reset(void) {
     nes_t *nes = &machine;
+    __asm__ volatile("" : : "r"(&nes_input_probe));
     nes6502_reset(&nes->cpu);
     nes_ppu_reset(&nes->ppu);
     nes_apu_reset(&nes->apu);
