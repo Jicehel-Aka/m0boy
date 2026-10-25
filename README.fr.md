@@ -33,6 +33,7 @@ l'ESPboy, une image à flasher).
 | Master System | oui | oui | oui |
 | MSX1 (mappers ASCII8/16, Konami et Konami SCC ; AY-3-8910 et SCC ; expérimental) | oui | oui | — |
 | PICO-8 | oui | oui | oui |
+| Vectrex (cartouches jusqu'à 32 Kio, ROM système intégrée ; expérimental) | oui | — | — |
 
 MSX1 est vérifié contre openMSX (VRAM des écrans titres) et contre le rendu
 de référence de l'hôte ; Gradius 2 (128 Kio, Konami SCC) a tenu 60 images de
@@ -43,6 +44,15 @@ d'échantillon une à une : sur 3 600 images gm0 de Gradius 2, 3,4 s de moins
 dans les routines de tuiles et 0,8 s de moins dans la génération audio
 (estimations), l'écran et la RAM du jeu restant identiques à la build
 précédente à la même image. Notes : `docs/MSX.fr.md`.
+
+Vectrex (expérimental) : le 6809 est recompilé en C devant l'interpréteur,
+la VIA (en Thumb-1 sur la META) et l'AY-3-8912 sont émulés, le faisceau est
+tracé en 128×128 ; la ROM système est intégrée au firmware généré
+(`--bios`), la cible PC la lit au lancement. Sur une META, la démo de
+Berzerk tourne à 36 images par seconde sur 50 (mesuré ; 19 avec
+l'interpréteur seul). Le projet `--meta-precise` donne le même run_hash que
+`--interp` sur les 231 cartouches de la collection locale (2 000 trames).
+Notes : `docs/VECTREX.fr.md`.
 
 Chaque cœur a le même menu d'options (HOME maintenu ; C sur la Pokitto) :
 reprendre, redémarrer, **10 emplacements d'états**, volume, vitesse,

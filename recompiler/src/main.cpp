@@ -10,6 +10,7 @@
 #include "m0boy/pico8_generator.h"
 #include "m0boy/nes_generator.h"
 #include "m0boy/pce_generator.h"
+#include "m0boy/vectrex_generator.h"
 #include "m0boy/cpu/huc6280/decoder.h"
 #include "m0boy/cpu/m6502/decoder.h"
 #include "m0boy/cpu/z80/decoder.h"
@@ -166,7 +167,7 @@ void print_usage(const char* program) {
     std::cout << "  --trace               Trace execution analysis (very verbose)\n";
     std::cout << "  --limit <n>           Limit analysis to n instructions\n";
     std::cout << "  -j, --jobs <n>        Parallel workers for codegen and batch generation (0=auto)\n";
-    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8|msx|nes|pce  Source console (default auto; legacy GB fallback)\n";
+    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8|msx|nes|pce|vectrex  Source console (default auto; legacy GB fallback)\n";
     std::cout << "  --cpu sm83|z80|6502|huc6280  Check the CPU required by the source console\n";
     std::cout << "  --list-systems       List source consoles, CPUs and available pipelines\n";
     std::cout << "  --list-targets       List destination consoles and their hardware facts\n";
@@ -184,7 +185,9 @@ void print_usage(const char* program) {
     std::cout << "  --meta-thumb          Experimental register-IR / Thumb-1 code generation\n";
     std::cout << "  --meta-precise        Poll interrupts before every instruction (differential tests)\n";
     std::cout << "  --meta-sync-cycles <n>  SG-1000/GG/SMS: also poll once n T-states ran since the last poll (default 40, 0: loop heads only)\n";
-    std::cout << "  --nes-interp          NES: no recompiled 6502 code, the interpreter only\n";
+    std::cout << "  --nes-interp          NES, Vectrex: no recompiled code, the interpreter only (alias --interp)\n";
+    std::cout << "  --bios <file>         Vectrex: the system ROM (4 or 8 KiB) a META firmware embeds\n";
+    std::cout << "  --full-boot           Vectrex: keep the BIOS intro\n";
     std::cout << "  --meta-static         Add the code found by static analysis (no play session needed)\n";
     std::cout << "  --meta-bytes-per-instruction <n>  Flash estimate per compiled instruction (default 20)\n";
     std::cout << "  --meta-fill-bytes <n>  Game Gear/SMS: spend n more bytes of flash on ROM sectors (code unchanged)\n";
@@ -1814,6 +1817,9 @@ static fs::path resolve_meta_dir(const char* argv0, const fs::path& explicit_dir
 /* --meta-code-budget: flash bytes for generated code (0 = derived from the
  * ROM size, see MetaTargetOptions::code_budget_bytes). */
 static size_t g_meta_code_budget = 0;
+/* Vectrex: the system ROM a console firmware embeds, the BIOS intro kept */
+static fs::path g_vectrex_bios;
+static bool g_vectrex_full_boot = false;
 static long g_meta_sync_cycles = -1; /* SG/GG fast mode; -1: the emitter's default */
 static int g_meta_stream = -1;                  /* --meta-stream auto|on|off */
 static std::vector<fs::path> g_rom_profiles;    /* --rom-profile FILE */
@@ -2229,8 +2235,16 @@ int main(int argc, char* argv[]) {
             meta_thumb = true;
         } else if (arg == "--meta-precise") {
             meta_precise = true;
-        } else if (arg == "--nes-interp") {
+        } else if (arg == "--nes-interp" || arg == "--interp") {
             nes_interp = true;
+        } else if (arg == "--bios") {
+            if (i + 1 >= argc) {
+                std::cerr << "Error: --bios requires a file\n";
+                return 1;
+            }
+            g_vectrex_bios = argv[++i];
+        } else if (arg == "--full-boot") {
+            g_vectrex_full_boot = true;
         } else if (arg == "--meta-static") {
             meta_static = true;
         } else if (arg == "--meta-bytes-per-instruction") {
@@ -2588,6 +2602,49 @@ int main(int argc, char* argv[]) {
             std::cout << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played)\n"
                       << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
                       << (meta_precise ? "  mode:               precise (budget checked after every instruction)\n" : "");
+        return 0;
+    }
+    if (source.id == m0boy::SystemId::vectrex) {
+        if (!source.supports(*m0boy::parse_target(target)))
+            return refuse_target(source, *m0boy::parse_target(target), target);
+        if (disasm_only || analyze_only || meta_thumb || g_meta_pack || g_meta_stream != -1 ||
+            !g_rom_profiles.empty() || g_meta_resident || emit_android_project ||
+            !native_patch_manifest_path.empty() || specific_bank > 0) {
+            std::cerr << "Error: unsupported Vectrex option; use --target, --bios, --full-boot, --coverage, "
+                         "--meta-precise, --nes-interp and --meta-compiler\n";
+            return 1;
+        }
+        m0boy::vectrex::GenerateOptions options;
+        options.target = *m0boy::parse_target(target);
+        options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string()) : output_prefix;
+        if (options.name.empty() || sanitize_prefix(options.name) != options.name) {
+            std::cerr << "Error: invalid Vectrex output prefix\n";
+            return 1;
+        }
+        options.output = output_dir.empty() ? fs::path(options.name + "_vectrex_" + target) : fs::path(output_dir);
+        options.targets_dir = resolve_meta_dir(argv[0], meta_dir).parent_path();
+        options.compiler = meta_compiler;
+        options.bios = g_vectrex_bios;
+        options.full_boot = g_vectrex_full_boot;
+        options.coverage = coverage_paths;
+        options.precise = meta_precise;
+        options.interpret = nes_interp;
+        options.code_budget_bytes = g_meta_code_budget;
+        if (meta_bpi_set) options.bytes_per_instruction = unsigned(meta_bpi);
+        std::string error;
+        m0boy::vectrex::GenerateStats stats;
+        if (!m0boy::vectrex::generate(rom_path, options, stats, error)) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        std::cout << "Generated Vectrex project for " << target << ": " << options.output << "\n";
+        if (nes_interp)
+            std::cout << "  mode:               interpreter only (--nes-interp)\n";
+        else
+            std::cout << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played)"
+                      << (stats.bios_compiled ? ", system ROM included" : ", cartridge only") << "\n"
+                      << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
+                      << (meta_precise ? "  mode:               precise (slice checked after every instruction)\n" : "");
         return 0;
     }
     if (source.id == m0boy::SystemId::pce) {

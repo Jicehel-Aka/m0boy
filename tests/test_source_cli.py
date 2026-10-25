@@ -18,7 +18,8 @@ listing = run("--list-systems", contains="sg1000 cpu=z80 inspect=yes disasm=yes 
 assert "gameboy cpu=sm83 inspect=yes disasm=yes codegen=desktop,meta,pokitto" in listing
 assert "pico8 cpu=lua inspect=yes disasm=no codegen=desktop,meta,pokitto,espboy" in listing
 assert "nes cpu=6502 inspect=yes disasm=yes codegen=desktop,meta,pokitto" in listing
-assert "pce cpu=huc6280 inspect=yes disasm=yes codegen=unavailable" in listing
+assert "pce cpu=huc6280 inspect=yes disasm=yes codegen=desktop" in listing
+assert "vectrex cpu=6809 inspect=yes disasm=no codegen=meta,pc" in listing
 targets = run("--list-targets", contains='meta host=no ram=32K')
 assert 'desktop host=yes' in targets and 'pc host=yes' in targets
 assert 'odroid host=no ram=320K psram=4096K' in targets and 'aka host=no ram=320K psram=8192K' in targets
@@ -76,8 +77,23 @@ with tempfile.TemporaryDirectory() as temporary:
     pce = root / "synthetic.pce"
     pce.write_bytes(bytes(262144))
     run(pce, "--info", contains="system=pce\ncpu=huc6280")
-    run(pce, "--target", "odroid", ok=False, contains="under construction; use --info")
+    run(pce, "--target", "odroid", ok=False, contains="not available for --target odroid")
     assert "cpu=huc6280" in run(pce, "--disasm", "--limit", "1") or True
+    vec = root / "synthetic.vec"
+    vec.write_bytes(bytes([0x67, 0x20, 0x47, 0x43, 0x45]))
+    run(vec, "--info", contains="system=vectrex\ncpu=6809")
+    run(vec, "--target", "pokitto", ok=False, contains="not available for --target pokitto")
+    vec_project = root / "vectrex_pc"
+    run(vec, "--target", "pc", "-o", vec_project, contains="Generated Vectrex project")
+    assert (vec_project / "src/m6809.c").is_file() and (vec_project / "CMakeLists.txt").is_file()
+    # the META firmware embeds the system ROM: required, never guessed
+    run(vec, "--target", "meta", "-o", root / "vectrex_meta0", ok=False, contains="needs the Vectrex system ROM")
+    bios = root / "system.bin"
+    bios.write_bytes(bytes(4096))
+    vec_meta = root / "vectrex_meta"
+    run(vec, "--target", "meta", "--bios", bios, "-o", vec_meta, contains="Generated Vectrex project for meta")
+    assert (vec_meta / "src/vx_main.cpp").is_file() and (vec_meta / "platformio.ini").is_file()
+    assert "vectrex_bios[8192]" in (vec_meta / "src/vx_cart.c").read_text()
     # GB is wired for the PC target: the project generates.
     run(gb, "--target", "pc", "-o", root / "gb_pc", contains="gbl project written")
     assert (root / "gb_pc/src/gbl_config.h").is_file()

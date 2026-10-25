@@ -25,6 +25,12 @@ on the ESPboy, an image to flash).
 
 ## What runs where
 
+An experimental Vectrex pipeline is available for the META (the system ROM
+built into the generated firmware, `--bios`) and the PC target (BIOS read at
+run time): the 6809 recompiled to C in front of the interpreter. On a META,
+Berzerk's demo runs at 36 frames/s of 50 (measured; 19 with the interpreter
+alone), the VIA now being the larger cost. See [Vectrex notes](docs/VECTREX.fr.md).
+
 | Source | META | Pokitto | ESPboy |
 |---|---|---|---|
 | Game Boy (DMG) | yes | yes | yes |
@@ -34,6 +40,7 @@ on the ESPboy, an image to flash).
 | MSX1 (ASCII8/16, Konami and Konami SCC mappers; AY-3-8910 and SCC sound; experimental) | yes | yes | — |
 | PICO-8 | yes | yes | yes |
 | NES (NROM: 16/32 KiB PRG, 8 KiB CHR ROM; experimental) | yes | yes | — |
+| Vectrex (cartridges up to 32 KiB, system ROM built in; experimental) | yes | — | — |
 
 MSX1 is checked against openMSX (VRAM of the title screens) and against the
 host reference renderer; Gradius 2 (128 KiB, Konami SCC) held 60 game frames

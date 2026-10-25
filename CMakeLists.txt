@@ -84,6 +84,12 @@ if(BUILD_TESTS)
     add_executable(test_sg1000_runtime tests/test_sg1000_runtime.c)
     target_link_libraries(test_sg1000_runtime PRIVATE m0boy_sg1000_runtime)
     add_test(NAME sg1000_runtime_devices COMMAND test_sg1000_runtime)
+    # the Vectrex core: the run loop against the reference in lockstep
+    add_executable(test_vectrex_core tests/test_vectrex_core.c
+        targets/vectrex/runtime/vectrex.c targets/vectrex/runtime/m6809.c
+        targets/vectrex/runtime/m6809_run.c targets/vectrex/runtime/via.c
+        targets/vectrex/runtime/psg.c)
+    add_test(NAME vectrex_core_smoke COMMAND test_vectrex_core)
     add_executable(test_gg_runtime tests/test_gg_runtime.c)
     target_link_libraries(test_gg_runtime PRIVATE m0boy_gg_runtime)
     add_test(NAME gg_sms_runtime_reference COMMAND test_gg_runtime)
@@ -142,6 +148,10 @@ if(BUILD_TESTS)
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_pce_e2e.py"
         )
         set_tests_properties(pce_end_to_end PROPERTIES TIMEOUT 300)
+        add_test(NAME vectrex_end_to_end
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_vectrex_e2e.py"
+        )
+        set_tests_properties(vectrex_end_to_end PROPERTIES TIMEOUT 600)
         add_test(NAME pico8_native_end_to_end
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_pico8_e2e.py"
                     --recompiler "$<TARGET_FILE:m0recomp>")

@@ -82,6 +82,7 @@ la table des faits, et un refus dit lequel des deux manque et pourquoi
 | pico8 | desktop, meta, pokitto, espboy | (pc non câblé) |
 | nes | desktop, meta, pokitto (6502 recompilé, interpréteur de repli) | — |
 | pce | desktop (interpréteur HuC6280 ; voir `docs/PCE.fr.md`) | consoles > 32 Kio RAM, VRAM 64 Kio |
+| vectrex | meta, pc (6809 recompilé, interpréteur de repli ; voir `docs/VECTREX.fr.md`) | (pokitto, espboy et ESP32 non câblés) |
 
 Les cibles pc (fenêtre SDL2, la carte en fichier `sd.img`), odroid
 (ODROID-GO : ESP32, ILI9341 320×240, carte SD, DAC) et aka (Gamebuino

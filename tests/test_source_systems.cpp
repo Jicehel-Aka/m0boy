@@ -12,7 +12,7 @@ static void require(bool condition, const char* message) {
 int main() {
     using namespace m0boy;
     try {
-        require(systems().size() == 8, "Source registry incomplete");
+        require(systems().size() == 9, "Source registry incomplete");
         require(targets().size() == 7, "Target registry incomplete");
         require(parse_target("pc") == TargetId::pc && parse_target("odroid") == TargetId::odroid &&
                 parse_target("aka") == TargetId::aka, "New targets not parsed");
@@ -54,6 +54,12 @@ int main() {
                 nes.supports(TargetId::pokitto) && target_fits(nes, target_descriptor(TargetId::meta)) &&
                 target_fits(nes, target_descriptor(TargetId::pokitto)),
                 "NES must be wired for the desktop harness, the META and the Pokitto only");
+        const auto& vx = system_descriptor(SystemId::vectrex);
+        require(vx.cpu == CpuId::m6809 && vx.work_ram_bytes == 1024 &&
+                vx.supports(TargetId::pc) && vx.supports(TargetId::meta) &&
+                target_fits(vx, target_descriptor(TargetId::meta)) && !vx.supports(TargetId::pokitto) &&
+                detect_system("game.VEC") == SystemId::vectrex,
+                "Vectrex must be wired for the PC and the META");
         require(detect_system("game.sms") == SystemId::mastersystem && parse_system("sms") == SystemId::mastersystem,
                 "Master System detection failed");
         require(detect_system("game.nes") == SystemId::nes && detect_system("game.PCE") == SystemId::pce,

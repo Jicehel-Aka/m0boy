@@ -14,6 +14,7 @@ constexpr std::array cpu_table = {
     CpuDescriptor{CpuId::lua, "lua", false}, // PICO-8 Lua bytecode (femto8's compiler)
     CpuDescriptor{CpuId::m6502, "6502", true},    // NES (2A03); HuC6280 extends it
     CpuDescriptor{CpuId::huc6280, "huc6280", true},  // PC Engine; extends the 6502 table
+    CpuDescriptor{CpuId::m6809, "6809", false},      // Vectrex: the recompiler decodes it
 };
 
 /* Wired pipelines: where a project generator exists today.  The runtime's
@@ -38,6 +39,9 @@ constexpr std::array msx_targets = {TargetId::desktop, TargetId::meta, TargetId:
 // flash either).
 constexpr std::array nes_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto};
 constexpr std::array pce_targets = {TargetId::desktop};
+// Vectrex: the 6809 recompiled in front of the interpreter on the META,
+// and the SDL host (pc).
+constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc};
 constexpr std::array<TargetId, 0> no_targets {};
 
 constexpr std::array system_table = {
@@ -62,6 +66,9 @@ constexpr std::array system_table = {
      * ~9 KiB of free RAM after a Sega firmware. */
     SystemDescriptor{SystemId::pce, "pce", CpuId::huc6280, 0xfffe,
                      8192, 86016, pce::inspect, pce_targets},
+    /* Vectrex: 1 KiB of RAM; the console frontend adds an 8 KiB phosphor */
+    SystemDescriptor{SystemId::vectrex, "vectrex", CpuId::m6809, 0xfffe,
+                     1024, 12288, vectrex::inspect, vectrex_targets},
 };
 
 /* Facts of each destination.  meta/pokitto: the whole contiguous SRAM is
@@ -156,6 +163,7 @@ std::optional<SystemId> detect_system(const std::filesystem::path& path) {
     if (ext == ".mx1" || ext == ".msx") return SystemId::msx;
     if (ext == ".nes") return SystemId::nes;
     if (ext == ".pce") return SystemId::pce;
+    if (ext == ".vec") return SystemId::vectrex;
     if (ext == ".rom") { // a MSX ROM starts with "AB"
         std::ifstream file(path, std::ios::binary);
         char header[2] = {};

@@ -135,7 +135,18 @@ built firmware in it (`ESPBOY_PIO` for the build).
   Pokitto's);
   `ppu_asm.S` is compared with its C on the
   estimator (`BENCH_PIXEL_HASH`, `NES_NO_PPU_ASM`); APU changes: identical
-  `--wav`. PC Engine (`--system pce`, `docs/PCE.fr.md`): the interpreter
+  `--wav`. Vectrex (`--system vectrex`, `.vec`, `docs/VECTREX.fr.md`):
+  `recompiler/src/system/vectrex/emitter.cpp` (6809 → C, `vx_gen.h`, the
+  dispatcher in `m6809_run.c` under `VX_NATIVE`), the run loop as
+  fallback and reference (`--interp`). Rule: a `--meta-precise` PC project
+  prints the `--interp` line (`tests/test_vectrex_e2e.py`: synthetic BIOS,
+  a VIA drawing program, random code) and, with ROMs, the same run_hash on
+  the whole collection (profile from `--interp --coverage f`).  The ROMs
+  and the system ROM stay in `output/`.  VIA changes: the same
+  `--interp` run_hash on the collection, and `--wav`.  `via_asm.S`
+  (Cortex-M0+): the C build (`-DVX_VIA_ASM=0`) and the asm build with
+  `-DVX_DRAW_HASH` give the same `vx_draw_hash` in gm0 at the same game
+  frame (`--until-guest`, input replayed with `--play-guest`). PC Engine (`--system pce`, `docs/PCE.fr.md`): the interpreter
   pipeline on the desktop harness (`targets/pce/runtime/`, the HuC6280
   cross-checked against the mednafen core; VDC, VCE, timer, pad, PSG),
   `tests/test_pce_e2e.py` holds a synthetic cartridge; Raiden boots to its
