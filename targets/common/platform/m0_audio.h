@@ -24,11 +24,19 @@ void m0_audio_stop(void);   /* timer and interrupt off (before the loader) */
 void m0_audio_pause(int on);
 
 /* Samples of one DMG frame (70224 cycles at 4194304 Hz) at `rate` Hz, the
- * remainder carried over in *frac (shared by the consoles' drivers). */
+ * remainder carried over in *frac (shared by the consoles' drivers).  The
+ * quotient and the remainder are computed once per rate: the Cortex-M0+
+ * divides in software, and this runs once a frame. */
 static inline unsigned m0_audio_frame_samples(uint32_t rate, uint32_t *frac) {
-    *frac += rate * 70224u;
-    unsigned n = *frac / 4194304u;
-    *frac %= 4194304u;
+    static uint32_t cached_rate, whole, part;
+    if (rate != cached_rate) {
+        cached_rate = rate;
+        whole = rate * 70224u / 4194304u;
+        part = rate * 70224u % 4194304u;
+    }
+    *frac += part;
+    unsigned n = whole;
+    if (*frac >= 4194304u) { *frac -= 4194304u; n++; }
     return n;
 }
 

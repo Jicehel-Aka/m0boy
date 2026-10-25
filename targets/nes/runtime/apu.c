@@ -127,6 +127,25 @@ static void sweep_clock(nes_apu_t *apu, unsigned i) {
     }
 }
 
+/* Reciprocals of 1..32, rounded up, 18 fractional bits: with them a
+ * division by any short period is a multiply and a shift, exact for the
+ * runs the render loop passes (under 8192 cycles; the correction keeps
+ * longer runs right, the Cortex-M0+ has no hardware division and its
+ * __udivsi3 was the APU's first cost). */
+#define APU_RECIP_SHIFT 18
+#define APU_SHORT_RECIP(d) (-(-(1u << APU_RECIP_SHIFT) / (d)))
+static const uint32_t apu_recip[33] = {
+    0,
+    APU_SHORT_RECIP(1), APU_SHORT_RECIP(2), APU_SHORT_RECIP(3), APU_SHORT_RECIP(4),
+    APU_SHORT_RECIP(5), APU_SHORT_RECIP(6), APU_SHORT_RECIP(7), APU_SHORT_RECIP(8),
+    APU_SHORT_RECIP(9), APU_SHORT_RECIP(10), APU_SHORT_RECIP(11), APU_SHORT_RECIP(12),
+    APU_SHORT_RECIP(13), APU_SHORT_RECIP(14), APU_SHORT_RECIP(15), APU_SHORT_RECIP(16),
+    APU_SHORT_RECIP(17), APU_SHORT_RECIP(18), APU_SHORT_RECIP(19), APU_SHORT_RECIP(20),
+    APU_SHORT_RECIP(21), APU_SHORT_RECIP(22), APU_SHORT_RECIP(23), APU_SHORT_RECIP(24),
+    APU_SHORT_RECIP(25), APU_SHORT_RECIP(26), APU_SHORT_RECIP(27), APU_SHORT_RECIP(28),
+    APU_SHORT_RECIP(29), APU_SHORT_RECIP(30), APU_SHORT_RECIP(31), APU_SHORT_RECIP(32),
+};
+
 /* A channel's timer over `run` cycles, in closed form: the per-cycle rule
  * is "at 0, reload the period and step, else count down", so the first
  * step comes after counter + 1 cycles and the next ones every timer + 1.
@@ -136,9 +155,11 @@ static inline unsigned timer_run(uint16_t *counter, unsigned timer, unsigned run
     if (run <= c) { *counter = (uint16_t)(c - run); return 0; }
     run -= c + 1;
     unsigned steps = 1;
-    if (timer < 32) { /* short periods (or none: a silent voice's 0) divide */
-        steps += run / (timer + 1);
-        run %= timer + 1;
+    if (timer < 32) { /* short periods (or none: a silent voice's 0) */
+        unsigned d = timer + 1, q = (run * apu_recip[d]) >> APU_RECIP_SHIFT;
+        while (q * d > run) q--; /* rounded-up reciprocal: never short of the quotient */
+        steps += q;
+        run -= q * d;
     } else {
         while (run > timer) { run -= timer + 1; steps++; }
     }
@@ -148,9 +169,14 @@ static inline unsigned timer_run(uint16_t *counter, unsigned timer, unsigned run
 
 void nes_apu_render(nes_apu_t *apu, uint8_t *dst, unsigned n, unsigned rate) {
     /* whole CPU cycles per sample, the remainder carried: the quotient and
-     * the remainder once, an add and a compare per sample (sample_frac
-     * stays below rate) */
-    const unsigned whole = NES_APU_CPU_HZ / rate, part = NES_APU_CPU_HZ % rate;
+     * the remainder once per rate (the frontends keep one rate), an add and
+     * a compare per sample (sample_frac stays below rate) */
+    static unsigned cached_rate, whole, part;
+    if (rate != cached_rate) {
+        cached_rate = rate;
+        whole = NES_APU_CPU_HZ / rate;
+        part = NES_APU_CPU_HZ % rate;
+    }
     for (unsigned s = 0; s < n; s++) {
         apu->sample_frac += part;
         unsigned left = whole;
