@@ -138,6 +138,10 @@ if(BUILD_TESTS)
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_nes_e2e.py"
         )
         set_tests_properties(nes_end_to_end PROPERTIES TIMEOUT 300)
+        add_test(NAME pce_end_to_end
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_pce_e2e.py"
+        )
+        set_tests_properties(pce_end_to_end PROPERTIES TIMEOUT 300)
         add_test(NAME pico8_native_end_to_end
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_pico8_e2e.py"
                     --recompiler "$<TARGET_FILE:m0recomp>")

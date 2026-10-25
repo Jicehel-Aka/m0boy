@@ -9,6 +9,7 @@
 #include "m0boy/sg1000_generator.h"
 #include "m0boy/pico8_generator.h"
 #include "m0boy/nes_generator.h"
+#include "m0boy/pce_generator.h"
 #include "m0boy/cpu/huc6280/decoder.h"
 #include "m0boy/cpu/m6502/decoder.h"
 #include "m0boy/cpu/z80/decoder.h"
@@ -2553,9 +2554,8 @@ int main(int argc, char* argv[]) {
                   << (meta_precise ? "  mode:               precise (sync per instruction)\n" : "");
         return 0;
     }
-    /* NES and PC Engine are at the inspection stage: --info (handled above)
-     * reads the cartridge; the code pipeline is under construction and no
-     * target is wired yet (see system.cpp's tables). */
+    /* PC Engine follows the NES interpreter pipeline's plan; its console
+     * targets come once the picture's budget says where (see system.cpp). */
     if (source.id == m0boy::SystemId::nes) {
         if (!source.supports(*m0boy::parse_target(target))) {
             return refuse_target(source, *m0boy::parse_target(target), target);
@@ -2591,8 +2591,35 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     if (source.id == m0boy::SystemId::pce) {
-        std::cerr << "Error: PC Engine code generation is under construction; use --info and --disasm\n";
-        return 1;
+        if (!source.supports(*m0boy::parse_target(target))) {
+            return refuse_target(source, *m0boy::parse_target(target), target);
+        }
+        if (analyze_only || meta_thumb || g_meta_pack ||
+            g_meta_stream != -1 || !g_rom_profiles.empty() || g_meta_resident ||
+            emit_android_project || !native_patch_manifest_path.empty() ||
+            !symbol_file_path.empty() || !annotation_file_path.empty() ||
+            specific_bank > 0 || !manual_entry_points.empty() || !trace_file_path.empty() ||
+            meta_precise || !coverage_paths.empty()) {
+            std::cerr << "Error: unsupported PC Engine option; use --target desktop\n";
+            return 1;
+        }
+        m0boy::pce::GenerateOptions options;
+        options.target = *m0boy::parse_target(target);
+        options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string()) : output_prefix;
+        if (options.name.empty() || sanitize_prefix(options.name) != options.name) {
+            std::cerr << "Error: invalid PC Engine output prefix\n";
+            return 1;
+        }
+        options.output = output_dir.empty() ? fs::path(options.name + "_pce_" + target) : fs::path(output_dir);
+        options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
+        options.compiler = meta_compiler;
+        std::string error;
+        if (!m0boy::pce::generate(rom_path, options, error)) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        std::cout << "Generated PC Engine project for " << target << ": " << options.output << "\n";
+        return 0;
     }
     if (!source.supports(*m0boy::parse_target(target))) {
         return refuse_target(source, *m0boy::parse_target(target), target);

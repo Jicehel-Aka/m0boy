@@ -128,9 +128,13 @@ built firmware in it (`ESPBOY_PIO` for the build).
   lines, also with `--skip 2` and with the Pokitto's `--rows 176`);
   `ppu_asm.S` is compared with its C on the
   estimator (`BENCH_PIXEL_HASH`, `NES_NO_PPU_ASM`); APU changes: identical
-  `--wav`. PC Engine is
-  still at the inspection stage (`--info`, `--disasm` with the
-  6502/HuC6280 decoders in `recompiler/src/cpu/`); no pipeline is wired.
+  `--wav`. PC Engine (`--system pce`, `docs/PCE.fr.md`): the interpreter
+  pipeline on the desktop harness (`targets/pce/runtime/`, the HuC6280
+  cross-checked against the mednafen core; VDC, VCE, timer, pad, PSG),
+  `tests/test_pce_e2e.py` holds a synthetic cartridge; Raiden boots to its
+  exact title screen.  The sprite text's line-edge clipping is the known
+  open item; the HuC6280 → C recompiler and a console target follow the
+  NES plan (64 KiB of VRAM will need flash windowing on the META).
   The AKA CORE v1.4 wiring follows the official Gamebuino_AKA_lib
   (`targets/consoles/aka/`, `docs/AKA.fr.md`).
 

@@ -32,8 +32,12 @@ constexpr std::array pico8_targets = {TargetId::desktop, TargetId::meta, TargetI
 // not wired up.
 constexpr std::array msx_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto};
 // NES: the recompiled pipeline on the META, the Pokitto and the desktop
-// harness; PC Engine stays at the inspection stage (see main.cpp).
+// harness.
+// PC Engine: the interpreter on the desktop harness (the consoles wait
+// on the picture's budget; a 768 KiB HuCard does not fit a 256 KiB
+// flash either).
 constexpr std::array nes_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto};
+constexpr std::array pce_targets = {TargetId::desktop};
 constexpr std::array<TargetId, 0> no_targets {};
 
 constexpr std::array system_table = {
@@ -57,7 +61,7 @@ constexpr std::array system_table = {
      * buffers — more than every 32 KiB console and than the ESPboy's
      * ~9 KiB of free RAM after a Sega firmware. */
     SystemDescriptor{SystemId::pce, "pce", CpuId::huc6280, 0xfffe,
-                     8192, 86016, pce::inspect, no_targets},
+                     8192, 86016, pce::inspect, pce_targets},
 };
 
 /* Facts of each destination.  meta/pokitto: the whole contiguous SRAM is
