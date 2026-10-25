@@ -1,15 +1,19 @@
-/* Line policies shared by the GG/SMS frontend and its host tests.
- * Inputs are source lines inside the GG or SMS window. Tables stay in flash. */
+/* Line policies shared by the GG/SMS frontend and its host tests: the
+ * shared vertical plan (m0_scale.h, m0_row_of and m0_row_first), as tables
+ * in flash where the denominator is not a power of two (test_gg_runtime.c
+ * checks them against the rule).  Inputs are source lines inside the GG or
+ * SMS window. */
 #ifndef GG_DISPLAY_H
 #define GG_DISPLAY_H
 #include "gg.h"
+#include "m0_scale.h"
 
-static inline unsigned gg_sms_display_row(unsigned y) { return (y * 5) >> 3; }
+static inline unsigned gg_sms_display_row(unsigned y) { return m0_row_of(y, 8, 5); }
 /* The nearest source line to each row centre: five selected out of eight. */
 static inline int gg_sms_line_shown(unsigned y) { return (0xb5u >> (y & 7)) & 1u; }
 
-/* META: 144 -> 128, the first two lines in each group of nine averaged.
- * No repeated software division on the Cortex-M0+. */
+/* META: 144 -> 128, m0_row_of(y, 9, 8): the first two lines in each group
+ * of nine averaged.  No repeated software division on the Cortex-M0+. */
 static const uint8_t gg_meta_rows[GG_HEIGHT] = {
     0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 9, 10, 11, 12, 13, 14, 15,
     16, 16, 17, 18, 19, 20, 21, 22, 23, 24, 24, 25, 26, 27, 28, 29, 30, 31,
@@ -36,7 +40,7 @@ static inline unsigned gg_meta_display_row(unsigned y) { return gg_meta_rows[y -
 static inline int gg_meta_draw_mode(unsigned y) { return gg_meta_modes[y - GG_TOP]; }
 
 /* Pokitto: 144 -> 176, line l on panel rows gg_pokitto_rows[l] up to the
- * next entry, (l * 11 + 8) / 9 without a software division per row. */
+ * next entry, m0_row_first(l, 9, 11), without a software division per row. */
 static const uint8_t gg_pokitto_rows[GG_HEIGHT + 1] = {
     0, 2, 3, 4, 5, 7, 8, 9, 10, 11, 13, 14, 15, 16, 18, 19, 20, 21,
     22, 24, 25, 26, 27, 29, 30, 31, 32, 33, 35, 36, 37, 38, 40, 41, 42, 43,

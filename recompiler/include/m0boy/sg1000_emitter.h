@@ -57,6 +57,7 @@ struct EmitOptions {
 struct EmitStats {
     size_t covered = 0, compiled = 0, speculative = 0, regions = 0, entries = 0;
     size_t native = 0, generic = 0;
+    size_t idle = 0;       ///< JR $ / JP $ loops spent at once (SG_IDLE)
     size_t swept = 0;      ///< instructions added by the speculative sweep
     size_t data_zones = 0; ///< inferred data zones (>= 512 bytes)
     size_t data_bytes = 0; ///< ROM bytes inside those zones

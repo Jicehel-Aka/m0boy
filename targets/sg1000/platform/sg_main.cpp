@@ -24,6 +24,8 @@
 #include "meta_hw.h"
 #endif
 #include "sg_frontend.h"
+#include "m0_scale.h" /* the vertical plan (m0_row_of) */
+#include "m0_rows.h"
 #if defined(GG_STATE_NAME83)
 #include "m0_card.h"
 #endif
@@ -50,8 +52,8 @@ static uint16_t line_buffer[SG_OUT_WIDTH] __attribute__((aligned(4)));
  * and one DMA chain per batch); two batches alternate. */
 #define SG_BATCH (SG_LOW_RAM ? 1 : 4)
 static uint16_t line_buffers[2][SG_BATCH][SG_OUT_WIDTH] __attribute__((aligned(4)));
-static uint32_t line_sequences[2];
-static unsigned line_slot, batch_rows, batch_dest;
+static m0_rows rows;
+static unsigned batch_rows, batch_dest;
 #endif
 static uint32_t deadline;
 #ifndef SG_MAX_SKIP
@@ -210,11 +212,11 @@ static int sg_card_open(void) {
 
 static unsigned display_row(unsigned y) {
 #if M0_TARGET_POKITTO
-    return (y * 25) >> 5; /* 192 -> 150 */
+    return m0_row_of(y, 32, 25); /* 192 -> 150 */
 #elif M0_TARGET_PC
     return y; /* the window is the TMS9918A's own 256x192 */
 #else
-    return (y * 5) >> 3; /* 192 -> 120 */
+    return m0_row_of(y, 8, 5); /* 192 -> 120 */
 #endif
 }
 /* Where the drawn rows start on the panel: the 120-row consoles crop the
@@ -235,21 +237,19 @@ static int draw_line(void *, unsigned y) {
 /* Lines are rendered straight into the buffer machine.row_out points to. */
 #if M0_TARGET_POKITTO
 static void row(void *, unsigned y, uint16_t *pixels) {
-    pokitto_lcd_row_zoom(display_row(y) + 13, pixels);
+    m0_rows_zoom(pixels, display_row(y) + 13, display_row(y) + 14);
 }
 #else
 static void flush_batch(void) {
     if (!batch_rows) return;
-    line_sequences[line_slot] = m0_lcd_send_rows(line_buffers[line_slot], (uint8_t)SG_PANEL_ROW0(batch_dest), (uint8_t)batch_rows);
-    line_slot ^= 1;
+    const unsigned slot = m0_rows_send(&rows, line_buffers[rows.slot], SG_PANEL_ROW0(batch_dest), batch_rows);
     batch_rows = 0;
-    while ((int32_t)(m0_lcd_done_seq() - line_sequences[line_slot]) < 0) {}
-    machine.row_out = line_buffers[line_slot][0];
+    machine.row_out = line_buffers[slot][0];
 }
 static void row(void *, unsigned y, uint16_t *) {
     if (!batch_rows) batch_dest = display_row(y);
     if (++batch_rows == SG_BATCH) flush_batch();
-    else machine.row_out = line_buffers[line_slot][batch_rows];
+    else machine.row_out = line_buffers[rows.slot][batch_rows];
 }
 #endif
 static void frame(void *) {

@@ -33,6 +33,7 @@
 #endif
 #include "m0_pad.h"
 #include "sg_frontend.h"
+#include "m0_rows.h"
 extern "C" {
 extern const uint8_t nes_prg[];
 extern const uint8_t nes_chr[];
@@ -45,8 +46,7 @@ void pokitto_sd_clock_changed(uint32_t) {}
  * enough, the second is the menu's) */
 static uint16_t line_buffer[2][160] __attribute__((aligned(4)));
 #if !M0_TARGET_POKITTO
-static uint32_t line_sequence[2];
-static unsigned line_slot;
+static m0_rows rows;
 #endif
 static uint32_t deadline;
 #ifndef NES_MAX_SKIP
@@ -56,22 +56,16 @@ static int skip_video;
 static unsigned skipped_run;
 static const char version[] __attribute__((used)) = "m0boy-nes-" M0_TARGET_NAME " " GBL_GEN_VERSION;
 
-/* The PPU scales the picture itself (ppu.h: 15 lines -> 8 rows, the 5-in-8
- * box filter across), straight into the row being filled. */
+/* The PPU scales the picture itself (ppu.h: 240 lines -> the panel's
+ * rows, the 5-in-8 box filter across), straight into the row being filled. */
+static void panel_row(void *host, unsigned r) {
+    (void)host;
 #if M0_TARGET_POKITTO
-static void panel_row(void *host, unsigned r) {
-    (void)host;
-    pokitto_lcd_row_zoom(r, line_buffer[0]); /* 200x176 from x = 10 */
-}
+    m0_rows_zoom(line_buffer[0], r, r + 1); /* 200x176 from x = 10 */
 #else
-static void panel_row(void *host, unsigned r) {
-    (void)host;
-    line_sequence[line_slot] = m0_lcd_send_rows(line_buffer[line_slot], (uint8_t)r, 1);
-    line_slot ^= 1;
-    while ((int32_t)(m0_lcd_done_seq() - line_sequence[line_slot]) < 0) {}
-    machine.ppu.panel_out = line_buffer[line_slot];
-}
+    machine.ppu.panel_out = line_buffer[m0_rows_send(&rows, line_buffer[rows.slot], r, 1)];
 #endif
+}
 
 /* ---- option menu (sg_menu.h) ---- */
 extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
@@ -182,7 +176,7 @@ int main() {
     machine.ppu.panel = panel_row;
     machine.ppu.panel_out = line_buffer[0];
 #if M0_TARGET_POKITTO
-    machine.ppu.panel_plan = NES_PLAN_176;
+    nes_ppu_set_rows(&machine.ppu, 176);
 #endif
     m0_audio_init();
     deadline = m0_micros();

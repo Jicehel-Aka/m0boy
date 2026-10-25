@@ -32,6 +32,7 @@
 #include "meta_hw.h"
 #endif
 #include "sg_frontend.h"
+#include "m0_rows.h"
 #if GG_CACHE_DYN
 #include "m0_stack_pool.h"
 /* The card cache's blocks after its fixed part and the C stack share the
@@ -71,8 +72,7 @@ static uint8_t cart_ram[GG_CART_RAM_SIZE] __attribute__((aligned(4)));
  * buffers: the META sends one by DMA while the other is drawn. */
 static uint16_t line_buffers[2][GG_ROW_STRIDE] __attribute__((aligned(4)));
 #if !M0_TARGET_POKITTO
-static uint32_t line_sequences[2];
-static unsigned line_slot;
+static m0_rows rows;
 #endif
 static uint32_t deadline;
 #ifndef GG_MAX_SKIP
@@ -172,11 +172,6 @@ static unsigned display_row(unsigned y) { return gg_meta_display_row(y); }
 #define GG_PAIRS 0
 #define GG_PANEL_ROW0(row) (row)
 #endif
-#if !M0_TARGET_POKITTO
-static void wait_slot(unsigned slot) {
-    while ((int32_t)(m0_lcd_done_seq() - line_sequences[slot]) < 0) {}
-}
-#endif
 
 /* Which lines are drawn, and how (gg.h): every line on the Pokitto; on the
  * META the first of two lines sharing a row is kept, the second averaged in. */
@@ -194,8 +189,8 @@ static int draw_line(void *, unsigned y) {
     const int mode = gg_meta_draw_mode(y);
     if (mode == 2) {
 #if !M0_TARGET_POKITTO
-        wait_slot(line_slot ^ 1); /* the other buffer is free once sent */
-        machine.row_tmp = line_buffers[line_slot ^ 1] + GG_ROW_PAD;
+        m0_rows_wait(&rows, rows.slot ^ 1); /* the other buffer is free once sent */
+        machine.row_tmp = line_buffers[rows.slot ^ 1] + GG_ROW_PAD;
 #endif
     }
     return mode;
@@ -204,13 +199,13 @@ static int draw_line(void *, unsigned y) {
 
 #if M0_TARGET_POKITTO && GG_SMS
 static void row(void *, unsigned y, uint16_t *pixels) {
-    const unsigned r = display_row(y), first = r * 5 / 4, last = (r + 1) * 5 / 4;
-    for (unsigned k = first; k < last; k++) pokitto_lcd_row_zoom(k + 13, pixels); /* 150 rows centred */
+    const unsigned r = display_row(y), first = m0_row_of(r, 4, 5), last = m0_row_of(r + 1, 4, 5);
+    m0_rows_zoom(pixels, first + 13, last + 13); /* 150 rows centred */
 }
 #elif M0_TARGET_POKITTO
 static void row(void *, unsigned y, uint16_t *pixels) {
     const unsigned line = y - GG_TOP, last = gg_pokitto_rows[line + 1]; /* 144 -> 176 */
-    for (unsigned r = gg_pokitto_rows[line]; r < last; r++) pokitto_lcd_row_zoom(r, pixels);
+    m0_rows_zoom(pixels, gg_pokitto_rows[line], last);
 }
 #else
 static void row(void *, unsigned y, uint16_t *pixels) {
@@ -218,10 +213,7 @@ static void row(void *, unsigned y, uint16_t *pixels) {
     (void)y; (void)pixels;
     return;
 #endif
-    line_sequences[line_slot] = m0_lcd_send_rows(pixels, (uint8_t)GG_PANEL_ROW0(display_row(y)), 1);
-    line_slot ^= 1;
-    wait_slot(line_slot);
-    machine.row_out = line_buffers[line_slot] + GG_ROW_PAD;
+    machine.row_out = line_buffers[m0_rows_send(&rows, pixels, GG_PANEL_ROW0(display_row(y)), 1)] + GG_ROW_PAD;
 }
 #endif
 

@@ -15,6 +15,7 @@
 #ifndef SG_GEN_H
 #define SG_GEN_H
 #include "sg_config.h"
+#include "m0_idle.h"
 #if SG_SYSTEM_GG
 #include "gg.h"
 #define SG_IO_OUT gg_out
@@ -174,6 +175,16 @@ SG_HELPER unsigned sg_op(const z80_decoded_t *d) { return z80_execute(&Z, d); }
 #define ADV(cy, rf) ((void)(rf), machine.cyc += (uint32_t)(cy))
 #endif
 #define CY(cy) (machine.cyc += (uint32_t)(cy))
+/* JR $ / JP $ of cy T-states and rf refreshes, a game waiting for its
+ * interrupt (m0_idle.h): the loops that end before the next event but the
+ * last, at once; the caller then runs the last one and its loop head's
+ * SYNC, where spinning would have stopped. */
+#define SG_IDLE(cy, rf) do { \
+        if (!EVT()) { \
+            const uint32_t n_ = m0_idle_loops(machine.next_evt - machine.cyc, (cy)) - 1u; \
+            ADV(n_ * (cy), n_ * (rf)); \
+        } \
+    } while (0)
 #define EVT() ((int32_t)(machine.cyc - machine.next_evt) >= 0)
 #define SYNC(pc) do { if (EVT() && sg_event(pc)) return; } while (0)
 /* Bounded syncs (m0recomp --meta-sync-cycles, default 40 T-states): the

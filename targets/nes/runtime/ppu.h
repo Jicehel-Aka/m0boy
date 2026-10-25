@@ -34,12 +34,13 @@ typedef struct {
     uint8_t oam_dirty;   /* OAM or the sprite size changed: the per-line
                           * sprite masks are rebuilt before the next use
                           * (the machine's OAM DMA sets it too) */
-    /* the panel picture: 240 lines -> rows of 160 pixels, panel_plan's
-     * (below).  Each row is written to panel_out, then panel(host, row) is
-     * called; it may point panel_out elsewhere for the next row.  skip:
-     * this frame is not shown (only v, the flags and sprite-0 run). */
+    /* the panel picture: 240 lines -> rows of 160 pixels
+     * (nes_ppu_set_rows).  Each row is written to panel_out, then
+     * panel(host, row) is called; it may point panel_out elsewhere for the
+     * next row.  skip: this frame is not shown (only v, the flags and
+     * sprite-0 run). */
     uint8_t skip;
-    uint16_t panel_plan;
+    uint32_t panel_ends[8]; /* bit y: line y closes its row (m0_plan_ends) */
     uint16_t *panel_out;
     void (*panel)(void *host, unsigned row);
 #ifdef NES_PPU_REFERENCE
@@ -60,19 +61,13 @@ void nes_ppu_write(nes_ppu_t *ppu, unsigned reg, uint8_t value);
  * enabled, advances v; returns 1 when an NMI must be raised. */
 int nes_ppu_line(nes_ppu_t *ppu, unsigned line);
 
-/* The panel's vertical plan: the 240 lines in 16 groups of 15, bit k of
- * panel_plan set when line k of a group closes a row; a row is one line or
- * two blended (no two clear bits in a row, bit 14 set).  16 rows per set
- * bit:
- *   NES_PLAN_128  seven pairs then one line alone, 15 -> 8 (the META's
- *                 160x128, nes_init's default);
- *   NES_PLAN_176  [0] [1] [2,3] [4] [5] [6,7] [8] [9] [10,11] [12] [13,14],
- *                 15 -> 11 (the Pokitto's 176 rows).
+/* The panel's vertical plan: the 240 lines onto rows rows (120 to 240),
+ * the shared rule of m0_scale.h (m0_row_of): line y on row y * rows / 240,
+ * a row of two lines blended.  128 on the META (nes_init's default: seven
+ * pairs and one line alone in every 15 lines), 176 on the Pokitto.
  * Horizontally, m0_box58_fast: 160 pixels. */
 #define NES_PANEL_W 160u
-#define NES_PLAN_128 0x6AAAu
-#define NES_PLAN_176 0x5BBBu
-#define NES_PANEL_ROWS(plan) (16u * (unsigned)__builtin_popcount(plan))
+void nes_ppu_set_rows(nes_ppu_t *ppu, unsigned rows);
 
 #endif
 

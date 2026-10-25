@@ -31,7 +31,8 @@ struct Templates {
 
 /* The frontend every console shares: the setup, pad and pacing macros
  * (sg_frontend.h), the option menu (sg_menu.h, m0_menu.*, m0_font.h), the
- * console facts (m0_target.h, m0_lcd.h, m0_clock.h, m0_pad.h) and the
+ * console facts (m0_target.h, m0_lcd.h, m0_clock.h, m0_pad.h), the rows'
+ * way to the panel (m0_rows.h) and the
  * META's board settings (gbl_board.h). */
 void copy_frontend(const Templates& t, const std::filesystem::path& src);
 

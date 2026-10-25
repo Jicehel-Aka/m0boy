@@ -45,8 +45,14 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
   optimisation switch, per console, is in `gbl_profile.h` (one switch, one
   define, independent).
 - `targets/common/platform/`: the frontend every console shares (option
-  menu, save states, FAT, SD protocol, pad decoding); console facts in
-  `m0_target.h`.  Common files are named `m0_*`, never `meta_*`.
+  menu, save states, FAT, SD protocol, pad decoding, rows to the panel in
+  `m0_rows.h`); console facts in `m0_target.h`.  Common files are named
+  `m0_*`, never `meta_*`.  Vertical plans (source lines onto panel rows)
+  follow `m0_row_of`/`m0_row_first` in `targets/common/runtime/m0_scale.h`;
+  idle loops (a jump to itself) are spent at once through
+  `targets/common/runtime/m0_idle.h` (NES and Z80 runtimes); the Pokitto's
+  pixel writes are one Thumb-1 macro in `pokitto_lcd_asm.S`, used by every
+  core.
 - `targets/meta/platform/`: the Game Boy frontend of its own (`gb_main.cpp`,
   `gbl_save`, `gbl_stream`, `gbl_display`, `gbl_palettes`).
 - `targets/consoles/meta/`, `targets/consoles/pokitto/`, `targets/consoles/espboy/`: bare-metal
@@ -125,7 +131,8 @@ built firmware in it (`ESPBOY_PIO` for the build).
   SMB must render identically through the harness before and after a
   runtime change (hashes + PPM captures), with `out_mismatch=0` and
   `hit_mismatch=0` (the 160x128 panel renderer against the reference
-  lines, also with `--skip 2` and with the Pokitto's `--rows 176`);
+  lines, also with `--skip 2` and with other plans, `--rows 176` the
+  Pokitto's);
   `ppu_asm.S` is compared with its C on the
   estimator (`BENCH_PIXEL_HASH`, `NES_NO_PPU_ASM`); APU changes: identical
   `--wav`. PC Engine (`--system pce`, `docs/PCE.fr.md`): the interpreter

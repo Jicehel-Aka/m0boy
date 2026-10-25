@@ -21,6 +21,7 @@
 #include "meta_hw.h"
 #endif
 #include "sg_frontend.h"
+#include "m0_rows.h"
 #if defined(P8_STATE_NAME83)
 #include "m0_sd.h" /* the card's state file (the META reads it in the game's folder: meta_card.h) */
 #if !M0_TARGET_POKITTO
@@ -49,8 +50,7 @@ extern "C" void m0_lcd_set_columns(uint8_t x0, uint8_t x1);
 static uint16_t line_buffer[256] __attribute__((aligned(4)));
 #else
 static uint16_t line_buffers[2][P8_BATCH][P8_OUT_WIDTH] __attribute__((aligned(4)));
-static uint32_t line_sequences[2];
-static unsigned line_slot;
+static m0_rows rows;
 #endif
 static uint32_t deadline;
 #if !M0_TARGET_POKITTO
@@ -240,7 +240,7 @@ static void draw_screen(void) {
     }
 #else
     for (unsigned y = 0; y < P8_H; y += P8_BATCH) {
-        uint16_t (*lines)[P8_OUT_WIDTH] = line_buffers[line_slot];
+        uint16_t (*lines)[P8_OUT_WIDTH] = line_buffers[rows.slot];
         for (unsigned r = 0; r < P8_BATCH; r++) {
             uint16_t *out = lines[r];
 #if M0_TARGET_ESPBOY
@@ -253,9 +253,7 @@ static void draw_screen(void) {
                 *out++ = tab[b >> 4];
             }
         }
-        line_sequences[line_slot] = m0_lcd_send_rows(lines, (uint8_t)y, P8_BATCH);
-        line_slot ^= 1;
-        while ((int32_t)(m0_lcd_done_seq() - line_sequences[line_slot]) < 0) {}
+        m0_rows_send(&rows, lines, y, P8_BATCH);
     }
 #endif
 }

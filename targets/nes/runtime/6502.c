@@ -419,6 +419,14 @@ void nes6502_run(nes6502_t *cpu, uint32_t until) {
             budget -= 7;
             continue;
         }
+        /* JMP to itself in PRG, a game waiting for its NMI: the rest of
+         * the slice in jumps of 3 cycles, as the recompiled loop spends it
+         * (emitter.cpp), without entering it each line */
+        if (cpu->pc >= 0x8000u && nes_rd(cpu, cpu->pc) == 0x4C &&
+            (nes_rd(cpu, (uint16_t)(cpu->pc + 1u)) | nes_rd(cpu, (uint16_t)(cpu->pc + 2u)) << 8) == cpu->pc) {
+            budget = NES_SPIN3(budget);
+            break;
+        }
         const int entry = nes_gen_lookup(cpu->pc);
         if (entry >= 0) {
             GEN_STAT(nes_gen_calls);

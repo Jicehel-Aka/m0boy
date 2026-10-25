@@ -54,7 +54,17 @@ jumping through 1-1 (frame counter read over USB, 2026-10-25; displayed
 frames not measured). On the Pokitto the same PPU blends fewer lines
 (240 -> 176, rows widened to 200 as for the Sega cores): Super Mario Bros.
 runs through 1-1 in gm0 at 59 game frames a second, video frames skipped
-to keep that pace (not yet tried on a Pokitto). No save states yet.
+to keep that pace (not yet tried on a Pokitto). Estimated cost of a frame
+with every frame shown: 0.91 M cycles on the META (from 1.05 M) and 1.21 M
+on the Pokitto at 48 MHz (from 1.36 M): runs of sky written as words, the
+idle loop spent at once, the PPU's loops in SRAM on the Pokitto. No save
+states yet.
+
+Shared by the cores: one vertical plan (source lines onto panel rows,
+`m0_scale.h`), one row sender (`m0_rows.h`), idle loops (a jump to itself)
+spent at once on the 6502 and the Z80 (`m0_idle.h`), and on the Pokitto
+one set of Thumb-1 pixel writes from SRAM for every core (PICO-8, SG-1000
+and MSX wrote theirs in C).
 Notes: `docs/MULTI_SYSTEM.fr.md` ("Recompilation 6502 (NES)", "Rendu NES
 sur le panneau").
 

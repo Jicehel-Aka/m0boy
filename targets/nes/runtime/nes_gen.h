@@ -18,6 +18,7 @@ extern "C" {
 #include <stdint.h>
 #include "nes.h"
 #include "nes_native.h"
+#include "m0_idle.h"
 
 typedef int32_t (*nes_region_fn)(int32_t budget, unsigned entry);
 
@@ -65,6 +66,10 @@ static inline __attribute__((always_inline)) void nes_gen_wr(uint16_t at, uint8_
 #define NES_POP() (s++, ram_[0x100u | s])
 
 #define NES_ZN(r_) (n = z = (r_))
+/* JMP to itself (3 cycles) until the slice is spent, as the interpreter
+ * jumps (m0_idle.h): nothing that could end a slice early (an NMI, an
+ * IRQ, a DMA stall) changes inside one.  b > 0. */
+#define NES_SPIN3(b_) ((b_) - 3 * (int32_t)m0_idle_loops((uint32_t)(b_), 3u))
 #define NES_ADC(m_) do { const uint8_t m__ = (m_); const unsigned sum__ = (unsigned)a + m__ + c; \
     v = (uint8_t)((~(a ^ m__) & (a ^ sum__) & 0x80u) >> 1); c = (uint8_t)(sum__ >> 8); \
     a = (uint8_t)sum__; NES_ZN(a); } while (0)

@@ -51,10 +51,22 @@ static uint8_t nes_buttons(uint8_t gbl) {
 uint32_t bench_pixel_hash = 2166136261u;
 #endif
 
+#ifdef BENCH_POKITTO_DISPLAY
+/* --target pokitto: 176 rows, each pushed 200 wide over the GPIO as
+ * nes_main.cpp does (the project's pokitto_lcd.c) */
+void pokitto_lcd_row_zoom(unsigned y, const uint16_t *px);
+#ifndef BENCH_NES_ROWS
+#define BENCH_NES_ROWS 176
+#endif
+#endif
+
 /* the PPU's panel rows (ppu.h), as nes_main.cpp takes them; no SPI */
 static void panel_row(void *host, unsigned y) {
     (void)host;
     bench_sink += line_buffer[0];
+#ifdef BENCH_POKITTO_DISPLAY
+    pokitto_lcd_row_zoom(y, line_buffer);
+#endif
 #ifdef BENCH_PIXEL_HASH
     {
         uint32_t h = (bench_pixel_hash ^ y) * 16777619u;
@@ -93,8 +105,8 @@ int main(void) {
              NES_VERTICAL_MIRROR);
     machine.ppu.panel = panel_row;
     machine.ppu.panel_out = line_buffer;
-#ifdef BENCH_NES_PLAN /* -DBENCH_NES_PLAN=NES_PLAN_176: the Pokitto's rows */
-    machine.ppu.panel_plan = BENCH_NES_PLAN;
+#ifdef BENCH_NES_ROWS /* -DBENCH_NES_ROWS=176: the Pokitto's rows */
+    nes_ppu_set_rows(&machine.ppu, BENCH_NES_ROWS);
 #endif
     nes_audio_set_rate(BENCH_AUDIO_RATE);
     for (uint32_t f = 0; f <= BENCH_FRAMES; f++) {

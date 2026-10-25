@@ -229,18 +229,18 @@ int main(void) {
     REQUIRE(!counters()); REQUIRE(!rendering(0)); REQUIRE(!rendering(1)); REQUIRE(!ram_outx());
     unsigned shown = 0;
     for (unsigned y = 0; y < GG_ACTIVE; y++) {
-        REQUIRE(gg_sms_display_row(y) == y * 5 / 8);
+        REQUIRE(gg_sms_display_row(y) == y * 5 / 8 && gg_sms_display_row(y) == m0_row_of(y, 192, 120));
         REQUIRE(gg_sms_line_shown(y) == (y == ((y * 5 / 8) * 8 + 4) / 5));
         shown += gg_sms_line_shown(y);
     }
     REQUIRE(shown == 120);
     for (unsigned y = GG_TOP; y < GG_TOP + GG_HEIGHT; y++) {
-        const unsigned r = (y - GG_TOP) * 8 / 9;
-        const int mode = y + 1 < GG_TOP + GG_HEIGHT && (y + 1 - GG_TOP) * 8 / 9 == r ? 3
-                       : y > GG_TOP && (y - 1 - GG_TOP) * 8 / 9 == r ? 2 : 1;
+        const unsigned r = m0_row_of(y - GG_TOP, 144, 128);
+        const int mode = y + 1 < GG_TOP + GG_HEIGHT && m0_row_of(y + 1 - GG_TOP, 144, 128) == r ? 3
+                       : y > GG_TOP && m0_row_of(y - 1 - GG_TOP, 144, 128) == r ? 2 : 1;
         REQUIRE(gg_meta_display_row(y) == r && gg_meta_draw_mode(y) == mode);
     }
-    for (unsigned l = 0; l <= GG_HEIGHT; l++) REQUIRE(gg_pokitto_rows[l] == (l * 11 + 8) / 9);
+    for (unsigned l = 0; l <= GG_HEIGHT; l++) REQUIRE(gg_pokitto_rows[l] == m0_row_first(l, 144, 176));
     puts("GG/SMS: counter, priority, sprite/filter composition and line policies match references");
     return 0;
 }

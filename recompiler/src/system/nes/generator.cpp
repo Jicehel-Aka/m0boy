@@ -123,6 +123,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
                << "#define NES_PANEL_SWAP " << (o.target == TargetId::meta ? 1 : 0) << "\n";
         /* the recompiled code's dispatcher (6502.c) */
         if (!o.interpret) config << "#ifndef NES_NATIVE\n#define NES_NATIVE 1\n#endif\n";
+        /* the Pokitto runs the PPU's loops from SRAM (ppu_asm.S) */
+        if (pokitto) config << "#ifndef NES_PPU_RAMFUNC\n#define NES_PPU_RAMFUNC 1\n#endif\n";
         write(src / "nes_config.h", config.str());
 
         for (const char* name : { "6502.c", "6502.h", "nes_native.h", "ppu.c", "ppu.h", "ppu_asm.S", "apu.c", "apu.h",
@@ -130,6 +132,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             copy_template(tpl / "runtime" / name, src / name);
         /* the panel renderer's box filter (ppu.c, and the harness's check) */
         copy_template(common_dir / "runtime" / "m0_scale.h", src / "m0_scale.h");
+        /* the idle loops' count (nes_gen.h) */
+        copy_template(common_dir / "runtime" / "m0_idle.h", src / "m0_idle.h");
 
         /* the recompiled 6502 code: the vectors, the profile, what they
          * reach; on a console, as much as the flash budget holds, played

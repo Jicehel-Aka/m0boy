@@ -270,12 +270,15 @@ décodée une fois pour ses huit lignes ; sprites par masques par ligne de
 l'OAM, refaits quand l'OAM ou la taille change). Horizontalement,
 `m0_box58_fast` (256 → 160) par tables de paires de pixels ; verticalement,
 15 lignes → 8 rangées : sept paires de lignes moyennées (`m0_avg2_panel`)
-puis une ligne seule. Le plan vertical est un masque par groupe de 15
-lignes (`ppu.panel_plan`, bit k : la ligne k ferme une rangée) : sur
-Pokitto, `NES_PLAN_176` fait 15 → 11 (quatre paires, sept lignes seules),
-240 → 176, et `pokitto_lcd_row_zoom` élargit les rangées à 200 (200×176,
-comme les cœurs Sega). Raccourcis exacts : un groupe d'une seule couleur, un
-groupe égal sur les deux lignes. Les boucles sont en Thumb-1 (`ppu_asm.S`,
+puis une ligne seule. Le plan vertical est la règle commune de
+`m0_scale.h` (`m0_row_of`, voir « Plans verticaux » plus bas) :
+`nes_ppu_set_rows(ppu, n)` en fait une table de 240 bits (la ligne y ferme
+sa rangée) pour n de 120 à 240 ; 128 sur META, 176 sur Pokitto, où
+`pokitto_lcd_row_zoom` élargit les rangées à 200 (200×176, comme les cœurs
+Sega). Raccourcis exacts : un groupe d'une seule couleur, un groupe égal
+sur les deux lignes ; les groupes d'une seule couleur qui se suivent avec
+le même mot (le ciel) ne sont plus que des comparaisons de mots et des
+écritures de mots, sans table. Les boucles sont en Thumb-1 (`ppu_asm.S`,
 en flash : le code en SRAM a fauté sur META surcadencé), la version C de
 `ppu.c` leur sert de référence. Une image que le cadenceur saute ne rend
 rien : seules les lignes où le sprite 0 peut toucher calculent leur fond.
@@ -284,7 +287,7 @@ Le harness compile aussi l'ancien rendu 256 pixels (`NES_PPU_REFERENCE`) et
 compare chaque rangée du panneau au filtre de ses lignes : `out_mismatch`
 (rangées différentes) et `hit_mismatch` (lignes dont le sprite 0 diffère)
 doivent valoir 0, aussi avec `--skip n` (une image sur n non affichée) et
-`--rows 176` (le plan du Pokitto).
+`--rows n` (176 : le plan du Pokitto ; vérifié aussi en 120, 144 et 240).
 L'asm se compare au C sur l'estimateur (`--cflag=-DBENCH_PIXEL_HASH`, puis
 `--cflag=-DNES_NO_PPU_ASM`) ; le banc rend aussi le son comme le pilote
 META (22049 Hz).
@@ -322,6 +325,72 @@ cycles par pixel) ; à 48 comme à 72 MHz (`POKITTO_HC`), le cadenceur saute
 donc des images. Dans gm0, la session META enregistrée (`--play-guest`)
 atteint 2000 images de jeu en 33,8 s émulées, 59 images de jeu/s, aux deux
 fréquences ; images affichées non comptées, pas encore essayé sur console.
+
+Suite (25 octobre 2026, mêmes entrées, estimations) : `m0_estimate.py
+--target pokitto` compte désormais aussi l'envoi des pixels d'un projet NES
+Pokitto (son propre `pokitto_lcd.c`), avec 2 attentes de flash à 48 MHz ;
+il donne 36,4 images/s toutes affichées, gm0 37 (`NES_MAX_SKIP=0`).
+
+| | cycles/image |
+| --- | --- |
+| META 70 MHz, 2 attentes : avant / groupes uniformes en série | 1,045 M / 0,992 M |
+| META, et `JMP` sur soi-même consommé d'un coup | 0,912 M |
+| Pokitto 48 MHz, boucles PPU en flash | 1,356 M |
+| Pokitto, boucles PPU en SRAM (`NES_PPU_RAMFUNC`, 2,6 Kio) | 1,318 M |
+| Pokitto, et `pokitto_push200` qui saute les groupes déjà sur le bus | 1,292 M (envoi 0,330 → 0,304 M) |
+| Pokitto, et `JMP` sur soi-même | 1,213 M (39,6 images/s toutes affichées) |
+
+La boucle d'attente du NMI (`JMP` vers sa propre adresse, `$8057` dans SMB)
+tournait jusqu'au bout de chaque tranche de ligne : le code recompilé et le
+répartiteur (`6502.c`) la consomment d'un coup, ⌈b/3⌉ sauts par une
+multiplication (`NES_SPIN3`, `nes_gen.h`). Mêmes cycles : rien de ce qui
+peut couper une tranche (NMI, IRQ, vol de cycles du DMA) ne change au cours
+d'une tranche ; SMB précis = interpréteur (run_hash 7c236ae4, 1500 images
+avec entrées).
+
+gm0 ne modélise pas les attentes de flash du LPC11U68 : il ne voit pas la
+différence entre boucles en SRAM et en flash (40,3 s contre 40,2 s pour 1500
+images). `pokitto_push200` est partagé : écrans fixes identiques à l'octet
+dans gm0 pour NES, Game Boy et Game Gear (un fondu diffère à mi-image, le
+point d'arrêt de gm0 tombant ailleurs dans l'image).
+
+### Plans verticaux
+
+Tous les cœurs qui réduisent ou étirent leurs lignes suivent la même règle
+(`m0_scale.h`) : n lignes sur m rangées, la ligne y sur la rangée
+`m0_row_of(y, n, m)` = ⌊y·m/n⌋ (réduction, une rangée prend une ou deux
+lignes), ou sur les rangées de `m0_row_first(y, n, m)` = ⌈y·m/n⌉ à celle de
+y + 1 (agrandissement). SG-1000 (192 → 120, 192 → 150), SMS (192 → 120,
+120 → 150), Game Gear (144 → 128, 144 → 176, en tables en flash vérifiées
+par `test_gg_runtime.c`), NES (240 → n). L'envoi des rangées est commun aussi
+(`targets/common/platform/m0_rows.h`) : deux tampons en alternance, l'un
+envoyé par DMA sur META pendant que l'autre se remplit, et sur Pokitto la
+rangée poussée sur chaque rangée d'écran que le plan lui donne
+(`m0_rows_zoom`). SG-1000, Game Gear, PICO-8 et NES s'en servent ; captures
+gm0 identiques à l'octet sur META et Pokitto pour les trois premiers.
+
+### Communs aux cœurs : boucles d'attente et écritures Pokitto
+
+- Boucle d'attente (`targets/common/runtime/m0_idle.h`) : un saut sur
+  lui-même (`JMP` du 6502, `JR $` / `JP $` du Z80) tourne jusqu'au prochain
+  événement ; `m0_idle_loops` donne d'un coup le nombre de tours qu'il
+  aurait faits, ⌈reste / durée⌉, par une multiplication (exact, vérifié de
+  1 à 2 millions de cycles pour toutes les durées de 2 à 30). Le NES s'en
+  sert (`NES_SPIN3`), le Z80 aussi : l'émetteur SG-1000/GG/SMS/MSX écrit
+  `SG_IDLE` (`sg_gen.h`) avant un tel saut, et la boucle s'arrête sur le
+  même `SYNC` qu'en tournant (précis = interpréteur, tests e2e). `HALT`
+  avait déjà le sien (`sg_halt`).
+- Écritures de pixels du Pokitto (`pokitto_lcd_asm.S`, en SRAM) : une seule
+  macro `PUSH4` pour `pokitto_push200` (élargi), `pokitto_push_n` (n
+  pixels) et `pokitto_push160` (son entrée) ; quatre pixels déjà sur le bus
+  ne sont que des impulsions WR. Le PICO-8 (`pokitto_lcd_row128`, une
+  boucle C en flash jusqu'ici), le SG-1000 et l'MSX (jusqu'ici en C eux
+  aussi) passent par elles ; le SG-1000 et l'MSX prennent aussi les bancs
+  de 2 Kio du Pokitto (la file audio dans RAM1), sans quoi Gradius 2
+  n'avait plus de place pour la pile. Écrans fixes identiques à l'octet
+  dans gm0 pour Game Boy (1:1, `push160`), NES et Game Gear (`push200`),
+  PICO-8 (`push_n`), SG-1000 et MSX ; les images en mouvement diffèrent là
+  où la vitesse change l'image affichée à un instant donné.
 
 ## Vérification
 

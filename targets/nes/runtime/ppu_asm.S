@@ -12,13 +12,21 @@
  *   pair tables are one array: pair44 = pair53 + 2048 bytes.  One copy of
  *   each loop per misalignment, so that every byte load has its offset.
  *
- * Code stays in flash: on the META, code run from SRAM faulted with the CPU
- * overclocked (gbl_profile.h, GBL_PPU_RAMFUNC). */
+ * Code stays in flash on the META: code run from SRAM faulted with the CPU
+ * overclocked (gbl_profile.h, GBL_PPU_RAMFUNC).  NES_PPU_RAMFUNC (the
+ * Pokitto's nes_config.h) puts the loops in SRAM, copied with .data
+ * (.data.gbl_ramfunc.*, as the Pokitto's pixel pushes): no flash wait
+ * state in them. */
 #if __has_include("nes_config.h")
 #include "nes_config.h"
 #endif
 #ifndef NES_PANEL_SWAP
 #define NES_PANEL_SWAP 0
+#endif
+#if defined(NES_PPU_RAMFUNC) && NES_PPU_RAMFUNC
+#define LOOP_SECTION(name) .section .data.gbl_ramfunc.name, "ax", %progbits
+#else
+#define LOOP_SECTION(name) .section .text.name, "ax", %progbits
 #endif
 
 #if defined(__ARM_ARCH_6M__) && !defined(NES_NO_PPU_ASM)
@@ -59,19 +67,87 @@
     strh \a, [r1, #\slot]
 .endm
 
-/* one colour in five pixels: the byte of r4, its table diagonal */
-.macro FLAT
+/* One colour in five pixels: the byte of r4, its table diagonal; then the
+ * groups that follow with the same word everywhere (a run of sky) without
+ * a lookup: compared word by word, written as words.  Entered with r0 past
+ * the group, r1 on its output; leaves through 8f at the row's end or
+ * through 1b on a group that differs, r0 back on it.  The output address
+ * alternates between 4-aligned and 2 past: the two bodies alternate. */
+.macro FLAT m, two
     lsls r5, r4, #24
     lsrs r5, r5, #24
     lsls r7, r5, #5
     adds r5, r5, r7
     ldrh r5, [r2, r5]
     PANEL r5
-    strh r5, [r1, #0]
-    strh r5, [r1, #2]
-    strh r5, [r1, #4]
-    strh r5, [r1, #6]
-    strh r5, [r1, #8]
+    lsls r3, r5, #16
+    orrs r3, r3, r5 /* the colour twice */
+    lsls r6, r1, #30
+    bmi .Lodd\@
+.Leven\@:
+    str r3, [r1, #0]
+    str r3, [r1, #4]
+    strh r3, [r1, #8]
+    adds r1, #10
+    cmp r0, r9
+    beq .Lend\@
+    SAME \m, \two, .Lout\@
+.Lodd\@:
+    strh r3, [r1, #0]
+    adds r1, #2
+    str r3, [r1, #0]
+    str r3, [r1, #4]
+    adds r1, #8
+    cmp r0, r9
+    beq .Lend\@
+    SAME \m, \two, .Lout\@
+    b .Leven\@
+.Lout\@:
+  .if \two
+    subs r0, #12
+  .endif
+    b 1b
+.Lend\@:
+    b 8f
+.endm
+
+/* the next group holds the word r4 in every word the test of its loop
+ * reads (both lines with \two): r0 past it, else to \out */
+.macro SAME m, two, out
+  .if \two
+    ldmia r0!, {r5, r6, r7}
+    cmp r5, r4
+    bne \out
+    cmp r6, r4
+    bne \out
+    cmp r7, r4
+    bne \out
+    ldr r5, [r0, #0]
+    cmp r5, r4
+    bne \out
+    .if \m
+    ldr r5, [r0, #4]
+    cmp r5, r4
+    bne \out
+    ldr r5, [r0, #8]
+    cmp r5, r4
+    bne \out
+    .endif
+    adds r0, #4
+  .else
+    ldr r5, [r0, #0]
+    cmp r5, r4
+    bne \out
+    ldr r5, [r0, #8]
+    cmp r5, r4
+    bne \out
+    .if \m
+    ldr r5, [r0, #16]
+    cmp r5, r4
+    bne \out
+    .endif
+    adds r0, #16
+  .endif
 .endm
 
 /* m0_box58_fast of line \r of the group at r3, to panel order */
@@ -131,8 +207,7 @@
     orrs r5, r5, r7
     cmp r4, r5
     bne 4f
-    FLAT
-    b 9f
+    FLAT \m, 0
 4:
     BOX \m, 0
 9:
@@ -167,8 +242,7 @@
     orrs r5, r5, r7
     cmp r4, r5
     bne 4f
-    FLAT
-    b 9f
+    FLAT \m, 1
 4:
     movs r3, r0
     subs r3, #16
@@ -247,7 +321,7 @@
     b \name\()_m3
 .endm
 
-    .section .text.nes_ppu_out1_asm, "ax", %progbits
+    LOOP_SECTION(nes_ppu_out1_asm)
     .global nes_ppu_out1_asm
     .type nes_ppu_out1_asm, %function
     .thumb_func
@@ -268,7 +342,7 @@ nes_ppu_out1_asm:
     LEAVE
     .size nes_ppu_out1_asm, . - nes_ppu_out1_asm
 
-    .section .text.nes_ppu_out2_asm, "ax", %progbits
+    LOOP_SECTION(nes_ppu_out2_asm)
     .global nes_ppu_out2_asm
     .type nes_ppu_out2_asm, %function
     .thumb_func
@@ -291,7 +365,7 @@ nes_ppu_out2_asm:
 
 /* the 33 tiles: expand[lo nibble | hi nibble << 4] | palette, the high
  * nibbles first */
-    .section .text.nes_ppu_tiles_asm, "ax", %progbits
+    LOOP_SECTION(nes_ppu_tiles_asm)
     .global nes_ppu_tiles_asm
     .type nes_ppu_tiles_asm, %function
     .thumb_func

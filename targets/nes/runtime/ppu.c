@@ -59,6 +59,10 @@ static int pair_init; /* the pair tables wait for the palette RAM to exist */
 static void pair_write(nes_ppu_t *ppu, unsigned i);
 #endif
 
+void nes_ppu_set_rows(nes_ppu_t *ppu, unsigned rows) {
+    m0_plan_ends(ppu->panel_ends, 240, rows);
+}
+
 void nes_ppu_reset(nes_ppu_t *ppu) {
     ppu->ctrl = ppu->mask = ppu->status = 0;
     ppu->v = ppu->t = 0;
@@ -216,7 +220,7 @@ static uint16_t pair_tabs[2][32 * 32]; /* m0_box58_fast's (5,3) and (4,4) of
                                         * ppu_asm.S finds the second after the first) */
 #define pair53 pair_tabs[0]
 #define pair44 pair_tabs[1]
-static unsigned panel_k, panel_row;    /* line within the group of 15, row */
+static unsigned panel_row;             /* the row being filled */
 static unsigned panel_open;            /* the row has its first line (pair slot 1 next) */
 
 static void tables_init(void) {
@@ -523,7 +527,6 @@ static void nes_ppu_indices(nes_ppu_t *ppu, unsigned line_y, uint8_t *line) {
 /* the panel side of a visible line: the row of indices, the panel row once
  * its lines are in; a frame not shown only keeps sprite-0 */
 static void nes_ppu_panel_line(nes_ppu_t *ppu, unsigned line_y, unsigned on) {
-    const unsigned k = panel_k;
     if (ppu->skip || !ppu->panel) {
         if ((on & (MASK_BG | MASK_SPR)) == (MASK_BG | MASK_SPR) && !(ppu->status & ST_SPRITE0) &&
             ppu->chr && sprite0_on(ppu, line_y)) {
@@ -537,7 +540,7 @@ static void nes_ppu_panel_line(nes_ppu_t *ppu, unsigned line_y, unsigned on) {
     if (on) nes_ppu_indices(ppu, line_y, line);
     else line_clear(line);
     row_x[slot] = ppu->x;
-    if (ppu->panel_plan >> k & 1) {
+    if (ppu->panel_ends[line_y >> 5] >> (line_y & 31) & 1) {
         if (pal_dirty) nes_ppu_tables(ppu);
         if (!slot) nes_ppu_out1(row_x[0], ppu->panel_out);
         else if (row_x[0] == row_x[1]) nes_ppu_out2(row_x[0], ppu->panel_out);
@@ -731,7 +734,7 @@ int nes_ppu_line(nes_ppu_t *ppu, unsigned line) {
         return 0;
     }
     if (line >= 240) return 0;
-    if (line == 0) panel_k = panel_row = panel_open = 0;
+    if (line == 0) panel_row = panel_open = 0;
     const unsigned on = ppu->mask & (MASK_BG | MASK_SPR);
 #ifdef NES_PPU_REFERENCE
     const uint8_t reference = ppu->render_row ? reference_line(ppu, line) : 0;
@@ -758,11 +761,10 @@ int nes_ppu_line(nes_ppu_t *ppu, unsigned line) {
         ppu->v = (uint16_t)((ppu->v & ~0x041F) | (ppu->t & 0x041F));
     }
     /* the vertical plan (ppu.h): a row ends on each set bit */
-    if (ppu->panel_plan >> panel_k & 1) {
+    if (ppu->panel_ends[line >> 5] >> (line & 31) & 1) {
         panel_row++;
         panel_open = 0;
     } else
         panel_open = 1;
-    if (++panel_k == 15) panel_k = 0;
     return 0;
 }

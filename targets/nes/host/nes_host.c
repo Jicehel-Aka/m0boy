@@ -7,8 +7,8 @@
  * Built with NES_PPU_REFERENCE: every panel row (160x128, ppu.h) is checked
  * against the reference lines it comes from (out_mismatch, rows that
  * differ; hit_mismatch, lines whose sprite-0 differs); --skip n leaves out
- * one frame in n from the panel, as a console's pacing does; --rows 176
- * takes the Pokitto's vertical plan (ppu.h, NES_PLAN_176). */
+ * one frame in n from the panel, as a console's pacing does; --rows n
+ * takes another vertical plan (ppu.h: 176 on the Pokitto). */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,20 +42,16 @@ static void on_row(void *host, unsigned line, const uint16_t *pixels) {
             frame[line][x] = pixels[x + machine.ppu.x];
 }
 
-/* the panel row against its reference lines (the plan's, ppu.h): each
- * through m0_box58_fast, the two of a pair averaged */
+/* the panel row against its reference lines (the plan's, ppu.h: the
+ * lines y with m0_row_of(y, 240, rows) == r): each through m0_box58_fast,
+ * the two of a pair averaged */
 static uint16_t panel[160];
 static uint32_t out_rows, out_mismatch;
+static unsigned rows = 128;
 static void on_panel(void *host, unsigned r) {
     (void)host;
-    const unsigned plan = machine.ppu.panel_plan, per = NES_PANEL_ROWS(plan) / 16u;
-    unsigned j = r % per, a = 15 * (r / per), k = 0;
-    for (;; k++)
-        if (plan >> k & 1) {
-            if (!j--) break;
-            a = 15 * (r / per) + k + 1;
-        }
-    const unsigned pair = 15 * (r / per) + k != a;
+    const unsigned a = m0_row_first(r, rows, 240);
+    const unsigned pair = a + 1 < 240 && m0_row_of(a + 1, 240, rows) == r;
     uint16_t want[160], other[160];
     for (unsigned x = 0; x < 256; x += 8) {
         uint32_t s[8];
@@ -80,7 +76,7 @@ static uint32_t fnv(const void *data, size_t n, uint32_t h) {
 int main(int argc, char **argv) {
     const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0, *coverage = 0;
     int interp = 0;
-    unsigned frames = 60, skip = 0, rows = 128;
+    unsigned frames = 60, skip = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) ppm = argv[++i];
@@ -130,8 +126,8 @@ int main(int argc, char **argv) {
     machine.row = on_row;
     machine.ppu.panel = on_panel;
     machine.ppu.panel_out = panel;
-    if (rows != 128 && rows != 176) { fprintf(stderr, "--rows: 128 (META) or 176 (Pokitto)\n"); return 2; }
-    machine.ppu.panel_plan = rows == 176 ? NES_PLAN_176 : NES_PLAN_128;
+    if (rows < 120 || rows > 240) { fprintf(stderr, "--rows: 120 to 240 (128 the META, 176 the Pokitto)\n"); return 2; }
+    nes_ppu_set_rows(&machine.ppu, rows);
     /* a held-input script: "frame buttons" lines, buttons by name */
     struct { unsigned frame; uint8_t buttons; } script[4096];
     unsigned script_n = 0;

@@ -820,7 +820,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         /* the Z80 engine both consoles run (the memory map differs, see
          * sg_gen.h), and the PSG sample generation sg_audio.c / gg_psg.c
          * include (sg_psg.h) */
-        for (const char* name : { "sg_gen.h", "sg_psg.h", "m0_scale.h" })
+        for (const char* name : { "sg_gen.h", "sg_psg.h", "m0_scale.h", "m0_idle.h" })
             copy_template(common_dir / "runtime" / name, src / name);
         if (gg) copy_template(common_dir / "runtime/m0_sega_mapper.h", src / "m0_sega_mapper.h");
         copy_template(common_dir / "runtime/m0_rom_codec.h", src / "m0_rom_codec.h");
@@ -870,10 +870,11 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             write(o.output / "host" / "rom_card.c", card.str());
             host_sources += " rom_card.c";
         }
-        /* The Game Gear streams its ROM: its FAT reader and SD bus join the
-         * Pokitto platform files in PLATFORM_C. */
+        /* The Pokitto's Thumb-1 pixel writes (and the Game Gear's audio
+         * interrupt) and, for the Game Gear's streamed ROM, its FAT reader
+         * and SD bus join the Pokitto platform files in PLATFORM_C. */
         const std::string platform_extra = gg ? " ${SRC}/pokitto_*.S ${SRC}/gg_stream.c ${SRC}/m0_sd.c ${SRC}/m0_fat.c"
-                                              : states ? " ${SRC}/m0_sd.c ${SRC}/m0_fat.c" : "";
+                                              : states ? " ${SRC}/pokitto_*.S ${SRC}/m0_sd.c ${SRC}/m0_fat.c" : " ${SRC}/pokitto_*.S";
         {
             std::string host_cmake = read(cmake_tpl / "host.txt.in");
             host_cmake = replace(host_cmake, "@NAME@", o.name);
@@ -931,7 +932,12 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             project::write_audio(t, o.target, src, "59736u", "3579545u", "sg_audio.h", "sg_platform_audio_render",
                                  "sg_platform_audio_rate");
             project::write_config(o.target, src);
-            project::write_profile(o.target, src, {gg, gg, gg});
+            /* on every Pokitto build (as the other systems'), the rows'
+             * Thumb-1 writes from SRAM and the 2 KiB banks that make room
+             * for them (the audio queue in RAM1); the audio interrupt's on
+             * the Game Gear's */
+            const bool pk = o.target == TargetId::pokitto;
+            project::write_profile(o.target, src, {gg || pk, gg || pk, gg});
             if (esp) {
                 /* Arduino core start-up; the drivers and flash code the Game Boy
                  * build uses (they find the Sega frontend by its sg_config.h) */
@@ -972,11 +978,9 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                     write(o.output / entry.path().stem(), replace(read(entry.path()), "@NAME@", o.name));
                 }
             } else if (o.target == TargetId::pokitto) {
-                project::copy_pokitto_drivers(t, src);
-                if (gg) { /* rows pushed and the audio interrupt in Thumb-1 */
-                    copy_template(platform / "pokitto_lcd_asm.S", src / "pokitto_lcd_asm.S");
-                    copy_template(platform / "pokitto_audio_asm.S", src / "pokitto_audio_asm.S");
-                }
+                /* rows pushed in Thumb-1; the Game Gear's audio interrupt too */
+                project::copy_pokitto_drivers(t, src, {"pokitto_lcd_asm.S"});
+                if (gg) copy_template(platform / "pokitto_audio_asm.S", src / "pokitto_audio_asm.S");
                 auto ld = project::pokitto_ld(t, o.name);
                 if (gg) /* the 2 KiB USB RAM bank: pair tables and the card cache */
                     ld = replace(ld, "*(.bss.gbl_lookup_cache)", "*(.bss.gbl_lookup_cache)\n    *(.bss.pair53)\n    *(.bss.card_buf)");

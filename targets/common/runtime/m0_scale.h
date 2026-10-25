@@ -9,11 +9,13 @@
  *                so does the NES's 2C02 (ppu.c, m0_box58_fast);
  *   160 -> 128   nearest neighbour, m0_nearest (the ESPboy's ST7735 adapter,
  *                espboy_hw.cpp, whatever the core that feeds it);
- *   vertical     each frontend's line policy (meta_display.c's modes,
- *                gg_display.h's tables, sg_main.cpp's display_row); where
- *                two source lines land on one row they are blended with
- *                m0_box58_pair (lines summed before the filter) or
- *                m0_avg2_panel (two rendered rows: the NES, 240 -> 128).
+ *   vertical     one rule for every core's line plan (m0_row_of below:
+ *                sg_main.cpp's display_row, gg_display.h's tables, the
+ *                NES's 240 -> 128 or 176, the Game Boy's meta_display.c
+ *                modes apart); where two source lines land on one row
+ *                they are blended with m0_box58_pair (lines summed before
+ *                the filter) or m0_avg2_panel (two rendered rows: the
+ *                NES), or one of them is kept.
  *
  * The device renderer and the reference renderer of a console must agree
  * pixel for pixel, so both go through these: a console picks its method
@@ -92,6 +94,25 @@ static inline void m0_box58_fast(const uint32_t *s, uint16_t *o) {
     o[2] = m0_blend2_565(s[3], s[4]);
     o[3] = m0_panel(m0_fold565(5 * s[5] + 3 * s[6]));
     o[4] = m0_panel(m0_fold565(3 * s[6] + 5 * s[7]));
+}
+
+/* Vertical plans: n source lines onto m panel rows.
+ *   shrinking (m <= n <= 2m): line y lands on row m0_row_of(y, n, m),
+ *     floor(y * m / n); a row takes one line or two;
+ *   growing (n < m <= 2n): line y covers the rows from m0_row_first(y, n, m)
+ *     up to m0_row_first(y + 1, n, m), ceil(y * m / n).
+ * Give the fraction reduced (192 -> 120 as 8 -> 5) so that a constant
+ * denominator of a power of two is a shift: the Cortex-M0+ has no divider.
+ * Other plans are tables made once (m0_plan_ends) or kept in flash
+ * (gg_display.h, checked against these by test_gg_runtime.c). */
+static inline unsigned m0_row_of(unsigned y, unsigned n, unsigned m) { return y * m / n; }
+static inline unsigned m0_row_first(unsigned y, unsigned n, unsigned m) { return (y * m + n - 1) / n; }
+/* a shrinking plan as a bitmap of n bits: bit y set when line y is the
+ * last of its row (a row of two lines: the first bit clear) */
+static inline void m0_plan_ends(uint32_t *ends, unsigned n, unsigned m) {
+    for (unsigned w = 0; w < (n + 31) / 32; w++) ends[w] = 0;
+    for (unsigned y = 0; y < n; y++)
+        if (y + 1 == n || m0_row_of(y + 1, n, m) != m0_row_of(y, n, m)) ends[y >> 5] |= 1u << (y & 31);
 }
 
 /* The source pixel nearest the centre of destination pixel x (a fraction of

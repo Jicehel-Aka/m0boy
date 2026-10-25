@@ -40,7 +40,7 @@ fs::path Templates::console(TargetId target) const {
 void copy_frontend(const Templates& t, const fs::path& src) {
     const auto shared = t.frontend();
     for (const char* name : { "sg_frontend.h", "sg_menu.h", "m0_target.h", "m0_lcd.h", "m0_clock.h", "m0_pad.h",
-                              "m0_menu.h", "m0_font.h", "m0_menu.cpp" })
+                              "m0_rows.h", "m0_menu.h", "m0_font.h", "m0_menu.cpp" })
         copy_template(shared / name, src / name);
     copy_template(t.targets / "meta" / "runtime" / "gbl_board.h", src / "gbl_board.h");
 }

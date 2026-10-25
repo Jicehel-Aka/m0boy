@@ -20,7 +20,17 @@
 /* The picture's row `row` (0..127): GRAM write from (POKITTO_P8_X,
  * POKITTO_P8_Y + row), register 0x20 takes the panel row, 0x21 the column,
  * 0x22 starts the pixels.  Register writes hold WR low two cycles, the
- * data one, as pokitto_lcd.c pushes them. */
+ * data one, as pokitto_lcd.c pushes them.  POKITTO_LCD_ASM: the shared
+ * Thumb-1 writes from SRAM (pokitto_lcd_asm.S), the C below their
+ * reference. */
+#if POKITTO_LCD_ASM
+void pokitto_at(unsigned x, unsigned y);
+void pokitto_push_n(const uint16_t *px, unsigned n);
+void pokitto_lcd_row128(unsigned row, const uint16_t *px) {
+    pokitto_at(POKITTO_P8_X, POKITTO_P8_Y + row);
+    pokitto_push_n(px, 128);
+}
+#else
 void pokitto_lcd_row128(unsigned row, const uint16_t *px) {
     volatile uint32_t *mpin = &GPIO_MPIN(2), *clr = &GPIO_CLR(1), *set = &GPIO_SET(1);
     GPIO_CLR(0) = CD_BIT;
@@ -41,3 +51,4 @@ void pokitto_lcd_row128(unsigned row, const uint16_t *px) {
         *set = WR_BIT;
     }
 }
+#endif

@@ -7,9 +7,10 @@
  *   r1 + 0x7C      SET[1]                WR high: the panel latches
  *   r2 = 1 << 12   WR (P1_12)
  *
- * Each pixel is ldrh, lsls #3 and three stores (about 9 cycles); the load of
- * the next pixel sits between WR low and WR high, so the strobe lasts a few
- * cycles (gm0 keeps one instruction there, PokittoLib a nop).  The 200x176
+ * Each pixel is three stores and its shifts (about 9 cycles), the next
+ * pixel's shift between WR low and WR high (gm0 keeps one instruction
+ * there, PokittoLib a nop); four pixels already on the bus are four or
+ * five strobes alone.  The 200x176
  * mode latches the second pixel of every four twice (the bus unchanged,
  * only WR toggled), 160 -> 200.  pokitto_lcd.c keeps the C versions
  * (POKITTO_LCD_ASM=0) as the reference.
@@ -22,29 +23,76 @@
 
 #define MPIN2 0xA0002188
 
-/* Latch pixel register \cur (already shifted) and load + shift \next from
- * [r0, #\off] while WR is low. */
-.macro PIX cur, next, off
-    str \cur, [r1]
-    str r2, [r1, r5]
-    ldrh \next, [r0, #\off]
-    str r2, [r1, #0x7C]
-    lsls \next, \next, #3
-.endm
-
-/* Last pixel of an iteration: nothing to load, lsls keeps the strobe wide. */
-.macro PIX_LAST cur
-    str \cur, [r1]
-    str r2, [r1, r5]
-    adds r0, #16
-    str r2, [r1, #0x7C]
-.endm
-
 /* WR strobe alone: the pixel on the bus once more. */
 .macro DUP
     str r2, [r1, r5]
     nop
     str r2, [r1, #0x7C]
+.endm
+
+/* Four pixels at a time from r0 up to r3, as two words: when both hold the
+ * colour already on the bus twice (r4: the last pixel written, in both
+ * halves) they are strobes alone, the bus unchanged; otherwise each
+ * strobe's gap does the next pixel's shifts.  stretch: the second pixel of
+ * the four latched twice (160 -> 200).  Ends at 2f. */
+.macro PUSH4 stretch
+    ldr r4, [r0]
+    mvns r4, r4             /* never the first word: the first group is written */
+1:  ldr r6, [r0, #0]
+    cmp r6, r4
+    bne 3f
+    ldr r7, [r0, #4]
+    cmp r7, r4
+    bne 4f
+    DUP
+    DUP
+    DUP
+    DUP
+  .if \stretch
+    DUP
+  .endif
+    adds r0, #8
+    cmp r0, r3
+    bne 1b
+    b 2f
+3:  ldr r7, [r0, #4]
+4:  lsls r4, r6, #16
+    lsrs r4, r4, #13        /* a << 3 */
+    str r4, [r1]            /* a */
+    str r2, [r1, r5]
+    lsrs r6, r6, #16
+    str r2, [r1, #0x7C]
+    lsls r6, r6, #3
+    str r6, [r1]            /* b */
+    str r2, [r1, r5]
+    lsls r4, r7, #16
+    str r2, [r1, #0x7C]
+    lsrs r4, r4, #13
+  .if \stretch
+    str r2, [r1, r5]        /* b again */
+    lsrs r6, r7, #16
+    str r2, [r1, #0x7C]
+    lsls r6, r6, #3
+    str r4, [r1]            /* c */
+    str r2, [r1, r5]
+    lsrs r4, r7, #16
+    str r2, [r1, #0x7C]
+  .else
+    str r4, [r1]            /* c */
+    str r2, [r1, r5]
+    lsrs r6, r7, #16
+    str r2, [r1, #0x7C]
+    lsls r6, r6, #3
+    lsrs r4, r7, #16
+  .endif
+    str r6, [r1]            /* d */
+    str r2, [r1, r5]
+    lsls r7, r4, #16
+    str r2, [r1, #0x7C]
+    orrs r4, r7             /* d on the bus, in both halves */
+    adds r0, #8
+    cmp r0, r3
+    bne 1b
 .endm
 
 /* One bus write of the C reference (command(), data(), strobe()): the value
@@ -100,39 +148,35 @@ pokitto_at:
     .pool
     .size pokitto_at, . - pokitto_at
 
-    .section .data.gbl_ramfunc.pokitto_push160, "ax", %progbits
+    .section .data.gbl_ramfunc.pokitto_push_n, "ax", %progbits
     .align 2
     .global pokitto_push160
     .type pokitto_push160, %function
     .thumb_func
 /* void pokitto_push160(const uint16_t *px): 160 pixels at the GRAM cursor. */
 pokitto_push160:
+    movs r1, #160
+    .global pokitto_push_n
+    .type pokitto_push_n, %function
+    .thumb_func
+/* void pokitto_push_n(const uint16_t *px, unsigned n): n pixels (a multiple
+ * of four, px 4-aligned) at the GRAM cursor, as pokitto_push200 without its
+ * stretch: four pixels as two words, five strobes alone when both hold the
+ * colour already on the bus (r4), else each strobe's gap doing the next
+ * pixel's shifts.  The Game Boy's 1:1 rows (160) and the PICO-8's (128,
+ * pokitto_p8lcd.c). */
+pokitto_push_n:
     push {r4, r5, r6, r7, lr}
+    lsls r3, r1, #1
+    adds r3, r3, r0         /* r3 = px + 2n bytes */
     ldr r1, =MPIN2
     movs r2, #1
     lsls r2, r2, #12
     movs r5, #0xFC
-    movs r3, r0
-    adds r3, #255
-    adds r3, #65            /* r3 = px + 320 bytes */
-    ldrh r6, [r0]
-    lsls r6, r6, #3
-1:  PIX r6, r7, 2
-    PIX r7, r6, 4
-    PIX r6, r7, 6
-    PIX r7, r6, 8
-    PIX r6, r7, 10
-    PIX r7, r6, 12
-    PIX r6, r7, 14
-    PIX_LAST r7
-    cmp r0, r3
-    beq 2f
-    ldrh r6, [r0]
-    lsls r6, r6, #3
-    b 1b
+    PUSH4 0
 2:  pop {r4, r5, r6, r7, pc}
     .pool
-    .size pokitto_push160, . - pokitto_push160
+    .size pokitto_push_n, . - pokitto_push_n
 
     .section .data.gbl_ramfunc.pokitto_push200, "ax", %progbits
     .align 2
@@ -140,7 +184,8 @@ pokitto_push160:
     .type pokitto_push200, %function
     .thumb_func
 /* void pokitto_push200(const uint16_t *px): 160 pixels stretched to 200
- * (a b b c d per four) at the GRAM cursor. */
+ * (a b b c d per four) at the GRAM cursor, PUSH4's stretch: a run of sky
+ * is five strobes per four pixels.  px is 4-aligned. */
 pokitto_push200:
     push {r4, r5, r6, r7, lr}
     ldr r1, =MPIN2
@@ -149,24 +194,8 @@ pokitto_push200:
     movs r5, #0xFC
     movs r3, r0
     adds r3, #255
-    adds r3, #65
-    ldrh r6, [r0]
-    lsls r6, r6, #3
-1:  PIX r6, r7, 2           /* a */
-    PIX r7, r6, 4           /* b */
-    DUP                     /* b again */
-    PIX r6, r7, 6           /* c */
-    PIX r7, r6, 8           /* d */
-    PIX r6, r7, 10          /* a */
-    PIX r7, r6, 12          /* b */
-    DUP
-    PIX r6, r7, 14          /* c */
-    PIX_LAST r7             /* d */
-    cmp r0, r3
-    beq 2f
-    ldrh r6, [r0]
-    lsls r6, r6, #3
-    b 1b
+    adds r3, #65            /* r3 = px + 320 bytes */
+    PUSH4 1
 2:  pop {r4, r5, r6, r7, pc}
     .pool
     .size pokitto_push200, . - pokitto_push200

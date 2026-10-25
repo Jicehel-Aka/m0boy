@@ -86,6 +86,11 @@ def build(project, out_dir, frames, opt, input_file, extra, compiler="gcc"):
         sources.append(os.path.join(HERE, "bench_main_nes.c"))
         if os.path.isfile(os.path.join(src, "nes_gen.c")):  # recompiled 6502 code
             extra = extra + ["-DNES_NATIVE"]
+        # --target pokitto on a Pokitto project: its rows pushed 200 wide by
+        # the project's own driver (pokitto_lcd.c and its Thumb-1 loops)
+        if any(f.startswith("-DBENCH_POKITTO_DISPLAY") for f in extra):
+            sources += [os.path.join(src, f) for f in ("pokitto_lcd.c", "pokitto_lcd_asm.S")
+                        if os.path.isfile(os.path.join(src, f))]
     else:
         sources = sorted(os.path.join(src, f) for f in os.listdir(src)
                          if (f.endswith(".c") or f.endswith(".S")) and (f.startswith("gbl_") or f.endswith("_gen.c") or f.endswith("_rom.c")))
@@ -98,7 +103,7 @@ def build(project, out_dir, frames, opt, input_file, extra, compiler="gcc"):
                     os.path.join(plat, "src", "gbl_palettes.c")]
         extra = extra + ["-I", os.path.join(plat, "src"), "-I", os.path.join(plat, "meta")]
     # -DBENCH_POKITTO_DISPLAY=<mode> (--target pokitto): the Pokitto's.
-    if any(f.startswith("-DBENCH_POKITTO_DISPLAY") for f in extra):
+    if any(f.startswith("-DBENCH_POKITTO_DISPLAY") for f in extra) and not nes:
         plat = os.path.normpath(os.path.join(HERE, "..", "..", "platform"))
         pk = os.path.join(plat, "pokitto")
         sources += [os.path.join(pk, "pokitto_display.c"), os.path.join(pk, "pokitto_lcd.c"),

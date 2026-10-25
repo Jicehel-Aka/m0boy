@@ -155,7 +155,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             project::write_config(o.target, src);
             /* the audio ring in the Pokitto's 2 KiB bank: the heap and the
              * screen leave the main RAM tight */
-            project::write_profile(o.target, src, {false, pokitto, false}, true);
+            project::write_profile(o.target, src, {pokitto, pokitto, false}, true);
             if (esp) {
                 /* Arduino core start-up; the hardware adapter is the Sega frontends' (it finds
                  * its audio in sg_audio.h) with the picture's 128 columns taken as they are */
@@ -178,12 +178,13 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             } else if (pokitto) {
                 /* Bare-metal drivers and start-up, the Sega Pokitto projects' files; the
                  * picture's row writer is pokitto_p8lcd.c, a file of the PICO-8's own (the
-                 * Game Boy and Sega firmwares must link pokitto_lcd.c unchanged). */
-                project::copy_pokitto_drivers(t, src, {"pokitto_p8lcd.c"});
+                 * Game Boy and Sega firmwares must link pokitto_lcd.c unchanged), over the
+                 * shared Thumb-1 pixel writes (pokitto_lcd_asm.S, POKITTO_LCD_ASM). */
+                project::copy_pokitto_drivers(t, src, {"pokitto_p8lcd.c", "pokitto_lcd_asm.S"});
                 project::write_pokitto_project(t, o.output, o.name, o.compiler, "pico8",
                                                "${SRC}/p8_gen.c ${SRC}/p8_cart.c ${SRC}/p8rt.c ${SRC}/p8gfx.c ${SRC}/p8lib.c ${SRC}/p8main.c"
                                                " ${SRC}/p8_audio.c ${SRC}/p8_main.cpp ${SRC}/m0_menu.cpp ${SRC}/m0_state.cpp",
-                                               " ${SRC}/m0_sd.c ${SRC}/m0_fat.c", project::pokitto_ld(t, o.name));
+                                               " ${SRC}/m0_sd.c ${SRC}/m0_fat.c ${SRC}/pokitto_*.S", project::pokitto_ld(t, o.name));
             } else {
                 project::copy_meta_drivers(t, src, false);
                 /* The picture is 128 pixels wide: the panel's column window is narrowed to it

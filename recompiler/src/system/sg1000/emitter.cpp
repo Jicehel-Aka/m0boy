@@ -948,6 +948,15 @@ void Emitter::emit_ins(std::ostringstream& o, Ins& in, const Ins* following) {
         o << "    Z.pc = " << hex(in.addr) << "; return;\n";
         return;
     case Flow::Jump:
+        if (in.target == in.addr && in.loop_head) {
+            /* JR $ / JP $, a game waiting for its interrupt: the loops
+             * that run before the next event, all but the last at once
+             * (SG_IDLE, sg_gen.h); the last and the label's SYNC as when
+             * spinning */
+            flush(o);
+            o << "    SG_IDLE(" << unsigned(in.cycles) << ", " << unsigned(d.refresh) << ");\n";
+            stats_->idle++;
+        }
         pend_cy_ += in.cycles; pend_rf_ += d.refresh;
         flush(o);
         transfer(o, in, in.target, in.target_dest);

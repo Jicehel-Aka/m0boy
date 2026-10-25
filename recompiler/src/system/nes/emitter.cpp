@@ -464,6 +464,13 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         return;
     }
     case Op::jmp:
+        if (in.has_target && in.target == in.addr && cycles == 3) {
+            /* JMP to itself, a game waiting for its NMI: the rest of the
+             * slice in jumps at once (nes_gen.h, NES_SPIN3), left with pc
+             * on it as the interpreter would; entered with budget > 0 */
+            o << "    budget = NES_SPIN3(budget); { pc_ = " << hex(in.addr) << "; goto out; }\n";
+            return;
+        }
         if (in.has_target) {
             o << "    budget -= " << cycles << ";";
             if (opt_.precise) o << " if (budget <= 0) { pc_ = " << hex(in.target) << "; goto out; }";

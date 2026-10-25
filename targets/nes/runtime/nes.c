@@ -87,7 +87,7 @@ void nes_init(const uint8_t *prg, uint32_t prg_bytes,
     nes->row = 0;
 #endif
     nes->ppu.panel = 0;
-    nes->ppu.panel_plan = NES_PLAN_128; /* the frontend may pick another */
+    nes_ppu_set_rows(&nes->ppu, 128); /* the frontend may pick another */
     nes->ppu.skip = 0;
     nes->ppu.host = nes;
     nes->host = 0;
