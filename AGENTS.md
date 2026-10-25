@@ -36,6 +36,9 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
   femto8's (`tests/test_pico8_e2e.py` holds a recorded hash; compare Celeste
   against a femto8 built with scripted input and no sleeping when touching the
   runtime), also with `-DP8_GC_STRESS`. Notes: `docs/PICO8.fr.md`.
+- `recompiler/src/system/console_project.cpp`: what the SG-1000, PICO-8 and
+  NES generators write alike for a console (shared frontend, audio driver,
+  `gbl_config.h`/`gbl_profile.h`, META and Pokitto build projects).
 - `recompiler/`: `gbrecomp`, from gb-recompiled. The M0 backend is
   `recompiler/src/codegen/meta_emitter.cpp` (`--target meta`, `--target pokitto`).
 - `targets/meta/runtime/`: the `gbl` runtime shared by both consoles; every
@@ -107,7 +110,7 @@ built firmware in it (`ESPBOY_PIO` for the build).
   for which console comes from the capability matrix in
   `recompiler/src/system.cpp` (`TargetFacts` vs `min_ram_bytes`) — see
   `--list-systems`/`--list-targets` and `docs/MULTI_SYSTEM.fr.md`.
-- NES (`--target meta` and the desktop harness,
+- NES (`--target meta`, `--target pokitto` and the desktop harness,
   `recompiler/src/system/nes/generator.cpp`, runtime in
   `targets/nes/runtime/`): 6502 with cycles, per-line 2C02 with sprite-0
   and loopy v/t, NROM only. The 6502 code is recompiled to C
@@ -122,7 +125,8 @@ built firmware in it (`ESPBOY_PIO` for the build).
   SMB must render identically through the harness before and after a
   runtime change (hashes + PPM captures), with `out_mismatch=0` and
   `hit_mismatch=0` (the 160x128 panel renderer against the reference
-  lines, also with `--skip 2`); `ppu_asm.S` is compared with its C on the
+  lines, also with `--skip 2` and with the Pokitto's `--rows 176`);
+  `ppu_asm.S` is compared with its C on the
   estimator (`BENCH_PIXEL_HASH`, `NES_NO_PPU_ASM`); APU changes: identical
   `--wav`. PC Engine is
   still at the inspection stage (`--info`, `--disasm` with the

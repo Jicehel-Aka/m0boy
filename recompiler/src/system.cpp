@@ -31,9 +31,9 @@ constexpr std::array pico8_targets = {TargetId::desktop, TargetId::meta, TargetI
 // MSX: the SG-1000 frontends (TMS9918A, Z80); the ESPboy and PC builds are
 // not wired up.
 constexpr std::array msx_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto};
-// NES: the interpreter pipeline on the META and the desktop harness; PC
-// Engine stays at the inspection stage (see main.cpp).
-constexpr std::array nes_targets = {TargetId::desktop, TargetId::meta};
+// NES: the recompiled pipeline on the META, the Pokitto and the desktop
+// harness; PC Engine stays at the inspection stage (see main.cpp).
+constexpr std::array nes_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto};
 constexpr std::array<TargetId, 0> no_targets {};
 
 constexpr std::array system_table = {

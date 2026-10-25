@@ -3,6 +3,9 @@
  * mode (the 2A03 has none), NMI on the host's edge and IRQ level-sampled.
  * Illegal opcodes run as NOPs of their true length — no game in the
  * pipeline's scope relies on them. */
+#if __has_include("nes_config.h") /* a generated project's: NES_NATIVE */
+#include "nes_config.h"
+#endif
 #include "6502.h"
 #include "nes_native.h"
 

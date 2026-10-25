@@ -217,6 +217,7 @@ static uint16_t pair_tabs[2][32 * 32]; /* m0_box58_fast's (5,3) and (4,4) of
 #define pair53 pair_tabs[0]
 #define pair44 pair_tabs[1]
 static unsigned panel_k, panel_row;    /* line within the group of 15, row */
+static unsigned panel_open;            /* the row has its first line (pair slot 1 next) */
 
 static void tables_init(void) {
     static int ready;
@@ -531,13 +532,14 @@ static void nes_ppu_panel_line(nes_ppu_t *ppu, unsigned line_y, unsigned on) {
         }
         return;
     }
-    uint8_t *line = pairs + 4u * (k & 1);
+    const unsigned slot = panel_open;
+    uint8_t *line = pairs + 4u * slot;
     if (on) nes_ppu_indices(ppu, line_y, line);
     else line_clear(line);
-    row_x[k & 1] = ppu->x;
-    if (k == 14 || (k & 1)) {
+    row_x[slot] = ppu->x;
+    if (ppu->panel_plan >> k & 1) {
         if (pal_dirty) nes_ppu_tables(ppu);
-        if (k == 14) nes_ppu_out1(row_x[0], ppu->panel_out);
+        if (!slot) nes_ppu_out1(row_x[0], ppu->panel_out);
         else if (row_x[0] == row_x[1]) nes_ppu_out2(row_x[0], ppu->panel_out);
         else nes_ppu_out2_split(row_x[0], row_x[1], ppu->panel_out);
         ppu->panel(ppu->host, panel_row);
@@ -729,7 +731,7 @@ int nes_ppu_line(nes_ppu_t *ppu, unsigned line) {
         return 0;
     }
     if (line >= 240) return 0;
-    if (line == 0) panel_k = panel_row = 0;
+    if (line == 0) panel_k = panel_row = panel_open = 0;
     const unsigned on = ppu->mask & (MASK_BG | MASK_SPR);
 #ifdef NES_PPU_REFERENCE
     const uint8_t reference = ppu->render_row ? reference_line(ppu, line) : 0;
@@ -755,12 +757,12 @@ int nes_ppu_line(nes_ppu_t *ppu, unsigned line) {
         /* the horizontal bits reload from t at the line's end */
         ppu->v = (uint16_t)((ppu->v & ~0x041F) | (ppu->t & 0x041F));
     }
-    /* the vertical plan (ppu.h): rows end on odd lines of a group and on
-     * its last */
-    if (panel_k == 14) { panel_k = 0; panel_row++; }
-    else {
-        if (panel_k & 1) panel_row++;
-        panel_k++;
-    }
+    /* the vertical plan (ppu.h): a row ends on each set bit */
+    if (ppu->panel_plan >> panel_k & 1) {
+        panel_row++;
+        panel_open = 0;
+    } else
+        panel_open = 1;
+    if (++panel_k == 15) panel_k = 0;
     return 0;
 }

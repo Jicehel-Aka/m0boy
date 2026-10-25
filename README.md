@@ -33,7 +33,7 @@ on the ESPboy, an image to flash).
 | Master System | yes | yes | yes |
 | MSX1 (ASCII8/16, Konami and Konami SCC mappers; AY-3-8910 and SCC sound; experimental) | yes | yes | — |
 | PICO-8 | yes | yes | yes |
-| NES (NROM: 16/32 KiB PRG, 8 KiB CHR ROM; experimental) | yes | — | — |
+| NES (NROM: 16/32 KiB PRG, 8 KiB CHR ROM; experimental) | yes | yes | — |
 
 MSX1 is checked against openMSX (VRAM of the title screens) and against the
 host reference renderer; Gradius 2 (128 KiB, Konami SCC) held 60 game frames
@@ -51,8 +51,12 @@ filter across, pairs of lines averaged down, 240 -> 128; the loops in
 Thumb-1), the APU's four voices are rendered at the driver's 22,049 Hz.
 Super Mario Bros. held 60 game frames a second on a META running and
 jumping through 1-1 (frame counter read over USB, 2026-10-25; displayed
-frames not measured). No save states yet. Notes: `docs/MULTI_SYSTEM.fr.md`
-("Recompilation 6502 (NES)", "Rendu NES sur le panneau").
+frames not measured). On the Pokitto the same PPU blends fewer lines
+(240 -> 176, rows widened to 200 as for the Sega cores): Super Mario Bros.
+runs through 1-1 in gm0 at 59 game frames a second, video frames skipped
+to keep that pace (not yet tried on a Pokitto). No save states yet.
+Notes: `docs/MULTI_SYSTEM.fr.md` ("Recompilation 6502 (NES)", "Rendu NES
+sur le panneau").
 
 Every core has the same option menu (hold HOME; C on the Pokitto): resume,
 restart, **10 save-state slots**, volume, speed, CPU clock, return to the

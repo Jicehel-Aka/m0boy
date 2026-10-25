@@ -17,7 +17,7 @@ def run(*args, ok=True, contains=""):
 listing = run("--list-systems", contains="sg1000 cpu=z80 inspect=yes disasm=yes codegen=desktop,meta,pokitto")
 assert "gameboy cpu=sm83 inspect=yes disasm=yes codegen=desktop,meta,pokitto" in listing
 assert "pico8 cpu=lua inspect=yes disasm=no codegen=desktop,meta,pokitto,espboy" in listing
-assert "nes cpu=6502 inspect=yes disasm=yes codegen=desktop,meta" in listing
+assert "nes cpu=6502 inspect=yes disasm=yes codegen=desktop,meta,pokitto" in listing
 assert "pce cpu=huc6280 inspect=yes disasm=yes codegen=unavailable" in listing
 targets = run("--list-targets", contains='meta host=no ram=32K')
 assert 'desktop host=yes' in targets and 'pc host=yes' in targets

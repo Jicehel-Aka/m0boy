@@ -2,6 +2,7 @@
  * runtime and, for the consoles (META, Pokitto, ESPboy), the drivers shared
  * with the other frontends come along. */
 #include "m0boy/pico8_generator.h"
+#include "m0boy/console_project.h"
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -16,26 +17,11 @@ namespace m0boy::pico8 {
 namespace fs = std::filesystem;
 namespace {
 
-std::string read(const fs::path& path) {
-    std::ifstream file(path);
-    if (!file) throw std::runtime_error("Cannot read template: " + path.string());
-    return { std::istreambuf_iterator<char>(file), {} };
-}
-void write(const fs::path& path, const std::string& data) {
-    std::ofstream file(path);
-    if (!file || !(file << data)) throw std::runtime_error("Cannot write generated file: " + path.string());
-}
-void copy_template(const fs::path& from, const fs::path& to) {
-    fs::copy_file(from, to, fs::copy_options::overwrite_existing);
-}
-std::string replace(std::string s, const std::string& what, const std::string& value) {
-    size_t pos = 0;
-    while ((pos = s.find(what, pos)) != std::string::npos) {
-        s.replace(pos, what.size(), value);
-        pos += value.size();
-    }
-    return s;
-}
+using project::read;
+using project::write;
+using project::replace;
+using project::copy_template;
+
 /* 8.3 base of the game's files on the card (the Sega generator's rule). */
 std::string sd_base(const std::string& project) {
     std::string n;
@@ -141,18 +127,12 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
               "endif()\n");
 
         if (o.target != TargetId::desktop) {
+            const auto t = project::Templates::from_meta(o.meta_templates);
             copy_template(tpl / "platform" / "p8_main.cpp", src / "p8_main.cpp");
-            copy_template(common_dir / "platform" / "sg_frontend.h", src / "sg_frontend.h");
-            copy_template(common_dir / "platform" / "sg_menu.h", src / "sg_menu.h");
-            const auto platform = o.meta_templates.parent_path() / "consoles" / (esp ? "espboy" : pokitto ? "pokitto" : "meta");
-            const auto shared = o.meta_templates.parent_path() / "common" / "platform";
-            for (const char* name : { "m0_target.h", "m0_lcd.h", "m0_clock.h", "m0_pad.h" })
-                copy_template(shared / name, src / name);
-            /* the option menu (sg_menu.h runs it; m0_menu.cpp draws it) */
-            copy_template(shared / "m0_menu.h", src / "m0_menu.h");
-            copy_template(shared / "m0_font.h", src / "m0_font.h");
-            copy_template(shared / "m0_menu.cpp", src / "m0_menu.cpp");
-            copy_template(o.meta_templates / "runtime" / "gbl_board.h", src / "gbl_board.h");
+            const auto platform = t.console(o.target);
+            const auto shared = t.frontend();
+            /* the frontend and the option menu (sg_menu.h runs it; m0_menu.cpp draws it) */
+            project::copy_frontend(t, src);
             /* save states: the card's state file in the game's folder on the META (the Pokitto
              * searches the root and the first-level folders), the flash on the ESPboy */
             copy_template(shared / "m0_state.h", src / "m0_state.h");
@@ -171,35 +151,11 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 }
             }
             /* the audio driver counts frames of 1/30 s */
-            auto audio_header = read(shared / "m0_audio.h");
-            audio_header = replace(replace(audio_header, "70224u", "1u"), "4194304u", "30u");
-            write(src / "m0_audio.h", audio_header);
-            if (esp) {
-                /* espboy: no console audio driver of its own here */
-            } else if (pokitto) {
-                auto audio = read(platform / "pokitto_audio.c");
-                audio = replace(audio, "#include \"gbl.h\"", "#include \"p8_audio.h\"");
-                audio = replace(replace(audio, "gbl_apu_render", "p8_audio_render"), "gbl_apu_set_rate", "p8_audio_set_rate");
-                write(src / "pokitto_audio.c", audio);
-            } else {
-                auto audio = read(platform / "meta_audio.cpp");
-                audio = replace(audio, "#include \"gbl.h\"", "#include \"p8_audio.h\"");
-                audio = replace(replace(audio, "gbl_apu_render", "p8_audio_render"), "gbl_apu_set_rate", "p8_audio_set_rate");
-                write(src / "meta_audio.cpp", audio);
-            }
-            write(src / "gbl_config.h", std::string("#pragma once\n#define GBL_TARGET_POKITTO ") + (pokitto ? "1" : "0") + "\n" +
-                                        (esp ? "#define GBL_TARGET_ESPBOY 1\n" : "") +
-                                        "#define GBL_GEN_VERSION \"" + (esp ? GBRECOMP_ESPBOY_VERSION : pokitto ? GBRECOMP_POKITTO_VERSION : GBRECOMP_META_VERSION) + "\"\n");
-            /* META_OVERCLOCK on by default on the META, off on the Pokitto unless POKITTO_HC
-             * (the Sega generator's rule); the audio ring in the Pokitto's 2 KiB bank: the heap
-             * and the screen leave the main RAM tight. */
-            write(src / "gbl_profile.h",
-                  "#pragma once\n#include \"gbl_board.h\"\n" +
-                  std::string(pokitto ? "#ifndef META_OVERCLOCK\n#if defined(POKITTO_HC) && POKITTO_HC\n#define META_OVERCLOCK 1\n#else\n#define META_OVERCLOCK 0\n#endif\n#endif\n"
-                                      : "#ifndef META_OVERCLOCK\n#define META_OVERCLOCK 1\n#endif\n") +
-                  "#define POKITTO_LCD_ASM 0\n#define POKITTO_RAM_BANKS " + (pokitto ? "1" : "0") + "\n#define POKITTO_AUDIO_ASM 0\n"
-                  "#ifndef META_AUDIO_DMA\n#define META_AUDIO_DMA 0\n#endif\n"
-                  "#ifndef META_AUDIO_RING\n#define META_AUDIO_RING 512u\n#endif\n");
+            project::write_audio(t, o.target, src, "1u", "30u", "p8_audio.h", "p8_audio_render", "p8_audio_set_rate");
+            project::write_config(o.target, src);
+            /* the audio ring in the Pokitto's 2 KiB bank: the heap and the
+             * screen leave the main RAM tight */
+            project::write_profile(o.target, src, {false, pokitto, false}, true);
             if (esp) {
                 /* Arduino core start-up; the hardware adapter is the Sega frontends' (it finds
                  * its audio in sg_audio.h) with the picture's 128 columns taken as they are */
@@ -223,30 +179,13 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 /* Bare-metal drivers and start-up, the Sega Pokitto projects' files; the
                  * picture's row writer is pokitto_p8lcd.c, a file of the PICO-8's own (the
                  * Game Boy and Sega firmwares must link pokitto_lcd.c unchanged). */
-                for (const char* name : { "pokitto_startup.c", "pokitto_clock.c", "pokitto_buttons.c", "pokitto_lcd.c", "pokitto_p8lcd.c", "pokitto_hw.h", "lpc11u6x.h" })
-                    copy_template(platform / name, src / name);
-                write(o.output / "pokitto.ld", replace(read(platform / "pokitto.ld.in"), "@NAME@", o.name));
-                /* The firmware project: the shared CMake (targets/common/cmake), the LPC boot
-                 * checksum and the ARM toolchain (the Sega projects' files). */
-                copy_template(o.meta_templates.parent_path() / "sg1000" / "checksum.py", o.output / "checksum.py");
-                copy_template(o.meta_templates.parent_path() / "sg1000" / "arm-toolchain.cmake", o.output / "arm-toolchain.cmake");
-                fs::create_directories(o.output / "toolchain");
-                for (const auto& entry : fs::directory_iterator(common_dir / "toolchain"))
-                    if (entry.is_regular_file()) copy_template(entry.path(), o.output / "toolchain" / entry.path().filename());
-                std::string firmware_cmake = read(common_dir / "cmake" / "firmware.txt.in");
-                firmware_cmake = replace(firmware_cmake, "@NAME@", o.name);
-                firmware_cmake = replace(firmware_cmake, "@SYSTEM@", "pico8");
-                firmware_cmake = replace(firmware_cmake, "@SOURCES@",
-                                         "${SRC}/p8_gen.c ${SRC}/p8_cart.c ${SRC}/p8rt.c ${SRC}/p8gfx.c ${SRC}/p8lib.c ${SRC}/p8main.c"
-                                         " ${SRC}/p8_audio.c ${SRC}/p8_main.cpp ${SRC}/m0_menu.cpp ${SRC}/m0_state.cpp");
-                firmware_cmake = replace(firmware_cmake, "@PLATFORM_EXTRA@", " ${SRC}/m0_sd.c ${SRC}/m0_fat.c");
-                firmware_cmake = replace(firmware_cmake, "@COMPILER@", o.compiler);
-                write(o.output / "CMakeLists.txt", firmware_cmake);
+                project::copy_pokitto_drivers(t, src, {"pokitto_p8lcd.c"});
+                project::write_pokitto_project(t, o.output, o.name, o.compiler, "pico8",
+                                               "${SRC}/p8_gen.c ${SRC}/p8_cart.c ${SRC}/p8rt.c ${SRC}/p8gfx.c ${SRC}/p8lib.c ${SRC}/p8main.c"
+                                               " ${SRC}/p8_audio.c ${SRC}/p8_main.cpp ${SRC}/m0_menu.cpp ${SRC}/m0_state.cpp",
+                                               " ${SRC}/m0_sd.c ${SRC}/m0_fat.c", project::pokitto_ld(t, o.name));
             } else {
-                for (const char* name : { "meta_startup.c", "meta_clock.cpp", "meta_lcd_pack.h", "meta_lcd_queue.h",
-                                          "meta_dma.h", "meta_dma.cpp", "meta_spi.c", "meta_hw.h", "meta_usb.c", "meta_usb.h",
-                                          "meta_usb_msc.c", "meta_usb_msc.h" })
-                    copy_template(platform / name, src / name);
+                project::copy_meta_drivers(t, src, false);
                 /* The picture is 128 pixels wide: the panel's column window is narrowed to it
                  * (m0_lcd_set_columns) so that a row is 256 bytes on the wire instead of 320. */
                 {
@@ -268,13 +207,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                            "    win_next = 0xFFFFu;\n}\n";
                     write(src / "meta_lcd.cpp", lcd);
                 }
-                write(o.output / "platformio.ini", replace(replace(read(platform / "platformio.ini.in"), "@NAME@", o.name), "@COMPILER@", o.compiler));
-                write(o.output / "gamebuino_meta.ld", replace(read(platform / "gamebuino_meta.ld.in"), "@NAME@", o.name));
-                fs::create_directories(o.output / "boards");
-                copy_template(platform / "boards" / "gamebuino_meta.json", o.output / "boards" / "gamebuino_meta.json");
-                fs::create_directories(o.output / "toolchain");
-                for (const auto& entry : fs::directory_iterator(common_dir / "toolchain"))
-                    if (entry.is_regular_file()) copy_template(entry.path(), o.output / "toolchain" / entry.path().filename());
+                project::write_meta_project(t, o.output, o.name, o.compiler);
             }
         }
         write(marker, target + "\n");

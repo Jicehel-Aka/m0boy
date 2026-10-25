@@ -93,6 +93,9 @@ int main(void) {
              NES_VERTICAL_MIRROR);
     machine.ppu.panel = panel_row;
     machine.ppu.panel_out = line_buffer;
+#ifdef BENCH_NES_PLAN /* -DBENCH_NES_PLAN=NES_PLAN_176: the Pokitto's rows */
+    machine.ppu.panel_plan = BENCH_NES_PLAN;
+#endif
     nes_audio_set_rate(BENCH_AUDIO_RATE);
     for (uint32_t f = 0; f <= BENCH_FRAMES; f++) {
         bench_frame(f);

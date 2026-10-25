@@ -1,8 +1,10 @@
-/* NES project generation: the interpreter runtime and the cartridge as
- * data (nes_prg[], nes_chr[]), the host harness or the console drivers
- * shared with the other frontends (the PICO-8 generator's plan). */
+/* NES project generation: the runtime, the recompiled 6502 code and the
+ * cartridge as data (nes_prg[], nes_chr[]), the host harness, and for a
+ * console the frontend and drivers the other systems share
+ * (console_project.h): the META and the Pokitto. */
 #include "m0boy/nes_generator.h"
 #include "m0boy/nes_emitter.h"
+#include "m0boy/console_project.h"
 #include <cctype>
 #include <cstring>
 #include <map>
@@ -15,26 +17,11 @@ namespace m0boy::nes {
 namespace fs = std::filesystem;
 namespace {
 
-std::string read(const fs::path& path) {
-    std::ifstream file(path);
-    if (!file) throw std::runtime_error("Cannot read template: " + path.string());
-    return { std::istreambuf_iterator<char>(file), {} };
-}
-void write(const fs::path& path, const std::string& data) {
-    std::ofstream file(path);
-    if (!file || !(file << data)) throw std::runtime_error("Cannot write generated file: " + path.string());
-}
-void copy_template(const fs::path& from, const fs::path& to) {
-    fs::copy_file(from, to, fs::copy_options::overwrite_existing);
-}
-std::string replace(std::string s, const std::string& what, const std::string& value) {
-    size_t pos = 0;
-    while ((pos = s.find(what, pos)) != std::string::npos) {
-        s.replace(pos, what.size(), value);
-        pos += value.size();
-    }
-    return s;
-}
+using project::read;
+using project::write;
+using project::replace;
+using project::copy_template;
+
 /* the ROM as C data, 16 bytes a line */
 std::string rom_data(const uint8_t* data, size_t n) {
     std::ostringstream out;
@@ -79,8 +66,9 @@ std::vector<CoverageEntry> read_coverage(const std::vector<fs::path>& files) {
 bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats& stats, std::string& error) {
     error.clear();
     try {
-        if (o.target != TargetId::meta && o.target != TargetId::desktop)
-            throw std::runtime_error("NES projects target the META (--target meta) or the desktop harness");
+        if (o.target != TargetId::meta && o.target != TargetId::pokitto && o.target != TargetId::desktop)
+            throw std::runtime_error("NES projects target the META, the Pokitto or the desktop harness");
+        const bool pokitto = o.target == TargetId::pokitto;
         const auto tpl = o.meta_templates.parent_path() / "nes";
         const auto common_dir = o.meta_templates.parent_path() / "common";
         if (!fs::is_regular_file(tpl / "runtime" / "nes.c"))
@@ -107,15 +95,13 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
         if (file.gcount() != (std::streamsize)chr_size)
             throw std::runtime_error("Truncated cartridge: " + cartridge.string());
 
-        const bool esp = false; /* no ESPboy pipeline for the NES yet */
-        const bool pokitto = false;
         const auto marker = o.output / "nes-project.txt";
         if (fs::exists(o.output) && !fs::exists(marker) && !fs::is_empty(o.output)) {
             bool foreign = false; /* compile.sh writes its log into the project directory before generation */
             for (const auto& e : fs::directory_iterator(o.output)) foreign = foreign || e.path().filename() != "compile.log";
             if (foreign) throw std::runtime_error("Output directory is not a NES project; choose a fresh directory");
         }
-        const std::string target = o.target == TargetId::meta ? "meta" : "desktop";
+        const std::string target = o.target == TargetId::meta ? "meta" : pokitto ? "pokitto" : "desktop";
         if (fs::exists(marker) && read(marker) != target + "\n")
             throw std::runtime_error("Use a separate output directory for each destination");
         const auto src = o.output / "src";
@@ -135,6 +121,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
                << "#define NES_VERTICAL_MIRROR " << (header[6] & 1) << "\n"
                << "/* the panel's byte order: the META's SPI takes the high byte first */\n"
                << "#define NES_PANEL_SWAP " << (o.target == TargetId::meta ? 1 : 0) << "\n";
+        /* the recompiled code's dispatcher (6502.c) */
+        if (!o.interpret) config << "#ifndef NES_NATIVE\n#define NES_NATIVE 1\n#endif\n";
         write(src / "nes_config.h", config.str());
 
         for (const char* name : { "6502.c", "6502.h", "nes_native.h", "ppu.c", "ppu.h", "ppu_asm.S", "apu.c", "apu.h",
@@ -152,12 +140,14 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             emit.prg_size = prg_size;
             emit.precise = o.precise;
             const unsigned bpi = o.bytes_per_instruction ? o.bytes_per_instruction : 24u;
-            /* the META's 256 KiB: the bootloader's 16, the runtime and the
-             * drivers (66, the panel renderer's loops included), the
-             * cartridge (PRG, CHR) and the lookup tables */
+            /* the META's 256 KiB less the bootloader's 16, the Pokitto's
+             * 228 below its loader: the runtime and the drivers (66, the
+             * panel renderer's loops included), the cartridge (PRG, CHR)
+             * and the lookup tables */
+            const size_t flash = pokitto ? 0x39000u / 1024u : 256 - 16;
             const size_t budget = o.code_budget_bytes ? o.code_budget_bytes
                                 : o.target == TargetId::desktop ? 0
-                                : size_t(256 - 16 - 66) * 1024 - prg_size - chr_size;
+                                : (flash - 66) * 1024 - prg_size - chr_size;
             emit.max_instructions = budget ? budget / bpi : 0;
             EmitStats es;
             write(src / "nes_gen.c", emit_code(prg, read_coverage(o.coverage), emit, es));
@@ -178,57 +168,38 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
               "add_executable(" + o.name + "_host nes_host.c ${SRC}/nes.c ${SRC}/6502.c ${SRC}/ppu.c ${SRC}/apu.c ${SRC}/nes_cart.c" +
               (native ? " ${SRC}/nes_gen.c" : "") + ")\n"
               "target_include_directories(" + o.name + "_host PRIVATE ${SRC})\n"
-              "target_compile_definitions(" + o.name + "_host PRIVATE NES_EMBEDDED NES_COVERAGE NES_PPU_REFERENCE" +
-              (native ? " NES_NATIVE" : "") + ")\n"
+              "target_compile_definitions(" + o.name + "_host PRIVATE NES_EMBEDDED NES_COVERAGE NES_PPU_REFERENCE)\n"
               "target_compile_options(" + o.name + "_host PRIVATE -w)\ntarget_link_libraries(" + o.name + "_host PRIVATE m)\n");
 
-        if (o.target == TargetId::meta) {
+        if (o.target != TargetId::desktop) {
+            const auto t = project::Templates::from_meta(o.meta_templates);
             copy_template(tpl / "platform" / "nes_main.cpp", src / "nes_main.cpp");
-            copy_template(common_dir / "platform" / "sg_frontend.h", src / "sg_frontend.h");
-            copy_template(common_dir / "platform" / "sg_menu.h", src / "sg_menu.h");
-            const auto platform = o.meta_templates.parent_path() / "consoles" / "meta";
-            const auto shared = o.meta_templates.parent_path() / "common" / "platform";
-            for (const char* name : { "m0_target.h", "m0_lcd.h", "m0_clock.h", "m0_pad.h" })
-                copy_template(shared / name, src / name);
-            copy_template(shared / "m0_menu.h", src / "m0_menu.h");
-            copy_template(shared / "m0_font.h", src / "m0_font.h");
-            copy_template(shared / "m0_menu.cpp", src / "m0_menu.cpp");
-            copy_template(o.meta_templates / "runtime" / "gbl_board.h", src / "gbl_board.h");
-            for (const char* name : { "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h" })
-                copy_template(shared / name, src / name);
-            copy_template(shared / "m0_card.h", src / "m0_card.h");
-            copy_template(platform / "meta_sd_bus.cpp", src / "meta_sd_bus.cpp");
+            project::copy_frontend(t, src);
             /* the audio driver: the frame's samples are 29781 CPU cycles at
-             * 1789773 Hz (m0_audio_frame_samples' DMG constants) */
-            auto audio_header = read(shared / "m0_audio.h");
-            audio_header = replace(replace(audio_header, "70224u", "29781u"), "4194304u", "1789773u");
-            write(src / "m0_audio.h", audio_header);
-            auto audio = read(platform / "meta_audio.cpp");
-            audio = replace(audio, "#include \"gbl.h\"", "#include \"nes.h\"");
-            audio = replace(replace(audio, "gbl_apu_render", "nes_audio_render"), "gbl_apu_set_rate", "nes_audio_set_rate");
-            write(src / "meta_audio.cpp", audio);
-            write(src / "gbl_config.h", std::string("#pragma once\n#define GBL_TARGET_POKITTO 0\n#define GBL_GEN_VERSION \"") + GBRECOMP_META_VERSION + "\"\n");
-            write(src / "gbl_profile.h",
-                  "#pragma once\n#include \"gbl_board.h\"\n"
-                  "#ifndef META_OVERCLOCK\n#define META_OVERCLOCK 1\n#endif\n"
-                  "#define POKITTO_LCD_ASM 0\n#define POKITTO_RAM_BANKS 0\n#define POKITTO_AUDIO_ASM 0\n"
-                  "#ifndef META_AUDIO_DMA\n#define META_AUDIO_DMA 0\n#endif\n"
-                  "#ifndef META_AUDIO_RING\n#define META_AUDIO_RING 512u\n#endif\n");
-            for (const char* name : { "meta_startup.c", "meta_clock.cpp", "meta_lcd.cpp", "meta_lcd_pack.h", "meta_lcd_queue.h",
-                                      "meta_dma.h", "meta_dma.cpp", "meta_spi.c", "meta_hw.h", "meta_usb.c", "meta_usb.h",
-                                      "meta_usb_msc.c", "meta_usb_msc.h" })
-                copy_template(platform / name, src / name);
-            /* the picture's columns are sampled 256 -> 160: the panel's full
-             * width, the meta_lcd.cpp column window patch is not needed */
-            auto ini = replace(replace(read(platform / "platformio.ini.in"), "@NAME@", o.name), "@COMPILER@", o.compiler);
-            if (native) ini = replace(ini, "build_flags = ", "build_flags = -DNES_NATIVE ");
-            write(o.output / "platformio.ini", ini);
-            write(o.output / "gamebuino_meta.ld", replace(read(platform / "gamebuino_meta.ld.in"), "@NAME@", o.name));
-            fs::create_directories(o.output / "boards");
-            copy_template(platform / "boards" / "gamebuino_meta.json", o.output / "boards" / "gamebuino_meta.json");
-            fs::create_directories(o.output / "toolchain");
-            for (const auto& entry : fs::directory_iterator(common_dir / "toolchain"))
-                if (entry.is_regular_file()) copy_template(entry.path(), o.output / "toolchain" / entry.path().filename());
+             * 1789773 Hz */
+            project::write_audio(t, o.target, src, "29781u", "1789773u", "nes.h", "nes_audio_render", "nes_audio_set_rate");
+            project::write_config(o.target, src);
+            /* the Pokitto: rows pushed and the audio interrupt in Thumb-1
+             * from SRAM, its 2 KiB banks in use (the Game Gear's choice) */
+            project::write_profile(o.target, src, {pokitto, pokitto, pokitto});
+            if (pokitto) {
+                /* no card: pokitto_sd.c stays out (nes_main.cpp) */
+                project::copy_pokitto_drivers(t, src, {"pokitto_lcd_asm.S", "pokitto_audio_asm.S"});
+                const std::string sources = "${SRC}/nes.c ${SRC}/6502.c ${SRC}/ppu.c ${SRC}/ppu_asm.S ${SRC}/apu.c ${SRC}/nes_cart.c" +
+                                            std::string(native ? " ${SRC}/nes_gen.c" : "") + " ${SRC}/nes_main.cpp ${SRC}/m0_menu.cpp";
+                project::write_pokitto_project(t, o.output, o.name, o.compiler, "nes", sources, " ${SRC}/pokitto_*.S",
+                                               project::pokitto_ld(t, o.name));
+            } else {
+                /* Every META firmware offers USB SD mode: the card's driver */
+                for (const char* name : { "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h" })
+                    copy_template(t.frontend() / name, src / name);
+                copy_template(t.console(TargetId::meta) / "meta_sd_bus.cpp", src / "meta_sd_bus.cpp");
+                /* the picture's columns are sampled 256 -> 160: the panel's
+                 * full width, the meta_lcd.cpp column window patch is not
+                 * needed */
+                project::copy_meta_drivers(t, src);
+                project::write_meta_project(t, o.output, o.name, o.compiler);
+            }
         }
         write(marker, target + "\n");
         write(o.output / "README.md",
@@ -239,7 +210,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
                       : std::string("The cartridge interpreted on the 2A03/2C02 runtime.\n\n")) +
               "Host: cmake -G Ninja -S host -B host/build && ninja -C host/build\n"
               "Run: host/build/" + o.name + "_host --frames 300 [--ppm shot.ppm] [--input script.txt] [--interp] [--coverage f]\n\n" +
-              (o.target == TargetId::meta ? "Firmware: pio run  (flash with pio run -t upload)\n" : ""));
+              (o.target == TargetId::meta ? "Firmware: pio run  (flash with pio run -t upload)\n"
+               : pokitto ? "Firmware: cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake && ninja -C build\n" : ""));
         return true;
     } catch (const std::exception& e) {
         error = e.what();

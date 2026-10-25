@@ -39,6 +39,7 @@ add_library(gbrecomp_core STATIC
     src/system/gameboy/analyzer.cpp
     src/system/gameboy/bank_tracker.cpp
     src/system/gameboy/decode_bank.cpp
+    src/system/console_project.cpp
     src/system/sg1000/generator.cpp
     src/system/sg1000/emitter.cpp
     src/system/pico8/generator.cpp

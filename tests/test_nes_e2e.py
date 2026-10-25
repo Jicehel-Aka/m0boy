@@ -5,14 +5,21 @@
    generated as an interpreter-only host project; two runs give the same
    run_hash, the capture shows the tile over the backdrop, and the panel
    renderer (160x128) equals the reference lines' box filter on every row
-   with the same sprite-0 hits, every frame shown or one in two left out.
+   with the same sprite-0 hits, every frame shown or one in two left out,
+   and so does the Pokitto's plan (--rows 176, 240 -> 176).
 2. The recompiler: a program that exercises the documented instructions
    (ADC/SBC, shifts, BIT, page-crossing indexed reads, (zp),Y and (zp,X),
    JSR/RTS, JMP through RAM, PHP/PLP, the NMI and RTI, OAM DMA, a routine
    copied to RAM and run by the interpreter).  A --meta-precise project
    must print the interpreter's run_hash, from the static walk alone and
-   with the harness's own coverage profile; the fast mode must run."""
+   with the harness's own coverage profile; the fast mode must run.
+3. The Pokitto: the project carries the Pokitto's drivers and no META file;
+   with arm-none-eabi-gcc (PATH or PlatformIO's) the firmware links below
+   the loader at 0x39000 with a valid vector checksum."""
 
+import os
+import shutil
+import struct
 import subprocess
 import tempfile
 from pathlib import Path
@@ -302,6 +309,8 @@ def picture(work):
     out = run(host, "--frames", "60")
     panel_ok(out, 60 * 128)
     panel_ok(run(host, "--frames", "60", "--skip", "2"), 30 * 128)
+    panel_ok(run(host, "--frames", "60", "--rows", "176"), 60 * 176)
+    panel_ok(run(host, "--frames", "60", "--rows", "176", "--skip", "2"), 30 * 176)
     h1 = run_hash(out)
     h2 = run_hash(run(host, "--frames", "60"))
     assert h1 == h2 and h1 != "run_hash=00000000", f"unstable hash: {h1} {h2}"
@@ -328,6 +337,9 @@ def recompiler(work):
     out = run(host, *frames)
     panel_ok(out, 120 * 128)
     native = run_hash(out)
+    out = run(host, *frames, "--rows", "176")
+    panel_ok(out, 120 * 176)
+    assert run_hash(out) == native, "the Pokitto's vertical plan changed the run"
     assert native == reference, f"precise static walk {native} != interpreter {reference}"
     coverage = work / "exercise.cov"
     run(host, *frames, "--coverage", coverage)
@@ -341,11 +353,47 @@ def recompiler(work):
     return reference
 
 
+def toolchain():
+    """the Pokitto firmware needs arm-none-eabi-gcc: PATH or PlatformIO's"""
+    if shutil.which("arm-none-eabi-gcc"):
+        return ""
+    pio = Path.home() / ".platformio" / "packages" / "toolchain-gccarmnoneeabi" / "bin"
+    return str(pio) if (pio / "arm-none-eabi-gcc").exists() else None
+
+
+def pokitto(work):
+    rom = work / "exercise.nes"
+    out = work / "pokitto"
+    run(GBRECOMP, "--system", "nes", rom, "--target", "pokitto", "--output-prefix", "synth", "-o", out)
+    for name in ("CMakeLists.txt", "pokitto.ld", "checksum.py", "arm-toolchain.cmake", "src/nes_main.cpp",
+                 "src/pokitto_lcd.c", "src/pokitto_lcd_asm.S", "src/pokitto_audio.c", "src/nes_gen.c"):
+        assert (out / name).is_file(), name
+    for name in ("platformio.ini", "src/meta_lcd.cpp", "src/meta_sd_bus.cpp", "src/pokitto_sd.c"):
+        assert not (out / name).exists(), name
+    bin_dir = toolchain()
+    if bin_dir is None:
+        return "firmware skipped: no arm-none-eabi-gcc"
+    env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ["PATH"]) if bin_dir else None
+    for cmd in (["cmake", "-G", "Ninja", "-S", out, "-B", out / "build", "-DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake"],
+                ["ninja", "-C", out / "build"]):
+        proc = subprocess.run([str(c) for c in cmd], capture_output=True, text=True, env=env)
+        assert proc.returncode == 0, proc.stdout[-4000:] + proc.stderr[-4000:]
+    fw = (out / "build" / "firmware.bin").read_bytes()
+    assert len(fw) <= 0x39000, f"firmware is {len(fw)} bytes, above the loader at 0x39000"
+    words = struct.unpack_from("<8I", fw, 0)
+    assert sum(words) & 0xFFFFFFFF == 0, "vector checksum"
+    assert 0x10000100 < words[0] <= 0x10008000 and words[1] & 1, "vectors"
+    assert b"m0boy-nes-pokitto " in fw, "version string missing"
+    return f"firmware {len(fw)} bytes"
+
+
 def main():
     work = Path(tempfile.mkdtemp(prefix="nes_e2e_"))
     h = picture(work)
     r = recompiler(work)
-    print("ok: NES e2e (picture stable", h + "; recompiled precise = interpreter", r + ", static and profiled)")
+    p = pokitto(work)
+    print("ok: NES e2e (picture stable", h + "; recompiled precise = interpreter", r + ", static and profiled; Pokitto",
+          p + ")")
 
 
 if __name__ == "__main__":

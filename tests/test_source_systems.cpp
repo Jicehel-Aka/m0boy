@@ -29,7 +29,7 @@ int main() {
         /* The matrix: a system runs on a target when a generator is wired AND
          * the runtime fits the hardware.  Every 32 KiB console target fits the
          * wired systems; the PC Engine's 64 KiB of video RAM excludes them and
-         * the ESPboy alike; NES would fit but nothing is wired yet. */
+         * the ESPboy alike. */
         for (auto id : {SystemId::gameboy, SystemId::sg1000, SystemId::gamegear,
                         SystemId::mastersystem, SystemId::msx, SystemId::pico8}) {
             const auto& system = system_descriptor(id);
@@ -51,8 +51,9 @@ int main() {
                 "Misfit explanation incorrect");
         const auto& nes = system_descriptor(SystemId::nes);
         require(!nes.wired(TargetId::pc) && nes.supports(TargetId::desktop) && nes.supports(TargetId::meta) &&
-                target_fits(nes, target_descriptor(TargetId::meta)),
-                "NES must be wired for the desktop harness and the META only");
+                nes.supports(TargetId::pokitto) && target_fits(nes, target_descriptor(TargetId::meta)) &&
+                target_fits(nes, target_descriptor(TargetId::pokitto)),
+                "NES must be wired for the desktop harness, the META and the Pokitto only");
         require(detect_system("game.sms") == SystemId::mastersystem && parse_system("sms") == SystemId::mastersystem,
                 "Master System detection failed");
         require(detect_system("game.nes") == SystemId::nes && detect_system("game.PCE") == SystemId::pce,

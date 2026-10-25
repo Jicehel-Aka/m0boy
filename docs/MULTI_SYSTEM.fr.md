@@ -39,11 +39,11 @@ lesquelles les firmwares Game Boy s’exécutent.
   consoles, qui réutilise les pilotes écran, son, horloge, démarrage et
   boutons de META/Pokitto. `targets/sg1000/host/` : harness et lecteur SDL.
  `targets/nes/platform/`
-  : frontend META ; l’image 160×128 vient du PPU lui-même (voir « Rendu
-  NES sur le panneau »).
+  : frontend META et Pokitto ; l’image vient du PPU lui-même, 160×128 ou
+  160×176 (voir « Rendu NES sur le panneau »).
   `targets/nes/host/` : harness (PPM, WAV, `--input`, `--interp`,
-  `--coverage`, `--skip`). Génération : `recompiler/src/system/nes/generator.cpp`
-  (META et harness hôte), code 6502 recompilé par
+  `--coverage`, `--skip`, `--rows 176`). Génération : `recompiler/src/system/nes/generator.cpp`
+  (META, Pokitto et harness hôte), code 6502 recompilé par
   `recompiler/src/system/nes/emitter.cpp` (voir « Recompilation 6502 »).
 - `targets/gamegear/` : runtime Game Gear (`gg.c` bus, mapper, ports et
   moteur ; `gg_vdp.c` VDP mode 4 ; `gg_psg.c` ; `gg_render_asm.S` ;
@@ -80,7 +80,7 @@ la table des faits, et un refus dit lequel des deux manque et pourquoi
 | gameboy, sg1000, gg, sms | desktop, meta, pokitto, espboy, pc, odroid, aka | — |
 | msx | desktop, meta, pokitto | (espboy et pc non câblés) |
 | pico8 | desktop, meta, pokitto, espboy | (pc non câblé) |
-| nes | desktop, meta (6502 recompilé, interpréteur de repli) | pce > 32 Kio RAM |
+| nes | desktop, meta, pokitto (6502 recompilé, interpréteur de repli) | pce > 32 Kio RAM |
 
 Les cibles pc (fenêtre SDL2, la carte en fichier `sd.img`), odroid
 (ODROID-GO : ESP32, ILI9341 320×240, carte SD, DAC) et aka (Gamebuino
@@ -269,7 +269,11 @@ décodée une fois pour ses huit lignes ; sprites par masques par ligne de
 l'OAM, refaits quand l'OAM ou la taille change). Horizontalement,
 `m0_box58_fast` (256 → 160) par tables de paires de pixels ; verticalement,
 15 lignes → 8 rangées : sept paires de lignes moyennées (`m0_avg2_panel`)
-puis une ligne seule. Raccourcis exacts : un groupe d'une seule couleur, un
+puis une ligne seule. Le plan vertical est un masque par groupe de 15
+lignes (`ppu.panel_plan`, bit k : la ligne k ferme une rangée) : sur
+Pokitto, `NES_PLAN_176` fait 15 → 11 (quatre paires, sept lignes seules),
+240 → 176, et `pokitto_lcd_row_zoom` élargit les rangées à 200 (200×176,
+comme les cœurs Sega). Raccourcis exacts : un groupe d'une seule couleur, un
 groupe égal sur les deux lignes. Les boucles sont en Thumb-1 (`ppu_asm.S`,
 en flash : le code en SRAM a fauté sur META surcadencé), la version C de
 `ppu.c` leur sert de référence. Une image que le cadenceur saute ne rend
@@ -278,7 +282,8 @@ rien : seules les lignes où le sprite 0 peut toucher calculent leur fond.
 Le harness compile aussi l'ancien rendu 256 pixels (`NES_PPU_REFERENCE`) et
 compare chaque rangée du panneau au filtre de ses lignes : `out_mismatch`
 (rangées différentes) et `hit_mismatch` (lignes dont le sprite 0 diffère)
-doivent valoir 0, aussi avec `--skip n` (une image sur n non affichée).
+doivent valoir 0, aussi avec `--skip n` (une image sur n non affichée) et
+`--rows 176` (le plan du Pokitto).
 L'asm se compare au C sur l'estimateur (`--cflag=-DBENCH_PIXEL_HASH`, puis
 `--cflag=-DNES_NO_PPU_ASM`) ; le banc rend aussi le son comme le pilote
 META (22049 Hz).
@@ -304,6 +309,18 @@ Le LFSR du bruit saute jusqu'à 14 pas d'un coup, la table de réciproques de
 boucle de correction rattrapait le quotient, jusqu'à ~16 000 tours), et les
 voix sont rendues l'une après l'autre par blocs, une voix muette n'avançant
 que de marque en marque du séquenceur.
+
+Pokitto (25 octobre 2026, SMB, même profil) : même runtime, plan 176, les
+rangées poussées par `pokitto_push200` (Thumb-1 en SRAM, comme le Game
+Gear), son par `pokitto_audio_asm.S`. Manette du frontend Game Boy : C tapé
+= Start, C + B = Select, C tenu = menu. Firmware de 229 Kio sous le loader
+(0x39000), 14,6 Kio de `.bss`. Estimateur (modèle META, 48 MHz, son
+compris) : 1,01 M cycles/image contre 0,96 M en 128 rangées, plus environ
+0,3 M par image affichée pour les 200×176 pixels (compté à la main, ~9
+cycles par pixel) ; à 48 comme à 72 MHz (`POKITTO_HC`), le cadenceur saute
+donc des images. Dans gm0, la session META enregistrée (`--play-guest`)
+atteint 2000 images de jeu en 33,8 s émulées, 59 images de jeu/s, aux deux
+fréquences ; images affichées non comptées, pas encore essayé sur console.
 
 ## Vérification
 
