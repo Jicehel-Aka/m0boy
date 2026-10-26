@@ -47,5 +47,40 @@ export PKG_CONFIG_PATH=
 build_pc windows -DCMAKE_TOOLCHAIN_FILE="$toolchain"
 cp "$out/windows/project/build/${name}_pc.exe" "$out/raiden.exe"
 cp /usr/x86_64-w64-mingw32/bin/SDL2.dll "$out/SDL2.dll"
-printf 'Built:\n  %s\n  %s (requires SDL2.dll beside it)\n' \
-  "$out/raiden-linux" "$out/raiden.exe"
+
+# the delivery note: what these are, how to run them, how they were made
+game=$(basename "$rom"); game=${game%.*}
+cat > "$out/README.txt" <<EOF
+$game — PC Engine sur PC (m0boy)
+
+Le cœur PC Engine de m0boy (HuC6280 interprété, VDC, VCE, PSG), avec la
+HuCard embarquée dans l'exécutable. Rien d'autre à installer qu'une
+bibliothèque SDL2 :
+
+  Linux   : ./raiden-linux
+            (SDL2 du système ; si absent : paquet sdl2 de la distribution)
+  Windows : raiden.exe, avec SDL2.dll à côté du fichier
+            (fournie ici)
+
+Contrôles :
+  Clavier  flèches = croix-direction, X = I (tir), Z = II,
+           Entrée = RUN (Start / pause), Maj = SELECT, Échap = quitter
+  Manette  croix ou stick gauche, B = I, A = II, Start = RUN,
+           Select = SELECT
+  Fenêtre  F8 change le filtre d'image, F10 l'échelle, F11 plein écran
+
+Pour lancer Raiden : laisser défiler l'écran titre, puis RUN.
+
+Hors écran (pour vérifier sans fenêtre, utile sur serveur) :
+  ./raiden-linux --frames 300 --ppm capture.ppm
+Le même run_hash sort du binaire Linux et du .exe Windows : le cœur est
+déterministe d'une plateforme à l'autre.
+
+Refaire ces binaires depuis les sources de m0boy :
+  tools/pce/build_pc_binaries.sh "<HuCard.pce>" <répertoire de sortie>
+(nécessite cmake, ninja, SDL2 de développement, et le compilateur croisé
+x86_64-w64-mingw32 + son SDL2 pour le .exe)
+EOF
+
+printf 'Built:\n  %s\n  %s (requires SDL2.dll beside it)\n  %s\n' \
+  "$out/raiden-linux" "$out/raiden.exe" "$out/README.txt"
