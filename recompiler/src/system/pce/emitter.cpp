@@ -303,8 +303,9 @@ private:
     void select(const std::vector<CoverageEntry>& coverage, EmitStats& stats);
     void plan();
     void emit_region(std::ostream& o, int r);
-    void emit_ins(std::ostream& o, const Ins& in);
+    bool emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail);
     std::string go(const Ins& from, uint16_t to) const;
+    int hint_of(const Ins& from, uint16_t to) const;
     std::string operand(const Ins& in, std::string& pre) const;
     std::string ea(const Ins& in, std::string& pre) const;
     bool may_bus(const Ins& in) const;
@@ -492,7 +493,9 @@ void Emitter::plan() {
         if (in.label) in.global = global++;
 }
 
-/* where control goes to reach `to` in the from-instance's context */
+/* where control goes to reach `to` in the from-instance's context.  Every
+ * exit shares one epilogue (`out`), which stores `ni` into the dispatcher's
+ * hint: a known entry lands as a hint, anything else leaves -1. */
 std::string Emitter::go(const Ins& from, uint16_t to) const {
     auto p = ins_.find(Key{to, from.ctx});
     if (p == ins_.end() || !p->second.label) return "{ pc_ = " + hex(to) + "; goto out; }";
@@ -501,7 +504,14 @@ std::string Emitter::go(const Ins& from, uint16_t to) const {
         snprintf(b, sizeof b, "goto L_%04X;", to);
         return b;
     }
-    return "{ pc_ = " + hex(to) + "; ni = " + std::to_string(p->second.global) + "; goto chain; }";
+    return "{ pc_ = " + hex(to) + "; ni = " + std::to_string(p->second.global) + "; goto out; }";
+}
+
+/* the entry's global index when `to` is one, else -1: a budget end with a
+ * hint saves the dispatcher's hash lookup on the next slice */
+int Emitter::hint_of(const Ins& from, uint16_t to) const {
+    auto p = ins_.find(Key{to, from.ctx});
+    return p != ins_.end() && p->second.label ? int(p->second.global) : -1;
 }
 
 /* the operand's address as C, computed once into `pre`'s locals when the
@@ -694,13 +704,27 @@ bool Emitter::may_bus(const Ins& in) const {
     }
 }
 
-void Emitter::emit_ins(std::ostream& o, const Ins& in) {
+bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
     const Op op = in.info.op;
     const Mode m = in.info.mode;
     const std::string next = go(in, in.next);
+    const int next_hint = hint_of(in, in.next);
     std::string pre, body;
     unsigned cycles = in.info.cycles;
     std::string after;  /* after the budget: an exit the instruction asks for */
+    /* the interpreter clears T after every instruction but SET, RTI and
+     * PLP; when T is already known zero on every path to here, the clear
+     * is dead (an entry — a label — knows nothing: t_zero starts false) */
+    const bool clears_t = op != Op::set && op != Op::plp;
+    const std::string t_clear = t_zero && clears_t ? "" : " p_ &= (uint8_t)~PCE_P_T;";
+    /* the two exits at a transfer and at a spent budget do the same thing
+     * since the epilogue took the hint: one statement each is dead */
+    auto budget_exit = [&](void) {
+        return " if (budget <= 0) { pc_ = " + hex(in.next) + "; ni = " + std::to_string(next_hint) + "; goto out; }";
+    };
+    /* the region's last instruction: its fallthrough continues with the
+     * transfer emit_region appends — dead check when that transfer leaves */
+    const bool fall_exits = tail && next.compare(0, 6, "goto L") != 0;
     auto store = [&](const std::string& value) {
         std::string pre2;
         const std::string at = ea(in, pre2);
@@ -778,14 +802,10 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
          * window tables; the rest changes the mapping out from under the
          * region's compiled constants: it leaves, and the dispatcher's MPR
          * check decides what the new windows still compile for */
-        if (in.tracked_a)
-            body = "{ for (unsigned i_ = 0; i_ < 8; i_++) if (" + hex(in.o[0], 2) +
-                   "u & (1u << i_)) machine.cpu.mpr[i_] = a_; huc6280_map(&machine.cpu); PCE_REBASE(); }";
-        else {
-            body = "{ for (unsigned i_ = 0; i_ < 8; i_++) if (" + hex(in.o[0], 2) +
-                   "u & (1u << i_)) machine.cpu.mpr[i_] = a_; huc6280_map(&machine.cpu); }";
-            after = "{ pc_ = " + hex(in.next) + "; goto out; }";
-        }
+        body = "{ for (unsigned i_ = 0; i_ < 8; i_++) if (" + hex(in.o[0], 2) +
+               "u & (1u << i_)) machine.cpu.mpr[i_] = a_; huc6280_map(&machine.cpu); }";
+        /* both kinds leave at the epilogue (may_bus): the region split in
+         * plan() is what tells an unproven TAM apart, not the exit */
         break;
     case Shape::tma:
         body = "{ for (unsigned i_ = 0; i_ < 8; i_++) if (" + hex(in.o[0], 2) +
@@ -822,78 +842,70 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
                                           "(p_ & PCE_P_V)", "!(p_ & PCE_P_C)", "(p_ & PCE_P_C)",
                                           "!(p_ & PCE_P_Z)", "(p_ & PCE_P_Z)" };
             const unsigned c = op == Op::bra ? 0 : 1 + unsigned(op) - unsigned(Op::bpl);
-            o << "    if (" << cond[c] << ") { p_ &= (uint8_t)~PCE_P_T; budget -= 4;";
-            if (opt_.precise) o << " if (budget <= 0) { pc_ = " << hex(in.target) << "; goto out; }";
-            o << " " << go(in, in.target) << " }\n";
-            o << "    budget -= 2; p_ &= (uint8_t)~PCE_P_T;";
-            if (opt_.precise) o << " if (budget <= 0) { pc_ = " << hex(in.next) << "; goto out; }";
+            o << "    if (" << cond[c] << ") {" << t_clear << " budget -= 4;"
+              << " " << go(in, in.target) << " }\n";
+            o << "   " << t_clear << " budget -= 2;";
+            /* the not-taken path falls into the next instruction inline;
+             * when the region ends here with a transfer to the same
+             * address, that transfer is the same exit and the check is
+             * dead */
+            if (opt_.precise && !fall_exits) o << budget_exit();
             o << "\n";
-            return;
+            return true;
         }
         if (op == Op::bbr || op == Op::bbs) {
             const unsigned bit = (in.code >> 4) & 7;
             const std::string take = std::string(op == Op::bbs ? "" : "!") + "((m_ >> " +
                                      std::to_string(bit) + "u) & 1u)";
             o << "    { const uint8_t m_ = PCE_RD(PCE_ZP_AT(" << hex(in.o[0], 2) << "u));\n"
-              << "    if (" << take << ") { p_ &= (uint8_t)~PCE_P_T; budget -= 8;";
-            if (opt_.precise) o << " if (budget <= 0) { pc_ = " << hex(in.target) << "; goto out; }";
-            o << " " << go(in, in.target) << " }\n"
-              << "    budget -= 6; p_ &= (uint8_t)~PCE_P_T;";
-            if (opt_.precise) o << " if (budget <= 0) { pc_ = " << hex(in.next) << "; goto out; }";
+              << "    if (" << take << ") {" << t_clear << " budget -= 8;"
+              << " " << go(in, in.target) << " }\n"
+              << "   " << t_clear << " budget -= 6;";
+            if (opt_.precise && !fall_exits) o << budget_exit();
             o << " }\n";
-            return;
+            return true;
         }
         if (op == Op::jmp && in.has_target) {
             if (in.target == in.addr) {
                 /* the idle loop the other runtimes spend at once
                  * (m0_idle.h): left with pc on it, as the interpreter */
-                o << "    p_ &= (uint8_t)~PCE_P_T; budget = PCE_SPIN4(budget); { pc_ = " << hex(in.addr)
+                o << "   " << t_clear << " budget = PCE_SPIN4(budget); { pc_ = " << hex(in.addr)
                   << "; goto out; }\n";
-                return;
+                return true;
             }
-            o << "    p_ &= (uint8_t)~PCE_P_T; budget -= 4;";
-            if (opt_.precise) o << " if (budget <= 0) { pc_ = " << hex(in.target) << "; goto out; }";
-            o << " " << go(in, in.target) << "\n";
-            return;
+            o << "   " << t_clear << " budget -= 4;" << " " << go(in, in.target) << "\n";
+            return true;
         }
         if (op == Op::jmp && m == Mode::ind) {
             o << "    { const uint16_t ptr_ = " << hex(in.o[0] | (in.o[1] << 8)) << "; "
               << "const unsigned lo_ = PCE_RD(ptr_); "
               << "const unsigned hi_ = PCE_RD((uint16_t)((ptr_ & 0xFF00u) | ((ptr_ + 1u) & 0xFFu))); "
-              << "pc_ = (uint16_t)(lo_ | hi_ << 8); } p_ &= (uint8_t)~PCE_P_T; budget -= 7;";
-            if (opt_.precise) o << " if (budget <= 0) goto out;";
-            o << " goto dyn;\n";
-            return;
+              << "pc_ = (uint16_t)(lo_ | hi_ << 8); }" << t_clear << " budget -= 7; goto out;\n";
+            return true;
         }
         if (op == Op::jmp) { /* (abs,X) */
             o << "    { const uint16_t ptr_ = (uint16_t)(" << hex(in.o[0] | (in.o[1] << 8)) << "u + x_); "
               << "const unsigned lo_ = PCE_RD(ptr_); const unsigned hi_ = PCE_RD((uint16_t)(ptr_ + 1u)); "
-              << "pc_ = (uint16_t)(lo_ | hi_ << 8); } p_ &= (uint8_t)~PCE_P_T; budget -= 7;";
-            if (opt_.precise) o << " if (budget <= 0) goto out;";
-            o << " goto dyn;\n";
-            return;
+              << "pc_ = (uint16_t)(lo_ | hi_ << 8); }" << t_clear << " budget -= 7; goto out;\n";
+            return true;
         }
         if (op == Op::jsr || op == Op::bsr) {
             const unsigned ret = op == Op::jsr ? unsigned(in.addr) + 2u : unsigned(in.addr) + 1u;
             o << "    PCE_PUSH(" << hex(ret >> 8, 2) << "); PCE_PUSH(" << hex(ret & 0xFF, 2)
-              << "); p_ &= (uint8_t)~PCE_P_T; budget -= " << (op == Op::jsr ? 7 : 8) << ";";
-            if (opt_.precise) o << " if (budget <= 0) { pc_ = " << hex(in.target) << "; goto out; }";
-            o << " " << go(in, in.target) << "\n";
-            return;
+              << ");" << t_clear << " budget -= " << (op == Op::jsr ? 7 : 8) << ";"
+              << " " << go(in, in.target) << "\n";
+            return true;
         }
         if (op == Op::rts) {
             o << "    { const uint8_t lo8_ = PCE_POP(); const uint8_t hi8_ = PCE_POP(); "
-              << "pc_ = (uint16_t)((uint16_t)(lo8_ | hi8_ << 8) + 1u); } p_ &= (uint8_t)~PCE_P_T; budget -= 7;";
-            if (opt_.precise) o << " if (budget <= 0) goto out;";
-            o << " goto dyn;\n";
-            return;
+              << "pc_ = (uint16_t)((uint16_t)(lo8_ | hi8_ << 8) + 1u); }" << t_clear
+              << " budget -= 7; goto out;\n";
+            return true;
         }
         /* RTI: P back (T kept), then pc */
         o << "    p_ = PCE_POP(); { const uint8_t lo8_ = PCE_POP(); const uint8_t hi8_ = PCE_POP(); "
-          << "pc_ = (uint16_t)(lo8_ | hi8_ << 8); } budget -= 7;";
-        if (opt_.precise) o << " if (budget <= 0) goto out;";
-        o << " goto dyn;\n";
-        return;
+          << "pc_ = (uint16_t)(lo8_ | hi8_ << 8); } budget -= 7; goto out;\n";
+        return false;
     case Shape::imp:
         switch (op) {
         case Op::ina: body = "a_ = (uint8_t)(a_ + 1); PCE_ZN(a_);"; break;
@@ -936,35 +948,37 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
             body = "p_ = PCE_POP();";
             /* the mask may have opened: the interpreter samples at once */
             after = "if (machine.cpu.irq_low & machine.cpu.irq_mask && !(p_ & PCE_P_I)) { pc_ = " +
-                    hex(in.next) + "; goto out; }";
+                    hex(in.next) + "; ni = " + std::to_string(next_hint) + "; goto out; }";
             break;
         default: break;
         }
         break;
     default:
         o << "    { pc_ = " << hex(in.addr) << "; goto out; }\n";
-        return;
+        return true;
     }
-    o << "    { " << pre << body;
-    /* the interpreter clears the T flag after every instruction but SET,
-     * RTI and PLP; the region must leave it the same way */
-    if (op != Op::set && op != Op::plp) o << " p_ &= (uint8_t)~PCE_P_T;";
+    o << "    { " << pre << body << t_clear;
     if (cycles) o << " budget -= " << cycles << ";";
     o << " }";
     if (opt_.precise) {
-        o << " if (budget <= 0) { pc_ = " << hex(in.next) << "; goto out; }";
-        if (may_bus(in)) o << " { pc_ = " << hex(in.next) << "; goto out; }";
+        if (may_bus(in))
+            /* the region leaves after this instruction whatever the
+             * budget: one exit, with the hint the dispatcher validates */
+            o << " { pc_ = " << hex(in.next) << "; ni = " << std::to_string(next_hint) << "; goto out; }";
+        else if (!fall_exits) o << budget_exit();
     }
     if (op == Op::cli)
-        after = "if (machine.cpu.irq_low & machine.cpu.irq_mask) { pc_ = " + hex(in.next) + "; goto out; }";
+        after = "if (machine.cpu.irq_low & machine.cpu.irq_mask) { pc_ = " + hex(in.next) +
+                "; ni = " + std::to_string(next_hint) + "; goto out; }";
     if (!after.empty()) o << " " << after;
     o << "\n";
+    return clears_t;
 }
 
 void Emitter::emit_region(std::ostream& o, int r) {
     const auto& keys = regions_[size_t(r)];
     o << "\nstatic int32_t r_" << r << "(int32_t budget, unsigned entry) {\n"
-      << "    PCE_LOAD();\n    uint16_t pc_;\n    int ni;\n    switch (entry) {\n";
+      << "    PCE_LOAD();\n    uint16_t pc_;\n    int ni = -1;\n    switch (entry) {\n";
     for (const Key& k : keys) {
         const Ins& in = ins_.at(k);
         if (in.label) {
@@ -974,6 +988,9 @@ void Emitter::emit_region(std::ostream& o, int r) {
         }
     }
     o << "    default: __builtin_unreachable();\n    }\n";
+    /* T is whatever the entering flow left: only a fallthrough from an
+     * instruction that clears it knows it zero */
+    bool t_zero = false;
     for (size_t i = 0; i < keys.size(); i++) {
         const Ins& in = ins_.at(keys[i]);
         if (in.label) {
@@ -982,14 +999,15 @@ void Emitter::emit_region(std::ostream& o, int r) {
             o << "L_" << b << ":";
             if (!opt_.precise) o << " if (budget <= 0) { pc_ = " << hex(in.addr) << "; goto out; }";
             o << "\n";
+            t_zero = false;
         }
-        emit_ins(o, in);
         /* the region's last instruction falls into the next one's place */
-        if (i + 1 == keys.size() && in.falls && !(in.info.op == Op::jmp)) o << "    " << go(in, in.next) << "\n";
+        const bool tail = i + 1 == keys.size() && in.falls && in.info.op != Op::jmp;
+        t_zero = emit_ins(o, in, t_zero, tail);
+        if (tail) o << "    " << go(in, in.next) << "\n";
     }
-    o << "out:\n    PCE_SAVE(); machine.cpu.pc = pc_; return budget;\n"
-      << "chain:\n    PCE_SAVE(); machine.cpu.pc = pc_; pce_gen_next = ni; return budget;\n"
-      << "dyn:\n    PCE_SAVE(); machine.cpu.pc = pc_; return budget;\n}\n";
+    /* every exit left the hint in ni: -1 where the target is no entry */
+    o << "out:\n    pce_gen_next = ni; PCE_SAVE(); machine.cpu.pc = pc_; return budget;\n}\n";
 }
 
 std::string Emitter::run(const std::vector<CoverageEntry>& coverage, EmitStats& stats) {
