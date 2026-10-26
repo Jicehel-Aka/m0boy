@@ -29,7 +29,7 @@ tools/pce/build_pc_binaries.sh                       # raiden-linux + raiden.exe
 build/bin/gbrecomp --system pce "Raiden (USA).pce" --target pc -o out/raiden_pc
 cmake -G Ninja -S out/raiden_pc -B out/raiden_pc/build && ninja -C out/raiden_pc/build
 out/raiden_pc/build/Raiden__USA__pc --frames 300 --ppm shot.ppm
-# frames=300 pc=4e2f run_hash=97ae6d24  (le harness donne le même)
+# frames=300 pc=4e2f run_hash=c6637372  (le harness donne le même)
 ```
 
 Le harness imprime le `run_hash` (CPU, WRAM, VRAM, SATB, palette, frame),
@@ -98,8 +98,7 @@ cartouche synthétique dont il vérifie hash et pixels.
 Les états d'attente CPU sur accès VDC/VCE, le vol de cycles du DMA (un
 DMA finit d'un coup, déterministe), le bit BSY du statut, la fenêtre de
 fetch CG des sprites, le mode CG « one word », l'horloge point de la VCE
-(la largeur vient de HDR), la vitesse lente du CSL (les cycles se
-comptent à 7,16 MHz), la BSRAM et le CD-ROM², le multitap. Un jeu qui
+(la largeur vient de HDR), la BSRAM et le CD-ROM², le multitap. Un jeu qui
 sonde BSY pendant un DMA verra le DMA déjà fini.
 
 ## Le harness
@@ -120,39 +119,55 @@ rejouera sur le harness quand l'application gm0 saura la lancer).
   écran titre exact : kanji 雷電, logo RAIDEN™, texte « FROM NEC / © 1990
   SEIBU KAIHATSU INC. / ALL RIGHTS RESERVED / © 1991 HUDSON SOFT ».
   RUN sur le titre lance la partie et la partie se joue : le vaisseau
-  décolle du porte-avions, la stage 1 défile (océan, côte, chars),
-  les ennemis arrivent, les entrées répondent (déplacements, tir,
-  bombardement — le compte de bombes baisse). Le gel « avant de vraiment
-  jouer » d'avant le correctif BSR est diagnostiqué et compris : la
-  boucle objet du jeu (banque 8, $4900-$4912) sautait le PLA qui suit
-  son `BSR`, un octet mort restait dans la pile, le RTS final partait
-  dans la page matérielle et la tempête de BRK→RTI qui suit laissait le
-  programme principal attendre le drapeau vblank $207E pour toujours.
-  run_hash stable d'une exécution à l'autre, inchangé à l'image 300
-  (97ae6d24 — la phase titre ne passe pas par BSR).
+  décolle du porte-avions, la stage 1 défile (océan, côte, forêt, chars),
+  les escadrilles attaquent avec leurs tirs visibles, les entrées
+  répondent (déplacements, tir). Le gel « avant de vraiment jouer »
+  d'avant le correctif BSR est diagnostiqué et compris : la boucle objet
+  du jeu (banque 8, $4900-$4912) sautait le PLA qui suit son `BSR`, un
+  octet mort restait dans la pile, le RTS final partait dans la page
+  matérielle et la tempête de BRK→RTI qui suit laissait le programme
+  principal attendre le drapeau vblank $207E pour toujours.
+  run_hash stable d'une exécution à l'autre (c6637372 à l'image 300,
+  harness desktop = binaire PC).
+- **Le budget CPU par ligne suit CSL/CSH** : Raiden démarre en CSL
+  (1,79 MHz) et passe tôt en CSH (7,16 MHz) ; une ligne VDC fait 1365
+  horloges maîtresses, soit 455 cycles CPU en CSH mais ~114 en CSL. Le
+  cœur donnait 455 cycles quoi qu'il arrive : tout le boot CSL tournait
+  4× trop vite, l'état calibré au démarrage divergeait, et RUN lançait
+  une partie restée en mode scripté — plus aucun tir, aucun ennemi,
+  aucune entrée prise en compte. Le budget compte maintenant des
+  horloges maîtresses (1365 par ligne, divisées par 3 en CSH, 12 en
+  CSL), comme le cœur mednafen ; l'attract suit de nouveau la vraie
+  timeline (écran PUSH RUN vers l'image 300 des deux côtés) et RUN
+  démarre une vraie partie.
 - **Comparaison de référence** : le cœur mednafen (beetle-pce-libretro)
-  piloté par un mini frontend libretro. Le titre colle image pour image
-  (300 frames identiques) et l'initialisation suit (flash tank, fondu).
-  À partir de la transition de l'attract les deux cœurs divergent :
-  mednafen enchaîne sur la démo jouée par la machine, le cœur m0boy
-  retourne au titre (cycle titre → flash → fondu → titre). Le diagnostic
-  de la session a aussi démenti la note antérieure « progression frame à
-  frame » : le gameplay vu alors était la démo de la référence, et le
-  « décalage d'entrée RUN » un faux pli — pendant la démo, mednafen
-  ignore RUN là où le cœur m0boy, rendu au bon état de titre, le prend.
+  piloté par un mini frontend libretro (avec `retro_set_controller_port_device`
+  — sans lui le pad de la référence reste mort, et la démo auto-jouée
+  masquait tout écart d'entrée). Le titre colle image pour image, RUN y
+  démarre une vraie partie des deux côtés, et les deux parties réelles
+  montrent le même déroulé (lancement porte-avions, océan, côte, combat,
+  score). Restent des écarts fins non tranchés : la démo de l'attract,
+  le rythme exact du niveau (le cœur m0boy atteint le mini-boss sphère
+  plus tôt que la référence, qui meurt avant sur la même entrée) et le
+  décalage de scroll de quelques pixels sur le titre.
 - **e2e synthétique** (`tests/test_pce_e2e.py`) : cartouche générée en
   Python (vecteurs, TAM, VDC, VCE), deux exécutions même hash, pixels du
   fond et du caractère vérifiés.
 
 ## Chantiers suivants
 
-- L'attract : la démo jouée par la machine (mednafen la joue de ~700 à
-  ~2115) reste sautée — l'init de démo s'enlise dans le chargeur VRAM
-  par ligne (banque 5, $4411-$4500) et l'état repart au titre. Trancher
-  ce qui manque (un drapeau, un timing de charge) contre la référence.
-- Le gameplay au long cours : la session mednafen recoupée frame à frame
-  (mêmes entrées, mêmes frames) pour trancher les écarts fins de timing
-  (timer aux frontières de ligne, SATB un peu tôt, DMA instantané).
+- L'attract : la démo jouée par la machine (mednafen la joue entre son
+  cycle logo → mur → démo → PUSH RUN) reste sautée — le cœur m0boy passe
+  par un écran de charge noir vers l'image 700 puis rebondit au titre.
+  L'init s'enlise dans le chargeur VRAM par ligne (banque 5, $4411-$4500,
+  ~4,5 unités par frame côté m0boy). Trancher ce qui manque (un drapeau,
+  un timing de charge) contre la référence.
+- Le rythme du niveau : sur la même entrée alignée sur RUN, le cœur
+  m0boy atteint la sphère (mini-boss) vers RUN+1200 quand la référence
+  en est encore à la première section plage (elle y meurt vers RUN+2600
+  et propose le continue « CREDIT 6 »). Recouper frame à frame les deux
+  parties réelles pour trancher ce qui reste (calibration d'un temporisateur,
+  diff de trajectoire d'état WRAM au boot).
 - La couche sprite : les gros glyphs du titre tombent juste, le texte
   sprite des bords de lignes montre des artefacts de découpe (limite des
   16 sprites de ligne ou fetch des demi-motifs 32 px — à trancher contre

@@ -32,14 +32,16 @@ and PC (SDL2) window projects (`--system pce --target desktop|pc`,
 `output/raiden-pc/`): the full HuC6280 (the mednafen core's
 opcode table and cycle counts, the 65C02 set and the Hudson extensions),
 the VDC, VCE, timer, pad and a reduced PSG. Raiden boots through its
-HuCard menu to the exact title screen and, from a RUN input, plays:
-the ship takes off from the carrier, stage 1 scrolls and fights back.
-Controls: arrows, X = I, Z = II, Enter = RUN, Shift = SELECT; a gamepad
-works too. The known open items are the attract demo (the machine's own
-demo play is skipped, the title cycle replaces it) and the sprite text's
-line-edge clipping. The PC window and the headless harness print the
-same run_hash, and the .exe's output matches the Linux build's byte for
-byte. See [PC Engine notes](docs/PCE.fr.md).
+HuCard menu to the exact title screen and, from a RUN input, plays: the
+ship takes off from the carrier, stage 1 scrolls, squadrons attack with
+visible fire, and the pad answers. Controls: arrows, X = I, Z = II,
+Enter = RUN, Shift = SELECT; a gamepad works too. The CPU budget follows
+the HuC6280's CSL/CSH clock switch (the bug that left the game
+script-locked). The known open items are the attract demo (the machine's
+own demo play is skipped, the title cycle replaces it) and the exact
+stage pacing against the reference. The PC window and the headless
+harness print the same run_hash, and the .exe's output matches the Linux
+build's byte for byte. See [PC Engine notes](docs/PCE.fr.md).
 
 An experimental Vectrex pipeline is available for the META (the system ROM
 built into the generated firmware, `--bios`) and the PC target (BIOS read at

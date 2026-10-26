@@ -183,8 +183,12 @@ void pce_init(const uint8_t *rom, uint32_t rom_bytes) {
     pce_reset();
 }
 
+/* the CPU-budget carry across frames and resets */
+static unsigned master_carry;
+
 void pce_reset(void) {
     pce_t *p = &machine;
+    master_carry = 0;
     __asm__ volatile("" : : "r"(&pce_input_probe));
     huc6280_reset(&p->cpu);
     vdc_reset(&p->vdc);
@@ -201,17 +205,24 @@ void pce_reset(void) {
     update_irq();
 }
 
+
 void pce_frame(void) {
     pce_t *p = &machine;
     p->frames++;
     p->have_frame = 0;
     for (unsigned line = 0; line < 262; line++) {
-        /* 1365 master clocks = 455 CPU cycles at 7.16 MHz, a whole line */
-        huc6280_run(&p->cpu, p->cpu.cycles + 455);
+        /* 1365 master clocks per line: 455 CPU cycles at CSH (7.16 MHz),
+         * 1365/12 ≈ 114 at CSL (1.79 MHz) — the game boots in CSL and the
+         * switch lands at a line boundary here */
+        master_carry += 1365;
+        const unsigned cycles = master_carry / (p->cpu.speed ? 3 : 12);
+        master_carry %= p->cpu.speed ? 3u : 12u;
+        huc6280_run(&p->cpu, p->cpu.cycles + cycles);
         vdc_line(&p->vdc, line);
-        /* the timer's ticks land on the line boundaries (a tick every
-         * 1024 cycles; the sweep's jitter stays under one line) */
-        p->timer_clock += 455;
+        /* the timer runs on the CPU clock: a tick every 1024 of the same
+         * cycles the CPU just consumed (the sweep's jitter stays under
+         * one line) */
+        p->timer_clock += cycles;
         while (p->timer_clock >= 1024) {
             p->timer_clock -= 1024;
             timer_tick();
