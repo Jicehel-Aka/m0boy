@@ -21,16 +21,20 @@ output/sonic_md/build/md_pc
 
 Pour fabriquer directement les exécutables Linux et Windows à partir de la
 ROM locale, utilisez `tools/megadrive/build_pc_binaries.sh [ROM] [DOSSIER]`.
-Le script entraîne la couverture avec une séquence Start, déplacement à droite
-et saut, puis compile le code C couvert pour les deux plateformes :
+Le profil du C natif vient de la recherche de parties de
+`tools/profile/m0search.py` : la graine Start/droite/saut, puis des sessions
+aléatoires rejouées sur l'interpréteur, et les enregistrements passés avec
+`EXTRA_INPUT` (parties capturées au moyen de `--record-input`, même dialecte
+que `--input`) ; les couvertures sont fusionnées avant la génération :
 
 ```bash
 tools/megadrive/build_pc_binaries.sh \
-  'roms/md/Sonic The Hedgehog (USA, Europe).md' output/sonic1-pc
+  'roms/md/Sonic The Hedgehog (USA, Europe).md'
 ```
 
-Les fichiers livrés sont `output/sonic1-pc/sonic1-linux` et
-`output/sonic1-pc/sonic1.exe`, avec `SDL2.dll` à côté du `.exe`. Le binaire
+Les fichiers livrés sont `output/<slug>-pc/<slug>-linux` et
+`output/<slug>-pc/<slug>.exe` (le slug vient du nom de la ROM), avec
+`SDL2.dll` à côté du `.exe`. Le binaire
 Linux nécessite SDL2 installé sur le système. Le cross-build Windows demande
 MinGW x86-64 et son paquet SDL2. Le script attend le recompileur déjà construit
 dans `build/bin/m0recomp` (ou le chemin défini par `M0RECOMP`). Les programmes
@@ -113,7 +117,9 @@ tranche, à l'endroit exact où l'exécution pas à pas se serait arrêtée.
 SDL2 est la seule dépendance du frontend PC. `--frames N --ppm FILE` permet
 une capture sans fenêtre visible, et `--input FILE` rejoue des lignes
 `trame masque` où haut=1, bas=2, gauche=4, droite=8, A=16, B=32, C=64 et
-Start=128.
+Start=128 ; `--record-input FILE` enregistre une partie jouée au même
+format, rejouable telle quelle par `--input` et lisible par `m0search.py`
+comme session manuelle du profil.
 
 ## Profil natif
 
@@ -132,7 +138,9 @@ vérifie la fin de tranche après chaque instruction : un projet doit donner le
 
 La couverture des adresses 68000 exécutées se collecte avec `md_pc --interp
 --coverage FILE`, puis se passe au générateur avec `--coverage FILE` (une ou
-plusieurs fois). Sans profil, le parcours statique depuis les vecteurs suffit
+plusieurs fois) ; `tools/profile/m0search.py` enchaîne les sessions aléatoires
+et les rejeux manuels et rend la couverture fusionnée, pour ce cœur comme
+pour tous les autres. Sans profil, le parcours statique depuis les vecteurs suffit
 souvent ; `native_hits` (entrées de région) et `fallback_hits` (instructions
 interprétées) rendent le partage visible. `megadrive_m68k_end_to_end`
 compare l'interpréteur, le C du seul parcours statique et le C profilé sur

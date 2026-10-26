@@ -28,14 +28,20 @@ static uint32_t fnv(const void *data, size_t n, uint32_t h) {
     return h;
 }
 
+/* the HuC6280 interpreter calls this every instruction when the build
+ * defines PCE_TRACE (the generated host projects do); --coverage dumps it */
+static uint32_t pc_hits[65536];
+void pce_trace_step(uint16_t pc) { pc_hits[pc]++; }
+
 int main(int argc, char **argv) {
-    const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0;
+    const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0, *coverage = 0;
     unsigned frames = 60;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) ppm = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_path = argv[++i];
+        else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) coverage = argv[++i];
         else rom_path = argv[i];
     }
     const uint8_t *rom;
@@ -45,7 +51,7 @@ int main(int argc, char **argv) {
         rom = pce_rom;
         rom_bytes = PCE_ROM_SIZE;
 #else
-        fprintf(stderr, "usage: pce_host rom.pce [--frames n] [--ppm f] [--wav f] [--input f]\n");
+        fprintf(stderr, "usage: pce_host rom.pce [--frames n] [--ppm f] [--wav f] [--input f] [--coverage f]\n");
         return 2;
 #endif
     } else {
@@ -66,7 +72,9 @@ int main(int argc, char **argv) {
 
     pce_init(rom, rom_bytes);
     machine.row = on_row;
-    /* a held-input script: "frame buttons" lines, buttons by name */
+    /* a momentary-input script: "frame buttons" lines held for that one
+     * frame, buttons by whole name ("i+right" — strstr would read "right"
+     * as "i") */
     struct { unsigned frame; uint8_t buttons; } script[4096];
     unsigned script_n = 0;
     if (input_path) {
@@ -75,14 +83,20 @@ int main(int argc, char **argv) {
         unsigned at; char names[64];
         while (script_n < 4096 && fscanf(in, "%u %63[^\n]\n", &at, names) == 2) {
             uint8_t b = 0;
-            if (strstr(names, "run")) b |= PCE_BTN_RUN;
-            if (strstr(names, "select")) b |= PCE_BTN_SELECT;
-            if (strstr(names, "i")) b |= PCE_BTN_I;
-            if (strstr(names, "ii")) b |= PCE_BTN_II;
-            if (strstr(names, "up")) b |= PCE_BTN_UP;
-            if (strstr(names, "down")) b |= PCE_BTN_DOWN;
-            if (strstr(names, "left")) b |= PCE_BTN_LEFT;
-            if (strstr(names, "right")) b |= PCE_BTN_RIGHT;
+            for (char *tok = strtok(names, "+ "); tok; tok = strtok(NULL, "+ ")) {
+                if (!strcmp(tok, "run")) b |= PCE_BTN_RUN;
+                else if (!strcmp(tok, "select")) b |= PCE_BTN_SELECT;
+                else if (!strcmp(tok, "i")) b |= PCE_BTN_I;
+                else if (!strcmp(tok, "ii")) b |= PCE_BTN_II;
+                else if (!strcmp(tok, "up")) b |= PCE_BTN_UP;
+                else if (!strcmp(tok, "down")) b |= PCE_BTN_DOWN;
+                else if (!strcmp(tok, "left")) b |= PCE_BTN_LEFT;
+                else if (!strcmp(tok, "right")) b |= PCE_BTN_RIGHT;
+                else if (strcmp(tok, "none")) {
+                    fprintf(stderr, "unknown button in: %s\n", tok);
+                    return 2;
+                }
+            }
             script[script_n].frame = at;
             script[script_n++].buttons = b;
         }
@@ -166,6 +180,15 @@ int main(int argc, char **argv) {
         for (unsigned y = 0; y < machine.vdc.active_height; y++)
             h = fnv(frame[machine.first_active_line + y],
                     machine.vdc.active_width * sizeof frame[0][0], h);
+    }
+    if (coverage) {
+        FILE *out = fopen(coverage, "w");
+        if (!out) { fprintf(stderr, "cannot write %s\n", coverage); return 2; }
+        fprintf(out, "# m0boy PCE coverage: address, HuC6280 instructions started\n");
+        for (unsigned pc = 0; pc < 65536; pc++)
+            if (pc_hits[pc])
+                fprintf(out, "%04x %u\n", pc, pc_hits[pc]);
+        fclose(out);
     }
     printf("frames=%u cycles=%u pc=%04x run_hash=%08x\n",
            frames, (unsigned)machine.cpu.cycles, machine.cpu.pc, h);

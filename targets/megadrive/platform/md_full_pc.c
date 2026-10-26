@@ -65,7 +65,7 @@ static int save_coverage(const char *path, const MdFull *m) {
 int main(int argc, char **argv) {
     unsigned limit = 0;
     int interp = 0;
-    const char *ppm = NULL, *script = NULL, *coverage = NULL, *wav = NULL, *ym_path = NULL;
+    const char *ppm = NULL, *script = NULL, *coverage = NULL, *wav = NULL, *ym_path = NULL, *record_path = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) limit = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) script = argv[++i];
@@ -73,8 +73,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) coverage = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
         else if (!strcmp(argv[i], "--ym-log") && i + 1 < argc) ym_path = argv[++i];
+        else if (!strcmp(argv[i], "--record-input") && i + 1 < argc) record_path = argv[++i];
         else if (!strcmp(argv[i], "--interp")) interp = 1;
-        else { fprintf(stderr, "usage: md_pc [--frames N] [--input SCRIPT] [--ppm FILE] [--wav FILE] [--ym-log FILE] [--coverage FILE] [--interp]\n"); return 2; }
+        else { fprintf(stderr, "usage: md_pc [--frames N] [--input SCRIPT] [--ppm FILE] [--wav FILE] [--ym-log FILE] [--coverage FILE] [--record-input FILE] [--interp]\n"); return 2; }
     }
     Event *events = NULL;
     size_t event_count = 0, event_at = 0;
@@ -119,6 +120,18 @@ int main(int argc, char **argv) {
     }
     unsigned scripted = 0;
     int running = 1;
+    /* the live pad recorded "frame mask", the --input dialect itself, so a
+     * played session replays as a profile session (only with a window) */
+    FILE *record_file = NULL;
+    unsigned record_last = ~0u;
+    if (record_path) {
+        if (limit)
+            fprintf(stderr, "--record-input needs a window; ignoring it\n");
+        else {
+            record_file = fopen(record_path, "w");
+            if (!record_file) { perror(record_path); return 1; }
+        }
+    }
     uint64_t deadline = SDL_GetTicks64();
     unsigned frame_fraction = 0;
     while (running && !m->fault && (!limit || m->frames < limit)) {
@@ -128,7 +141,12 @@ int main(int argc, char **argv) {
         }
         while (event_at < event_count && events[event_at].frame == m->frames)
             scripted = events[event_at++].mask;
-        m->pad = (uint8_t)(scripted | (limit ? 0u : pc_frontend_buttons(&pc)));
+        const unsigned live = limit ? 0u : pc_frontend_buttons(&pc);
+        if (record_file && (unsigned)(uint8_t)live != record_last) {
+            record_last = (unsigned)(uint8_t)live;
+            fprintf(record_file, "%u %u\n", m->frames, record_last);
+        }
+        m->pad = (uint8_t)(scripted | live);
         /* The VDP draws into pixels line by line; without a window only
          * the last frame is needed. */
         m->screen = !limit || m->frames + 1u >= limit ? pixels : NULL;
@@ -150,6 +168,7 @@ int main(int argc, char **argv) {
         }
     }
     int okay = (!ppm || write_ppm(ppm, pixels)) && (!coverage || save_coverage(coverage, m));
+    if (record_file && fclose(record_file)) okay = 0;
     if (wav_file) { wav_header(wav_file, wav_samples); if (fclose(wav_file)) okay = 0; }
     if (ym_file && fclose(ym_file)) okay = 0;
     printf("frames=%u pc=%06x fault=%u fault_pc=%06x opcode=%04x native_hits=%u fallback_hits=%u run_hash=%08x image_hash=%08x audio_hash=%08x\n",

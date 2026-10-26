@@ -112,6 +112,9 @@ if(BUILD_TESTS)
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_gg_e2e.py"
                 --recompiler "$<TARGET_FILE:m0recomp>" --host "$<TARGET_FILE:gg_host>")
     set_tests_properties(gg_native_end_to_end PROPERTIES TIMEOUT 300)
+    add_test(NAME profile_search_generic
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_profile_search.py")
+    set_tests_properties(profile_search_generic PROPERTIES TIMEOUT 120)
     # SG-1000, Game Gear, Master System on the ESPboy: generated projects and
     # the cartridge RAM saved in flash (mock flash).
     add_test(NAME sega_espboy_target

@@ -126,6 +126,36 @@ static void input(Vectrex *v, uint16_t k) {
                (k & PC_C ? 4 : 0) | (k & PC_D ? 8 : 0);
   v->via.ay[14] = ~v->buttons;
 }
+/* a held-input script: "frame buttons" lines, buttons by name (none,
+ * up down left right a b c d), held from that frame on — the shape the
+ * Game Boy harness records and m0search.py generates and converts */
+static const char *const key_names[] = {"up", "down", "left", "right",
+                                        "a",  "b",    "c",    "d"};
+static const uint16_t key_bits[] = {PC_UP, PC_DOWN, PC_LEFT, PC_RIGHT,
+                                    PC_A, PC_B, PC_C, PC_D};
+static struct { unsigned frame; uint16_t keys; } *script;
+static unsigned script_n, script_pos, script_held;
+static FILE *record_file;
+static uint16_t record_last;
+static unsigned script_keys(unsigned frame) {
+  while (script_pos < script_n && script[script_pos].frame <= frame)
+    script_held = script[script_pos++].keys;
+  return script_held;
+}
+static void record_keys(unsigned frame, uint16_t k) {
+  if (!record_file || k == record_last)
+    return;
+  record_last = k;
+  fprintf(record_file, "%u ", frame);
+  if (!k)
+    fputs("none", record_file);
+  for (unsigned i = 0, first = 1; i < 8; i++)
+    if (k & key_bits[i]) {
+      fprintf(record_file, "%s%s", first ? "" : "+", key_names[i]);
+      first = 0;
+    }
+  fputc('\n', record_file);
+}
 #ifdef VX_NATIVE
 #include "vx_gen.h"
 #ifdef VX_GEN_STATS
@@ -146,7 +176,8 @@ static int save_coverage(const char *path) {
 }
 #endif
 int main(int argc, char **argv) {
-  const char *bios = 0, *ppm = 0, *wav = 0, *coverage = 0;
+  const char *bios = 0, *ppm = 0, *wav = 0, *coverage = 0, *input_path = 0,
+             *record_path = 0;
   int frames = 0, full_boot = 0, interp = 0;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--bios") && i + 1 < argc)
@@ -157,6 +188,10 @@ int main(int argc, char **argv) {
       ppm = argv[++i];
     else if (!strcmp(argv[i], "--wav") && i + 1 < argc)
       wav = argv[++i];
+    else if (!strcmp(argv[i], "--input") && i + 1 < argc)
+      input_path = argv[++i];
+    else if (!strcmp(argv[i], "--record-input") && i + 1 < argc)
+      record_path = argv[++i];
     else if (!strcmp(argv[i], "--full-boot"))
       full_boot = 1;
     else if (!strcmp(argv[i], "--interp"))
@@ -167,6 +202,7 @@ int main(int argc, char **argv) {
       fprintf(stderr,
               "usage: %s --bios BIOS.vec [--frames N] [--ppm shot.ppm] [--wav "
               "sound.wav] "
+              "[--input buttons.input] [--record-input play.input] "
               "[--full-boot] [--interp] [--coverage profile.cov]\n",
               argv[0]);
       return 2;
@@ -201,6 +237,42 @@ int main(int argc, char **argv) {
     return 2;
   }
 #endif
+  if (input_path) {
+    FILE *in = fopen(input_path, "r");
+    char line[256];
+    unsigned cap = 0;
+    if (!in) {
+      perror(input_path);
+      return 2;
+    }
+    while (fgets(line, sizeof line, in)) {
+      char buttons[128];
+      unsigned at, keys = 0;
+      if (line[0] == '#' || sscanf(line, "%u %127s", &at, buttons) != 2)
+        continue;
+      for (char *tok = strtok(buttons, "+"); tok; tok = strtok(0, "+")) {
+        unsigned i = 0;
+        while (i < 8 && strcmp(tok, key_names[i]))
+          i++;
+        if (i == 8 && strcmp(tok, "none")) {
+          fprintf(stderr, "%s: unknown button '%s'\n", input_path, tok);
+          fclose(in);
+          return 2;
+        }
+        if (i < 8)
+          keys |= key_bits[i];
+      }
+      if (script_n == cap) {
+        cap = cap ? cap * 2 : 256;
+        script = realloc(script, cap * sizeof *script);
+        if (!script)
+          return 1;
+      }
+      script[script_n].frame = at;
+      script[script_n++].keys = keys;
+    }
+    fclose(in);
+  }
   vx_reset(v);
   if (full_boot)
     v->fast_boot = 0;
@@ -235,12 +307,23 @@ int main(int argc, char **argv) {
       SDL_PauseAudioDevice(audio_device, 0);
   }
   int frame = 0;
+  if (record_path && !headless) {
+    record_file = fopen(record_path, "w");
+    if (!record_file) {
+      perror(record_path);
+      return 1;
+    }
+  }
   while (frames <= 0 || frame < frames) {
     Uint32 begin = SDL_GetTicks();
     if (!headless) {
       pc_frontend_poll(&pc, 1);
       if (pc.quit) break;
-      input(v, pc_frontend_buttons(&pc));
+      const uint16_t k = pc_frontend_buttons(&pc);
+      record_keys((unsigned)frame, k);
+      input(v, k);
+    } else if (script) {
+      input(v, script_keys((unsigned)frame));
     }
     for (unsigned i = 0; i < VX_W * VX_H; i++)
       pixels[i] = (uint8_t)(pixels[i] * 3u / 4u);
@@ -283,6 +366,8 @@ int main(int argc, char **argv) {
     wav_header(wav_file, wav_samples);
     fclose(wav_file);
   }
+  if (record_file && fclose(record_file))
+    perror(record_path);
 #ifdef VX_COVERAGE
   if (coverage && !save_coverage(coverage)) {
     perror(coverage);

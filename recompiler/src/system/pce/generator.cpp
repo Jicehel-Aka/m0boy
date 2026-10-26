@@ -108,7 +108,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
               "set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src)\n"
               "add_executable(" + o.name + "_host pce_host.c ${SRC}/pce.c ${SRC}/huc6280.c ${SRC}/vdc.c ${SRC}/psg.c ${SRC}/pce_cart.c)\n"
               "target_include_directories(" + o.name + "_host PRIVATE ${SRC})\n"
-              "target_compile_definitions(" + o.name + "_host PRIVATE PCE_EMBEDDED)\n"
+              "target_compile_definitions(" + o.name + "_host PRIVATE PCE_EMBEDDED PCE_TRACE)\n"
               "target_compile_options(" + o.name + "_host PRIVATE -w)\ntarget_link_libraries(" + o.name + "_host PRIVATE m)\n");
 
         if (pc_window) {

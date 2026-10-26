@@ -60,6 +60,11 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
 - `targets/meta/host/`, `targets/meta/tools/m0bench/`: host harness and the
   Cortex-M0+ cycle estimator.
 - `compile.sh`, `tools/meta-compiler/`: batch conversion (shell and Node).
+- `tools/profile/`: the per-game profile store (`m0profile.py`, `play.sh`,
+  `m0romsim.cpp`) and `m0search.py`, the generic play search shared by every
+  core's harness (random or recorded sessions through `--explore`/`--random`
+  where the harness has them, generated input scripts elsewhere, `--input`
+  replays, merged coverage for the generator).
 - `tools/gb-emu/`: gamebuino-emulator fork used for profiling runs.
 
 ## Build and test
