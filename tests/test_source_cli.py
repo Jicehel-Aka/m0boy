@@ -16,8 +16,8 @@ def run(*args, ok=True, contains=""):
 
 listing = run("--list-systems", contains="sg1000 cpu=z80 inspect=yes disasm=yes codegen=desktop,meta,pokitto")
 assert "gameboy cpu=sm83 inspect=yes disasm=yes codegen=desktop,meta,pokitto" in listing
-assert "pico8 cpu=lua inspect=yes disasm=no codegen=desktop,meta,pokitto,espboy" in listing
-assert "nes cpu=6502 inspect=yes disasm=yes codegen=desktop,meta,pokitto" in listing
+assert "pico8 cpu=lua inspect=yes disasm=no codegen=desktop,meta,pokitto,espboy,pc" in listing
+assert "nes cpu=6502 inspect=yes disasm=yes codegen=desktop,meta,pokitto,pc" in listing
 assert "pce cpu=huc6280 inspect=yes disasm=yes codegen=desktop" in listing
 assert "vectrex cpu=6809 inspect=yes disasm=no codegen=meta,pc" in listing
 assert "megadrive cpu=m68k inspect=yes disasm=no codegen=desktop,meta,pc" in listing
@@ -101,7 +101,9 @@ with tempfile.TemporaryDirectory() as temporary:
     run(nes, "--info", contains="system=nes\ncpu=6502")
     info = run(nes, "--info")
     assert "rom_bytes=40960" in info and "mapper=NROM (0)" in info
-    run(nes, "--target", "pc", ok=False, contains="not available for --target pc")
+    nes_pc = root / "nes_pc"
+    run(nes, "--target", "pc", "-o", nes_pc, contains="Generated NES project for pc")
+    assert (nes_pc / "src/pc_hw.c").is_file() and (nes_pc / "CMakeLists.txt").is_file()
     listing = run(nes, "--disasm", "--limit", "3")
     assert "8000" in listing  # the PRG banks, disassembled from $8000
     run(nes, "--cpu", "z80", "--info", ok=False, contains="requires CPU 6502")

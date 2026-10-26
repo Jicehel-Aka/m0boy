@@ -297,6 +297,16 @@ typedef struct { const uint8_t *pattern; uint32_t pal; } nes_tile;
 static nes_tile tile_row[33];
 static uint32_t tile_key = 0xFFFFFFFFu;
 
+void nes_ppu_state_loaded(nes_ppu_t *ppu) {
+    pal_dirty = 0xFFFFFFFFu;
+    nt_writes++;
+    tile_key = 0xFFFFFFFFu;
+    ppu->oam_dirty = 1;
+#ifdef NES_PPU_REFERENCE
+    pair_init = 0;
+#endif
+}
+
 static void nes_ppu_tile_row(const nes_ppu_t *ppu) {
     const unsigned v = ppu->v;
     unsigned cx = v & 31;

@@ -10,6 +10,18 @@ static uint8_t pixels[VX_W * VX_H];
 static uint8_t bios_image[8192];
 /* every stroke the core draws, hashed: the run's fingerprint */
 static uint32_t run_hash = 2166136261u;
+static void state_read(void *data, uint32_t bytes, void *ctx) {
+  if (fread(data, 1, bytes, (FILE *)ctx) != bytes) {
+    fprintf(stderr, "state file too short\n");
+    exit(2);
+  }
+}
+static void state_write(void *data, uint32_t bytes, void *ctx) {
+  if (fwrite(data, 1, bytes, (FILE *)ctx) != bytes) {
+    fprintf(stderr, "cannot write state\n");
+    exit(2);
+  }
+}
 static void hash32(uint32_t x) {
   for (int i = 0; i < 4; i++) {
     run_hash ^= (x >> (i * 8)) & 255;
@@ -177,7 +189,7 @@ static int save_coverage(const char *path) {
 #endif
 int main(int argc, char **argv) {
   const char *bios = 0, *ppm = 0, *wav = 0, *coverage = 0, *input_path = 0,
-             *record_path = 0;
+             *record_path = 0, *save_state = 0, *load_state = 0;
   int frames = 0, full_boot = 0, interp = 0;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--bios") && i + 1 < argc)
@@ -198,12 +210,17 @@ int main(int argc, char **argv) {
       interp = 1;
     else if (!strcmp(argv[i], "--coverage") && i + 1 < argc)
       coverage = argv[++i];
+    else if (!strcmp(argv[i], "--save-state") && i + 1 < argc)
+      save_state = argv[++i];
+    else if (!strcmp(argv[i], "--load-state") && i + 1 < argc)
+      load_state = argv[++i];
     else {
       fprintf(stderr,
               "usage: %s --bios BIOS.vec [--frames N] [--ppm shot.ppm] [--wav "
               "sound.wav] "
               "[--input buttons.input] [--record-input play.input] "
-              "[--full-boot] [--interp] [--coverage profile.cov]\n",
+              "[--full-boot] [--interp] [--coverage profile.cov] "
+              "[--save-state file] [--load-state file]\n",
               argv[0]);
       return 2;
     }
@@ -276,6 +293,24 @@ int main(int argc, char **argv) {
   vx_reset(v);
   if (full_boot)
     v->fast_boot = 0;
+  int frame = 0;
+  uint64_t audio_fraction = 0;
+  if (load_state) {
+    FILE *in = fopen(load_state, "rb");
+    char magic[8];
+    if (!in) { perror(load_state); return 2; }
+    if (fread(magic, 1, 8, in) != 8 || memcmp(magic, "VXSTATE1", 8)) {
+      fprintf(stderr, "invalid Vectrex state\n");
+      fclose(in);
+      return 2;
+    }
+    vx_machine_state_io(v, state_read, in, 1);
+    state_read(pixels, (uint32_t)sizeof pixels, in);
+    state_read(&run_hash, (uint32_t)sizeof run_hash, in);
+    state_read(&frame, (uint32_t)sizeof frame, in);
+    state_read(&audio_fraction, (uint32_t)sizeof audio_fraction, in);
+    fclose(in);
+  }
   int headless = frames > 0;
   if (SDL_Init(headless ? SDL_INIT_TIMER
                         : SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_AUDIO)) {
@@ -286,7 +321,6 @@ int main(int argc, char **argv) {
   SDL_AudioDeviceID audio_device = 0;
   FILE *wav_file = 0;
   unsigned wav_samples = 0;
-  uint64_t audio_fraction = 0;
   if (wav) {
     wav_file = fopen(wav, "wb+");
     if (!wav_file) {
@@ -306,7 +340,6 @@ int main(int argc, char **argv) {
     if (audio_device)
       SDL_PauseAudioDevice(audio_device, 0);
   }
-  int frame = 0;
   if (record_path && !headless) {
     record_file = fopen(record_path, "w");
     if (!record_file) {
@@ -314,7 +347,8 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
-  while (frames <= 0 || frame < frames) {
+  const int stop_frame = frames > 0 ? frame + frames : 0;
+  while (frames <= 0 || frame < stop_frame) {
     Uint32 begin = SDL_GetTicks();
     if (!headless) {
       pc_frontend_poll(&pc, 1);
@@ -357,6 +391,17 @@ int main(int argc, char **argv) {
       if (elapsed < 20)
         SDL_Delay(20 - elapsed);
     }
+  }
+  if (save_state) {
+    FILE *out = fopen(save_state, "wb");
+    if (!out) { perror(save_state); return 2; }
+    state_write("VXSTATE1", 8, out);
+    vx_machine_state_io(v, state_write, out, 0);
+    state_write(pixels, (uint32_t)sizeof pixels, out);
+    state_write(&run_hash, (uint32_t)sizeof run_hash, out);
+    state_write(&frame, (uint32_t)sizeof frame, out);
+    state_write(&audio_fraction, (uint32_t)sizeof audio_fraction, out);
+    if (fclose(out)) { perror(save_state); return 2; }
   }
   if (ppm && !save_ppm(ppm)) {
     perror(ppm);

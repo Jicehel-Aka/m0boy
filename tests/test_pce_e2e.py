@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -132,6 +133,11 @@ def main():
     h1 = [t for t in out1.split() if t.startswith("run_hash=")][0]
     h2 = [t for t in out2.split() if t.startswith("run_hash=")][0]
     assert h1 == h2 and h1 != "run_hash=00000000", f"unstable hash: {h1} {h2}"
+
+    run(host, "--frames", "60", "--wav", work / "sound.wav")
+    with wave.open(str(work / "sound.wav"), "rb") as sound:
+        assert sound.getnchannels() == 2 and sound.getsampwidth() == 1
+        assert sound.getframerate() == 11025 and sound.getnframes() > 0
 
     run(host, "--frames", "60", "--ppm", work / "shot.ppm")
     body = (work / "shot.ppm").read_bytes().split(b"\n255\n", 1)[1]

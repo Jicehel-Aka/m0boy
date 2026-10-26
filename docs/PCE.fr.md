@@ -10,7 +10,13 @@ le son du PSG en file
 SDL, `--frames`/`--ppm` pour une passe hors écran. La HuCard est
 embarquée dans l'exécutable. `tools/pce/build_pc_binaries.sh` construit
 le binaire Linux et un **.exe Windows** (MinGW croisé, `SDL2.dll` à
-côté), sur le modèle du Mega Drive. Le shell et le harness impriment le
+côté), sur le modèle du Mega Drive : les sessions de jeu de
+`tools/profile/m0search.py` (la graine écran titre puis RUN, des
+sessions aléatoires, les rejeux manuels passés avec `EXTRA_INPUT`)
+tournent sur le harnais et stockent leur couverture HuC6280 fusionnée
+dans `search/` — elle attend le HuC6280 → C recompilé ; en attendant,
+les binaires livrés restent l'interpréteur et la recherche prouve que
+le jeu se joue. Le shell et le harness impriment le
 même `run_hash` (la recette du fingerprint est la même), et le .exe
 produit l'image du binaire Linux **octet pour octet** — le cœur est
 déterministe d'une plateforme à l'autre. C'est la même trajectoire que
@@ -105,8 +111,11 @@ sonde BSY pendant un DMA verra le DMA déjà fini.
 
 `targets/pce/host/pce_host.c`, le contrat des autres runtimes :
 `--frames`, `--ppm` (la fenêtre active : largeur = (HDW+1)×8, hauteur =
-VDW+1), `--wav`, `--input` (script « frame boutons », noms `i ii select
-run up down left right`), `run_hash=` sur la sortie. La ligne de lecture
+VDW+1), `--wav`, `--input` (script « frame boutons », noms entiers `i
+ii select run up down left right`, joints par `+`, tenus le temps de
+leur seule trame), `--coverage` (les adresses HuC6280 démarrées, sous
+`PCE_TRACE` — le défini des projets hôte générés), `run_hash=` sur la
+sortie. La ligne de lecture
 du pad et la sonde `m0input` suivent le modèle commun (une session gm0
 rejouera sur le harness quand l'application gm0 saura la lancer).
 
@@ -140,34 +149,47 @@ rejouera sur le harness quand l'application gm0 saura la lancer).
   CSL), comme le cœur mednafen ; l'attract suit de nouveau la vraie
   timeline (écran PUSH RUN vers l'image 300 des deux côtés) et RUN
   démarre une vraie partie.
+- **`TST #imm,zp/abs` lisait son opérande une octave trop tôt** : les
+  quatre formes (83/A3/93/B3) reprenaient `A_ZP()`/`A_ABS()`, qui
+  cherchent l'opérande en `pc+1` — l'octet immédiat — au lieu de
+  `pc+2`/`pc+2..3` (l'encodage est `83 imm zp`, comme le décode mednafen).
+  Raiden teste `TST #$08,$8C` (battement de 8 trames de sa machine à
+  états) : le cœur testait la case zéro-page $08, le saut de fin de
+  démo partait à la première occasion, l'attract rebondissait au titre
+  vers l'image 673 (écran noir de charge à la clé) et un RUN pendant la
+  démo thus démarrait par le mauvais chemin — plus de prise en compte
+  du pad, des bombes qui partent seules (le vaisseau suivait le script
+  de démo). Corrigé contre le décode mednafen (mêmes cycles) : la démo
+  d'attract joue désormais comme la référence (le drapeau démo $92 suit
+  les mêmes transitions trame à trame, 940 → ~2100), et RUN sur l'écran
+  titre (avant ~620 ; pendant la démo il ne se passe rien, côté
+  référence comme côté m0boy) lance une vraie partie où le vaisseau
+  obéit au pad — vérifié au score et à la capture (LEFT tenu : le
+  vaisseau se déplace, l'écran diverge de la partie sans entrée).
 - **Comparaison de référence** : le cœur mednafen (beetle-pce-libretro)
   piloté par un mini frontend libretro (avec `retro_set_controller_port_device`
   — sans lui le pad de la référence reste mort, et la démo auto-jouée
   masquait tout écart d'entrée). Le titre colle image pour image, RUN y
   démarre une vraie partie des deux côtés, et les deux parties réelles
   montrent le même déroulé (lancement porte-avions, océan, côte, combat,
-  score). Restent des écarts fins non tranchés : la démo de l'attract,
-  le rythme exact du niveau (le cœur m0boy atteint le mini-boss sphère
-  plus tôt que la référence, qui meurt avant sur la même entrée) et le
-  décalage de scroll de quelques pixels sur le titre.
+  score). La démo de l'attract joue désormais des deux côtés (même
+  fenêtre temporelle) ; sur la même entrée alignée sur RUN au titre,
+  les deux parties montrent la même section au même moment avec le même
+  ennemi. Restent des écarts fins non tranchés : un décalage de scroll
+  de quelques pixels (sur le titre comme en niveau, la référence est
+  légèrement en avance) et le rythme exact de ce décalage.
 - **e2e synthétique** (`tests/test_pce_e2e.py`) : cartouche générée en
   Python (vecteurs, TAM, VDC, VCE), deux exécutions même hash, pixels du
   fond et du caractère vérifiés.
 
 ## Chantiers suivants
 
-- L'attract : la démo jouée par la machine (mednafen la joue entre son
-  cycle logo → mur → démo → PUSH RUN) reste sautée — le cœur m0boy passe
-  par un écran de charge noir vers l'image 700 puis rebondit au titre.
-  L'init s'enlise dans le chargeur VRAM par ligne (banque 5, $4411-$4500,
-  ~4,5 unités par frame côté m0boy). Trancher ce qui manque (un drapeau,
-  un timing de charge) contre la référence.
-- Le rythme du niveau : sur la même entrée alignée sur RUN, le cœur
-  m0boy atteint la sphère (mini-boss) vers RUN+1200 quand la référence
-  en est encore à la première section plage (elle y meurt vers RUN+2600
-  et propose le continue « CREDIT 6 »). Recouper frame à frame les deux
-  parties réelles pour trancher ce qui reste (calibration d'un temporisateur,
-  diff de trajectoire d'état WRAM au boot).
+- Le décalage de scroll : la référence défile de quelques pixels de plus
+  que le cœur m0boy, sur le titre comme en niveau (même section au même
+  moment, même ennemi, décalage stable) — un temporisateur ou un compte
+  de lignes reste à trancher, le diff de trajectoire WRAM trame à trame
+  des deux parties réelles est l'outil (les sondes de la chasse au TST
+  sont dans /tmp, à repositer au besoin).
 - La couche sprite : les gros glyphs du titre tombent juste, le texte
   sprite des bords de lignes montre des artefacts de découpe (limite des
   16 sprites de ligne ou fetch des demi-motifs 32 px — à trancher contre

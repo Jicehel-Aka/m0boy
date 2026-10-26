@@ -57,7 +57,7 @@ int main(int argc, char **argv) {
     memset(&want, 0, sizeof want);
     want.freq = AUDIO_RATE;
     want.format = AUDIO_S16SYS;
-    want.channels = 1;
+    want.channels = 2;
     want.samples = 512;
     SDL_AudioDeviceID audio = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (audio) SDL_PauseAudioDevice(audio, 0);
@@ -85,12 +85,13 @@ int main(int argc, char **argv) {
             carry += AUDIO_RATE * 119210u;
             unsigned count = carry / 7159090u;
             carry %= 7159090u;
-            if (count > sizeof pcm / sizeof pcm[0]) count = sizeof pcm / sizeof pcm[0];
-            uint8_t samples[sizeof pcm / 2];
-            pce_audio(samples, count, AUDIO_RATE);
-            for (unsigned i = 0; i < count; i++)
-                pcm[i] = (int16_t)((samples[i] - 128) << 8);
-            SDL_QueueAudio(audio, pcm, count * sizeof pcm[0]);
+            if (count > sizeof pcm / sizeof pcm[0] / 2)
+                count = sizeof pcm / sizeof pcm[0] / 2;
+            uint8_t samples[sizeof pcm / sizeof pcm[0]];
+            psg_render_stereo(&machine.psg, samples, count, AUDIO_RATE);
+            for (unsigned i = 0; i < count * 2; i++)
+                pcm[i] = (int16_t)(((int)samples[i] - 128) * 256);
+            SDL_QueueAudio(audio, pcm, count * 2 * sizeof pcm[0]);
         }
         if (machine.have_frame) {
             const unsigned w = machine.vdc.active_width, h = machine.vdc.active_height;

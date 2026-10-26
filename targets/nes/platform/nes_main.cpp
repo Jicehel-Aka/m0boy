@@ -34,12 +34,15 @@
 #include "m0_pad.h"
 #include "sg_frontend.h"
 #include "m0_rows.h"
+#if defined(NES_STATE_NAME83)
+#include "m0_state.h"
+#include "m0_sd.h"
+#include "m0_fat.h"
+#include "m0_card.h"
+#endif
 extern "C" {
 extern const uint8_t nes_prg[];
 extern const uint8_t nes_chr[];
-#if M0_TARGET_POKITTO /* no card in a NES firmware: pokitto_sd.c stays out */
-void pokitto_sd_clock_changed(uint32_t) {}
-#endif
 }
 /* one panel row at a time: the PPU writes it, the DMA sends it while the
  * next one is built (the Pokitto's CPU writes it at once: one buffer is
@@ -123,6 +126,22 @@ extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
 #define SG_MENU_RESTART() NES_MENU_RESTART()
 #define SG_MENU_QUIT() NES_MENU_QUIT()
 #define SG_MENU_RESUME() NES_MENU_RESUME()
+#if defined(NES_STATE_NAME83)
+#define SG_MENU_STATE_SLOTS NES_STATE_SLOTS
+#define SG_MENU_STATE_BUF() ((uint8_t *)line_buffer)
+#define SG_MENU_STATE_LOADED() do { \
+        deadline = m0_micros(); \
+        skip_video = 0; \
+        skipped_run = 0; \
+    } while (0)
+static int nes_card_open(void) {
+    if (!m0_sd_init()) return 0;
+#if M0_TARGET_META
+    m0_fat_dir = m0_fat_game_dir(m0_card_sector, SG_MENU_STATE_BUF(), NES_BIN_NAME83, META_APP_START);
+#endif
+    return 1;
+}
+#endif
 #ifdef NES_MENU_BOOTLOADER /* the META's USB bootloader */
 #define SG_MENU_BOOTLOADER() NES_MENU_BOOTLOADER()
 #endif
@@ -177,6 +196,9 @@ int main() {
     machine.ppu.panel_out = line_buffer[0];
 #if M0_TARGET_POKITTO
     nes_ppu_set_rows(&machine.ppu, 176);
+#endif
+#if defined(NES_STATE_NAME83)
+    m0_state_init(nes_card_open(), SG_MENU_STATE_BUF());
 #endif
     m0_audio_init();
     deadline = m0_micros();

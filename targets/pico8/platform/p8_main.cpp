@@ -17,6 +17,9 @@
 #include "espboy_hw.h"
 #elif M0_TARGET_POKITTO
 #include "pokitto_hw.h"
+#elif M0_TARGET_PC
+#include "pc_hw.h"
+#include <stdlib.h>
 #else
 #include "meta_hw.h"
 #endif
@@ -31,14 +34,14 @@
 #include <string.h>
 
 /* The META sends rows of the picture's 128 columns (narrowed window); the ESPboy's adapter takes 160-wide rows and the picture is at column 16; the Pokitto's row writer takes the picture's 128 columns. */
-#if M0_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY || M0_TARGET_PC
 #define P8_OUT_WIDTH 160
 #else
 #define P8_OUT_WIDTH 128
 #endif
 #define P8_PIXELS 128
 #define P8_MARGIN 16 /* columns left of the picture (META) */
-#if !M0_TARGET_ESPBOY && !M0_TARGET_POKITTO
+#if M0_TARGET_META
 extern "C" void m0_lcd_set_columns(uint8_t x0, uint8_t x1);
 #endif
 #define P8_BATCH 1
@@ -66,9 +69,12 @@ static const char version[] __attribute__((used)) = "m0boy-pico8-" M0_TARGET_NAM
 extern "C" const uint32_t _irom0_text_start[], _irom0_text_end[];
 #elif M0_TARGET_POKITTO
 extern "C" const uint32_t _sidata[]; /* the .data load image: the flash before it is this firmware's code */
+#elif M0_TARGET_PC
+extern "C" uint32_t p8_state_identity(void) { return P8_PC_STATE_ID; }
 #else
 extern "C" const uint32_t __etext[];
 #endif
+#if !M0_TARGET_PC
 extern "C" uint32_t p8_state_identity(void) {
     static uint32_t id;
     if (id) return id;
@@ -83,6 +89,7 @@ extern "C" uint32_t p8_state_identity(void) {
     for (; p < e; p++) h = (h ^ *p) * 16777619u;
     return id = h | 1u;
 }
+#endif
 #endif
 
 /* ---- option menu (sg_menu.h): HOME (Pokitto: C) held half a second, MENU (a tap on C) restarts ----- */
@@ -118,6 +125,8 @@ extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
 #endif
 #if M0_TARGET_ESPBOY
 #define SG_MENU_QUIT() do { espboy_restart(); } while (0)
+#elif M0_TARGET_PC
+#define SG_MENU_QUIT() do { exit(0); } while (0)
 #elif M0_TARGET_POKITTO
 #define SG_MENU_QUIT() do { \
         m0_audio_stop(); \
@@ -175,7 +184,10 @@ extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
 /* the menu's 160-pixel rows go out as they are: no column window here */
 #else
 #define SG_MENU_RESUME() do { deadline = m0_micros(); } while (0)
-#if M0_TARGET_ESPBOY
+#if M0_TARGET_PC
+#define SG_MENU_SCREEN_ENTER() do { } while (0)
+#define SG_MENU_SCREEN_LEAVE() do { } while (0)
+#elif M0_TARGET_ESPBOY
 /* the adapter takes the picture's 128 columns at 16 of each row, and the
  * menu's 160 narrowed while it is open (the generator's espboy_hw.cpp) */
 extern "C" { unsigned char p8_menu_wide; }
@@ -211,7 +223,7 @@ extern "C" { unsigned char p8_menu_wide; }
 #if defined(P8_STATE_NAME83)
 static int p8_card_open(void) {
     if (!m0_sd_init()) return 0;
-#if !M0_TARGET_POKITTO /* the state file is searched in the game's folder, the loader's app start as the clue */
+#if M0_TARGET_META /* the META loader's app start identifies the game's folder */
     m0_fat_dir = m0_fat_game_dir(m0_card_sector, SG_MENU_STATE_BUF(), P8_BIN_NAME83, META_APP_START);
 #endif
     return 1;
@@ -243,7 +255,7 @@ static void draw_screen(void) {
         uint16_t (*lines)[P8_OUT_WIDTH] = line_buffers[rows.slot];
         for (unsigned r = 0; r < P8_BATCH; r++) {
             uint16_t *out = lines[r];
-#if M0_TARGET_ESPBOY
+#if M0_TARGET_ESPBOY || M0_TARGET_PC
             out += P8_MARGIN;
 #endif
             const uint8_t *in = &p8_screen[(y + r) * 64];
@@ -337,7 +349,7 @@ int main() {
 #endif
     SG_PLATFORM_INIT();
     m0_lcd_fill(0); /* the margins, once */
-#if !M0_TARGET_ESPBOY && !M0_TARGET_POKITTO
+#if M0_TARGET_META
     m0_lcd_set_columns(P8_MARGIN, P8_MARGIN + P8_PIXELS - 1);
 #endif
 #if defined(P8_STATE_NAME83)

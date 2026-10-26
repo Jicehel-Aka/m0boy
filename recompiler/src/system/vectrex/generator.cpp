@@ -34,6 +34,17 @@ void write(const fs::path &path, const std::string &data) {
   if (!file || !(file << data))
     throw std::runtime_error("Cannot write generated file: " + path.string());
 }
+std::string state_base(const std::string &name) {
+  std::string out;
+  for (unsigned char c : name)
+    if (std::isalnum(c) && out.size() < 8) out += static_cast<char>(std::toupper(c));
+  return out.empty() ? "CART" : out;
+}
+std::string name83(std::string base, std::string ext) {
+  base.resize(8, ' ');
+  ext.resize(3, ' ');
+  return base + ext;
+}
 void copy_template(const fs::path &from, const fs::path &to) {
   fs::copy_file(from, to, fs::copy_options::overwrite_existing);
 }
@@ -221,12 +232,17 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
      * the upper half */
     write(src / "vx_cart.c", cart + "\n/* The system ROM (E000-FFFF). */\nconst uint8_t vectrex_bios[8192] = {\n" +
                                  bytes(bios.data(), bios.size()) + "};\n");
+    const std::string sd = state_base(o.name);
     write(src / "vx_config.h",
           std::string("#pragma once\n"
                       "/* the panel's byte order: the META's SPI takes the high byte first */\n"
                       "#define VX_PANEL_SWAP 1\n" + native +
                       "#define VX_FULL_BOOT ") +
-              (o.full_boot ? "1" : "0") + "\n");
+              (o.full_boot ? "1" : "0") + "\n" +
+              "#define VX_STATE_NAME \"" + sd + ".ST8\"\n" +
+              "#define VX_STATE_NAME83 \"" + name83(sd, "ST8") + "\"\n" +
+              "#define VX_BIN_NAME83 \"" + name83(sd, "BIN") + "\"\n" +
+              "#define VX_STATE_SLOTS 10\n#define VX_STATE_SLOT_SECTORS 24\n");
     copy_template(tpl / "platform" / "vx_main.cpp", src / "vx_main.cpp");
 
     const fs::path common = o.targets_dir / "common";
@@ -237,7 +253,7 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
           replace(replace(read(shared / "sg_frontend.h"), "#define SG_FRAME_US 16688u", "#define SG_FRAME_US 20000u"),
                   "#define SG_STALL_US 100128", "#define SG_STALL_US 120000"));
     copy_template(shared / "sg_menu.h", src / "sg_menu.h");
-    for (const char *name : {"m0_target.h", "m0_lcd.h", "m0_clock.h", "m0_pad.h", "m0_menu.h", "m0_font.h",
+    for (const char *name : {"m0_target.h", "m0_lcd.h", "m0_clock.h", "m0_pad.h", "m0_menu.h", "m0_font.h", "m0_state.h", "m0_state.cpp",
                              "m0_menu.cpp", "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h"})
       copy_template(shared / name, src / name);
     copy_template(o.targets_dir / "meta" / "runtime" / "gbl_board.h", src / "gbl_board.h");
@@ -271,6 +287,8 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
     for (const auto &entry : fs::directory_iterator(common / "toolchain"))
       if (entry.is_regular_file())
         copy_template(entry.path(), o.output / "toolchain" / entry.path().filename());
+    if (!fs::exists(o.output / (sd + ".ST8")))
+      write(o.output / (sd + ".ST8"), std::string(10u * 24u * 512u, char(0xff)));
     write(o.output / "README.md",
           "# Vectrex META: " + o.name +
               "\n\n" +
@@ -280,6 +298,7 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
               "The system ROM is built into this firmware: do not distribute it.\n\n"
               "Firmware: pio run  (flash with pio run -t upload, or copy\n"
               ".pio/build/meta/firmware.bin to the SD card)\n\n"
+              "Copy " + sd + ".ST8 beside " + sd + ".BIN on the SD card for ten save-state slots.\n"
               "D-pad: stick; A, B, MENU, HOME: buttons 1-4; HOME held: options.\n");
     write(marker, target + "\n");
     return true;

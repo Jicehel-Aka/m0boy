@@ -106,6 +106,58 @@ void nes_reset(void) {
     nes->line = 0;
 }
 
+uint32_t nes_state_bytes(void) {
+    return (uint32_t)(sizeof machine + 2048u + 32u);
+}
+
+void nes_state_io(void (*io)(void *data, uint32_t bytes, void *ctx), void *ctx, int load) {
+    nes_t *nes = &machine;
+    /* The saved pointers belong to an earlier process or invocation.  The
+     * live cartridge, frontend callbacks and memory allocations own them. */
+    uint8_t *ram = nes->cpu.ram, *nametable = nes->ppu.nametable;
+    uint8_t *palette = nes->ppu.palette, *oam = nes->ppu.oam;
+    const uint8_t *prg = nes->prg, *chr = nes->chr;
+    uint16_t *panel_out = nes->ppu.panel_out;
+    void (*panel)(void *, unsigned) = nes->ppu.panel;
+#ifdef NES_PPU_REFERENCE
+    void (*render_row)(void *, unsigned) = nes->ppu.render_row;
+    void (*row)(void *, unsigned, const uint16_t *) = nes->row;
+#endif
+    void *host = nes->host;
+    io(nes, (uint32_t)sizeof *nes, ctx);
+    if (load) {
+        nes->cpu.ram = ram;
+        nes->cpu.prg = prg;
+        nes->prg = prg;
+        nes->chr = chr;
+        nes->ppu.nametable = nametable;
+        nes->ppu.palette = palette;
+        nes->ppu.oam = oam;
+        nes->ppu.chr = chr;
+        nes->ppu.panel_out = panel_out;
+        nes->ppu.panel = panel;
+        nes->ppu.host = nes;
+#ifdef NES_PPU_REFERENCE
+        nes->ppu.render_row = render_row;
+        nes->row = row;
+#endif
+        nes->host = host;
+    }
+    io(nametable, 2048u, ctx);
+    io(palette, 32u, ctx);
+    if (load) nes_ppu_state_loaded(&nes->ppu);
+}
+
+uint32_t nes_state_frame(void) { return machine.frames; }
+
+uint32_t nes_state_identity(void) {
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < machine.prg_size; i++) h = (h ^ machine.prg[i]) * 16777619u;
+    if (machine.chr)
+        for (uint32_t i = 0; i < 8192u; i++) h = (h ^ machine.chr[i]) * 16777619u;
+    return h | 1u;
+}
+
 void nes_frame(void) {
     nes_t *nes = &machine;
     nes->frames++;

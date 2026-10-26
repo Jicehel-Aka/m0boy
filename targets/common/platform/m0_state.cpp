@@ -26,6 +26,12 @@
 #if __has_include("p8_config.h")
 #include "p8_config.h"
 #endif
+#if __has_include("nes_config.h")
+#include "nes_config.h"
+#endif
+#if __has_include("vx_config.h")
+#include "vx_config.h"
+#endif
 
 /* The machine behind the slots: the Game Boy's runtime (gbl_state_io), or
  * the Sega one (gg_state_io, the machine as raw bytes). */
@@ -87,6 +93,39 @@ extern "C" uint32_t p8_state_identity(void);
 #define STATE_IO(fn, ctx, load) p8_state_io(fn, ctx, load)
 #define STATE_FRAME p8_state_frame()
 #define STATE_IDENTITY() p8_state_identity()
+
+#elif defined(NES_STATE_NAME83)
+
+#include "gbl_config.h" /* GBL_GEN_VERSION */
+#include "nes.h"
+
+#define STATE_NAME83 NES_STATE_NAME83
+#define STATE_SLOTS NES_STATE_SLOTS
+#define STATE_SLOT_SECTORS NES_STATE_SLOT_SECTORS
+#define STATE_TITLE NES_STATE_NAME
+#define STATE_BYTES() nes_state_bytes()
+#define STATE_IO(fn, ctx, load) nes_state_io(fn, ctx, load)
+#define STATE_FRAME nes_state_frame()
+#define STATE_IDENTITY() nes_state_identity()
+
+#elif defined(VX_STATE_NAME83)
+
+#include "gbl_config.h"
+extern "C" {
+uint32_t vx_state_bytes(void);
+void vx_state_io(void (*io)(void *data, uint32_t bytes, void *ctx), void *ctx, int load);
+uint32_t vx_state_frame(void);
+uint32_t vx_state_identity(void);
+}
+
+#define STATE_NAME83 VX_STATE_NAME83
+#define STATE_SLOTS VX_STATE_SLOTS
+#define STATE_SLOT_SECTORS VX_STATE_SLOT_SECTORS
+#define STATE_TITLE VX_STATE_NAME
+#define STATE_BYTES() vx_state_bytes()
+#define STATE_IO(fn, ctx, load) vx_state_io(fn, ctx, load)
+#define STATE_FRAME vx_state_frame()
+#define STATE_IDENTITY() vx_state_identity()
 
 #endif
 

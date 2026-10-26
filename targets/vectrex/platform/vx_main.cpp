@@ -19,6 +19,11 @@
 #include "meta_hw.h"
 #include "m0_pad.h"
 #include "sg_frontend.h"
+#include "m0_state.h"
+#include "m0_sd.h"
+#include "m0_fat.h"
+#include "m0_card.h"
+#include <string.h>
 extern "C" {
 extern const uint8_t vectrex_bios[];
 }
@@ -69,6 +74,28 @@ static volatile uint32_t vx_frames, vx_busy_us, vx_busy_max_us, vx_skipped, vx_c
 static uint8_t vx_buttons;
 static const struct { char tag[8]; uint32_t version; const volatile void *frame, *buttons, *extra; }
     vx_input_probe __attribute__((used, aligned(4))) = { "m0input", 1, &vx_frames, &vx_buttons, 0 };
+
+extern "C" uint32_t vx_state_bytes(void) {
+    return (uint32_t)(vx_machine_state_bytes() + sizeof phosphor + sizeof row_level +
+                      sizeof row_black + sizeof vx_frames);
+}
+
+extern "C" void vx_state_io(void (*io)(void *, uint32_t, void *), void *ctx, int load) {
+    vx_machine_state_io(&machine, io, ctx, load);
+    io(phosphor, (uint32_t)sizeof phosphor, ctx);
+    io(row_level, (uint32_t)sizeof row_level, ctx);
+    io(row_black, (uint32_t)sizeof row_black, ctx);
+    io((void *)&vx_frames, (uint32_t)sizeof vx_frames, ctx);
+}
+
+extern "C" uint32_t vx_state_frame(void) { return vx_frames; }
+
+extern "C" uint32_t vx_state_identity(void) {
+    uint32_t h = 2166136261u;
+    for (unsigned i = 0; i < vectrex_cart_size; i++) h = (h ^ vectrex_cart[i]) * 16777619u;
+    for (unsigned i = 0; i < 8192; i++) h = (h ^ vectrex_bios[i]) * 16777619u;
+    return h | 1u;
+}
 
 static inline void plot(int x, int y, unsigned z) {
     row_level[y] = (uint8_t)(row_level[y] > z ? row_level[y] : z);
@@ -239,6 +266,18 @@ static void restart(void) {
 #define SG_MENU_QUIT() VX_MENU_QUIT()
 #define SG_MENU_RESUME() VX_MENU_RESUME()
 #define SG_MENU_TITLE "Vectrex"
+#define SG_MENU_STATE_SLOTS VX_STATE_SLOTS
+#define SG_MENU_STATE_BUF() ((uint8_t *)line_buffer)
+#define SG_MENU_STATE_LOADED() do { \
+        deadline = m0_micros(); \
+        skip_video = 0; \
+        skipped_run = 0; \
+    } while (0)
+static int vx_card_open(void) {
+    if (!m0_sd_init()) return 0;
+    m0_fat_dir = m0_fat_game_dir(m0_card_sector, SG_MENU_STATE_BUF(), VX_BIN_NAME83, META_APP_START);
+    return 1;
+}
 #if META_USB_SERIAL
 #include "meta_usb_msc.h"
 #define SG_MENU_USB_SD() do { \
@@ -277,6 +316,7 @@ int main() {
     SG_PLATFORM_INIT();
     video_init();
     restart();
+    m0_state_init(vx_card_open(), SG_MENU_STATE_BUF());
     m0_audio_init();
     deadline = m0_micros();
     __asm__ volatile("" : : "r"(version), "r"(&vx_input_probe));

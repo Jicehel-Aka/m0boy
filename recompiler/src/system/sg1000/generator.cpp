@@ -264,7 +264,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                                   o.target != TargetId::pc && o.target != TargetId::odroid && o.target != TargetId::aka;
         if (!gg) cart_ram = cart_ram && rom_size <= 0x8000 && !msx; /* 40/48 KiB boards: ROM at 8000 */
         /* MSX RAM: 16 KiB at C000 on the host; the consoles' SRAM holds the top 8 KiB */
-        const unsigned msx_ram = o.target == TargetId::desktop ? 16384 : 8192;
+        const unsigned msx_ram = o.target == TargetId::desktop || o.target == TargetId::pc ? 16384 : 8192;
 
         // compile.sh writes its log into the project directory before generation.
         auto foreign = [&] {

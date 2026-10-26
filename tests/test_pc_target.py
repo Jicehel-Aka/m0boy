@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from test_meta_target_e2e import make_rom, run
 from test_sg1000_e2e import fixture as sg_fixture
 from gg_fixture import fixture as gg_fixture
+from msx_fixture import fixture as msx_fixture
+from test_nes_e2e import ROM as nes_fixture
 
 
 def firmware_run(exe, frames, ppm):
@@ -79,6 +81,27 @@ def main():
         assert '#define SG_OUT_WIDTH 256' in sg_config
         assert '#define GG_STATE_SLOTS 10' in sg_config
 
+        msx = root / 'synthetic.mx1'
+        msx.write_bytes(msx_fixture())
+        msx_project = root / 'msx_pc'
+        run([cli, str(msx), '--system', 'msx', '--target', 'pc', '-o', str(msx_project)])
+        assert '#define SG_MSX_RAM 16384' in (msx_project / 'src/sg_config.h').read_text()
+
+        nes = root / 'synthetic.nes'
+        nes.write_bytes(nes_fixture)
+        nes_project = root / 'nes_pc'
+        run([cli, str(nes), '--system', 'nes', '--target', 'pc', '-o', str(nes_project)])
+        assert (nes_project / 'src/pc_hw.c').is_file()
+
+        pico_project = None
+        if (Path(__file__).resolve().parents[2] / 'femto8').is_dir():
+            from test_pico8_e2e import cartridge
+            pico = root / 'synthetic.p8'
+            pico.write_text(cartridge())
+            pico_project = root / 'pico_pc'
+            run([cli, str(pico), '--system', 'pico8', '--target', 'pc', '-o', str(pico_project)])
+            assert (pico_project / 'src/pc_hw.c').is_file()
+
         # the PCE window project: the runtime, the SDL2 shell, the ROM as data
         from test_pce_e2e import build_rom as pce_rom
         pce = root / 'synthetic.pce'
@@ -108,6 +131,26 @@ def main():
             firmware_run(exe, 120, root / 'sg.ppm')
             header = (root / 'sg.ppm').read_bytes().split(b'\n')[1]
             assert header == b'256 192', header  # the TMS9918A's own screen
+            for system, project, dims in (('msx', msx_project, b'256 192'),
+                                          ('nes', nes_project, b'160 128')):
+                firmware_run(build(project), 60, root / (system + '.ppm'))
+                assert (root / (system + '.ppm')).read_bytes().split(b'\n')[1] == dims
+            if pico_project:
+                firmware_run(build(pico_project), 30, root / 'pico.ppm')
+                assert (root / 'pico.ppm').read_bytes().split(b'\n')[1] == b'160 128'
+                host_build = pico_project / 'host' / 'build'
+                subprocess.run(['cmake', '-G', 'Ninja', '-S', str(pico_project / 'host'), '-B', str(host_build)],
+                               check=True, capture_output=True)
+                subprocess.run(['ninja', '-C', str(host_build)], check=True, capture_output=True)
+                host_ppm = root / 'pico_host.ppm'
+                host_exe, = host_build.glob('*_host')
+                subprocess.run([str(host_exe), '--frames', '30', '--shot', str(host_ppm)],
+                               check=True, capture_output=True)
+                screen = (root / 'pico.ppm').read_bytes().split(b'\n255\n', 1)[1]
+                crop = b''.join(screen[(y * 160 + 16) * 3:(y * 160 + 144) * 3] for y in range(128))
+                native = host_ppm.read_bytes().split(b'\n255\n', 1)[1]
+                rgb565 = bytes((c & (252 if i % 3 == 1 else 248)) for i, c in enumerate(native))
+                assert crop == rgb565, 'PC PICO-8 frame 30 differs from the host harness'
             exe = build(pce_project)
             env = dict(os.environ, SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
             shot = root / 'pce.ppm'
@@ -119,7 +162,7 @@ def main():
             assert len({body[i:i + 3] for i in range(0, len(body), 3)}) > 1
             for system, sega_project in sega_projects:
                 firmware_run(build(sega_project), 120, root / (system + '.ppm'))
-            print('pc: GB, SG-1000, Game Gear, SMS and PCE built and run head first')
+            print('pc: GB, SG-1000, MSX, NES, PICO-8, Game Gear, SMS and PCE built and run head first')
         else:
             print('pc: SDL2 absent, generation checks only')
     finally:

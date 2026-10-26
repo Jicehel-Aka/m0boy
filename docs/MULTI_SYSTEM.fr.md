@@ -99,9 +99,9 @@ la table des faits, et un refus dit lequel des deux manque et pourquoi
 | système | câblé sur | hors hardware |
 |---|---|---|
 | gameboy, sg1000, gg, sms | desktop, meta, pokitto, espboy, pc, odroid, aka | — |
-| msx | desktop, meta, pokitto | (espboy et pc non câblés) |
-| pico8 | desktop, meta, pokitto, espboy | (pc non câblé) |
-| nes | desktop, meta, pokitto (6502 recompilé, interpréteur de repli) | — |
+| msx | desktop, meta, pokitto, pc | (espboy non câblé) |
+| pico8 | desktop, meta, pokitto, espboy, pc | — |
+| nes | desktop, meta, pokitto, pc (6502 recompilé, interpréteur de repli) | — |
 | pce | desktop, pc (interpréteur HuC6280 ; voir `docs/PCE.fr.md`) | consoles > 32 Kio RAM, VRAM 64 Kio |
 | vectrex | meta, pc (6809 recompilé, interpréteur de repli ; voir `docs/VECTREX.fr.md`) | (pokitto, espboy et ESP32 non câblés) |
 

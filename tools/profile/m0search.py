@@ -10,7 +10,9 @@ le coeur :
     à leur harnais : --explore FRAMES --random GRAINE joue par segments
     depuis des instantanés (m0_explore.h) et la couverture se écrit toute
     seule ;
-  - les autres (Mega Drive, NES, Vectrex, PC Engine, PICO-8) reçoivent des
+  - NES et Vectrex sauvegardent un instantané après chaque session ; la
+    suivante repart de l'état qui a apporté du code neuf ;
+  - les autres (Mega Drive, PC Engine, PICO-8) reçoivent des
     scripts d'entrées générés ici, même politique que m0_explore : une
     direction tenue 8 à 63 trames, les boutons tenus ou tapotés, START de
     temps en temps, dans le dialecte d'entrées du coeur.
@@ -89,14 +91,14 @@ SYSTEMS = {
         b1="a", b2="b",
     ),
     "nes": dict(
-        explore=False, coverage=True, interp=["--interp"], rom_arg=False,
+        explore=False, checkpoint=True, coverage=True, interp=["--interp"], rom_arg=False,
         input="momentary-named",
         names={"a": 1, "b": 2, "select": 4, "start": 8,
                "up": 16, "down": 32, "left": 64, "right": 128},
         b1="a", b2="b",
     ),
     "vectrex": dict(
-        explore=False, coverage=True, interp=["--interp"], rom_arg=False,
+        explore=False, checkpoint=True, coverage=True, interp=["--interp"], rom_arg=False,
         input="held-named", bios=True,
         names={"up": 1, "down": 2, "left": 4, "right": 8,
                "a": 16, "b": 32, "c": 64, "d": 512},
@@ -314,25 +316,43 @@ def cmd_run(a):
     else:
         for i in range(a.sessions):
             inp = outdir / ("session-%02d.input" % (i + 1))
-            inp.write_text(render_input(sys_["input"],
-                                        random_events(a.seed + i, a.frames, sys_),
-                                        sys_["names"]))
+            if not sys_.get("checkpoint"):
+                inp.write_text(render_input(sys_["input"],
+                                            random_events(a.seed + i, a.frames, sys_),
+                                            sys_["names"]))
             plan.append((inp.stem, inp, a.frames))
     for i, manual in enumerate(a.input):
         plan.append(("manual-%02d" % (i + 1), Path(manual), a.manual_frames))
 
     report = {"system": a.system, "harness": a.harness, "seed": a.seed,
               "frames_per_session": a.frames, "sessions": [], "union": 0}
-    covs, union = [], set()
+    covs, union, checkpoints = [], set(), []
     for name, inp, frames in plan:
+        checkpoint = sys_.get("checkpoint") and name.startswith("session-")
+        parent = checkpoints[-1] if checkpoint and checkpoints and checkpoints[-1][2] else None
+        start_frame = parent[1] if parent else 0
+        if checkpoint:
+            events = random_events(a.seed + int(name[-2:]) - 1, frames, sys_)
+            inp.write_text(render_input(sys_["input"],
+                                        [(f + start_frame, mask) for f, mask in events],
+                                        sys_["names"]))
         cov = outdir / (name + ".cov") if sys_["coverage"] else None
         argv = harness_argv(sys_, a, cov, inp)
+        state = outdir / (name + ".state") if checkpoint else None
+        if parent:
+            argv += ["--load-state", str(parent[0])]
+        if state:
+            argv += ["--save-state", str(state)]
         if sys_["explore"] and inp is None:
             argv += ["--explore", str(frames), "--random", str(a.seed),
                      "--frames", str(frames)]
         else:
             argv += ["--frames", str(frames)]
         row = {"name": name, "argv": [str(x) for x in argv], "frames": frames}
+        if checkpoint:
+            row["start_frame"] = start_frame
+            row["state"] = str(state)
+            if parent: row["parent"] = str(parent[0])
         h = run_session(argv, frames, a.timeout)
         if h:
             row["run_hash"] = h.group(1)
@@ -342,6 +362,8 @@ def cmd_run(a):
             row["locations"] = len(keys)
             row["new"] = len(keys - union)
             union |= keys
+        if checkpoint:
+            checkpoints.append((state, start_frame + frames, row.get("new", 0)))
         report["sessions"].append(row)
         print("%-12s locations=%-6s new=%-6s %s" % (
             name, row.get("locations", "-"), row.get("new", "-"),

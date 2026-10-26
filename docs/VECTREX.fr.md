@@ -6,6 +6,13 @@ commutation de banques) et produit un projet pour la META
 en C devant l'interpréteur (voir « Recompilation 6809 → C ») ; `--interp`
 garde l'interpréteur seul.
 
+Sur META, le générateur crée un fichier `.ST8` vierge de dix emplacements à
+copier à côté du `.BIN` sur la carte. Le menu peut sauvegarder et recharger
+l'état du 6809, de la VIA, du son et du phosphore. Le harnais PC accepte
+`--save-state` et `--load-state` ; son test 60 = 30+30 trames retrouve le même
+`run_hash`. Le firmware META compile et tient en RAM/flash ; le chargement
+sur une console physique reste à vérifier.
+
 ```sh
 cmake -G Ninja -B build . -DBUILD_TESTS=ON && ninja -C build
 # META : la ROM système est intégrée au firmware généré

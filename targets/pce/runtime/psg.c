@@ -19,10 +19,12 @@ void psg_write(psg_t *p, unsigned at, uint8_t value) {
         p->select = value & 0x07;
         return;
     }
+    if (at == 0x01) {
+        p->balance = value;
+        return;
+    }
     if (p->select > 5) return;
     switch (at) {
-    case 0x01: /* the global balance: ignored, games set it symmetric */
-        break;
     case 0x02:
         p->ch[p->select].frequency = (uint16_t)((p->ch[p->select].frequency & 0x0F00) | value);
         break;
@@ -34,7 +36,8 @@ void psg_write(psg_t *p, unsigned at, uint8_t value) {
             p->ch[p->select].waveform_index = 0;
         p->ch[p->select].control = value;
         break;
-    case 0x05: /* the channel balance: ignored */
+    case 0x05:
+        p->ch[p->select].balance = value;
         break;
     case 0x06: /* the waveform, or the DDA stream */
         value &= 0x1F;
@@ -56,17 +59,18 @@ void psg_write(psg_t *p, unsigned at, uint8_t value) {
 /* the channels' sample clock, 12 fractional bits, per output sample */
 static uint32_t wave_step(unsigned freq, unsigned rate) {
     if (!freq) freq = 4096;
-    return (PSG_CLOCK << 12) / ((uint32_t)freq * rate);
+    return (uint32_t)(((uint64_t)PSG_CLOCK << 12) / ((uint64_t)freq * rate));
 }
 
 static int channel_sample(psg_t *p, unsigned c, unsigned rate) {
     const uint8_t control = p->ch[c].control;
     if (!(control & 0x80)) return 0;
-    if (p->ch[c].noise & 0x80) {
+    if (c >= 4 && (p->ch[c].noise & 0x80)) {
         /* the noise: an 18-bit LFSR (the tap pair is an approximation,
          * the polynomial of the chip is not published) */
         const unsigned nf = (p->ch[c].noise & 0x1F) + 1;
-        p->ch[c].acc += (PSG_CLOCK << 12) / ((uint32_t)nf * rate);
+        p->ch[c].acc += (uint32_t)(((uint64_t)PSG_CLOCK << 12) /
+                                    ((uint64_t)nf * rate));
         while (p->ch[c].acc >> 12) {
             p->ch[c].acc -= 1u << 12;
             const unsigned fb = ((p->lfsr >> 17) ^ (p->lfsr >> 12)) & 1;
@@ -84,15 +88,37 @@ static int channel_sample(psg_t *p, unsigned c, unsigned rate) {
     return (int)p->ch[c].waveform[p->ch[c].waveform_index] - 16;
 }
 
+static uint8_t clamp_sample(int mix) {
+    mix += 128;
+    return (uint8_t)(mix < 0 ? 0 : mix > 255 ? 255 : mix);
+}
+
+static void render_pair(psg_t *p, uint8_t *left, uint8_t *right,
+                        unsigned rate) {
+    int l = 0, r = 0;
+    for (unsigned c = 0; c < 6; c++) {
+        const int s = channel_sample(p, c, rate) * (p->ch[c].control & 0x1F);
+        l += s * (p->ch[c].balance >> 4);
+        r += s * (p->ch[c].balance & 0x0F);
+    }
+    /* Full balance on both registers retains the former /24 mix level. */
+    l = l * (p->balance >> 4) / (24 * 15 * 15);
+    r = r * (p->balance & 0x0F) / (24 * 15 * 15);
+    *left = clamp_sample(l);
+    *right = clamp_sample(r);
+}
+
+void psg_render_stereo(psg_t *p, uint8_t *dst, unsigned n, unsigned rate) {
+    if (!rate) return;
+    for (unsigned i = 0; i < n; i++)
+        render_pair(p, &dst[2 * i], &dst[2 * i + 1], rate);
+}
+
 void psg_render(psg_t *p, uint8_t *dst, unsigned n, unsigned rate) {
+    if (!rate) return;
     for (unsigned i = 0; i < n; i++) {
-        int mix = 0;
-        for (unsigned c = 0; c < 6; c++) {
-            const int s = channel_sample(p, c, rate);
-            if (s) mix += s * (p->ch[c].control & 0x1F);
-        }
-        /* 6 channels x 31 x 15, signed: scale into the unsigned 8 bits */
-        mix = mix / 24 + 128;
-        dst[i] = (uint8_t)(mix < 0 ? 0 : mix > 255 ? 255 : mix);
+        uint8_t l, r;
+        render_pair(p, &l, &r, rate);
+        dst[i] = (uint8_t)(((unsigned)l + r) / 2);
     }
 }

@@ -114,16 +114,16 @@ int main(int argc, char **argv) {
             if (script[i].frame == f) machine.input = script[i].buttons;
         pce_frame();
         if (audio) {
-            uint8_t samples[256];
+            uint8_t samples[512];
             /* 119210 CPU cycles per frame: the samples that covers */
             static unsigned carry;
             carry += AUDIO_RATE * 119210u;
             unsigned count = carry / 7159090u;
             carry %= 7159090u;
-            if (count > sizeof samples) count = sizeof samples;
-            pce_audio(samples, count, AUDIO_RATE);
-            fwrite(samples, 1, count, audio);
-            audio_bytes += count;
+            if (count > sizeof samples / 2) count = sizeof samples / 2;
+            psg_render_stereo(&machine.psg, samples, count, AUDIO_RATE);
+            fwrite(samples, 2, count, audio);
+            audio_bytes += count * 2;
         }
     }
     if (audio) {
@@ -134,13 +134,13 @@ int main(int argc, char **argv) {
         fprintf(audio, "WAVEfmt ");
         const uint32_t fmt = 16;
         fwrite(&fmt, 4, 1, audio);
-        const uint16_t pcm = 1, ch = 1;
+        const uint16_t pcm = 1, ch = 2;
         fwrite(&pcm, 2, 1, audio);
         fwrite(&ch, 2, 1, audio);
-        const uint32_t rate = AUDIO_RATE, byte_rate = AUDIO_RATE;
+        const uint32_t rate = AUDIO_RATE, byte_rate = AUDIO_RATE * 2;
         fwrite(&rate, 4, 1, audio);
         fwrite(&byte_rate, 4, 1, audio);
-        const uint16_t block = 1, bits = 8;
+        const uint16_t block = 2, bits = 8;
         fwrite(&block, 2, 1, audio);
         fwrite(&bits, 2, 1, audio);
         fprintf(audio, "data");

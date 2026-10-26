@@ -1,4 +1,4 @@
-# PICO-8 sur la Gamebuino META et la Pokitto
+# PICO-8 sur la Gamebuino META, la Pokitto et le PC
 
 Statut au 2026-10-23. Les étiquettes disent d'où vient chaque affirmation :
 **vérifié** (comparaison avec femto8 ou test automatique), **mesuré dans gm0**
@@ -11,6 +11,12 @@ cartouche PICO-8 en C,
 puis en firmware pour la console. Ce n'est pas un interpréteur Lua embarqué : le
 bytecode de la cartouche devient une fonction C par fonction Lua, sur un petit
 runtime (`targets/pico8/runtime/`).
+
+`--target pc` produit aussi une fenêtre SDL2 de 160×128 : l'image PICO-8
+occupe les 128 colonnes centrales. Le projet se construit avec CMake et Ninja ;
+la fixture synthétique a été générée, compilée et lancée sans fenêtre dans
+`tests/test_pc_target.py`. Les états PC exigent un `sd.img` contenant le fichier
+`.ST8`, comme les autres projets PC à carte virtuelle.
 
 - **Front-end sur le PC** : le lecteur de cartouches (`.p8`, `.p8.png`) et le
   compilateur Lua de [femto8](https://github.com/benbaker76/femto8) (Lua 5.2

@@ -37,6 +37,7 @@ static PcFrontend frontend;
 static uint32_t frame_pixels[PC_ROWS * PC_COLS];
 static uint32_t lcd_seq;
 static unsigned frames_left;    /* M0_FRAMES: exit after that many frames */
+static unsigned frames_limit;   /* fixed bound for the stuck-boot poll guard */
 static unsigned polls;          /* button reads while frames_left runs */
 static const char *ppm_path;    /* M0_PPM: dump the last frame there */
 static void dump_ppm(void);
@@ -69,7 +70,7 @@ uint8_t pc_buttons(void) {
     if (frontend.quit) exit(0);
     /* The boot-error loops never draw frames; under M0_FRAMES the run then
      * ends here instead, so a stuck firmware still exits on the CI. */
-    if (frames_left && ++polls > frames_left * 10) {
+    if (frames_limit && ++polls > frames_limit * 10) {
         dump_ppm();
         exit(0);
     }
@@ -104,7 +105,7 @@ void m0_lcd_init(void) {
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS);
     if (!pc_frontend_open(&frontend, "m0boy", PC_COLS, PC_ROWS)) exit(1);
     const char *frames = getenv("M0_FRAMES");
-    if (frames) frames_left = (unsigned)strtoul(frames, NULL, 10);
+    if (frames) frames_left = frames_limit = (unsigned)strtoul(frames, NULL, 10);
     ppm_path = getenv("M0_PPM");
 }
 /* Native RGB565 rows (M0_COLOR keeps the host order) into the texture. */

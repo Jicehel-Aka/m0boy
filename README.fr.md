@@ -21,7 +21,7 @@ l'ESPboy, une image à flasher).
 | Mémoire | 32 Kio de RAM, 240 Kio de flash pour le jeu | 36 Kio de RAM, 228 Kio de flash | 80 Kio de RAM, 4 Mio de flash |
 | Écran | 160×128 | 220×176 | 128×128 |
 | Stockage | carte SD | carte SD | flash seulement |
-| Version du runtime | 0.10.41 | 0.10.36 | 0.3.10 |
+| Version du runtime | 0.10.51 | 0.10.40 | 0.3.11 |
 
 ## Ce qui tourne où
 
@@ -33,7 +33,16 @@ l'ESPboy, une image à flasher).
 | Master System | oui | oui | oui |
 | MSX1 (mappers ASCII8/16, Konami et Konami SCC ; AY-3-8910 et SCC ; expérimental) | oui | oui | — |
 | PICO-8 | oui | oui | oui |
+| NES (NROM : PRG 16/32 Kio, CHR ROM 8 Kio ; expérimental) | oui | oui | — |
+| PC Engine (HuCards, interpréteur ; expérimental, PC seulement) | — | — | — |
 | Vectrex (cartouches jusqu'à 32 Kio, ROM système intégrée ; expérimental) | oui | — | — |
+| Mega Drive (profil M68k borné ; expérimental, PC seulement) | oui | — | — |
+
+La cible PC (`--target pc`) ajoute une fenêtre SDL2 pour Game Boy, SG-1000,
+Game Gear, Master System, MSX, NES, PICO-8, PC Engine, Vectrex et Mega Drive.
+Les projets partagent les manettes, filtres d'image (F8), échelle (F10) et
+plein écran (F11). Le NES PC affiche l'image 160×128 du panneau META ; les
+autres cœurs gardent leur géométrie propre.
 
 MSX1 est vérifié contre openMSX (VRAM des écrans titres) et contre le rendu
 de référence de l'hôte ; Gradius 2 (128 Kio, Konami SCC) a tenu 60 images de
@@ -54,15 +63,16 @@ l'interpréteur seul). Le projet `--meta-precise` donne le même run_hash que
 `--interp` sur les 231 cartouches de la collection locale (2 000 trames).
 Notes : `docs/VECTREX.fr.md`.
 
-Chaque cœur a le même menu d'options (HOME maintenu ; C sur la Pokitto) :
-reprendre, redémarrer, **10 emplacements d'états**, volume, vitesse,
+Les cœurs sur console partagent un menu d'options (HOME maintenu ; C sur la Pokitto) :
+reprendre, redémarrer, volume, vitesse,
 fréquence du processeur, retour au loader, plus les lignes propres à chaque
 système (modes d'affichage et palettes sur Game Boy, bootloader USB sur la
-META).
+META). Les emplacements d'état apparaissent pour les cœurs qui les prennent
+en charge.
 
 | Fonction | META | Pokitto | ESPboy |
 |---|---|---|---|
-| États sauvegardés | tous les cœurs, fichier sur la carte | tous les cœurs, fichier sur la carte | tous les cœurs, en flash |
+| États sauvegardés | GB, SG, GG, SMS, MSX, PICO-8, NES, Vectrex : fichier sur la carte | GB, SG, GG, SMS, MSX, PICO-8, NES : fichier sur la carte | GB, SG, GG, SMS, PICO-8 : en flash |
 | Sauvegardes sur pile | `.SAV` sur la carte | `.SAV` sur la carte | en flash, deux copies alternées |
 | ROM plus grande que la flash | lue sur la carte, secteurs chauds gardés en flash | lue sur la carte | `rom.bin` dans les 4 Mio de flash |
 | Secteurs de ROM compressés (LZSS) | oui | oui | oui |

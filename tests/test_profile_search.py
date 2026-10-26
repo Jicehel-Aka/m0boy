@@ -23,12 +23,15 @@ FAKE_HARNESS = r"""#!/usr/bin/env python3
 import hashlib, sys
 from pathlib import Path
 args = sys.argv[1:]
-rom, cov, inp, frames = None, None, None, 600
+rom, cov, inp, frames, state_out, state_in = None, None, None, 600, None, None
 for i, a in enumerate(args):
     if a == "--coverage": cov = args[i + 1]
     elif a == "--input": inp = args[i + 1]
     elif a == "--frames": frames = int(args[i + 1])
+    elif a == "--save-state": state_out = args[i + 1]
+    elif a == "--load-state": state_in = args[i + 1]
 text = Path(inp).read_text() if inp else "boot"
+if state_in: text += Path(state_in).read_text()
 digest = hashlib.sha1(((rom or "") + text).encode()).digest()
 pool = [int.from_bytes(digest[i:i + 2], "big") % 0x10000 for i in range(0, 12, 2)]
 hits = {("%04x" % a): 1 + (a % 7) for a in pool[:max(1, len(pool) - len(pool) // 3)]}
@@ -36,6 +39,7 @@ if cov:
     with open(cov, "w") as f:
         for a, n in sorted(hits.items()):
             f.write("%s %d\n" % (a, n))
+if state_out: Path(state_out).write_text(str(frames))
 print("frames=%d run_hash=%08x" % (frames, int(hashlib.sha1(text.encode()).hexdigest()[:8], 16)))
 """
 
@@ -156,17 +160,21 @@ def test_run_and_merge():
             all_keys |= set(m0search.parse_coverage(str(cov))[0])
         check(set(merged) == all_keys, "la fusion garde toutes les adresses découvertes")
 
-        # NES : dialecte momentary-named, même chaîne
+        # NES : dialecte momentary-named et sessions à instantanés
         out_nes = str(Path(tmp) / "search-nes")
         subprocess.run(
             [sys.executable, SEARCH, "run", "--system", "nes", "--harness", harness,
-             "-o", out_nes, "--sessions", "1", "--frames", "200"],
+             "-o", out_nes, "--sessions", "2", "--frames", "200"],
             check=True, capture_output=True, text=True)
         text = (Path(out_nes) / "session-01.input").read_text()
         check(all("+" in l or l.split()[1].isalpha() for l in text.splitlines()),
               "NES : boutons par nom")
         check(all(int(l.split()[0]) == int(l.split()[0]) for l in text.splitlines()),
               "NES : trames numériques")
+        report = json.loads((Path(out_nes) / "search.json").read_text())
+        check((Path(out_nes) / "session-01.state").is_file(), "NES : état de fin conservé")
+        check(report["sessions"][1]["start_frame"] == 200, "NES : seconde session reprise à l'image 200")
+        check("--load-state" in report["sessions"][1]["argv"], "NES : le harnais recharge l'état")
 
 
 def main():

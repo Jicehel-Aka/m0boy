@@ -68,6 +68,8 @@ int nes_ppu_line(nes_ppu_t *ppu, unsigned line);
  * Horizontally, m0_box58_fast: 160 pixels. */
 #define NES_PANEL_W 160u
 void nes_ppu_set_rows(nes_ppu_t *ppu, unsigned rows);
+/* Rebuild derived renderer data after the machine memory is restored. */
+void nes_ppu_state_loaded(nes_ppu_t *ppu);
 
 #endif
 

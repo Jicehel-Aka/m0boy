@@ -34,6 +34,20 @@ std::string rom_data(const uint8_t* data, size_t n) {
     return out.str();
 }
 
+std::string state_base(const std::string& name) {
+    std::string out;
+    for (unsigned char c : name) {
+        if (std::isalnum(c) && out.size() < 8) out += static_cast<char>(std::toupper(c));
+    }
+    return out.empty() ? "CART" : out;
+}
+
+std::string name83(std::string base, std::string ext) {
+    base.resize(8, ' ');
+    ext.resize(3, ' ');
+    return base + ext;
+}
+
 } // namespace
 
 /* the harness's coverage files: "addr hits [d]" lines, summed */
@@ -66,8 +80,9 @@ std::vector<CoverageEntry> read_coverage(const std::vector<fs::path>& files) {
 bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats& stats, std::string& error) {
     error.clear();
     try {
-        if (o.target != TargetId::meta && o.target != TargetId::pokitto && o.target != TargetId::desktop)
-            throw std::runtime_error("NES projects target the META, the Pokitto or the desktop harness");
+        if (o.target != TargetId::meta && o.target != TargetId::pokitto &&
+            o.target != TargetId::desktop && o.target != TargetId::pc)
+            throw std::runtime_error("NES projects target the META, the Pokitto, the PC or the desktop harness");
         const bool pokitto = o.target == TargetId::pokitto;
         const auto tpl = o.meta_templates.parent_path() / "nes";
         const auto common_dir = o.meta_templates.parent_path() / "common";
@@ -101,7 +116,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             for (const auto& e : fs::directory_iterator(o.output)) foreign = foreign || e.path().filename() != "compile.log";
             if (foreign) throw std::runtime_error("Output directory is not a NES project; choose a fresh directory");
         }
-        const std::string target = o.target == TargetId::meta ? "meta" : pokitto ? "pokitto" : "desktop";
+        const std::string target = o.target == TargetId::meta ? "meta" : pokitto ? "pokitto" :
+                                   o.target == TargetId::pc ? "pc" : "desktop";
         if (fs::exists(marker) && read(marker) != target + "\n")
             throw std::runtime_error("Use a separate output directory for each destination");
         const auto src = o.output / "src";
@@ -121,6 +137,15 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
                << "#define NES_VERTICAL_MIRROR " << (header[6] & 1) << "\n"
                << "/* the panel's byte order: the META's SPI takes the high byte first */\n"
                << "#define NES_PANEL_SWAP " << (o.target == TargetId::meta ? 1 : 0) << "\n";
+        if (o.target != TargetId::desktop) {
+            const std::string sd = state_base(o.name);
+            config << "#define NES_STATE_NAME \"" << sd << ".ST8\"\n"
+                   << "#define NES_STATE_NAME83 \"" << name83(sd, "ST8") << "\"\n"
+                   << "#define NES_BIN_NAME83 \"" << name83(sd, "BIN") << "\"\n"
+                   << "#define NES_STATE_SLOTS 10\n#define NES_STATE_SLOT_SECTORS 16\n";
+            if (o.target != TargetId::pc && !fs::exists(o.output / (sd + ".ST8")))
+                write(o.output / (sd + ".ST8"), std::string(10u * 16u * 512u, char(0xff)));
+        }
         /* the recompiled code's dispatcher (6502.c) */
         if (!o.interpret) config << "#ifndef NES_NATIVE\n#define NES_NATIVE 1\n#endif\n";
         /* the Pokitto runs the PPU's loops from SRAM (ppu_asm.S) */
@@ -150,7 +175,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
              * and the lookup tables */
             const size_t flash = pokitto ? 0x39000u / 1024u : 256 - 16;
             const size_t budget = o.code_budget_bytes ? o.code_budget_bytes
-                                : o.target == TargetId::desktop ? 0
+                                : o.target == TargetId::desktop || o.target == TargetId::pc ? 0
                                 : (flash - 66) * 1024 - prg_size - chr_size;
             emit.max_instructions = budget ? budget / bpi : 0;
             EmitStats es;
@@ -179,6 +204,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             const auto t = project::Templates::from_meta(o.meta_templates);
             copy_template(tpl / "platform" / "nes_main.cpp", src / "nes_main.cpp");
             project::copy_frontend(t, src);
+            for (const char* name : {"m0_state.h", "m0_state.cpp", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h"})
+                copy_template(t.frontend() / name, src / name);
             /* the audio driver: the frame's samples are 29781 CPU cycles at
              * 1789773 Hz */
             project::write_audio(t, o.target, src, "29781u", "1789773u", "nes.h", "nes_audio_render", "nes_audio_set_rate");
@@ -186,17 +213,26 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             /* the Pokitto: rows pushed and the audio interrupt in Thumb-1
              * from SRAM, its 2 KiB banks in use (the Game Gear's choice) */
             project::write_profile(o.target, src, {pokitto, pokitto, pokitto});
-            if (pokitto) {
-                /* no card: pokitto_sd.c stays out (nes_main.cpp) */
-                project::copy_pokitto_drivers(t, src, {"pokitto_lcd_asm.S", "pokitto_audio_asm.S"});
+            if (o.target == TargetId::pc) {
+                const auto pc = t.console(TargetId::pc);
+                for (const char* name : {"pc_hw.c", "pc_hw.h", "pc_frontend.c", "pc_frontend.h", "pc_sd.c"})
+                    copy_template(pc / name, src / name);
+                write(src / "sg_audio.h", "#pragma once\n#include \"nes.h\"\n"
+                                          "#define sg_platform_audio_rate nes_audio_set_rate\n"
+                                          "#define sg_platform_audio_render nes_audio_render\n");
+                write(src / "nes_config.h", config.str() + "#define PC_COLS 160\n#define PC_ROWS 128\n");
+                write(o.output / "CMakeLists.txt", replace(read(pc / "CMakeLists.txt.in"), "@NAME@", o.name));
+            } else if (pokitto) {
+                copy_template(t.frontend() / "m0_sd.c", src / "m0_sd.c");
+                project::copy_pokitto_drivers(t, src, {"pokitto_lcd_asm.S", "pokitto_audio_asm.S", "pokitto_sd.c"});
                 const std::string sources = "${SRC}/nes.c ${SRC}/6502.c ${SRC}/ppu.c ${SRC}/ppu_asm.S ${SRC}/apu.c ${SRC}/nes_cart.c" +
-                                            std::string(native ? " ${SRC}/nes_gen.c" : "") + " ${SRC}/nes_main.cpp ${SRC}/m0_menu.cpp";
+                                            std::string(native ? " ${SRC}/nes_gen.c" : "") +
+                                            " ${SRC}/nes_main.cpp ${SRC}/m0_menu.cpp ${SRC}/m0_state.cpp ${SRC}/m0_sd.c ${SRC}/m0_fat.c";
                 project::write_pokitto_project(t, o.output, o.name, o.compiler, "nes", sources, " ${SRC}/pokitto_*.S",
                                                project::pokitto_ld(t, o.name));
             } else {
                 /* Every META firmware offers USB SD mode: the card's driver */
-                for (const char* name : { "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h" })
-                    copy_template(t.frontend() / name, src / name);
+                copy_template(t.frontend() / "m0_sd.c", src / "m0_sd.c");
                 copy_template(t.console(TargetId::meta) / "meta_sd_bus.cpp", src / "meta_sd_bus.cpp");
                 /* the picture's columns are sampled 256 -> 160: the panel's
                  * full width, the meta_lcd.cpp column window patch is not
@@ -215,7 +251,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
               "Host: cmake -G Ninja -S host -B host/build && ninja -C host/build\n"
               "Run: host/build/" + o.name + "_host --frames 300 [--ppm shot.ppm] [--input script.txt] [--interp] [--coverage f]\n\n" +
               (o.target == TargetId::meta ? "Firmware: pio run  (flash with pio run -t upload)\n"
-               : pokitto ? "Firmware: cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake && ninja -C build\n" : ""));
+               : pokitto ? "Firmware: cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake && ninja -C build\n" : "") +
+              (o.target == TargetId::meta || pokitto ? "Copy the generated .ST8 file beside the .BIN on the SD card for ten save-state slots.\n" : ""));
         return true;
     } catch (const std::exception& e) {
         error = e.what();

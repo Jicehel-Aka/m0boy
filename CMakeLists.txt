@@ -141,6 +141,9 @@ if(BUILD_TESTS)
     add_test(NAME profile_rom_cache_simulation
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_romsim.py"
                 "$<TARGET_FILE:m0romsim>" "$<TARGET_FILE:gg_host>")
+    add_executable(test_pce_psg tests/test_pce_psg.c targets/pce/runtime/psg.c)
+    target_include_directories(test_pce_psg PRIVATE targets/pce/runtime)
+    add_test(NAME pce_psg_clock_and_balance COMMAND test_pce_psg)
     if(TARGET sg1000_host)
         add_test(NAME profile_gm0_sessions
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_profile_sessions.py"

@@ -31,10 +31,10 @@
 #define M0_TARGET_ESPBOY 0
 #endif
 
-/* The META is the default build (no GBL_TARGET_* written): its exclusive
- * blocks (USB, the loader) test this instead of "none of the others". */
-#if M0_TARGET_ESPBOY || defined(GBL_TARGET_POKITTO) || defined(GBL_TARGET_PC) || \
-    defined(GBL_TARGET_ODROID) || defined(GBL_TARGET_AKA)
+/* The META is the default build (GBL_TARGET_POKITTO is written as 0 there):
+ * its exclusive blocks (USB, the loader) test the flag's value. */
+#if M0_TARGET_ESPBOY || GBL_TARGET_POKITTO || GBL_TARGET_PC || \
+    GBL_TARGET_ODROID || GBL_TARGET_AKA
 #define M0_TARGET_META 0
 #else
 #define M0_TARGET_META 1

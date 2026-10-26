@@ -21,7 +21,7 @@ on the ESPboy, an image to flash).
 | Memory | 32 KiB RAM, 240 KiB flash for the game | 36 KiB RAM, 228 KiB flash | 80 KiB RAM, 4 MiB flash |
 | Screen | 160×128 | 220×176 | 128×128 |
 | Storage | SD card | SD card | flash only |
-| Runtime version | 0.10.41 | 0.10.36 | 0.3.10 |
+| Runtime version | 0.10.51 | 0.10.40 | 0.3.11 |
 
 ## What runs where
 
@@ -97,10 +97,11 @@ has not been compared with a console (see the Mega Drive notes).
 | Mega Drive (bounded M68k colour-loop profile; experimental) | yes | — | — |
 
 The `--target pc` SDL2 backend is available for Game Boy, SG-1000, Game Gear,
-Master System, PC Engine, Vectrex and Mega Drive. These projects share gamepad
+Master System, MSX, NES, PICO-8, PC Engine, Vectrex and Mega Drive. These projects share gamepad
 and joystick hotplug, an unfiltered image by default, F8 display filters,
 F10 scaling and F11 fullscreen. Each system keeps its own keyboard button
-names and audio core; captures and run hashes use the native image.
+names and audio core. The NES PC window displays the same 160×128 panel image
+as the META; the other PC cores use their own output geometry.
 
 MSX1 is checked against openMSX (VRAM of the title screens) and against the
 host reference renderer; Gradius 2 (128 KiB, Konami SCC) held 60 game frames
@@ -124,8 +125,10 @@ runs through 1-1 in gm0 at 59 game frames a second, video frames skipped
 to keep that pace (not yet tried on a Pokitto). Estimated cost of a frame
 with every frame shown: 0.91 M cycles on the META (from 1.05 M) and 1.21 M
 on the Pokitto at 48 MHz (from 1.36 M): runs of sky written as words, the
-idle loop spent at once, the PPU's loops in SRAM on the Pokitto. No save
-states yet.
+idle loop spent at once, the PPU's loops in SRAM on the Pokitto. NES now has
+ten save-state slots on both handhelds; the host harness checks a resumed
+run against an uninterrupted one. Firmware builds and size checks pass;
+save/load on a device has not been checked.
 
 Shared by the cores: one vertical plan (source lines onto panel rows,
 `m0_scale.h`), one row sender (`m0_rows.h`), idle loops (a jump to itself)
@@ -135,14 +138,14 @@ and MSX wrote theirs in C).
 Notes: `docs/MULTI_SYSTEM.fr.md` ("Recompilation 6502 (NES)", "Rendu NES
 sur le panneau").
 
-Every core has the same option menu (hold HOME; C on the Pokitto): resume,
-restart, **10 save-state slots**, volume, speed, CPU clock, return to the
+The handheld cores share an option menu (hold HOME; C on the Pokitto): resume,
+restart, volume, speed, CPU clock, return to the
 loader, plus each system's own lines (display modes and palettes on the
-Game Boy, USB bootloader on the META).
+Game Boy, USB bootloader on the META). Save-state slots appear where supported.
 
 | Feature | META | Pokitto | ESPboy |
 |---|---|---|---|
-| Save states | every core, file on the card | every core, file on the card | every core, in flash |
+| Save states | GB, SG, GG, SMS, MSX, PICO-8, NES, Vectrex: file on the card | GB, SG, GG, SMS, MSX, PICO-8, NES: file on the card | GB, SG, GG, SMS, PICO-8: in flash |
 | Battery saves | `.SAV` on the card | `.SAV` on the card | in flash, two alternating copies |
 | ROM larger than the flash | read from the card, hot sectors kept in flash | read from the card | `rom.bin` in the 4 MiB flash |
 | Compressed ROM sectors (LZSS) | yes | yes | yes |

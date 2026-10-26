@@ -314,6 +314,11 @@ def picture(work):
     h1 = run_hash(out)
     h2 = run_hash(run(host, "--frames", "60"))
     assert h1 == h2 and h1 != "run_hash=00000000", f"unstable hash: {h1} {h2}"
+    state = work / "nes.state"
+    run(host, "--frames", "30", "--save-state", state)
+    resumed = run(host, "--frames", "30", "--load-state", state)
+    panel_ok(resumed, 30 * 128)
+    assert run_hash(resumed) == h1, "NES state did not resume the same machine"
 
     run(host, "--frames", "60", "--ppm", work / "shot.ppm")
     body = (work / "shot.ppm").read_bytes().split(b"\n255\n", 1)[1]
@@ -341,6 +346,10 @@ def recompiler(work):
     panel_ok(out, 120 * 176)
     assert run_hash(out) == native, "the Pokitto's vertical plan changed the run"
     assert native == reference, f"precise static walk {native} != interpreter {reference}"
+    state = work / "native.state"
+    run(host, "--frames", "60", "--save-state", state)
+    resumed = run(host, "--frames", "60", "--load-state", state)
+    assert run_hash(resumed) == native, "native NES state did not resume precisely"
     coverage = work / "exercise.cov"
     run(host, *frames, "--coverage", coverage)
     assert " d" in coverage.read_text(), "no dynamic entry in the coverage file"
@@ -366,9 +375,10 @@ def pokitto(work):
     out = work / "pokitto"
     run(GBRECOMP, "--system", "nes", rom, "--target", "pokitto", "--output-prefix", "synth", "-o", out)
     for name in ("CMakeLists.txt", "pokitto.ld", "checksum.py", "arm-toolchain.cmake", "src/nes_main.cpp",
-                 "src/pokitto_lcd.c", "src/pokitto_lcd_asm.S", "src/pokitto_audio.c", "src/nes_gen.c"):
+                 "src/pokitto_lcd.c", "src/pokitto_lcd_asm.S", "src/pokitto_audio.c", "src/pokitto_sd.c",
+                 "src/m0_state.cpp", "src/nes_gen.c"):
         assert (out / name).is_file(), name
-    for name in ("platformio.ini", "src/meta_lcd.cpp", "src/meta_sd_bus.cpp", "src/pokitto_sd.c"):
+    for name in ("platformio.ini", "src/meta_lcd.cpp", "src/meta_sd_bus.cpp"):
         assert not (out / name).exists(), name
     bin_dir = toolchain()
     if bin_dir is None:

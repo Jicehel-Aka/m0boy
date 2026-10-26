@@ -66,6 +66,11 @@ void nes_audio(uint8_t *dst, unsigned n, unsigned rate);
 /* the consoles' drivers' entry points (the rate set, 11025 Hz until then) */
 void nes_audio_set_rate(unsigned rate);
 void nes_audio_render(uint8_t *buffer, unsigned n);
+/* A frame-boundary save state; pointers and renderer caches are rebuilt on load. */
+uint32_t nes_state_bytes(void);
+void nes_state_io(void (*io)(void *data, uint32_t bytes, void *ctx), void *ctx, int load);
+uint32_t nes_state_frame(void);
+uint32_t nes_state_identity(void);
 
 #endif
 

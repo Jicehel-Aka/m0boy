@@ -47,10 +47,12 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
     return false;
 #else
     try {
-        if (o.target != TargetId::meta && o.target != TargetId::desktop && o.target != TargetId::espboy && o.target != TargetId::pokitto)
-            throw std::runtime_error("PICO-8 projects target the META (--target meta), the Pokitto, the ESPboy or the desktop harness");
+        if (o.target != TargetId::meta && o.target != TargetId::desktop && o.target != TargetId::espboy &&
+            o.target != TargetId::pokitto && o.target != TargetId::pc)
+            throw std::runtime_error("PICO-8 projects target the META, the Pokitto, the ESPboy, the PC or the desktop harness");
         const bool esp = o.target == TargetId::espboy;
         const bool pokitto = o.target == TargetId::pokitto;
+        const bool pc = o.target == TargetId::pc;
         const auto tpl = o.meta_templates.parent_path() / "pico8";
         const auto common_dir = o.meta_templates.parent_path() / "common";
         if (!fs::is_regular_file(tpl / "runtime" / "p8rt.c"))
@@ -61,7 +63,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             for (const auto& e : fs::directory_iterator(o.output)) foreign = foreign || e.path().filename() != "compile.log";
             if (foreign) throw std::runtime_error("Output directory is not a PICO-8 project; choose a fresh directory");
         }
-        const std::string target = o.target == TargetId::meta ? "meta" : esp ? "espboy" : pokitto ? "pokitto" : "desktop";
+        const std::string target = o.target == TargetId::meta ? "meta" : esp ? "espboy" : pokitto ? "pokitto" : pc ? "pc" : "desktop";
         if (fs::exists(marker) && read(marker) != target + "\n")
             throw std::runtime_error("Use a separate output directory for each destination");
         const auto src = o.output / "src";
@@ -84,8 +86,14 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
          * same 32 KiB, its audio queue lives in the 2 KiB bank) */
         /* ESPboy: 6 KiB of continuation stack in .bss (the PICO-8 code needs about 1 KiB of C
          * stack, measured on the META) and 4 KiB left to the SDK's heap */
-        const unsigned heap = o.heap_bytes ? o.heap_bytes : esp ? 22528u : 18432u;
+        const unsigned heap = o.heap_bytes ? o.heap_bytes : pc ? 65536u : esp ? 22528u : 18432u;
         config << "#ifndef P8_HEAP_BYTES /* the host harness takes more: its values are twice as large */\n#define P8_HEAP_BYTES " << heap << "\n#endif\n";
+        if (pc) {
+            uint32_t identity = 2166136261u;
+            for (const auto& path : {src / "p8_gen.c", src / "p8_cart.c"})
+                for (unsigned char c : read(path)) identity = (identity ^ c) * 16777619u;
+            config << "#define P8_PC_STATE_ID " << (identity | 1u) << "u\n";
+        }
         /* Save states (p8_state_io): the heap, the screen, the cartridge's globals (8 bytes each on the
          * consoles) and under 1 KiB of the rest; on the card next to the .BIN (NAME.ST8, made by
          * compile.sh, in the game's folder on the META, found in the root and the first-level
@@ -102,7 +110,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 config << "#define P8_STATE_SLOTS " << slots << " /* in flash */\n";
             } else {
                 config << "#define P8_STATE_NAME \"" << sd << ".ST8\"\n#define P8_STATE_NAME83 \"" << name83(sd, "ST8") << "\"\n#define P8_STATE_SLOTS 10\n";
-                if (!pokitto) /* the state file in the game's folder: a META loader notion */
+                if (!pokitto && !pc) /* the state file in the game's folder: a META loader notion */
                     config << "#define P8_BIN_NAME83 \"" << name83(sd, "BIN") << "\"\n";
             }
             config << "#define P8_STATE_SLOT_SECTORS " << sectors << "\n";
@@ -141,11 +149,16 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 copy_template(common_dir / "runtime" / "m0_scale.h", src / "m0_scale.h"); /* espboy_hw.cpp */
             } else {
                 copy_template(shared / "m0_state.cpp", src / "m0_state.cpp");
-                for (const char* name : { "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h" })
+                for (const char* name : { "m0_sd.h", "m0_fat.c", "m0_fat.h" })
                     copy_template(shared / name, src / name);
-                if (pokitto) /* the card's SD bus */
+                if (pokitto) { /* the card's SD bus */
+                    copy_template(shared / "m0_sd.c", src / "m0_sd.c");
                     copy_template(platform / "pokitto_sd.c", src / "pokitto_sd.c");
-                else {
+                } else if (pc) {
+                    copy_template(platform / "pc_sd.c", src / "pc_sd.c");
+                    copy_template(shared / "m0_card.h", src / "m0_card.h");
+                } else {
+                    copy_template(shared / "m0_sd.c", src / "m0_sd.c");
                     copy_template(shared / "m0_card.h", src / "m0_card.h");
                     copy_template(platform / "meta_sd_bus.cpp", src / "meta_sd_bus.cpp");
                 }
@@ -156,7 +169,20 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             /* the audio ring in the Pokitto's 2 KiB bank: the heap and the
              * screen leave the main RAM tight */
             project::write_profile(o.target, src, {pokitto, pokitto, false}, true);
-            if (esp) {
+            if (pc) {
+                config << "#define PC_COLS 160\n#define PC_ROWS 128\n";
+                write(src / "p8_config.h", config.str());
+                write(src / "sg_audio.h", "#pragma once\n#include \"p8_audio.h\"\n"
+                                           "#define sg_platform_audio_rate p8_audio_set_rate\n"
+                                           "#define sg_platform_audio_render p8_audio_render\n");
+                for (const char* name : {"pc_hw.c", "pc_hw.h", "pc_frontend.c", "pc_frontend.h"})
+                    copy_template(platform / name, src / name);
+                auto cmake = replace(read(platform / "CMakeLists.txt.in"), "@NAME@", o.name);
+                cmake += "\nif(CMAKE_SYSTEM_NAME STREQUAL \"Linux\")\n"
+                         "    target_compile_options(" + o.name + " PRIVATE -fno-pie)\n"
+                         "    target_link_options(" + o.name + " PRIVATE -no-pie)\nendif()\n";
+                write(o.output / "CMakeLists.txt", cmake);
+            } else if (esp) {
                 /* Arduino core start-up; the hardware adapter is the Sega frontends' (it finds
                  * its audio in sg_audio.h) with the picture's 128 columns taken as they are */
                 write(src / "sg_audio.h", "#pragma once\n#include \"p8_audio.h\"\n#define sg_platform_audio_rate p8_audio_set_rate\n#define sg_platform_audio_render p8_audio_render\n");

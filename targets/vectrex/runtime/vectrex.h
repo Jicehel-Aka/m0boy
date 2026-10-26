@@ -113,6 +113,8 @@ void vx_reset(Vectrex *);
 void vx_run_until(Vectrex *, uint32_t stop);
 void vx_frame(Vectrex *);
 void vx_end_frame(Vectrex *);
+uint32_t vx_machine_state_bytes(void);
+void vx_machine_state_io(Vectrex *, void (*io)(void *, uint32_t, void *), void *ctx, int load);
 /* one instruction (the reference core), or instructions until the clock
  * reaches `stop` (the run loop, m6809_run.c: the same results) */
 void m6809_step(Vectrex *);

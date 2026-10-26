@@ -425,16 +425,24 @@ void huc6280_run(huc6280_t *cpu, uint32_t until) {
         case 0x1C: { const uint16_t at_ = A_ABS(); const uint8_t m_ = rd(cpu, at_);
             p_ = (uint8_t)((p_ & ~(PCE_P_Z | PCE_P_V | PCE_P_N)) | ((m_ & (uint8_t)~a_) ? 0 : PCE_P_Z) | (m_ & 0xC0u));
             wr(cpu, at_, (uint8_t)(m_ & (uint8_t)~a_)); pc_ += 3; left = 7; break; }
-        /* TST #m,ea: BIT's flags with an immediate mask */
+        /* TST #m,ea: BIT's flags with an immediate mask.  The zp/abs
+         * operand follows the immediate byte (83 imm zp), so A_ZP()'s
+         * pc_+1 fetch would read the immediate as the address */
         #define TST_OF(m_, t_) do { p_ = (uint8_t)((p_ & ~(PCE_P_Z | PCE_P_V | PCE_P_N)) \
             | ((t_ & (m_)) ? 0 : PCE_P_Z) | ((m_) & 0xC0u)); } while (0)
-        case 0x83: { const uint8_t imm_ = rd(cpu, (uint16_t)(pc_ + 1)); const uint8_t m_ = rd(cpu, A_ZP());
+        case 0x83: { const uint8_t imm_ = rd(cpu, (uint16_t)(pc_ + 1));
+            const uint8_t m_ = rd(cpu, ZP_AT(rd(cpu, (uint16_t)(pc_ + 2))));
             TST_OF(imm_, m_); pc_ += 3; left = 7; break; }
-        case 0xA3: { const uint8_t imm_ = rd(cpu, (uint16_t)(pc_ + 1)); const uint8_t m_ = rd(cpu, A_ZPI(x_));
+        case 0xA3: { const uint8_t imm_ = rd(cpu, (uint16_t)(pc_ + 1));
+            const uint8_t m_ = rd(cpu, ZP_AT((uint8_t)(rd(cpu, (uint16_t)(pc_ + 2)) + x_)));
             TST_OF(imm_, m_); pc_ += 3; left = 7; break; }
-        case 0x93: { const uint8_t imm_ = rd(cpu, (uint16_t)(pc_ + 1)); const uint8_t m_ = rd(cpu, A_ABS());
+        case 0x93: { const uint8_t imm_ = rd(cpu, (uint16_t)(pc_ + 1));
+            const uint16_t ea_ = (uint16_t)(rd(cpu, (uint16_t)(pc_ + 2)) | rd(cpu, (uint16_t)(pc_ + 3)) << 8);
+            const uint8_t m_ = rd(cpu, ea_);
             TST_OF(imm_, m_); pc_ += 4; left = 8; break; }
-        case 0xB3: { const uint8_t imm_ = rd(cpu, (uint16_t)(pc_ + 1)); const uint8_t m_ = rd(cpu, (uint16_t)(A_ABS() + x_));
+        case 0xB3: { const uint8_t imm_ = rd(cpu, (uint16_t)(pc_ + 1));
+            const uint16_t ea_ = (uint16_t)((rd(cpu, (uint16_t)(pc_ + 2)) | rd(cpu, (uint16_t)(pc_ + 3)) << 8) + x_);
+            const uint8_t m_ = rd(cpu, ea_);
             TST_OF(imm_, m_); pc_ += 4; left = 8; break; }
         #undef TST_OF
         /* branches */

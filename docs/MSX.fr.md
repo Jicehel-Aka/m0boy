@@ -1,7 +1,9 @@
 # MSX1 : cartouches ROM
 
 `--system msx` (extensions `.mx1`, `.msx`, ou `.rom` commençant par `AB`)
-recompile une cartouche MSX1 vers la META, la Pokitto ou le PC (`desktop`).
+recompile une cartouche MSX1 vers la META, la Pokitto, le harnais (`desktop`)
+ou une fenêtre SDL2 (`pc`). Le projet PC garde les 16 Kio de RAM du harnais,
+affiche les 256×192 pixels du TMS9918A et se construit avec CMake et Ninja.
 Ce n'est pas un émulateur de MSX complet : c'est le runtime SG-1000 (Z80,
 TMS9918A, mêmes frontends) avec la carte mémoire, les ports, le PSG et un BIOS
 simulé du MSX (`targets/msx/runtime/`, activé par `SG_MSX`). Le firmware SG-1000

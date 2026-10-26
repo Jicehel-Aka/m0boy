@@ -322,6 +322,9 @@ def main():
         run(interp, "--bios", bios, "--frames", 120, "--coverage", cov)
         static = build_pc(cart, bios, root / "draw_static", "--meta-precise")
         assert line(static, bios, 120) == ref, (line(static, bios, 120), ref)
+        state = root / "vectrex.state"
+        line(static, bios, 60, "--save-state", state)
+        assert line(static, bios, 60, "--load-state", state) == ref
         assert line(static, bios, 120, "--interp") == ref
         played = build_pc(cart, bios, root / "draw_played", "--meta-precise", "--coverage", cov)
         assert line(played, bios, 120) == ref
@@ -356,6 +359,9 @@ def main():
         assert (meta / "src" / "vx_gen.c").is_file()
         assert "#define VX_NATIVE 1" in (meta / "src" / "vx_config.h").read_text()
         assert "vectrex_bios[8192]" in (meta / "src" / "vx_cart.c").read_text()
+        assert (meta / "src" / "m0_state.cpp").is_file()
+        states = list(meta.glob("*.ST8"))
+        assert len(states) == 1 and states[0].stat().st_size == 10 * 24 * 512
         gcc = shutil.which("arm-none-eabi-gcc")
         pio_gcc = Path.home() / ".platformio/packages/toolchain-gccarmnoneeabi/bin/arm-none-eabi-gcc"
         if not gcc and pio_gcc.is_file():

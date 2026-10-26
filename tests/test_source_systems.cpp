@@ -50,10 +50,10 @@ int main() {
                 target_misfit_reason(pce, target_descriptor(TargetId::pc)).empty(),
                 "Misfit explanation incorrect");
         const auto& nes = system_descriptor(SystemId::nes);
-        require(!nes.wired(TargetId::pc) && nes.supports(TargetId::desktop) && nes.supports(TargetId::meta) &&
+        require(nes.supports(TargetId::pc) && nes.supports(TargetId::desktop) && nes.supports(TargetId::meta) &&
                 nes.supports(TargetId::pokitto) && target_fits(nes, target_descriptor(TargetId::meta)) &&
                 target_fits(nes, target_descriptor(TargetId::pokitto)),
-                "NES must be wired for the desktop harness, the META and the Pokitto only");
+                "NES must be wired for the desktop harness, PC, META and Pokitto");
         const auto& vx = system_descriptor(SystemId::vectrex);
         require(vx.cpu == CpuId::m6809 && vx.work_ram_bytes == 1024 &&
                 vx.supports(TargetId::pc) && vx.supports(TargetId::meta) &&
@@ -76,8 +76,11 @@ int main() {
         const auto& msx = system_descriptor(SystemId::msx);
         require(msx.cpu == CpuId::z80 && msx.reset_address == 0x4000 && parse_system("msx") == SystemId::msx &&
                     detect_system("game.MX1") == SystemId::msx && msx.supports(TargetId::meta) &&
-                    msx.supports(TargetId::pokitto) && !msx.supports(TargetId::espboy),
+                    msx.supports(TargetId::pokitto) && msx.supports(TargetId::pc) &&
+                    !msx.supports(TargetId::espboy),
                 "MSX profile incorrect");
+        require(system_descriptor(SystemId::pico8).supports(TargetId::pc),
+                "PICO-8 PC target missing");
         const auto& sg = system_descriptor(SystemId::sg1000);
         require(sg.cpu == CpuId::z80 && sg.reset_address == 0 &&
                 sg.work_ram_bytes == 1024, "SG-1000 profile incorrect");

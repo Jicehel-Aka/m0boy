@@ -73,8 +73,22 @@ static uint32_t fnv(const void *data, size_t n, uint32_t h) {
     return h;
 }
 
+static void state_read(void *data, uint32_t bytes, void *ctx) {
+    if (fread(data, 1, bytes, (FILE *)ctx) != bytes) {
+        fprintf(stderr, "state file too short\n");
+        exit(2);
+    }
+}
+static void state_write(void *data, uint32_t bytes, void *ctx) {
+    if (fwrite(data, 1, bytes, (FILE *)ctx) != bytes) {
+        fprintf(stderr, "cannot write state\n");
+        exit(2);
+    }
+}
+
 int main(int argc, char **argv) {
     const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0, *coverage = 0;
+    const char *save_state = 0, *load_state = 0;
     int interp = 0;
     unsigned frames = 60, skip = 0;
     for (int i = 1; i < argc; i++) {
@@ -83,6 +97,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_path = argv[++i];
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) coverage = argv[++i];
+        else if (!strcmp(argv[i], "--save-state") && i + 1 < argc) save_state = argv[++i];
+        else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) load_state = argv[++i];
         else if (!strcmp(argv[i], "--skip") && i + 1 < argc) skip = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--rows") && i + 1 < argc) rows = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--interp")) interp = 1;
@@ -128,6 +144,12 @@ int main(int argc, char **argv) {
     machine.ppu.panel_out = panel;
     if (rows < 120 || rows > 240) { fprintf(stderr, "--rows: 120 to 240 (128 the META, 176 the Pokitto)\n"); return 2; }
     nes_ppu_set_rows(&machine.ppu, rows);
+    if (load_state) {
+        FILE *in = fopen(load_state, "rb");
+        if (!in) { perror(load_state); return 2; }
+        nes_state_io(state_read, in, 1);
+        fclose(in);
+    }
     /* a held-input script: "frame buttons" lines, buttons by name */
     struct { unsigned frame; uint8_t buttons; } script[4096];
     unsigned script_n = 0;
@@ -137,14 +159,21 @@ int main(int argc, char **argv) {
         unsigned at; char names[64];
         while (script_n < 4096 && fscanf(in, "%u %63[^\n]\n", &at, names) == 2) {
             uint8_t b = 0;
-            if (strstr(names, "start")) b |= NES_START;
-            if (strstr(names, "a")) b |= NES_A;
-            if (strstr(names, "b")) b |= NES_B;
-            if (strstr(names, "up")) b |= NES_UP;
-            if (strstr(names, "down")) b |= NES_DOWN;
-            if (strstr(names, "left")) b |= NES_LEFT;
-            if (strstr(names, "right")) b |= NES_RIGHT;
-            if (strstr(names, "select")) b |= NES_SELECT;
+            for (char *tok = strtok(names, "+ "); tok; tok = strtok(NULL, "+ ")) {
+                if (!strcmp(tok, "start")) b |= NES_START;
+                else if (!strcmp(tok, "a")) b |= NES_A;
+                else if (!strcmp(tok, "b")) b |= NES_B;
+                else if (!strcmp(tok, "up")) b |= NES_UP;
+                else if (!strcmp(tok, "down")) b |= NES_DOWN;
+                else if (!strcmp(tok, "left")) b |= NES_LEFT;
+                else if (!strcmp(tok, "right")) b |= NES_RIGHT;
+                else if (!strcmp(tok, "select")) b |= NES_SELECT;
+                else if (strcmp(tok, "none")) {
+                    fprintf(stderr, "unknown NES button: %s\n", tok);
+                    fclose(in);
+                    return 2;
+                }
+            }
             script[script_n].frame = at;
             script[script_n++].buttons = b;
         }
@@ -159,8 +188,8 @@ int main(int argc, char **argv) {
     for (unsigned f = 0; f < frames; f++) {
         machine.input = 0;
         for (unsigned i = 0; i < script_n; i++)
-            if (script[i].frame == f) machine.input = script[i].buttons;
-        machine.ppu.skip = skip && f % skip == skip - 1;
+            if (script[i].frame == machine.frames) machine.input = script[i].buttons;
+        machine.ppu.skip = skip && machine.frames % skip == skip - 1;
         nes_frame();
         if (audio) {
             uint8_t samples[256];
@@ -174,6 +203,12 @@ int main(int argc, char **argv) {
             fwrite(samples, 1, count, audio);
             audio_bytes += count;
         }
+    }
+    if (save_state) {
+        FILE *out = fopen(save_state, "wb");
+        if (!out) { perror(save_state); return 2; }
+        nes_state_io(state_write, out, 0);
+        if (fclose(out)) { perror(save_state); return 2; }
     }
     if (audio) {
         fseek(audio, 0, SEEK_SET);

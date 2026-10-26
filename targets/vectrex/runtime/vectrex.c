@@ -93,3 +93,19 @@ void vx_frame(Vectrex *v) {
   vx_run_until(v, v->frame_end + VX_FRAME_CYCLES);
   vx_end_frame(v);
 }
+
+uint32_t vx_machine_state_bytes(void) { return (uint32_t)sizeof(Vectrex); }
+
+void vx_machine_state_io(Vectrex *v, void (*io)(void *, uint32_t, void *), void *ctx, int load) {
+  const uint8_t *bios = v->bios;
+  const uint8_t *rmap[64];
+  uint8_t *wmap[64];
+  memcpy(rmap, v->rmap, sizeof rmap);
+  memcpy(wmap, v->wmap, sizeof wmap);
+  io(v, (uint32_t)sizeof *v, ctx);
+  if (load) {
+    v->bios = bios;
+    memcpy(v->rmap, rmap, sizeof rmap);
+    memcpy(v->wmap, wmap, sizeof wmap);
+  }
+}
