@@ -376,7 +376,8 @@ private:
     void emit_region(std::ostringstream& o, int r);
     void emit_ins(std::ostringstream& o, Ins& in, const Ins* following,
                   const std::string* replacement = nullptr);
-    void emit_transfer(std::ostringstream& o, const Ins& from, uint16_t target, bool set_pc);
+    void emit_transfer(std::ostringstream& o, const Ins& from, uint16_t target, bool set_pc,
+                       int extra = 0);
     void emit_call(std::ostringstream& o, const Ins& in);
     void emit_alu(std::ostringstream& o, unsigned grp, const std::string& src, bool mem,
                   bool src_is_a, uint8_t live);
@@ -1252,14 +1253,18 @@ void Generator::const_write(std::ostringstream& o, uint16_t a, const std::string
 /* Emit a jump to target.  pc is always written first so any path out of the
  * region resumes at the right place. */
 void Generator::emit_transfer(std::ostringstream& o, const Ins& from, uint16_t target,
-                              bool set_pc) {
+                              bool set_pc, int extra) {
     int bank_check;
     Ins* t = resolve(from, target, bank_check);
     if (t && t->region == from.region) {
-        if (t->carry) o << "    CY(" << -t->carry << ");\n";
+        /* one line for the taken branch's cycles and the label's entry
+         * refund: on a branch whose extra equals the carry they cancel */
+        const int net = extra - t->carry;
+        if (net) o << "    CY(" << net << ");\n";
         o << "    goto L_" << hex4(target) << ";\n";
         return;
     }
+    if (extra) o << "    CY(" << extra << ");\n";
     if (set_pc) o << "    gbr.pc = " << hex(target, 4) << ";\n";
     if (!t) {
         o << "    gbl_exec(); return;\n";
@@ -1291,6 +1296,11 @@ void Generator::emit_alu(std::ostringstream& o, unsigned grp, const std::string&
                          bool src_is_a, uint8_t live) {
     const bool z = live & FZ, n = live & FN, h = live & FH, c = live & FC;
     std::string s = "    ";
+    /* an instruction whose flags are all dead emits nothing: do not print
+     * the indent-only line left behind */
+    auto print = [&]() {
+        if (s.find_first_not_of(' ') != std::string::npos) o << s << "\n";
+    };
     switch (grp) {
     case 0: case 1: case 2: case 3: {
         const bool sub = grp >= 2;
@@ -1306,7 +1316,7 @@ void Generator::emit_alu(std::ostringstream& o, unsigned grp, const std::string&
             if (z) s += " gbr.zr = gbr.a;";
             s += " }";
             if (n) s += sub ? " gbr.nf = 1;" : " gbr.nf = 0;";
-            o << s << "\n";
+            print();
             return;
         }
         const char* carry_in = (grp == 1) ? " + gbr.cf" : (grp == 3) ? " - gbr.cf" : "";
@@ -1321,7 +1331,7 @@ void Generator::emit_alu(std::ostringstream& o, unsigned grp, const std::string&
             s += "gbr.a = (uint8_t)(gbr.a " + std::string(sub ? "- " : "+ ") + src + carry_in + ");";
         }
         if (n) s += sub ? " gbr.nf = 1;" : " gbr.nf = 0;";
-        o << s << "\n";
+        print();
         return;
     }
     case 4: case 5: case 6: {
@@ -1332,7 +1342,7 @@ void Generator::emit_alu(std::ostringstream& o, unsigned grp, const std::string&
         if (n) s += " gbr.nf = 0;";
         if (h) s += grp == 4 ? " gbr.hf = 1;" : " gbr.hf = 0;";
         if (c) s += " gbr.cf = 0;";
-        o << s << "\n";
+        print();
         return;
     }
     default: {
@@ -1342,7 +1352,7 @@ void Generator::emit_alu(std::ostringstream& o, unsigned grp, const std::string&
             if (c) s += " gbr.cf = (uint8_t)((t >> 8) & 1);";
             s += " }";
             if (n) s += " gbr.nf = 1;";
-            o << s << "\n";
+            print();
             return;
         }
         if (z || c) {
@@ -1354,7 +1364,7 @@ void Generator::emit_alu(std::ostringstream& o, unsigned grp, const std::string&
             s += "(void)" + src + ";";
         }
         if (n) s += " gbr.nf = 1;";
-        o << s << "\n";
+        print();
         return;
     }
     }
@@ -1367,13 +1377,16 @@ void Generator::emit_cb(std::ostringstream& o, const Ins& in) {
     const std::string src = mem ? "gbl_rd(gbr.hl)" : kR8[r];
     const uint8_t live = in.live_out;
     const std::string mask = hex(1u << bit, 2);
+    auto print = [&](const std::string& s) {
+        if (s.find_first_not_of(' ') != std::string::npos) o << s << "\n";
+    };
     if (grp == 1) {
         std::string s = "   ";
         if (live & FZ) s += " gbr.zr = (uint8_t)(" + src + " & " + mask + ");";
         else if (mem) s += " (void)" + src + ";";
         if (live & FN) s += " gbr.nf = 0;";
         if (live & FH) s += " gbr.hf = 1;";
-        o << s << "\n";
+        print(s);
         return;
     }
     if (grp == 2 || grp == 3) {
@@ -1407,6 +1420,11 @@ void Generator::emit_ins(std::ostringstream& o, Ins& in, const Ins* following,
     bool sync_after = false;
     const bool after_ei = ei_pending_;
     ei_pending_ = false;
+    /* an instruction whose flags are all dead emits nothing: do not print
+     * the indent-only line left behind */
+    auto print = [&](const std::string& s) {
+        if (s.find_first_not_of(' ') != std::string::npos) o << s << "\n";
+    };
 
     if (in.label) {
         /* Loop heads poll interrupts and need gbr.cyc exact; elsewhere the
@@ -1489,7 +1507,7 @@ void Generator::emit_ins(std::ostringstream& o, Ins& in, const Ins* following,
                 if (live & FH) s += inc ? " gbr.hf = (t & 0x0F) == 0;" : " gbr.hf = (t & 0x0F) == 0x0F;";
                 s += " }";
                 if (live & FN) s += inc ? " gbr.nf = 0;" : " gbr.nf = 1;";
-                o << s << "\n";
+                print(s);
             }
             break;
         }
@@ -1510,7 +1528,7 @@ void Generator::emit_ins(std::ostringstream& o, Ins& in, const Ins* following,
             if (live & FZ) s += " gbr.zr = 1;";
             if (live & FN) s += " gbr.nf = 0;";
             if (live & FH) s += " gbr.hf = 0;";
-            o << s << "\n";
+            print(s);
             break;
         }
         case 0x08: {
@@ -1525,7 +1543,7 @@ void Generator::emit_ins(std::ostringstream& o, Ins& in, const Ins* following,
             std::string s = "    gbr.a = (uint8_t)~gbr.a;";
             if (live & FN) s += " gbr.nf = 1;";
             if (live & FH) s += " gbr.hf = 1;";
-            o << s << "\n";
+            print(s);
             break;
         }
         case 0x37: case 0x3F: {
@@ -1533,7 +1551,7 @@ void Generator::emit_ins(std::ostringstream& o, Ins& in, const Ins* following,
             if (live & FC) s += op == 0x37 ? " gbr.cf = 1;" : " gbr.cf ^= 1;";
             if (live & FN) s += " gbr.nf = 0;";
             if (live & FH) s += " gbr.hf = 0;";
-            o << s << "\n";
+            print(s);
             break;
         }
         case 0xC1: o << "    gbr.bc = gbl_pop();\n"; break;
@@ -1605,9 +1623,15 @@ void Generator::emit_ins(std::ostringstream& o, Ins& in, const Ins* following,
         case 0x20: case 0x28: case 0x30: case 0x38:
         case 0xC2: case 0xCA: case 0xD2: case 0xDA:
             flush(o);
-            o << "    if (" << cond_expr(op) << ") {\n    CY(" << int(in.extra) << ");\n";
-            if (in.spin) emit_spin(o, in);
-            emit_transfer(o, in, in.target, true);
+            o << "    if (" << cond_expr(op) << ") {\n";
+            if (in.spin) {
+                /* gbl_spin reads gbr.cyc: the taken cycles stay before it */
+                o << "    CY(" << int(in.extra) << ");\n";
+                emit_spin(o, in);
+                emit_transfer(o, in, in.target, true);
+            } else {
+                emit_transfer(o, in, in.target, true, int(in.extra));
+            }
             o << "    }\n";
             break;
         case 0xE9:

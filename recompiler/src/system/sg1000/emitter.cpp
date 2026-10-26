@@ -701,9 +701,16 @@ bool Emitter::emit_native(std::ostringstream& o, const Ins& in, bool flags) {
         const std::string v = reg8(r, d);
         if (x == 1) { /* BIT: X/Y from the address high byte when indexed */
             if (!flags) { o << "    /* BIT: flags unused */\n"; return true; }
-            const std::string xy = d.index ? "(" + addr_hl(d) + " >> 8)" : "v_";
-            o << "    { uint8_t v_ = " << v << "; Z.f = (uint8_t)((Z.f & 1) | 0x10 | (" << xy << " & 0x28) | ((v_ & "
-              << hex(1u << y, 2) << ") ? " << (y == 7 ? "0x80" : "0") << " : 0x44)); }\n";
+            const std::string mask = hex(1u << y, 2);
+            if (d.index) {
+                /* the indexed address feeds both the read and F5/F3: once */
+                o << "    { uint16_t a_ = " << addr_hl(d) << "; uint8_t v_ = " << rd_expr("a_")
+                  << "; Z.f = (uint8_t)((Z.f & 1) | 0x10 | ((a_ >> 8) & 0x28) | ((v_ & "
+                  << mask << ") ? " << (y == 7 ? "0x80" : "0") << " : 0x44)); }\n";
+            } else {
+                o << "    { uint8_t v_ = " << v << "; Z.f = (uint8_t)((Z.f & 1) | 0x10 | (v_ & 0x28) | ((v_ & "
+                  << mask << ") ? " << (y == 7 ? "0x80" : "0") << " : 0x44)); }\n";
+            }
             return true;
         }
         if (x == 0) {
@@ -1118,11 +1125,18 @@ void Emitter::emit_region(std::ostringstream& o, int r) {
     o << "    switch (Z.pc) {\n";
     for (Loc a : reg) if (ins_[a].sw_case) o << "    case " << hex(addr_of(a)) << ": goto " << lab(a) << ";\n";
     o << "    default: return;\n    }\n";
+    /* an instruction with no label after an exit is text GCC would throw
+     * away: do not emit it (the next label always restarts a live path) */
+    bool falls_in = true;
     for (size_t k = 0; k < reg.size(); k++) {
         Ins& in = ins_[reg[k]];
         const Ins* following = k + 1 < reg.size() ? &ins_[reg[k + 1]] : nullptr;
+        if (!falls_in && !in.label) continue;
         /* an Ei/Ret/Jump... ends the straight line: the next one needs a label */
         emit_ins(o, in, following);
+        /* Flow::Ei inlines the instruction after it (EI;RET...): the run
+         * never falls into it */
+        falls_in = in.flow != Flow::Ei && in.falls();
     }
     flush(o);
     o << "}\n";

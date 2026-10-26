@@ -263,7 +263,8 @@ static void emit_proto(const Proto *p, int id) {
             if (b) E("%d", b - 1); else E("top - %d", a + 1);
             E(");");
             if (c == 0) E(" top = %d + n_;", a);
-            else E(" for (int i_ = n_; i_ < %d; i_++) R[%d + i_] = V_NIL;", c - 1, a);
+            else if (c > 1) E(" for (int i_ = n_; i_ < %d; i_++) R[%d + i_] = V_NIL;", c - 1, a);
+            /* c == 1: the results are dropped, and p8_call returns n_ >= 0 */
             E(" }\n");
             break;
         case OP_TAILCALL:

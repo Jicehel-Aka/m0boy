@@ -204,7 +204,8 @@ void print_usage(const char* program) {
     std::cout << "  --android-package <p> Android Java package (default: io.gbrecompiled.<game>)\n";
     std::cout << "  --android-app-name <n> Android app name (default: ROM title)\n";
     std::cout << "  --single-function     Generate all code in a single function\n";
-    std::cout << "  --no-comments         Don't include disassembly comments\n";
+    std::cout << "  --comments            Include the disassembly comments (default: off, they\n"
+                 "                        more than double the size of the generated C)\n";
     std::cout << "  --bank <n>            Only process bank n\n";
     std::cout << "  --add-entry-point b:a Add manual entry point (e.g. 1:4000)\n";
     std::cout << "  --no-scan             Disable speculative code seeding (enabled by default)\n";
@@ -348,7 +349,7 @@ struct GenerationOptions {
     size_t limit_instructions = 0;
     size_t codegen_jobs = 0;
     bool single_function = false;
-    bool emit_comments = true;
+    bool emit_comments = false;
     bool aggressive_scan = true;
     bool infer_data_zones = true;
     bool analyze_all_banks = true;
@@ -2040,7 +2041,7 @@ int main(int argc, char* argv[]) {
     size_t limit_instructions = 0;
     size_t requested_jobs = 0;
     bool single_function = false;
-    bool emit_comments = true;
+    bool emit_comments = false;
     bool aggressive_scan = true;
     bool infer_data_zones = true;
     bool analyze_all_banks = true;
@@ -2132,8 +2133,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (arg == "--single-function") {
             single_function = true;
-        } else if (arg == "--no-comments") {
-            emit_comments = false;
+        } else if (arg == "--comments") {
+            emit_comments = true;
         } else if (arg == "--bank") {
             if (i + 1 < argc) {
                 specific_bank = std::stoi(argv[++i]);

@@ -659,6 +659,10 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
     const std::string R8 = in.reg ? "c->b" : "c->a";
     const unsigned live = in.wr & in.live_out;
     const std::string L = std::to_string(live) + "u";
+    /* the flags are known dead: emit no flag call at all (the live-masked
+     * helpers would fold to nothing anyway) */
+    const bool nf = live == 0;
+    const std::string NZ8 = nf ? "" : " VXG_NZ8(z_, " + L + "); ";
     static const char* r16[5] = {"VXG_D()", "c->x", "c->y", "c->u", "c->s"};
     auto set16 = [](unsigned reg, const std::string& v) {
         static const char* f[5] = {"", "c->x", "c->y", "c->u", "c->s"};
@@ -731,14 +735,14 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         body += "const uint32_t t_ = " + t + "; ";
         switch (in.lo) {
         case 0: body += R8 + " = (uint8_t)vxg_sub8(c, " + R8 + ", t_, 0, " + L + "); "; break;
-        case 1: body += "vxg_sub8(c, " + R8 + ", t_, 0, " + L + "); "; break;
+        case 1: if (!nf) body += "vxg_sub8(c, " + R8 + ", t_, 0, " + L + "); "; break;
         case 2: body += R8 + " = (uint8_t)vxg_sub8(c, " + R8 + ", t_, c->cc & 1u, " + L + "); "; break;
-        case 4: body += "const uint32_t z_ = " + R8 + " & t_; " + R8 + " = (uint8_t)z_; VXG_NZ8(z_, " + L + "); "; break;
-        case 5: body += "const uint32_t z_ = " + R8 + " & t_; VXG_NZ8(z_, " + L + "); "; break;
-        case 6: body += R8 + " = (uint8_t)t_; VXG_NZ8(t_, " + L + "); "; break;
-        case 8: body += "const uint32_t z_ = " + R8 + " ^ t_; " + R8 + " = (uint8_t)z_; VXG_NZ8(z_, " + L + "); "; break;
+        case 4: body += "const uint32_t z_ = " + R8 + " & t_; " + R8 + " = (uint8_t)z_;" + NZ8; break;
+        case 5: if (!nf) body += "const uint32_t z_ = " + R8 + " & t_; VXG_NZ8(z_, " + L + "); "; break;
+        case 6: body += R8 + " = (uint8_t)t_;" + (nf ? " " : " VXG_NZ8(t_, " + L + "); "); break;
+        case 8: body += "const uint32_t z_ = " + R8 + " ^ t_; " + R8 + " = (uint8_t)z_;" + NZ8; break;
         case 9: body += R8 + " = (uint8_t)vxg_add8(c, " + R8 + ", t_, c->cc & 1u, " + L + "); "; break;
-        case 10: body += "const uint32_t z_ = " + R8 + " | t_; " + R8 + " = (uint8_t)z_; VXG_NZ8(z_, " + L + "); "; break;
+        case 10: body += "const uint32_t z_ = " + R8 + " | t_; " + R8 + " = (uint8_t)z_;" + NZ8; break;
         case 11: body += R8 + " = (uint8_t)vxg_add8(c, " + R8 + ", t_, 0, " + L + "); "; break;
         }
         finish(check(in, in.next));
@@ -746,7 +750,7 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
     }
     case K::st8: {
         const Addr a = address(in, pre);
-        body += "const uint32_t z_ = " + R8 + "; " + wr8(in, a, "z_", T) + "VXG_NZ8(z_, " + L + "); ";
+        body += "const uint32_t z_ = " + R8 + "; " + wr8(in, a, "z_", T) + NZ8;
         finish(check(in, in.next));
         return;
     }
@@ -762,8 +766,8 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         switch (in.lo) {
         case SUB16: body += "VXG_SETD(vxg_sub16(c, VXG_D(), t_, " + L + ")); "; break;
         case ADD16: body += "VXG_SETD(vxg_add16(c, VXG_D(), t_, " + L + ")); "; break;
-        case CMP16: body += "vxg_sub16(c, " + std::string(r16[in.reg]) + ", t_, " + L + "); "; break;
-        case LD16: body += set16(in.reg, "t_") + "VXG_NZ16(t_, " + L + "); "; break;
+        case CMP16: if (!nf) body += "vxg_sub16(c, " + std::string(r16[in.reg]) + ", t_, " + L + "); "; break;
+        case LD16: body += set16(in.reg, "t_") + (nf ? "" : " VXG_NZ16(t_, " + L + "); "); break;
         }
         finish(check(in, in.next));
         return;
@@ -771,7 +775,7 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
     case K::st16: {
         const Addr a = address(in, pre);
         body += "const uint32_t z_ = " + std::string(r16[in.reg]) + "; " + wr8(in, a, "z_ >> 8", T) +
-                wr8(in, plus1(a), "z_", T) + "VXG_NZ16(z_, " + L + "); ";
+                wr8(in, plus1(a), "z_", T) + (nf ? " " : " VXG_NZ16(z_, " + L + "); ");
         finish(check(in, in.next));
         return;
     }
@@ -781,9 +785,14 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         return;
     case K::umem: {
         const Addr a = address(in, pre);
-        body += "const uint32_t t_ = " + rd8(in, a, T) + "; const uint32_t z_ = vxg_unary(c, " +
-                std::to_string(in.lo) + "u, t_, " + L + "); (void)z_; ";
-        if (in.lo != 13) body += wr8(in, a, "z_", T);
+        body += "const uint32_t t_ = " + rd8(in, a, T) + "; ";
+        if (in.lo == 13) {
+            /* TST: the read is the only effect when the flags are dead */
+            if (!nf) body += "const uint32_t z_ = vxg_unary(c, 13u, t_, " + L + "); (void)z_; ";
+        } else {
+            body += "const uint32_t z_ = vxg_unary(c, " + std::to_string(in.lo) + "u, t_, " + L + "); " +
+                    wr8(in, a, "z_", T);
+        }
         finish(check(in, in.next));
         return;
     }
@@ -832,13 +841,13 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
     case K::daa:
         body += "const uint32_t a_ = c->a; uint32_t fix_ = 0; if ((a_ & 15u) > 9u || (c->cc & 32u)) fix_ |= 6u; "
                 "if (a_ > 0x99u || (c->cc & 1u)) fix_ |= 0x60u; const uint32_t r_ = (a_ + fix_) & 0xFFu; "
-                "c->a = (uint8_t)r_; VXG_NZ8(r_, " + L + "); if (fix_ & 0x60u) c->cc |= 1u; ";
+                "c->a = (uint8_t)r_;" + (nf ? " " : " VXG_NZ8(r_, " + L + "); ") + "if (fix_ & 0x60u) c->cc |= 1u; ";
         finish(check(in, in.next));
         return;
     case K::orcc: body += "c->cc |= " + hex(in.imm, 2) + "u; "; finish(check(in, in.next)); return;
     case K::andcc: body += "c->cc &= " + hex(in.imm, 2) + "u; "; finish(check(in, in.next)); return;
     case K::sex:
-        body += "c->a = (c->b & 0x80u) ? 0xFFu : 0; VXG_NZ16(VXG_D(), " + L + "); ";
+        body += "c->a = (c->b & 0x80u) ? 0xFFu : 0;" + (nf ? " " : " VXG_NZ16(VXG_D(), " + L + "); ");
         finish(check(in, in.next));
         return;
     case K::exg: case K::tfr: {
@@ -873,7 +882,10 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
             }
         };
         const unsigned hi = in.imm >> 4, lo = in.imm & 15;
-        body += "const uint32_t e1_ = " + get(hi) + ", e2_ = " + get(lo) + "; (void)e1_; (void)e2_; ";
+        /* only EXG needs the second side; the unused-variable pragmas of the
+         * generated file cover an immediate source */
+        body += "const uint32_t e1_ = " + get(hi) + "; ";
+        if (in.k == K::exg) body += "const uint32_t e2_ = " + get(lo) + "; ";
         if (in.k == K::exg) body += set(hi, "e2_");
         body += set(lo, "e1_");
         if (in.dynamic) {
@@ -888,7 +900,7 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         static const char* f[4] = {"c->x", "c->y", "c->s", "c->u"};
         const std::string v = a.constant ? hexu(a.value) : a.expr;
         body += std::string(f[in.reg]) + " = (uint16_t)(" + v + "); ";
-        if (in.reg < 2) body += "vxg_flags(c, " + L + ", (" + v + ") ? 0u : 4u); ";
+        if (in.reg < 2 && !nf) body += "vxg_flags(c, " + L + ", (" + v + ") ? 0u : 4u); ";
         finish(check(in, in.next));
         return;
     }
@@ -912,8 +924,9 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         return;
     case K::abx: body += "c->x = (uint16_t)(c->x + c->b); "; finish(check(in, in.next)); return;
     case K::mul:
-        body += "const uint32_t m_ = (uint32_t)c->a * c->b; VXG_SETD(m_); vxg_flags(c, " + L +
-                ", (m_ ? 0u : 4u) | ((m_ >> 7) & 1u)); ";
+        body += "const uint32_t m_ = (uint32_t)c->a * c->b; VXG_SETD(m_);";
+        if (!nf) body += " vxg_flags(c, " + L + ", (m_ ? 0u : 4u) | ((m_ >> 7) & 1u)); ";
+        body += " ";
         finish(check(in, in.next));
         return;
     case K::none:

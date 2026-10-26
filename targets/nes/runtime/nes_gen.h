@@ -74,6 +74,11 @@ static inline __attribute__((always_inline)) void nes_gen_wr(uint16_t at, uint8_
     v = (uint8_t)((~(a ^ m__) & (a ^ sum__) & 0x80u) >> 1); c = (uint8_t)(sum__ >> 8); \
     a = (uint8_t)sum__; NES_ZN(a); } while (0)
 #define NES_SBC(m_) NES_ADC((uint8_t)~(m_))
+/* the same arithmetic with only V and C kept: no flag read wants N or Z */
+#define NES_ADC_NC(m_) do { const uint8_t m__ = (m_); const unsigned sum__ = (unsigned)a + m__ + c; \
+    v = (uint8_t)((~(a ^ m__) & (a ^ sum__) & 0x80u) >> 1); c = (uint8_t)(sum__ >> 8); \
+    a = (uint8_t)sum__; } while (0)
+#define NES_SBC_NC(m_) NES_ADC_NC((uint8_t)~(m_))
 #define NES_CMP(r_, m_) do { const uint8_t r__ = (r_), m__ = (m_); \
     c = (uint8_t)(r__ >= m__); NES_ZN((uint8_t)(r__ - m__)); } while (0)
 #define NES_BIT(m_) do { const uint8_t m__ = (m_); \

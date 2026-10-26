@@ -116,6 +116,49 @@ unsigned length(Mode m) {
 
 bool is_branch(Op op) { return op >= Op::bpl && op <= Op::beq; }
 
+/* flag bits of the liveness sets: N|Z|C|V */
+enum : uint8_t { FNZ_N = 1, FNZ_Z = 2, FNZ_C = 4, FNZ_V = 8, FNZ_ALL = 0xF };
+
+/* the flags an instruction writes (the I/D bits are kept out of the
+ * model: SEI/CLI/CLD/SED and the IRQ checks always run) */
+uint8_t flag_writes(Op op) {
+    switch (op) {
+    case Op::lda: case Op::ldx: case Op::ldy: case Op::ora: case Op::and_: case Op::eor:
+    case Op::inc: case Op::dec: case Op::inx: case Op::iny: case Op::dex: case Op::dey:
+    case Op::tax: case Op::tay: case Op::txa: case Op::tya: case Op::tsx: case Op::pla:
+        return FNZ_N | FNZ_Z;
+    case Op::adc: case Op::sbc:
+        return FNZ_ALL;
+    case Op::cmp: case Op::cpx: case Op::cpy:
+    case Op::asl: case Op::lsr: case Op::rol: case Op::ror:
+        return FNZ_N | FNZ_Z | FNZ_C;
+    case Op::bit:
+        return FNZ_N | FNZ_Z | FNZ_V;
+    case Op::clc: case Op::sec:
+        return FNZ_C;
+    case Op::clv:
+        return FNZ_V;
+    case Op::plp: case Op::rti:
+        return FNZ_ALL;                  /* NES_SETP joins P back */
+    default:
+        return 0;
+    }
+}
+
+/* the flags an instruction reads */
+uint8_t flag_reads(Op op) {
+    switch (op) {
+    case Op::bpl: case Op::bmi: return FNZ_N;
+    case Op::bvc: case Op::bvs: return FNZ_V;
+    case Op::bcc: case Op::bcs: return FNZ_C;
+    case Op::bne: case Op::beq: return FNZ_Z;
+    case Op::adc: case Op::sbc: case Op::rol: case Op::ror: return FNZ_C;
+    case Op::php: return FNZ_ALL;        /* NES_P() joins P together */
+    default:
+        return 0;
+    }
+}
+
 std::string hex(unsigned v, int digits = 4) {
     char b[16];
     snprintf(b, sizeof b, "0x%0*X", digits, v);
@@ -137,6 +180,7 @@ struct Ins {
     int region = -1;
     unsigned local = 0;
     unsigned global = 0;     /* index in the entry table */
+    uint8_t live_out = 0xF;  /* flags read after this instruction: N|Z|C|V */
 };
 
 class Emitter {
@@ -291,6 +335,21 @@ void Emitter::plan() {
     unsigned global = 0;
     for (auto& [a, in] : ins_)
         if (in.label) in.global = global++;
+    /* the fast mode can prune a dead flag write: walk every region
+     * backwards, keeping all flags live at labels (the budget check may
+     * leave) and at every exit; precise mode keeps the default 0xF */
+    if (!opt_.precise)
+        for (const auto& r : regions_) {
+            uint8_t live = FNZ_ALL;
+            for (size_t i = r.size(); i-- > 0;) {
+                Ins& in = ins_.at(r[i]);
+                const bool all_out = in.has_target || !in.falls || i + 1 == r.size() ||
+                                     ins_.at(r[i + 1]).label;
+                in.live_out = all_out ? FNZ_ALL : live;
+                live = (uint8_t)((in.live_out & ~flag_writes(in.info.op)) | flag_reads(in.info.op));
+                if (in.label) live = FNZ_ALL;
+            }
+        }
 }
 
 /* where control goes to reach `to` */
@@ -389,53 +448,121 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         if (m == Mode::abs) return "nes_bus_write(" + at + ", " + value + ");";
         return "nes_gen_wr(" + at + ", " + value + ");";
     };
-    /* read-modify-write: the bus sees the read, then the write */
-    auto modify = [&](const std::string& f) {
-        if (m == Mode::acc) return "a = " + f + "(a);";
-        const std::string value = read(in, pre, cross);
-        cross.clear(); /* the read-modify-writes pay no page penalty: their count holds it */
-        return "{ const uint8_t r_ = " + f + "(" + value + "); " + store("r_") + " }";
+    /* the flags still read after this instruction (the liveness pass keeps
+     * 0xF in precise mode and at every exit) */
+    const uint8_t lv = in.live_out;
+    const bool nz = lv & (FNZ_N | FNZ_Z), cl = lv & FNZ_C, vl = lv & FNZ_V;
+    /* read-modify-write: the bus sees the read, then the write; an indexed
+     * operand's address is computed once for both */
+    bool rmw_ram = false, rmw_dma = false;
+    std::string rmw_rd, rmw_wr;
+    if (m == Mode::zp || m == Mode::zpx || m == Mode::zpy ||
+        m == Mode::absx || m == Mode::absy) {
+        const std::string at = address(in, pre, rmw_ram, rmw_dma);
+        const std::string idx = (m == Mode::absx || m == Mode::absy) ? " & 0x7FFu" : "";
+        if (rmw_ram) {
+            rmw_rd = "ram_[" + at + idx + "]";
+            rmw_wr = "ram_[" + at + idx + "] = r_;";
+        } else {
+            rmw_rd = "nes_gen_rd(" + at + ", " + hex(opt_.prg_size - 1) + "u)";
+            rmw_wr = "nes_gen_wr(" + at + ", r_);";
+        }
+        /* $4014 may hide behind an indexed address (precise mode stalls) */
+        if (rmw_dma && opt_.precise)
+            after = "if (NES_C.stall_pending) { pc_ = " + hex(in.next) + "; goto out; }";
+    }
+    /* the shift's value from m__, with the flags this instruction keeps */
+    auto shift_core = [&](unsigned kind) {
+        static const char* sh[4] = {"(uint8_t)(m__ << 1)", "(uint8_t)(m__ >> 1)",
+                                    "(uint8_t)((m__ << 1) | c)", "(uint8_t)((m__ >> 1) | (c << 7))"};
+        static const char* cw[4] = {"(uint8_t)(m__ >> 7)", "(uint8_t)(m__ & 1u)",
+                                    "(uint8_t)(m__ >> 7)", "(uint8_t)(m__ & 1u)"};
+        std::string s = "const uint8_t r_ = " + std::string(sh[kind]) + "; ";
+        if (cl) s += std::string("c = ") + cw[kind] + "; ";
+        if (nz) s += "NES_ZN(r_); ";
+        return s;
+    };
+    auto modify = [&](unsigned kind) {
+        if (m == Mode::acc) return "{ const uint8_t m__ = a; " + shift_core(kind) + "a = r_; }";
+        if (m == Mode::abs) {
+            /* a constant address: the ROM folds, $4014 keeps its bus path */
+            const std::string value = read(in, pre, cross);
+            cross.clear(); /* the read-modify-writes pay no page penalty: their count holds it */
+            return "{ const uint8_t m__ = " + value + "; " + shift_core(kind) + store("r_") + " }";
+        }
+        cross.clear();
+        return "{ const uint8_t m__ = " + rmw_rd + "; " + shift_core(kind) + rmw_wr + " }";
     };
     auto step = [&](const std::string& f) {
-        std::string value = read(in, pre, cross);
-        cross.clear();
-        return "{ const uint8_t r_ = (uint8_t)(" + value + " " + f + "); NES_ZN(r_); " + store("r_") + " }";
+        if (m == Mode::abs) {
+            const std::string value = read(in, pre, cross);
+            cross.clear();
+            return "{ const uint8_t r_ = (uint8_t)(" + value + " " + f + "); " +
+                   (nz ? "NES_ZN(r_); " : "") + store("r_") + " }";
+        }
+        return "{ const uint8_t r_ = (uint8_t)(" + rmw_rd + " " + f + "); " +
+               (nz ? "NES_ZN(r_); " : "") + rmw_wr + " }";
     };
+    const std::string zn_a = nz ? " NES_ZN(a);" : "", zn_x = nz ? " NES_ZN(x);" : "",
+                      zn_y = nz ? " NES_ZN(y);" : "";
     switch (op) {
-    case Op::lda: body = "a = " + read(in, pre, cross) + "; NES_ZN(a);"; break;
-    case Op::ldx: body = "x = " + read(in, pre, cross) + "; NES_ZN(x);"; break;
-    case Op::ldy: body = "y = " + read(in, pre, cross) + "; NES_ZN(y);"; break;
+    case Op::lda: body = "a = " + read(in, pre, cross) + ";" + zn_a; break;
+    case Op::ldx: body = "x = " + read(in, pre, cross) + ";" + zn_x; break;
+    case Op::ldy: body = "y = " + read(in, pre, cross) + ";" + zn_y; break;
     case Op::sta: body = store("a"); break;
     case Op::stx: body = store("x"); break;
     case Op::sty: body = store("y"); break;
-    case Op::adc: body = "NES_ADC(" + read(in, pre, cross) + ");"; break;
-    case Op::sbc: body = "NES_SBC(" + read(in, pre, cross) + ");"; break;
-    case Op::ora: body = "a |= " + read(in, pre, cross) + "; NES_ZN(a);"; break;
-    case Op::and_: body = "a &= " + read(in, pre, cross) + "; NES_ZN(a);"; break;
-    case Op::eor: body = "a ^= " + read(in, pre, cross) + "; NES_ZN(a);"; break;
-    case Op::cmp: body = "NES_CMP(a, " + read(in, pre, cross) + ");"; break;
-    case Op::cpx: body = "NES_CMP(x, " + read(in, pre, cross) + ");"; break;
-    case Op::cpy: body = "NES_CMP(y, " + read(in, pre, cross) + ");"; break;
-    case Op::bit: body = "NES_BIT(" + read(in, pre, cross) + ");"; break;
-    case Op::asl: body = modify("NES_ASL"); break;
-    case Op::lsr: body = modify("NES_LSR"); break;
-    case Op::rol: body = modify("NES_ROL"); break;
-    case Op::ror: body = modify("NES_ROR"); break;
+    case Op::adc: case Op::sbc: {
+        const std::string val = read(in, pre, cross);
+        if (nz) body = (op == Op::adc ? "NES_ADC(" : "NES_SBC(") + val + ");";
+        else if (cl || vl) body = (op == Op::adc ? "NES_ADC_NC(" : "NES_SBC_NC(") + val + ");";
+        else body = op == Op::adc ? "a = (uint8_t)(a + " + val + " + c);"
+                                  : "a = (uint8_t)(a + (uint8_t)~" + val + " + c);";
+        break;
+    }
+    case Op::ora: body = "a |= " + read(in, pre, cross) + ";" + zn_a; break;
+    case Op::and_: body = "a &= " + read(in, pre, cross) + ";" + zn_a; break;
+    case Op::eor: body = "a ^= " + read(in, pre, cross) + ";" + zn_a; break;
+    case Op::cmp: case Op::cpx: case Op::cpy: {
+        const std::string r = op == Op::cmp ? "a" : op == Op::cpx ? "x" : "y";
+        const std::string val = read(in, pre, cross);
+        if (nz && cl) body = "NES_CMP(" + r + ", " + val + ");";
+        else if (cl) body = "c = (uint8_t)((uint8_t)" + r + " >= " + val + ");";
+        else if (nz) body = "NES_ZN((uint8_t)(" + r + " - " + val + "));";
+        else body = "(void)(" + val + ");";
+        break;
+    }
+    case Op::bit: {
+        const std::string val = read(in, pre, cross);
+        if (!(lv & (FNZ_N | FNZ_Z | FNZ_V))) body = "(void)(" + val + ");";
+        else {
+            body = "{ const uint8_t m__ = " + val + ";";
+            if (lv & FNZ_Z) body += " z = (uint8_t)(a & m__);";
+            if (lv & FNZ_V) body += " v = (uint8_t)(m__ & 0x40u);";
+            if (lv & FNZ_N) body += " n = m__;";
+            body += " }";
+        }
+        break;
+    }
+    case Op::asl: body = modify(0); break;
+    case Op::lsr: body = modify(1); break;
+    case Op::rol: body = modify(2); break;
+    case Op::ror: body = modify(3); break;
     case Op::inc: body = step("+ 1u"); break;
     case Op::dec: body = step("- 1u"); break;
-    case Op::inx: body = "x++; NES_ZN(x);"; break;
-    case Op::iny: body = "y++; NES_ZN(y);"; break;
-    case Op::dex: body = "x--; NES_ZN(x);"; break;
-    case Op::dey: body = "y--; NES_ZN(y);"; break;
-    case Op::tax: body = "x = a; NES_ZN(x);"; break;
-    case Op::tay: body = "y = a; NES_ZN(y);"; break;
-    case Op::txa: body = "a = x; NES_ZN(a);"; break;
-    case Op::tya: body = "a = y; NES_ZN(a);"; break;
-    case Op::tsx: body = "x = s; NES_ZN(x);"; break;
+    case Op::inx: body = nz ? "x++; NES_ZN(x);" : "x++;"; break;
+    case Op::iny: body = nz ? "y++; NES_ZN(y);" : "y++;"; break;
+    case Op::dex: body = nz ? "x--; NES_ZN(x);" : "x--;"; break;
+    case Op::dey: body = nz ? "y--; NES_ZN(y);" : "y--;"; break;
+    case Op::tax: body = nz ? "x = a; NES_ZN(x);" : "x = a;"; break;
+    case Op::tay: body = nz ? "y = a; NES_ZN(y);" : "y = a;"; break;
+    case Op::txa: body = nz ? "a = x; NES_ZN(a);" : "a = x;"; break;
+    case Op::tya: body = nz ? "a = y; NES_ZN(a);" : "a = y;"; break;
+    case Op::tsx: body = nz ? "x = s; NES_ZN(x);" : "x = s;"; break;
     case Op::txs: body = "s = x;"; break;
     case Op::pha: body = "NES_PUSH(a);"; break;
     case Op::php: body = "NES_PUSH((uint8_t)(NES_P() | NES_P_B));"; break;
-    case Op::pla: body = "a = NES_POP(); NES_ZN(a);"; break;
+    case Op::pla: body = nz ? "a = NES_POP(); NES_ZN(a);" : "a = NES_POP();"; break;
     case Op::plp:
         body = "NES_SETP(NES_POP());";
         after = "if (NES_C.irq_line && !(id & NES_P_I)) { pc_ = " + hex(in.next) + "; goto out; }";
