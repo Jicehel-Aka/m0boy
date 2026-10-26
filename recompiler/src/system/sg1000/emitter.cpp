@@ -548,23 +548,28 @@ void Emitter::plan() {
             }
         }
     }
-    /* Flag liveness per region, least fixed point; exits keep all live. */
+    /* Flag liveness, global least fixed point over every region: a direct
+     * transfer between compiled regions (a goto, a jump or the run into the
+     * next region) carries exactly what the target still reads there — the
+     * same reasoning as inside one region.  Everything that leaves for the
+     * interpreter, the callee side of a call and the return sites keep all
+     * flags live. */
     auto liveness = [&]() {
         for (auto& [a, in] : ins_) in.live_in = in.live_out = 0;
-        for (auto& reg : regions_) {
-            for (bool changed = true; changed;) {
-                changed = false;
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (auto& reg : regions_) {
                 for (size_t k = reg.size(); k-- > 0;) {
                     Ins& in = ins_[reg[k]];
                     uint8_t out = 0;
                     if (opt_.precise || in.calls() || in.remap || in.stores || in.flow == Flow::Ei || in.flow == Flow::Bad) out = FALL;
                     if (in.falls()) {
                         Ins* n = find(in.next_dest.loc);
-                        out |= (n && n->region == in.region) ? n->live_in : FALL;
+                        out |= n ? n->live_in : FALL;
                     }
                     if (in.jumps()) {
                         Ins* t = find(in.target_dest.loc);
-                        out |= (t && t->region == in.region) ? t->live_in : FALL;
+                        out |= t ? t->live_in : FALL;
                     }
                     if (in.flow == Flow::Ret || in.flow == Flow::RetCond || in.flow == Flow::Reti || in.flow == Flow::JumpDyn)
                         out = FALL;
