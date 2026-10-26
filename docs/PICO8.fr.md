@@ -155,7 +155,11 @@ build/bin/p8c cart.p8.png --lua       # le Lua tel que compilé
 ```
 
 `--input` : « image:masque:durée » (bits 0 gauche, 1 droite, 2 haut, 3 bas,
-4 O, 5 X). Variables du harnais : `P8_STATS=1` (mémoire par type), `P8_BINS=préfixe`
+4 O, 5 X). `--input-file fichier` lit les mêmes segments dans un fichier —
+celui qu'écrit la fenêtre PC avec `M0_RECORD_INPUT=fichier` (un segment se
+ferme à chaque changement de boutons ; un redémarrage ou un état sauvegardé
+du menu y met fin) et que rejoue aussi la fenêtre avec `M0_INPUT=fichier`.
+Variables du harnais : `P8_STATS=1` (mémoire par type), `P8_BINS=préfixe`
 (écran brut toutes les 30 images), `P8_GC_EVERY=1`.
 Options de construction utiles au débogage du firmware : `-DP8_ERROR_STATS`
 (la page d'erreur détaille le tas), `-DP8_STACK_CHECK` (barre de la pile C en

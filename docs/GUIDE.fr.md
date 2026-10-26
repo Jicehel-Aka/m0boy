@@ -185,6 +185,13 @@ a la forme `<frame> <boutons>`, avec les boutons joints par `+` : `a`, `b`,
     --input mon_script.input --coverage out/tetris.cov
 ```
 
+Même parcours sur les fenêtres PC des autres cœurs, chacun dans son dialecte
+(`targets/consoles/pc/pc_input.h`) : NES et PICO-8 par variables
+d'environnement (`M0_RECORD_INPUT=partie.input` enregistre,
+`M0_INPUT=script.input` rejoue dans la fenêtre), PC Engine en ligne de
+commande (`--record-input`, `--input`). Le harnais du projet relit ces
+fichiers tels quels (`--input`, PICO-8 : `--input-file`).
+
 ## Conversion en lot : `compile.sh`
 
 ```bash

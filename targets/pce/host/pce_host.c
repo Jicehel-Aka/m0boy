@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "../runtime/pce.h"
+#include "../../consoles/pc/pc_input.h"
 #ifdef PCE_EMBEDDED
 #include "../src/pce_config.h"
 extern const uint8_t pce_rom[];
@@ -72,36 +73,13 @@ int main(int argc, char **argv) {
 
     pce_init(rom, rom_bytes);
     machine.row = on_row;
-    /* a momentary-input script: "frame buttons" lines held for that one
+    /* a momentary-input script: "<frame> buttons" lines held for that one
      * frame, buttons by whole name ("i+right" — strstr would read "right"
-     * as "i") */
-    struct { unsigned frame; uint8_t buttons; } script[4096];
-    unsigned script_n = 0;
-    if (input_path) {
-        FILE *in = fopen(input_path, "r");
-        if (!in) { fprintf(stderr, "cannot read %s\n", input_path); return 2; }
-        unsigned at; char names[64];
-        while (script_n < 4096 && fscanf(in, "%u %63[^\n]\n", &at, names) == 2) {
-            uint8_t b = 0;
-            for (char *tok = strtok(names, "+ "); tok; tok = strtok(NULL, "+ ")) {
-                if (!strcmp(tok, "run")) b |= PCE_BTN_RUN;
-                else if (!strcmp(tok, "select")) b |= PCE_BTN_SELECT;
-                else if (!strcmp(tok, "i")) b |= PCE_BTN_I;
-                else if (!strcmp(tok, "ii")) b |= PCE_BTN_II;
-                else if (!strcmp(tok, "up")) b |= PCE_BTN_UP;
-                else if (!strcmp(tok, "down")) b |= PCE_BTN_DOWN;
-                else if (!strcmp(tok, "left")) b |= PCE_BTN_LEFT;
-                else if (!strcmp(tok, "right")) b |= PCE_BTN_RIGHT;
-                else if (strcmp(tok, "none")) {
-                    fprintf(stderr, "unknown button in: %s\n", tok);
-                    return 2;
-                }
-            }
-            script[script_n].frame = at;
-            script[script_n++].buttons = b;
-        }
-        fclose(in);
-    }
+     * as "i"), '#' lines are comments */
+    static const char *const pce_names[8] = {
+        "i", "ii", "select", "run", "up", "right", "down", "left"};
+    pc_input_t script = {0};
+    if (input_path && !pc_input_load(&script, input_path, pce_names, 8)) return 2;
     FILE *audio = wav ? fopen(wav, "wb") : 0;
     if (audio) { /* the header is patched once the length is known */
         const char silence[44] = {0};
@@ -109,9 +87,7 @@ int main(int argc, char **argv) {
     }
     uint32_t audio_bytes = 0;
     for (unsigned f = 0; f < frames; f++) {
-        machine.input = 0;
-        for (unsigned i = 0; i < script_n; i++)
-            if (script[i].frame == f) machine.input = script[i].buttons;
+        machine.input = (uint8_t)pc_input_keys(&script, f);
         pce_frame();
         if (audio) {
             uint8_t samples[512];

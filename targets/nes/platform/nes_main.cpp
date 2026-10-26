@@ -21,6 +21,8 @@
 #include "pokitto_hw.h"
 #elif M0_TARGET_PC
 #include "pc_hw.h"
+#include "pc_input.h"
+#include <stdio.h>
 #include <stdlib.h>
 #elif M0_TARGET_ESP32
 #if __has_include("odroid_hw.h")
@@ -44,6 +46,28 @@ extern "C" {
 extern const uint8_t nes_prg[];
 extern const uint8_t nes_chr[];
 }
+
+#if M0_TARGET_PC
+/* The session the way the harness replays it: M0_INPUT plays a script (the
+ * --input dialect, names joined with '+'), M0_RECORD_INPUT writes one — a
+ * line per frame the game receives buttons on, so the file replays with
+ * no gaps.  A restart or a save-state load ends the file there: the
+ * harness replays from power-on, what follows could not replay. */
+static const char *const nes_pad_names[8] = {
+    "a", "b", "select", "start", "up", "down", "left", "right"};
+static pc_input_t nes_script;
+static FILE *nes_record;
+static void nes_record_stop(const char *why) {
+    if (!nes_record) return;
+    fprintf(stderr, "recording ends at frame %u (%s)\n", (unsigned)machine.frames, why);
+    if (fclose(nes_record)) perror("M0_RECORD_INPUT");
+    nes_record = NULL;
+}
+static void nes_record_at_exit(void) { nes_record_stop("exit"); }
+#define NES_RECORD_INTERRUPT(why) nes_record_stop(why)
+#else
+#define NES_RECORD_INTERRUPT(why) do { } while (0)
+#endif
 /* one panel row at a time: the PPU writes it, the DMA sends it while the
  * next one is built (the Pokitto's CPU writes it at once: one buffer is
  * enough, the second is the menu's) */
@@ -76,6 +100,7 @@ extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
     return line_buffer[0];
 }
 #define NES_MENU_RESTART() do { \
+        NES_RECORD_INTERRUPT("restart"); \
         nes_reset(); \
         deadline = m0_micros(); \
         skipped_run = 0; \
@@ -130,6 +155,7 @@ extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
 #define SG_MENU_STATE_SLOTS NES_STATE_SLOTS
 #define SG_MENU_STATE_BUF() ((uint8_t *)line_buffer)
 #define SG_MENU_STATE_LOADED() do { \
+        NES_RECORD_INTERRUPT("state load"); \
         deadline = m0_micros(); \
         skip_video = 0; \
         skipped_run = 0; \
@@ -181,7 +207,13 @@ static void frame(void *) {
 #else
     keys |= ((mb & M0_MB_MENU) ? NES_START : 0) | ((mb & M0_MB_HOME) ? NES_SELECT : 0);
 #endif
+#if M0_TARGET_PC
+    keys |= (uint8_t)pc_input_keys(&nes_script, machine.frames); /* the script's frame is this one */
+#endif
     machine.input = keys;
+#if M0_TARGET_PC
+    pc_record_buttons(nes_record, machine.frames, keys, nes_pad_names, 8);
+#endif
     SG_PAD_WDT();
     sg_menu_frame();
     sg_menu_poll(mb);
@@ -199,6 +231,21 @@ int main() {
 #endif
 #if defined(NES_STATE_NAME83)
     m0_state_init(nes_card_open(), SG_MENU_STATE_BUF());
+#endif
+#if M0_TARGET_PC
+    if (const char *path = getenv("M0_INPUT")) {
+        if (!pc_input_load(&nes_script, path, nes_pad_names, 8)) return 1;
+    }
+    if (const char *path = getenv("M0_RECORD_INPUT")) {
+        nes_record = fopen(path, "w");
+        if (!nes_record) { perror(path); return 1; }
+        fprintf(nes_record, "# NES input recording: <frame> <buttons>\n");
+        atexit(nes_record_at_exit);
+    }
+    if (nes_script.count) { /* the first frame latches before the first pad read */
+        machine.input = (uint8_t)pc_input_keys(&nes_script, 0);
+        pc_record_buttons(nes_record, 0, machine.input, nes_pad_names, 8);
+    }
 #endif
     m0_audio_init();
     deadline = m0_micros();

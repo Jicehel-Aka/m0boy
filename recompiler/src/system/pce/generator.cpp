@@ -98,10 +98,16 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
         for (const char* name : { "huc6280.c", "huc6280.h", "vdc.c", "vdc.h", "psg.c", "psg.h", "pce.c", "pce.h" })
             copy_template(tpl / "runtime" / name, src / name);
 
+        /* the input scripts' reader (the harness's --input, the window's
+         * --input / --record-input) */
+        copy_template(o.meta_templates.parent_path() / "consoles" / "pc" / "pc_input.h", src / "pc_input.h");
+
         /* the harness sits next to src/ in a generated project, not next
          * to ../runtime as in the checkout */
         write(o.output / "host" / "pce_host.c",
-              replace(read(tpl / "host" / "pce_host.c"), "#include \"../runtime/pce.h\"", "#include \"../src/pce.h\""));
+              replace(replace(read(tpl / "host" / "pce_host.c"),
+                              "#include \"../runtime/pce.h\"", "#include \"../src/pce.h\""),
+                      "#include \"../../consoles/pc/pc_input.h\"", "#include \"../src/pc_input.h\""));
         write(o.output / "host" / "CMakeLists.txt",
               "cmake_minimum_required(VERSION 3.20)\nproject(" + o.name + "_pce_host C)\nset(CMAKE_C_STANDARD 11)\n"
               "if(NOT CMAKE_BUILD_TYPE)\n    set(CMAKE_BUILD_TYPE Release)\nendif()\n"
@@ -136,7 +142,10 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                   "Run: build/" + o.name + "_pc (arrows, X = I, Z = II, Enter = RUN, "
                   "Shift = SELECT, Esc quits; gamepad B/A = I/II, Start/Back = RUN/SELECT). "
                   "No filter by default; F8 cycles filters, F10 scaling, F11 fullscreen. "
-                  "--frames N and --ppm shot.ppm provide a headless run.\n");
+                  "--frames N and --ppm shot.ppm provide a headless run. "
+                  "--record-input session.input records what the game receives "
+                  "(--input script.txt plays a script); the host harness replays it: "
+                  "--input session.input.\n");
             return true;
         }
 

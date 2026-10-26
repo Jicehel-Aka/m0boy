@@ -157,6 +157,9 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             copy_template(tpl / "runtime" / name, src / name);
         /* the panel renderer's box filter (ppu.c, and the harness's check) */
         copy_template(common_dir / "runtime" / "m0_scale.h", src / "m0_scale.h");
+        /* the input scripts' reader (the harness's --input, the PC window's
+         * M0_INPUT / M0_RECORD_INPUT) */
+        copy_template(common_dir.parent_path() / "consoles" / "pc" / "pc_input.h", src / "pc_input.h");
         /* the idle loops' count (nes_gen.h) */
         copy_template(common_dir / "runtime" / "m0_idle.h", src / "m0_idle.h");
 
@@ -189,7 +192,9 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
         /* the harness sits next to src/ in a generated project, not next to
          * ../runtime as in the checkout */
         write(o.output / "host" / "nes_host.c",
-              replace(read(tpl / "host" / "nes_host.c"), "#include \"../runtime/nes.h\"", "#include \"../src/nes.h\""));
+              replace(replace(read(tpl / "host" / "nes_host.c"),
+                              "#include \"../runtime/nes.h\"", "#include \"../src/nes.h\""),
+                      "#include \"../../consoles/pc/pc_input.h\"", "#include \"../src/pc_input.h\""));
         write(o.output / "host" / "CMakeLists.txt",
               "cmake_minimum_required(VERSION 3.20)\nproject(" + o.name + "_nes_host C)\nset(CMAKE_C_STANDARD 11)\n"
               "if(NOT CMAKE_BUILD_TYPE)\n    set(CMAKE_BUILD_TYPE Release)\nendif()\n"
@@ -250,6 +255,9 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
                       : std::string("The cartridge interpreted on the 2A03/2C02 runtime.\n\n")) +
               "Host: cmake -G Ninja -S host -B host/build && ninja -C host/build\n"
               "Run: host/build/" + o.name + "_host --frames 300 [--ppm shot.ppm] [--input script.txt] [--interp] [--coverage f]\n\n" +
+              (o.target == TargetId::pc ? "The SDL2 window: M0_RECORD_INPUT=session.input records what the game receives\n"
+                                         "(M0_INPUT=script.txt plays a script); the host replays it: --input session.input.\n\n"
+               : "") +
               (o.target == TargetId::meta ? "Firmware: pio run  (flash with pio run -t upload)\n"
                : pokitto ? "Firmware: cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake && ninja -C build\n" : "") +
               (o.target == TargetId::meta || pokitto ? "Copy the generated .ST8 file beside the .BIN on the SD card for ten save-state slots.\n" : ""));

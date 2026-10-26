@@ -19,6 +19,8 @@
 #include "pokitto_hw.h"
 #elif M0_TARGET_PC
 #include "pc_hw.h"
+#include "pc_input.h"
+#include <stdio.h>
 #include <stdlib.h>
 #else
 #include "meta_hw.h"
@@ -32,6 +34,25 @@
 #endif
 #endif
 #include <string.h>
+
+#if M0_TARGET_PC
+/* The session the way the harness replays it: M0_INPUT plays a script (the
+ * "at:mask:len" segments of --input / --input-file), M0_RECORD_INPUT writes
+ * one — a segment closes at every button change.  A restart or a save-state
+ * load ends the file there: the harness replays from power-on, what follows
+ * could not replay. */
+static char *p8_script;
+static pc_segments_t p8_record;
+static void p8_record_stop(const char *why) {
+    if (!p8_record.file) return;
+    fprintf(stderr, "recording ends at frame %u (%s)\n", (unsigned)p8_frames, why);
+    pc_segments_finish(&p8_record, (unsigned)p8_frames);
+}
+static void p8_record_at_exit(void) { p8_record_stop("exit"); }
+#define P8_RECORD_INTERRUPT(why) p8_record_stop(why)
+#else
+#define P8_RECORD_INTERRUPT(why) do { } while (0)
+#endif
 
 /* The META sends rows of the picture's 128 columns (narrowed window); the ESPboy's adapter takes 160-wide rows and the picture is at column 16; the Pokitto's row writer takes the picture's 128 columns. */
 #if M0_TARGET_ESPBOY || M0_TARGET_PC
@@ -115,6 +136,7 @@ extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
 #define SG_MENU_TAP() do { } while (0)
 #endif
 #define SG_MENU_RESTART() do { \
+        P8_RECORD_INTERRUPT("restart"); \
         p8_start(); /* the cartridge again */ \
         deadline = m0_micros(); \
     } while (0)
@@ -218,7 +240,10 @@ extern "C" { unsigned char p8_menu_wide; }
 #define SG_MENU_STATE_BUF() ((uint8_t *)line_buffers) /* 512 bytes and more */
 #endif
 #define SG_MENU_STATE_SLOTS P8_STATE_SLOTS
-#define SG_MENU_STATE_LOADED() do { deadline = m0_micros(); } while (0)
+#define SG_MENU_STATE_LOADED() do { \
+        P8_RECORD_INTERRUPT("state load"); \
+        deadline = m0_micros(); \
+    } while (0)
 #endif
 #if defined(P8_STATE_NAME83)
 static int p8_card_open(void) {
@@ -359,12 +384,27 @@ int main() {
 #endif
     p8_start();
     m0_audio_init();
+#if M0_TARGET_PC
+    if (const char *path = getenv("M0_INPUT")) {
+        p8_script = pc_script_file(path);
+        if (!p8_script) return 1;
+    }
+    if (const char *path = getenv("M0_RECORD_INPUT")) {
+        if (!pc_segments_open(&p8_record, path)) return 1;
+        atexit(p8_record_at_exit);
+    }
+#endif
     deadline = m0_micros();
     __asm__ volatile("" : : "r"(version));
     for (;;) {
         const uint8_t mb = M0_PAD(SG_PAD_RAW());
         SG_PAD_WDT();
-        p8_frame(game_buttons(mb));
+        uint16_t buttons = game_buttons(mb);
+#if M0_TARGET_PC
+        buttons |= (uint16_t)pc_scripted(p8_script, (unsigned)p8_frames);
+        pc_segments_note(&p8_record, (unsigned)p8_frames, buttons);
+#endif
+        p8_frame(buttons);
 #ifdef P8_STACK_CHECK
         stack_check();
 #endif
@@ -381,7 +421,10 @@ int main() {
 #if M0_TARGET_POKITTO
         /* MENU's role is SG_MENU_TAP's: a tap on C, already handled */
 #else
-        if ((mb & M0_MB_MENU) && !menu_was_down) p8_start();
+        if ((mb & M0_MB_MENU) && !menu_was_down) {
+            P8_RECORD_INTERRUPT("restart");
+            p8_start();
+        }
         menu_was_down = mb & M0_MB_MENU;
 #endif
         if (!sg_menu_fast) {

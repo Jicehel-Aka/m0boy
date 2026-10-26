@@ -2,9 +2,13 @@
  * embedded in the project (pce_rom), SDL2 supplies the window and the
  * sound.  The run fingerprint follows the host harness's recipe, so a
  * scripted session here prints the harness's run_hash.  Keyboard:
- * arrows, X = I, Z = II, Enter = RUN, Shift = SELECT, Esc quits. */
+ * arrows, X = I, Z = II, Enter = RUN, Shift = SELECT, Esc quits.
+ * --input plays a session script ("<frame> <buttons>", the harness's
+ * dialect), --record-input writes one: a line per frame the game
+ * receives buttons on, replayable by the harness untouched. */
 #include "pce.h"
 #include "pc_frontend.h"
+#include "pc_input.h"
 #include <SDL.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -33,15 +37,27 @@ static uint32_t fnv(const void *data, size_t n, uint32_t h) {
 
 int main(int argc, char **argv) {
     unsigned limit = 0;
-    const char *ppm = NULL;
+    const char *ppm = NULL, *input_path = NULL, *record_path = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc)
             limit = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) ppm = argv[++i];
+        else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_path = argv[++i];
+        else if (!strcmp(argv[i], "--record-input") && i + 1 < argc) record_path = argv[++i];
         else {
-            fprintf(stderr, "usage: pce_pc [--frames N] [--ppm shot.ppm]\n");
+            fprintf(stderr, "usage: pce_pc [--frames N] [--ppm shot.ppm] [--input f] [--record-input f]\n");
             return 2;
         }
+    }
+    static const char *const pce_pad_names[8] = {
+        "i", "ii", "select", "run", "up", "right", "down", "left"};
+    pc_input_t script = {0};
+    if (input_path && !pc_input_load(&script, input_path, pce_pad_names, 8)) return 2;
+    FILE *record = NULL;
+    if (record_path) {
+        record = fopen(record_path, "w");
+        if (!record) { perror(record_path); return 2; }
+        fprintf(record, "# PCE input recording: <frame> <buttons>\n");
     }
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS | SDL_INIT_TIMER)) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -80,6 +96,8 @@ int main(int argc, char **argv) {
             (b & PC_RIGHT ? PCE_BTN_RIGHT : 0) | (b & PC_A ? PCE_BTN_I : 0) |
             (b & PC_B ? PCE_BTN_II : 0) | (b & PC_START ? PCE_BTN_RUN : 0) |
             (b & PC_SELECT ? PCE_BTN_SELECT : 0));
+        machine.input |= (uint8_t)pc_input_keys(&script, machine.frames);
+        pc_record_buttons(record, machine.frames, machine.input, pce_pad_names, 8);
         pce_frame();
         if (audio) {
             carry += AUDIO_RATE * 119210u;
@@ -146,6 +164,12 @@ int main(int argc, char **argv) {
             h = fnv(rows[machine.first_active_line + y],
                     machine.vdc.active_width * sizeof rows[0][0], h);
     printf("frames=%u pc=%04x run_hash=%08x\n", machine.frames, machine.cpu.pc, h);
+    if (record) {
+        if (fflush(record) | pc_record_close(record))
+            perror(record_path);
+        else
+            fprintf(stderr, "recording: %s (%u frames)\n", record_path, machine.frames);
+    }
     if (audio) SDL_CloseAudioDevice(audio);
     pc_frontend_close(&pc);
     SDL_Quit();

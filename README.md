@@ -106,6 +106,20 @@ F10 scaling and F11 fullscreen. Each system keeps its own keyboard button
 names and audio core. The NES PC window displays the same 160×128 panel image
 as the META; the other PC cores use their own output geometry.
 
+Input recording in the PC windows (NES, PC Engine, PICO-8): each core keeps
+the dialect its harness reads with `--input`. NES and PC Engine write
+"<frame> <buttons>" lines (names joined with `+`, one line for every frame
+the game receives buttons on — the harnesses' scripts are momentary, held
+for their one frame); the PICO-8 window writes `at:mask:len` segments. NES
+and PICO-8 read environment variables (`M0_RECORD_INPUT=file` records,
+`M0_INPUT=file` plays a script in the window); the PC Engine window takes
+`--record-input file` and `--input file` on its command line. A window
+close, the frame limit (`M0_FRAMES`/`--frames`) and the stuck-boot guard all
+close the file; a menu restart or save-state load ends it there (the
+harness replays from power-on, what follows could not replay). The harness
+replays the file untouched: NES and PC Engine with `--input file`, PICO-8
+with `--input-file file`.
+
 MSX1 is checked against openMSX (VRAM of the title screens) and against the
 host reference renderer; Gradius 2 (128 KiB, Konami SCC) held 60 game frames
 a second on a META in a 90 s hands-on test (frame counter against the

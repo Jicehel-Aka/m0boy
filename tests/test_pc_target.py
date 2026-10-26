@@ -131,12 +131,18 @@ def main():
             firmware_run(exe, 120, root / 'sg.ppm')
             header = (root / 'sg.ppm').read_bytes().split(b'\n')[1]
             assert header == b'256 192', header  # the TMS9918A's own screen
+            nes_exe = None
             for system, project, dims in (('msx', msx_project, b'256 192'),
                                           ('nes', nes_project, b'160 128')):
-                firmware_run(build(project), 60, root / (system + '.ppm'))
+                exe = build(project)
+                firmware_run(exe, 60, root / (system + '.ppm'))
                 assert (root / (system + '.ppm')).read_bytes().split(b'\n')[1] == dims
+                if system == 'nes':
+                    nes_exe = exe
+            pico_exe = None
             if pico_project:
-                firmware_run(build(pico_project), 30, root / 'pico.ppm')
+                pico_exe = build(pico_project)
+                firmware_run(pico_exe, 30, root / 'pico.ppm')
                 assert (root / 'pico.ppm').read_bytes().split(b'\n')[1] == b'160 128'
                 host_build = pico_project / 'host' / 'build'
                 subprocess.run(['cmake', '-G', 'Ninja', '-S', str(pico_project / 'host'), '-B', str(host_build)],
@@ -151,10 +157,10 @@ def main():
                 native = host_ppm.read_bytes().split(b'\n255\n', 1)[1]
                 rgb565 = bytes((c & (252 if i % 3 == 1 else 248)) for i, c in enumerate(native))
                 assert crop == rgb565, 'PC PICO-8 frame 30 differs from the host harness'
-            exe = build(pce_project)
+            pce_exe = build(pce_project)
             env = dict(os.environ, SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
             shot = root / 'pce.ppm'
-            result = subprocess.run([str(exe), '--frames', '120', '--ppm', str(shot)],
+            result = subprocess.run([str(pce_exe), '--frames', '120', '--ppm', str(shot)],
                                     env=env, capture_output=True, text=True, timeout=120)
             assert result.returncode == 0, (result.stdout, result.stderr)
             header, _, body = shot.read_bytes().partition(b'\n255\n')
@@ -162,7 +168,98 @@ def main():
             assert len({body[i:i + 3] for i in range(0, len(body), 3)}) > 1
             for system, sega_project in sega_projects:
                 firmware_run(build(sega_project), 120, root / (system + '.ppm'))
+
+            # ---- recorded sessions replay in the harnesses ----
+            # Each window plays a script (its harness's dialect), records
+            # what the game receives, and the harness replays that file to
+            # the script's own fingerprint.  The synthetic NES and PCE
+            # cards mark RAM while their button is held, so the
+            # fingerprints really follow the input; a plugged gamepad adds
+            # held bits the recording captures too, which the fingerprint
+            # ignores (the fixtures' marks are on other buttons).
+            def host_build(project):
+                build_dir = project / 'host' / 'build'
+                subprocess.run(['cmake', '-G', 'Ninja', '-S', str(project / 'host'), '-B', str(build_dir),
+                                '-DCMAKE_BUILD_TYPE=Release'], check=True, capture_output=True)
+                subprocess.run(['ninja', '-C', str(build_dir)], check=True, capture_output=True)
+                host, = build_dir.glob('*_host')
+                return host
+
+            def run_hash_of(text):
+                return [t for t in text.split() if t.startswith('run_hash=')][0]
+
+            # NES: the window records env M0_RECORD_INPUT while M0_INPUT plays
+            nes_host = host_build(nes_project)
+            script = root / 'nes_play.input'
+            script.write_text('10 a\n20 start\n30 down+left\n')
+            rec = root / 'nes_rec.input'
+            nes_env = dict(env, M0_FRAMES='60', M0_INPUT=str(script), M0_RECORD_INPUT=str(rec))
+            result = subprocess.run([str(nes_exe)], env=nes_env, capture_output=True, text=True, timeout=120)
+            assert result.returncode == 0, (result.stdout, result.stderr)
+            lines = rec.read_text().splitlines()
+            assert lines[0].startswith('#'), lines[:3]
+            pressed = {}
+            for line in lines[1:]:
+                frame, names = line.split(None, 1)
+                pressed[int(frame)] = names.strip()
+            for frame, names in ((10, 'a'), (20, 'start'), (30, 'down+left')):
+                assert frame in pressed and set(names.split('+')) <= set(pressed[frame].split('+')), \
+                    (frame, pressed.get(frame))
+            played = run_hash_of(subprocess.run([str(nes_host), '--frames', '60', '--input', str(rec)],
+                                                capture_output=True, text=True).stdout)
+            scripted = run_hash_of(subprocess.run([str(nes_host), '--frames', '60', '--input', str(script)],
+                                                  capture_output=True, text=True).stdout)
+            bare = run_hash_of(subprocess.run([str(nes_host), '--frames', '60'],
+                                              capture_output=True, text=True).stdout)
+            assert played == scripted != bare, (played, scripted, bare)
+
+            # PICO-8: the segments file the window wrote replays through
+            # --input-file, to the --input string's own screen hash
+            if pico_project:
+                host_exe, = (pico_project / 'host' / 'build').glob('*_host')
+                script = root / 'p8_play.input'
+                script.write_text('30:16:100,200:32:3,300:1:20,350:2:20\n')
+                rec = root / 'p8_rec.input'
+                pico_env = dict(env, M0_FRAMES='420', M0_INPUT=str(script), M0_RECORD_INPUT=str(rec))
+                result = subprocess.run([str(pico_exe)], env=pico_env, capture_output=True, text=True, timeout=120)
+                assert result.returncode == 0, (result.stdout, result.stderr)
+                segments = rec.read_text().strip()
+                assert segments.startswith('30:') and '16' in segments.split(',')[0].split(':')[1], segments
+                def screen_of(*args):
+                    out = subprocess.run([str(host_exe), '--frames', '420', *args],
+                                         capture_output=True, text=True).stdout
+                    return [t for t in out.split() if t.startswith('screen_hash=')][0]
+                assert screen_of('--input-file', str(rec)) == \
+                    screen_of('--input', segments) == \
+                    screen_of('--input', script.read_text().strip()) != \
+                    screen_of()
+
+            # PC Engine: the window prints the harness's own fingerprint,
+            # with the script and with the recording replayed from it
+            pce_host = host_build(pce_project)
+            script = root / 'pce_play.input'
+            script.write_text('10 i\n30 run\n')
+            rec = root / 'pce_rec.input'
+            result = subprocess.run([str(pce_exe), '--frames', '60', '--input', str(script),
+                                     '--record-input', str(rec)],
+                                    env=env, capture_output=True, text=True, timeout=120)
+            assert result.returncode == 0, (result.stdout, result.stderr)
+            window_hash = run_hash_of(result.stdout)
+            lines = rec.read_text().splitlines()
+            assert lines[0].startswith('#'), lines[:3]
+            pressed = {}
+            for line in lines[1:]:
+                frame, names = line.split(None, 1)
+                pressed[int(frame)] = names.strip()
+            for frame, names in ((10, 'i'), (30, 'run')):
+                assert frame in pressed and set(names.split('+')) <= set(pressed[frame].split('+')), \
+                    (frame, pressed.get(frame))
+            replayed = run_hash_of(subprocess.run([str(pce_host), '--frames', '60', '--input', str(rec)],
+                                                  capture_output=True, text=True).stdout)
+            assert replayed == window_hash, (replayed, window_hash)
+
             print('pc: GB, SG-1000, MSX, NES, PICO-8, Game Gear, SMS and PCE built and run head first')
+            print('pc: NES, PICO-8 and PCE recorded sessions replay in their harnesses')
         else:
             print('pc: SDL2 absent, generation checks only')
     finally:

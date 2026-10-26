@@ -85,17 +85,26 @@ def build_rom():
     emit(0xA9, 0x38, 0x8D, 0x04, 0x04)             # red: R=7 -> $038
     emit(0xA9, 0x00, 0x8D, 0x05, 0x04)
 
+    # the idle loop polls the pad and marks RAM $2001 while I is held: a
+    # run's fingerprint follows its input, the recording round trips lean
+    # on that
     idle = at
-    emit(0x80, 0xFE)                               # BRA self
+    emit(0xA9, 0x00, 0x8D, 0x00, 0x10)             # LDA #0 STA $1000 (SEL: I..RUN nibble)
+    emit(0xAD, 0x00, 0x10)                         # LDA $1000 (pressed = 0)
+    emit(0x49, 0xFF)                               # EOR #$FF
+    emit(0x29, 0x01)                               # AND #$01: I
+    emit(0xF0, 0x03)                               # not held: past the mark
+    emit(0x8D, 0x01, 0x20)                         # STA $2001 (WRAM, MPR1)
+    emit(0x80, 0xED)                               # again
 
     rom = bytearray(0x8000)
     for base, bytes_ in prog:
         for i, b in enumerate(bytes_):
             rom[(base & 0x1FFF) + i] = b   # MPR7 = $00: $E000+ is file 0+
-    assert idle == 0xE000 + sum(len(b) for _, b in prog[:-1])
+    assert at == idle + 19                         # the poll loop, then the RTI stub after it
     # the vectors in page 0: $FFF6 BRK/IRQ2, $FFF8 IRQ1, $FFFA TIQ,
     # $FFFC NMI, $FFFE RESET — the first four at a RTI stub
-    rti = idle + 2
+    rti = idle + 19
     rom[rti - 0xE000] = 0x40                       # RTI
     for addr in (0x1FF6, 0x1FF8, 0x1FFA, 0x1FFC):
         rom[addr] = rti & 0xFF

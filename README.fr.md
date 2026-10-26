@@ -44,6 +44,21 @@ Les projets partagent les manettes, filtres d'image (F8), échelle (F10) et
 plein écran (F11). Le NES PC affiche l'image 160×128 du panneau META ; les
 autres cœurs gardent leur géométrie propre.
 
+Enregistrement des entrées dans les fenêtres PC (NES, PC Engine, PICO-8) :
+chaque cœur garde le dialecte que son harnais lit avec `--input`. NES et PC
+Engine écrivent des lignes « trame boutons » (noms joints par `+`, une ligne
+par trame où le jeu reçoit des boutons — les scripts du harnais sont
+momentanés, tenus le temps de leur seule trame) ; la fenêtre PICO-8 écrit des
+segments `début:masque:durée`. NES et PICO-8 lisent les variables
+d'environnement (`M0_RECORD_INPUT=fichier` enregistre, `M0_INPUT=fichier`
+rejoue un script dans la fenêtre) ; la fenêtre PC Engine prend
+`--record-input fichier` et `--input fichier` en ligne de commande. La
+fermeture de la fenêtre, la limite de trames (`M0_FRAMES`/`--frames`) et
+l'anti-blocage du démarrage ferment le fichier ; un redémarrage ou un état
+sauvegardé du menu y met fin (le harnais repart de la mise sous tension, ce
+qui suit ne pourrait pas se rejouer). Le harnais rejoue tel quel : NES et
+PC Engine avec `--input fichier`, PICO-8 avec `--input-file fichier`.
+
 MSX1 est vérifié contre openMSX (VRAM des écrans titres) et contre le rendu
 de référence de l'hôte ; Gradius 2 (128 Kio, Konami SCC) a tenu 60 images de
 jeu par seconde sur une META lors d'un essai de 90 s (compteur d'images du

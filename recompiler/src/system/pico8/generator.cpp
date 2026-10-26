@@ -175,7 +175,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 write(src / "sg_audio.h", "#pragma once\n#include \"p8_audio.h\"\n"
                                            "#define sg_platform_audio_rate p8_audio_set_rate\n"
                                            "#define sg_platform_audio_render p8_audio_render\n");
-                for (const char* name : {"pc_hw.c", "pc_hw.h", "pc_frontend.c", "pc_frontend.h"})
+                for (const char* name : {"pc_hw.c", "pc_hw.h", "pc_frontend.c", "pc_frontend.h", "pc_input.h"})
                     copy_template(platform / name, src / name);
                 auto cmake = replace(read(platform / "CMakeLists.txt.in"), "@NAME@", o.name);
                 cmake += "\nif(CMAKE_SYSTEM_NAME STREQUAL \"Linux\")\n"

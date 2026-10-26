@@ -144,6 +144,9 @@ if(BUILD_TESTS)
     add_executable(test_pce_psg tests/test_pce_psg.c targets/pce/runtime/psg.c)
     target_include_directories(test_pce_psg PRIVATE targets/pce/runtime)
     add_test(NAME pce_psg_clock_and_balance COMMAND test_pce_psg)
+    add_executable(test_pc_input tests/test_pc_input.c)
+    target_include_directories(test_pc_input PRIVATE targets/consoles/pc)
+    add_test(NAME pc_input_scripts_and_recordings COMMAND test_pc_input)
     if(TARGET sg1000_host)
         add_test(NAME profile_gm0_sessions
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_profile_sessions.py"

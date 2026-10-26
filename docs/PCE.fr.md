@@ -113,11 +113,19 @@ sonde BSY pendant un DMA verra le DMA déjà fini.
 `--frames`, `--ppm` (la fenêtre active : largeur = (HDW+1)×8, hauteur =
 VDW+1), `--wav`, `--input` (script « frame boutons », noms entiers `i
 ii select run up down left right`, joints par `+`, tenus le temps de
-leur seule trame), `--coverage` (les adresses HuC6280 démarrées, sous
+leur seule trame ; lignes `#` en commentaire, taille libre),
+`--coverage` (les adresses HuC6280 démarrées, sous
 `PCE_TRACE` — le défini des projets hôte générés), `run_hash=` sur la
 sortie. La ligne de lecture
 du pad et la sonde `m0input` suivent le modèle commun (une session gm0
 rejouera sur le harness quand l'application gm0 saura la lancer).
+
+La fenêtre PC (`pce_pc.c`) enregistre le même dialecte :
+`--record-input fichier` écrit une ligne pour chaque trame où le jeu
+reçoit des boutons (fermeture propre à la sortie, sur Échap comme sur
+`--frames`) et `--input fichier` rejoue un script dans la fenêtre ; le
+`run_hash` qu'elle imprime est celui du harnais sur la même entrée —
+`tests/test_pc_target.py` rejoue une session enregistrée et compare.
 
 ## Ce qui a été vérifié
 

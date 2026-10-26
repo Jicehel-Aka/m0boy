@@ -44,8 +44,19 @@ PRG = bytes([
     0xA9, 0x00, 0x8D, 0x04, 0x20,                   # in front, palette 4
     0xA9, 0x04, 0x8D, 0x04, 0x20,                   # x 4: sprite 0 hits
     0xA9, 0x1E, 0x8D, 0x01, 0x20,                   # LDA #$1E STA $2001 (both layers, both left columns)
-    0x4C, 0x43, 0x80,                               # JMP $8043 (idle, past STA $2001)
+    0x4C, 0x46, 0x80,                               # JMP $8046 (the pad poll loop)
 ]).ljust(32768, b"\xEA")                            # NOP fill
+# the idle loop polls the pads and marks RAM $10 while A is held: a run's
+# hash follows its input, the recording round trips lean on that
+PRG = PRG[:0x46] + bytes([
+    0xA9, 0x01, 0x8D, 0x16, 0x40,                   # LDA #1 STA $4016: the pads latch
+    0xA9, 0x00, 0x8D, 0x16, 0x40,                   # strobe off
+    0xAD, 0x16, 0x40,                               # LDA $4016 (A first)
+    0x29, 0x01,                                     # AND #$01
+    0xF0, 0x03,                                     # not held: past the mark
+    0x8D, 0x10, 0x00,                               # STA $0010
+    0x4C, 0x46, 0x80,                               # again
+]) + PRG[0x5D:]
 # vectors at the end of the last 16 KiB bank
 PRG = PRG[:-6] + bytes([0x00, 0x80, 0x00, 0x80, 0x00, 0x80])  # NMI, RESET, IRQ
 

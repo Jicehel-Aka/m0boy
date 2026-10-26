@@ -38,6 +38,37 @@ static void write_ppm(const char *path) {
     fclose(f);
 }
 
+/* --input-file: the "at:mask:len" segments of a file, as --input takes
+ * them as one string — a session recorded in a PC window (pc_input.h's
+ * M0_RECORD_INPUT) replays here.  '#' lines are comments, a newline
+ * separates like a comma.  NULL: unreadable (reported). */
+static char *script_file(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) { perror(path); return NULL; }
+    char *text = malloc(1);
+    size_t size = 0, cap = 1, n;
+    char line[256];
+    if (!text) { fclose(f); return NULL; }
+    text[0] = '\0';
+    while (fgets(line, sizeof line, f)) {
+        if (line[0] == '#') continue;
+        n = strlen(line);
+        if (size + n + 1 > cap) {
+            cap = (size + n + 1) * 2;
+            char *next = realloc(text, cap);
+            if (!next) { fclose(f); free(text); return NULL; }
+            text = next;
+        }
+        memcpy(text + size, line, n);
+        size += n;
+    }
+    fclose(f);
+    text[size] = '\0';
+    for (char *p = text; *p; p++)
+        if (*p == '\n' || *p == '\r') *p = ',';
+    return text;
+}
+
 int main(int argc, char **argv) {
     unsigned frames = 60, held = 0;
     const char *shot = 0, *script = 0, *every = 0, *wav_path = 0, *save_state = 0, *load_state = 0;
@@ -50,10 +81,15 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav_path = argv[++i];
         else if (!strcmp(argv[i], "--buttons") && i + 1 < argc) held = (unsigned)strtoul(argv[++i], 0, 0);
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) script = argv[++i];
+        else if (!strcmp(argv[i], "--input-file") && i + 1 < argc) {
+            script = script_file(argv[++i]);
+            if (!script) return 1;
+        }
         else if (!strcmp(argv[i], "--save-state") && i + 1 < argc) save_state = argv[++i]; /* after the last frame */
         else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) load_state = argv[++i]; /* before the first */
         else { fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]); return 1; }
     }
+    if (!script) script = "";
     if (setjmp(failure)) {
         fprintf(stderr, "error at frame %u: %s\n", p8_frames, failure_text);
         if (shot) write_ppm(shot);

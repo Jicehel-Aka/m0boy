@@ -360,3 +360,85 @@ actif sur les deux).  EMU_LATCH_DUMP=<fichier> vide le flux horodaté des
 latches pokitto (tick, valeur) — l'outil de cette comparaison.  Le
 correctif de resynchronisation audio posait pk_aqSize à 32 768 au lieu
 de 600 après le saut : corrigé.
+
+**États sauvegardés NES et Vectrex via gm0 (2026-10-26)** — examen du
+parcours « je joue → État sauvegardé sur la carte → redémarrage → État
+chargé » sur l'émulateur, **pas sur console**. Sonde : firmware NES META
+généré depuis la cartouche synthétique de `tests/test_nes_e2e.py`
+(`--nes-interp`, PlatformIO, 99 Ko), carte SD émulée par gm0 (dossier avec
+`SYNTH.BIN` + `SYNTH.ST8`), chorégraphie pilotée par `--play-input`
+(maintenance de HOME 0,5 s → menu → « Sauver l'état » → partie →
+redémarrage `r` du journal → menu → « Charger l'état ») et observée par
+`--record-input` (la sonde `m0input` du firmware donne le compteur de
+trames du jeu) et `--out-img` (la carte en fin de session).
+
+- Ce qui marche dans gm0 tel que livré : le firmware démarre et joue, le
+  menu s'ouvre (HOME tenu), la **sauvegarde écrit sur la carte émulée**
+  (secteurs relus dans `--out-img` : entrée 8.3 `SYNTH~1.ST8`, magic
+  `GBLSTATE`, taille 4 600 octets, dix CMD24 consécutifs), le
+  redémarrage rejoue l'init.
+- Le **chargement échouait** : le compteur du jeu restait figé, écran de
+  menu. Trace `SD_DEBUG=1` : après le redémarrage, la ré-initialisation SD
+  du firmware boucle 300 ms sur CMD0 et abandonne — la carte émulée de
+  gm0 répondait `0x00` à GO_IDLE_STATE une fois initialisée, alors qu'une
+  vraie carte SPI repasse en idle (`0x01`) et rejoue l'init. Le firmware
+  est du bon côté (garde de 300 ms dans `m0_sd_init`, réinitialisation
+  prévue `reinit()`). Correctif candidat d'une ligne dans gm0 (`gm0.c`,
+  cas CMD0 : répondre `0x01` et repasser `sd_initialized` à 0), **posé
+  dans la copie locale de gm0, non commité** — à revendiquer ou rejeter
+  côté gm0 (`git -C ~/dev/gm0 diff` le montre ; revert :
+  `git -C ~/dev/gm0 checkout -- gm0.c`).
+- Avec ce correctif, le parcours complet passe dans gm0 : après
+  « Charger l'état », le compteur du jeu **revient à 24** (la valeur
+  sauvée) puis rejoue exactement la même suite que la première session
+  (45 à la même marque d'entrée, écran de jeu et non plus le menu à
+  l'arrivée). C'est une **validation émulateur**, pas une preuve console :
+  les timings SPI réels, l'alimentation et la vraie carte restent hors
+  de portée.
+- Vectrex : même machine à états (`sg_menu.h` + `m0_state` + `m0_fat` +
+  `m0_sd`), non sondée séparément — le correctif gm0 la débloque par la
+  même couche, le contenu d'état propre au Vectrex (`vx_state_io`) reste
+  à passer par la même chorégraphie si on veut la même preuve.
+- Reste pour une validation complète : rejouer la même sonde sur une
+  META réelle (la chorégraphie au pad, le `.ST8` sur la carte), et
+  intégrer la chorégraphie gm0 comme test quand le correctif CMD0 sera
+  accepté côté gm0.
+
+  Sonde reproductible (firmware `proj/.pio/build/meta/firmware.bin`,
+  carte = dossier avec `SYNTH.BIN` copie du firmware + `SYNTH.ST8`,
+  pad physique ignoré par `SDL_GAMECONTROLLER_IGNORE_DEVICES`) :
+
+      k 30 0
+      k 60 80        # HOME tenu : le menu s'ouvre à 0,5 s
+      k 200 0
+      k 260 1        # bas x3 -> « Sauver l'état »
+      k 280 0
+      k 300 1
+      k 320 0
+      k 340 1
+      k 360 0
+      k 400 10       # A : sauvegarde, le menu se referme
+      k 440 0
+      k 500 10       # partie : le compteur du jeu marque l'état joué
+      k 540 0
+      r 620          # redémarrage (retrait-repos du firmware)
+      k 700 0
+      k 760 80       # HOME -> menu
+      k 900 0
+      k 980 1        # bas x4 -> « Charger l'état »
+      k 1010 0
+      k 1040 1
+      k 1070 0
+      k 1100 1
+      k 1130 0
+      k 1160 1
+      k 1190 0
+      k 1240 10      # A : chargement
+      k 1300 0
+      k 1360 10      # A tenu : le compteur revient à la valeur sauvée
+      k 1430 0
+
+  `gm0 firmware.bin carte --frames 1560 --play-input journal
+  --record-input rec --out-img carte.img` : les lignes `g` de `rec`
+  montrent le compteur du jeu (24 sauvé -> 24 recharge -> 45 à la même
+  marque d'entrée des deux côtés), et `carte.img` garde le `GBLSTATE`.
