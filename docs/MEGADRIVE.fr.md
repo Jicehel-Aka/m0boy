@@ -40,6 +40,10 @@ MinGW x86-64 et son paquet SDL2. Le script attend le recompileur déjà construi
 dans `build/bin/m0recomp` (ou le chemin défini par `M0RECOMP`). Les programmes
 intègrent la ROM passée au script ; gardez-les dans `output/`, conformément à
 la règle qui exclut les exécutables dérivés de ROMs du dépôt et des archives.
+La cartouche peut avoir un pointeur de pile initial nul (Sonic 3 installe le
+sien) ; son registre SRAM `$A130F1` (bit 0 : activation, bit 1 : protection en
+écriture) mappe la SRAM de `$200000` à `$20FFFF`, volatile au remise à zéro —
+Sonic 3 démarre et court en natif pur, ses sauvegardes restent à faire.
 
 Flèches pour bouger, X/Z/C pour A/B/C, Entrée pour Start, Échap pour quitter.
 Une manette SDL2 utilise la croix ou le stick gauche, B/A/X pour A/B/C et Start.
@@ -76,7 +80,11 @@ rétroaction, mode spécial du canal 3 et CSM, LFO AM/PM, minuteries A/B,
 drapeau busy (32 horloges internes après une écriture de données),
 panoramique, DAC, et le DAC 9 bits du YM2612 discret avec sa discontinuité
 autour de zéro. L'état des touches est lu une fois par échantillon, comme sur
-la puce. Le PSG (SN76489 de Sega) compte à 223,7 kHz, avec son bruit à
+la puce. Les valeurs tirées des registres (taux d'enveloppe avec l'échelle de
+touche, niveaux, détune, multiplicateur, pas de phase par bloc/F-num) sont
+préparées à l'écriture, et un opérateur sans touche au-delà du seuil de
+silence ne garde que son enveloppe, jusqu'à son plancher 0x3ff : le son reste
+le même, l'oracle ymfm et les `audio_hash` le pincent. Le PSG (SN76489 de Sega) compte à 223,7 kHz, avec son bruit à
 registre 16 bits. Le mélange est rééchantillonné à 44,1 kHz stéréo, puis le
 continu est retiré ; `--wav FILE` l'enregistre même sans fenêtre
 (`--frames N`), `--ym-log FILE` garde chaque écriture YM2612 avec son

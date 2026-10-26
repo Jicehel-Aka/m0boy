@@ -20,6 +20,7 @@ static inline uint32_t md_sext(uint32_t v, unsigned size) {
 /* ---- Bus: work RAM and ROM directly, the rest through md_full_bus.c -- */
 static inline uint8_t md_rd8(MdFull *m, uint32_t a) {
     a &= 0xffffffu;
+    if (m->sram_enable && a >= 0x200000u && a < 0x210000u) return m->sram[a & 0xffffu];
     if (a >= 0xff0000u) return m->ram[a & 0xffffu];
     if (a < md_rom_size) return md_rom[a];
     return md_full_read8(m, a);
@@ -27,6 +28,8 @@ static inline uint8_t md_rd8(MdFull *m, uint32_t a) {
 static inline uint16_t md_rd16(MdFull *m, uint32_t a) {
     a &= 0xffffffu;
     if (!(a & 1u)) {
+        if (m->sram_enable && a >= 0x200000u && a < 0x20ffffu)
+            return (uint16_t)(m->sram[a & 0xffffu] << 8 | m->sram[(a + 1u) & 0xffffu]);
         if (a >= 0xff0000u) return (uint16_t)(m->ram[a & 0xffffu] << 8 | m->ram[(a + 1u) & 0xffffu]);
         if (a + 1u < md_rom_size) return (uint16_t)(md_rom[a] << 8 | md_rom[a + 1u]);
     }

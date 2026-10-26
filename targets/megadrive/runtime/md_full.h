@@ -20,6 +20,9 @@ typedef struct {
     uint32_t vdp_addr, vdp_first;
     uint8_t vdp_code, vdp_pending, dma_fill;
     uint8_t pad, pad_th, pad_control, z80_bus, z80_reset;
+    /* Cartridge SRAM ($200000-$20FFFF), enabled by a write to $A130F1;
+     * bit 1 of that write protects it.  Volatile across a reset. */
+    uint8_t sram[65536], sram_enable, sram_protect;
     uint8_t zram[8192];
     uint32_t z80_bank;
     z80_t sound_cpu;

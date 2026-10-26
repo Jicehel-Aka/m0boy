@@ -43,6 +43,7 @@ static uint16_t vdp_status(const MdFull *m) {
 
 uint8_t md_full_read8(MdFull *m, uint32_t addr) {
     addr &= 0xffffffu;
+    if (m->sram_enable && addr >= 0x200000u && addr < 0x210000u) return m->sram[addr & 0xffffu];
     if (addr < md_rom_size) return md_rom[addr];
     if (addr >= 0xff0000u) return m->ram[addr & 0xffffu];
     if (addr >= 0xa00000u && addr < 0xa10000u) return md_full_sound_read(m, addr & 0xffffu);
@@ -149,6 +150,14 @@ void md_full_write8(MdFull *m, uint32_t addr, uint8_t v) {
     addr &= 0xffffffu;
     if (addr >= 0xff0000u) {
         m->ram[addr & 0xffffu] = v; return;
+    }
+    if (addr >= 0x200000u && addr < 0x210000u) {
+        if (m->sram_enable && !m->sram_protect) m->sram[addr & 0xffffu] = v;
+        return;
+    }
+    if (addr >= 0xa13000u && addr < 0xa14000u) {
+        if (addr == 0xa130f1u) { m->sram_enable = v & 1u; m->sram_protect = (v >> 1) & 1u; }
+        return;
     }
     if (addr >= 0xa00000u && addr < 0xa10000u) { md_full_sound_write(m, addr & 0xffffu, v); return; }
     if (addr >= 0xa10000u && addr <= 0xa1001fu) {
