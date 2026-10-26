@@ -29,6 +29,7 @@ add_library(m0boy_frontends STATIC
     src/system/pico8/cartridge.cpp
     src/system/nes/cartridge.cpp
     src/system/pce/cartridge.cpp
+    src/system/megadrive/cartridge.cpp
     src/system/vectrex/cartridge.cpp
 )
 target_link_libraries(m0boy_frontends PUBLIC m0boy_common)
@@ -47,6 +48,7 @@ add_library(gbrecomp_core STATIC
     src/system/nes/emitter.cpp
     src/system/nes/generator.cpp
     src/system/pce/generator.cpp
+    src/system/megadrive/generator.cpp
     src/system/vectrex/emitter.cpp
     src/system/vectrex/generator.cpp
     src/symbol_table.cpp

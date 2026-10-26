@@ -169,6 +169,22 @@ if(BUILD_TESTS)
     add_test(NAME source_system_cli
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_source_cli.py"
                 "$<TARGET_FILE:m0recomp>")
+    add_test(NAME megadrive_m68k_end_to_end
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_megadrive_e2e.py"
+                "$<TARGET_FILE:m0recomp>")
+    if(EXISTS "${PROJECT_SOURCE_DIR}/roms/md/Sonic The Hedgehog (USA, Europe).md")
+        add_test(NAME megadrive_sonic_pc_native
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_megadrive_sonic_pc.py"
+                    --recompiler "$<TARGET_FILE:m0recomp>"
+                    --rom "${PROJECT_SOURCE_DIR}/roms/md/Sonic The Hedgehog (USA, Europe).md")
+    endif()
+    add_executable(test_megadrive_pad tests/test_megadrive_pad.c targets/megadrive/runtime/md.c)
+    target_include_directories(test_megadrive_pad PRIVATE targets/megadrive/runtime)
+    add_test(NAME megadrive_pad_bus COMMAND test_megadrive_pad)
+    add_executable(test_megadrive_vdp tests/test_megadrive_vdp.c targets/megadrive/runtime/md.c)
+    target_include_directories(test_megadrive_vdp PRIVATE targets/megadrive/runtime)
+    target_compile_definitions(test_megadrive_vdp PRIVATE MD_FULL_VDP=1)
+    add_test(NAME megadrive_pc_vdp COMMAND test_megadrive_vdp)
     add_executable(test_register_ir tests/test_register_ir.cpp)
     target_link_libraries(test_register_ir PRIVATE gbrecomp_core)
     add_test(NAME meta_register_ir_semantics COMMAND test_register_ir)

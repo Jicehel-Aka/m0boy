@@ -15,6 +15,7 @@ constexpr std::array cpu_table = {
     CpuDescriptor{CpuId::m6502, "6502", true},    // NES (2A03); HuC6280 extends it
     CpuDescriptor{CpuId::huc6280, "huc6280", true},  // PC Engine; extends the 6502 table
     CpuDescriptor{CpuId::m6809, "6809", false},      // Vectrex: the recompiler decodes it
+    CpuDescriptor{CpuId::m68k, "m68k", false}, // bounded compiler decoder, no --disasm listing yet
 };
 
 /* Wired pipelines: where a project generator exists today.  The runtime's
@@ -42,6 +43,7 @@ constexpr std::array pce_targets = {TargetId::desktop};
 // Vectrex: the 6809 recompiled in front of the interpreter on the META,
 // and the SDL host (pc).
 constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc};
+constexpr std::array megadrive_targets = {TargetId::desktop, TargetId::meta, TargetId::pc};
 constexpr std::array<TargetId, 0> no_targets {};
 
 constexpr std::array system_table = {
@@ -69,6 +71,11 @@ constexpr std::array system_table = {
     /* Vectrex: 1 KiB of RAM; the console frontend adds an 8 KiB phosphor */
     SystemDescriptor{SystemId::vectrex, "vectrex", CpuId::m6809, 0xfffe,
                      1024, 12288, vectrex::inspect, vectrex_targets},
+    /* First Mega Drive profile: 4 KiB of the 68k's upper work RAM and
+     * CRAM/background colour.  The generator checks every reachable opcode
+     * and rejects ROMs outside this deliberately small profile. */
+    SystemDescriptor{SystemId::megadrive, "megadrive", CpuId::m68k, 0x0004,
+                     65536, 8192, megadrive::inspect, megadrive_targets},
 };
 
 /* Facts of each destination.  meta/pokitto: the whole contiguous SRAM is
@@ -164,6 +171,7 @@ std::optional<SystemId> detect_system(const std::filesystem::path& path) {
     if (ext == ".nes") return SystemId::nes;
     if (ext == ".pce") return SystemId::pce;
     if (ext == ".vec") return SystemId::vectrex;
+    if (ext == ".md" || ext == ".gen") return SystemId::megadrive;
     if (ext == ".rom") { // a MSX ROM starts with "AB"
         std::ifstream file(path, std::ios::binary);
         char header[2] = {};

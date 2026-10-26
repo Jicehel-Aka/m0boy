@@ -31,6 +31,22 @@ run time): the 6809 recompiled to C in front of the interpreter. On a META,
 Berzerk's demo runs at 36 frames/s of 50 (measured; 19 with the interpreter
 alone), the VIA now being the larger cost. See [Vectrex notes](docs/VECTREX.fr.md).
 
+An experimental Mega Drive M68k recompiler profile generates META, desktop
+harness and SDL2 PC projects. The PC project emits covered 68000 opcodes as C
+and has an in-tree 68000 fallback, 64 KiB work RAM, VRAM and a Plane A tile
+renderer. Sonic 1 reaches Green Hill and responds to movement and jump input in
+the native C project. VDP features, sound and META compatibility remain
+incomplete. See
+[Mega Drive notes](docs/MEGADRIVE.fr.md).
+
+Build local Linux and Windows PC binaries from a locally supplied Sonic ROM
+with `tools/megadrive/build_pc_binaries.sh [ROM] [OUTPUT_DIR]`. This requires
+SDL2 development files; Windows cross-builds also require the x86-64 MinGW
+toolchain and its SDL2 package. The Linux executable and Windows `.exe` plus
+`SDL2.dll` are written under `output/sonic1-pc/` by default. These generated
+ROM-containing files stay out of Git and release archives; see the Mega Drive
+notes for controls and details.
+
 | Source | META | Pokitto | ESPboy |
 |---|---|---|---|
 | Game Boy (DMG) | yes | yes | yes |
@@ -41,6 +57,7 @@ alone), the VIA now being the larger cost. See [Vectrex notes](docs/VECTREX.fr.m
 | PICO-8 | yes | yes | yes |
 | NES (NROM: 16/32 KiB PRG, 8 KiB CHR ROM; experimental) | yes | yes | — |
 | Vectrex (cartridges up to 32 KiB, system ROM built in; experimental) | yes | — | — |
+| Mega Drive (bounded M68k colour-loop profile; experimental) | yes | — | — |
 
 MSX1 is checked against openMSX (VRAM of the title screens) and against the
 host reference renderer; Gradius 2 (128 KiB, Konami SCC) held 60 game frames

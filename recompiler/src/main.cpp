@@ -10,6 +10,7 @@
 #include "m0boy/pico8_generator.h"
 #include "m0boy/nes_generator.h"
 #include "m0boy/pce_generator.h"
+#include "m0boy/megadrive_generator.h"
 #include "m0boy/vectrex_generator.h"
 #include "m0boy/cpu/huc6280/decoder.h"
 #include "m0boy/cpu/m6502/decoder.h"
@@ -167,8 +168,8 @@ void print_usage(const char* program) {
     std::cout << "  --trace               Trace execution analysis (very verbose)\n";
     std::cout << "  --limit <n>           Limit analysis to n instructions\n";
     std::cout << "  -j, --jobs <n>        Parallel workers for codegen and batch generation (0=auto)\n";
-    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8|msx|nes|pce|vectrex  Source console (default auto; legacy GB fallback)\n";
-    std::cout << "  --cpu sm83|z80|6502|huc6280  Check the CPU required by the source console\n";
+    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8|msx|nes|pce|vectrex|megadrive  Source console (default auto; legacy GB fallback)\n";
+    std::cout << "  --cpu sm83|z80|6502|huc6280|m68k  Check the CPU required by the source console\n";
     std::cout << "  --list-systems       List source consoles, CPUs and available pipelines\n";
     std::cout << "  --list-targets       List destination consoles and their hardware facts\n";
     std::cout << "  --info               Inspect a cartridge without generating code\n";
@@ -2465,6 +2466,44 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: --sd-name must be 1 to 8 letters, digits, '_' or '-'\n";
             return 1;
         }
+    }
+    if (source.id == m0boy::SystemId::megadrive) {
+        if (!source.supports(*m0boy::parse_target(target)))
+            return refuse_target(source, *m0boy::parse_target(target), target);
+        if (disasm_only || analyze_only || (target != "pc" && !coverage_paths.empty()) ||
+            meta_thumb || g_meta_pack || g_meta_stream != -1 ||
+            !g_rom_profiles.empty() || g_meta_resident || emit_android_project ||
+            !native_patch_manifest_path.empty() || specific_bank > 0) {
+            std::cerr << "Error: unsupported Mega Drive profile option; use --target, --coverage (PC) and --meta-compiler\n";
+            return 1;
+        }
+        m0boy::megadrive::GenerateOptions options;
+        options.target = *m0boy::parse_target(target);
+        options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string()) : output_prefix;
+        if (options.name.empty() || sanitize_prefix(options.name) != options.name) {
+            std::cerr << "Error: invalid Mega Drive output prefix\n";
+            return 1;
+        }
+        options.output = output_dir.empty() ? fs::path(options.name + "_megadrive_" + target) : fs::path(output_dir);
+        options.targets_dir = resolve_meta_dir(argv[0], meta_dir).parent_path();
+        options.compiler = meta_compiler;
+        options.coverage = coverage_paths;
+        std::string error;
+        if (!m0boy::megadrive::generate(rom_path, options, error)) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        const bool native = [&] {
+            std::ifstream status(options.output / "native-status.txt");
+            std::string line;
+            return bool(std::getline(status, line)) && (line == "native" || line == "native-c");
+        }();
+        std::cout << "Generated Mega Drive project for " << target << ": " << options.output
+                  << "\n  mode:               "
+                  << (target == "pc" ? "covered 68000 opcodes emitted as C, in-tree fallback" :
+                      native ? "instruction-precise native profile" : "unsupported")
+                  << (native && meta_precise ? " (--meta-precise)" : "") << "\n";
+        return 0;
     }
     if (source.id == m0boy::SystemId::pico8) {
         if (disasm_only || analyze_only || meta_thumb || g_meta_pack || !coverage_paths.empty() || meta_precise ||

@@ -12,7 +12,7 @@ static void require(bool condition, const char* message) {
 int main() {
     using namespace m0boy;
     try {
-        require(systems().size() == 9, "Source registry incomplete");
+        require(systems().size() == 10, "Source registry incomplete");
         require(targets().size() == 7, "Target registry incomplete");
         require(parse_target("pc") == TargetId::pc && parse_target("odroid") == TargetId::odroid &&
                 parse_target("aka") == TargetId::aka, "New targets not parsed");
@@ -60,6 +60,11 @@ int main() {
                 target_fits(vx, target_descriptor(TargetId::meta)) && !vx.supports(TargetId::pokitto) &&
                 detect_system("game.VEC") == SystemId::vectrex,
                 "Vectrex must be wired for the PC and the META");
+        const auto& md = system_descriptor(SystemId::megadrive);
+        require(md.cpu == CpuId::m68k && md.supports(TargetId::desktop) && md.supports(TargetId::meta) &&
+                md.supports(TargetId::pc) && !md.supports(TargetId::pokitto) &&
+                detect_system("game.MD") == SystemId::megadrive,
+                "Mega Drive bounded M68k profile must be wired for desktop, META and PC");
         require(detect_system("game.sms") == SystemId::mastersystem && parse_system("sms") == SystemId::mastersystem,
                 "Master System detection failed");
         require(detect_system("game.nes") == SystemId::nes && detect_system("game.PCE") == SystemId::pce,
