@@ -96,20 +96,33 @@ rejouera sur le harness quand l'application gm0 saura la lancer).
   — un TIA autogénéré vers le port VCE), IRQ VBlank + RCR, SATB DMA,
   écran titre exact : kanji 雷電, logo RAIDEN™, texte « FROM NEC / © 1990
   SEIBU KAIHATSU INC. / ALL RIGHTS RESERVED / © 1991 HUDSON SOFT ».
-  run_hash stable d'une exécution à l'autre.
+  Avec RUN posé au bon moment (l'écran « PUSH RUN BUTTON »), le jeu
+  démarre : vaisseau au décollage sur l'océan, score, HUD vies/bombes.
+  run_hash stable d'une exécution à l'autre (builds trace et non-trace
+  identiques).
+- **Comparaison de référence** : le cœur mednafen (beetle-pce-libretro)
+  piloté par un mini frontend libretro rejoue la même session. La
+  progression frame à frame colle (titre, transition, écran PUSH RUN) ;
+  mednafen vu « en plein jeu » plus tôt vient du calage de l'entrée RUN
+  entre les deux sessions, pas d'une divergence du cœur — le traceur
+  fidèle au flux réel (`PCE_TRACE` dans `huc6280_run`) ne voit aucun BRK
+  parasite ni drapeau I posé hors des dispatches d'IRQ après le lancement.
 - **e2e synthétique** (`tests/test_pce_e2e.py`) : cartouche générée en
   Python (vecteurs, TAM, VDC, VCE), deux exécutions même hash, pixels du
   fond et du caractère vérifiés.
 
 ## Chantiers suivants
 
+- Le gameplay au long cours : la session mednafen recoupée frame à frame
+  (mêmes entrées, mêmes frames) pour trancher les écarts fins de timing
+  (timer aux frontières de ligne, SATB un peu tôt, DMA instantané).
 - La couche sprite : les gros glyphs du titre tombent juste, le texte
   sprite des bords de lignes montre des artefacts de découpe (limite des
   16 sprites de ligne ou fetch des demi-motifs 32 px — à trancher contre
-  une référence).
+  la même référence).
 - Le recompilateur HuC6280 → C (le modèle NES : régions, profils depuis
   le harness, interpréteur en repli) et la cible META — la VRAM de 64 Kio
   ne tient pas dans les 32 Kio de SRAM : il faudra la fenêtrer en flash
   comme la ROM Sega.
 - Le PSG complet (LFO, balance, polynôme de bruit) et l'entrée audio du
-  harness comparée à une référence.
+  harness comparée à la référence.
