@@ -223,7 +223,7 @@ bool Emitter::decode(uint32_t pc, Ins &in, std::string *code) {
             std::string pre, a;
             if (d.memory()) a = address(d, 1, pre);
             c = "{ const int t_ = md_cc(m, " + std::to_string(cc) + "); " +
-                (mode == 0 ? "if (t_) md_spend(m, MD_SCC_TRUE_DN); " : "") + pre +
+                (mode == 0 ? "if (t_) fc_ += MD_SCC_TRUE_DN; " : "") + pre +
                 store(d, 1, "t_ ? 0xffu : 0u", a) + "}";
             return finish();
         } else {
@@ -324,7 +324,7 @@ bool Emitter::decode(uint32_t pc, Ins &in, std::string *code) {
             return finish();
         }
         if (op == 0x4e76u) {
-            c = "if (m->sr & MD_V) { md_spend(m, 30); md_exception(m, 7, " + hx(at) + "); goto dyn; }";
+            c = "if (m->sr & MD_V) { fc_ += 30u; MDFLUSH(); md_exception(m, 7, " + hx(at) + "); goto dyn; }";
             return finish();
         }
         if (op == 0x4e77u) {
@@ -371,7 +371,7 @@ bool Emitter::decode(uint32_t pc, Ins &in, std::string *code) {
             std::string pre;
             const std::string v = load(s, 2, pre);
             c = pre + "{ const int16_t b_ = (int16_t)" + v + ", x_ = (int16_t)m->d[" + R + "]; if (x_ < 0 || x_ > b_) { "
-                "m->sr = (uint16_t)((m->sr & ~MD_N) | (x_ < 0 ? MD_N : 0)); md_spend(m, 30); md_exception(m, 6, " + hx(at) + "); goto dyn; } }";
+                "m->sr = (uint16_t)((m->sr & ~MD_N) | (x_ < 0 ? MD_N : 0)); fc_ += 30u; MDFLUSH(); md_exception(m, 6, " + hx(at) + "); goto dyn; } }";
             return finish();
         }
         if ((op & 0xfff8u) == 0x4840u) {
@@ -397,7 +397,7 @@ bool Emitter::decode(uint32_t pc, Ins &in, std::string *code) {
             const uint16_t list = w16(at); at += 2;
             unsigned count = 0;
             for (uint16_t l = list; l; l &= uint16_t(l - 1)) ++count;
-            const std::string S = std::to_string(size), extra = "md_spend(m, " + std::to_string(count * (size == 4 ? 8 : 4)) + "u); ";
+            const std::string S = std::to_string(size), extra = "fc_ += " + std::to_string(count * (size == 4 ? 8 : 4)) + "u; ";
             if (mode == 4) {
                 if (to_regs) return false;
                 c = extra + "{ uint32_t p_ = m->a[" + RY + "]; ";
@@ -485,8 +485,10 @@ bool Emitter::decode(uint32_t pc, Ins &in, std::string *code) {
             if (!parse(at, mode, ry, 2, s) || s.mode == 1) return false;
             std::string pre;
             const std::string v = "(uint16_t)" + load(s, 2, pre);
-            if (top == 12) c = pre + (opmode == 3 ? "md_mulu" : "md_muls") + std::string("(m, ") + R + ", " + v + ");";
-            else c = pre + "if (!" + (opmode == 3 ? "md_divu" : "md_divs") + "(m, " + R + ", " + v + ", " + hx(at) + ")) goto dyn;";
+            if (top == 12) c = pre + (opmode == 3 ? "md_mulu" : "md_muls") + std::string("(m, ") + R + ", " + v +
+                  "); fc_ = st_ = m->frame_cycles;";
+            else c = pre + "if (!" + (opmode == 3 ? "md_divu" : "md_divs") + "(m, " + R + ", " + v + ", " + hx(at) +
+                  ")) { fc_ = st_ = m->frame_cycles; goto dyn; } fc_ = st_ = m->frame_cycles;";
             return finish();
         }
         if ((top == 8 || top == 12) && opmode == 4 && mode <= 1) {   /* SBCD/ABCD */
@@ -573,7 +575,7 @@ bool Emitter::decode(uint32_t pc, Ins &in, std::string *code) {
         const unsigned size = 1u << ((op >> 6) & 3u);
         const std::string S = std::to_string(size), type = std::to_string((op >> 3) & 3u), left = (op & 0x0100u) ? "1" : "0";
         if (op & 0x0020u)
-            c = "{ const unsigned n_ = m->d[" + R + "] & 63u; md_spend(m, 2u * n_); md_setd(m, " + RY + ", md_shift(m, " + type +
+            c = "{ const unsigned n_ = m->d[" + R + "] & 63u; fc_ += 2u * n_; md_setd(m, " + RY + ", md_shift(m, " + type +
                 ", " + left + ", m->d[" + RY + "], n_, " + S + "), " + S + "); }";
         else
             c = "md_setd(m, " + RY + ", md_shift(m, " + type + ", " + left + ", m->d[" + RY + "], " + std::to_string(reg ? reg : 8) +
@@ -630,13 +632,19 @@ std::string Emitter::run(const std::set<uint32_t> &seeds, EmitStats &stats) {
          "#include \"md_m68k_ops.h\"\n"
          "#pragma GCC diagnostic ignored \"-Wunused-label\"\n"
          "#pragma GCC diagnostic ignored \"-Wunused-variable\"\n"
-         "#define OVER (m->frame_cycles >= m->slice_limit)\n\n"
+         "/* the region's own cycle shadow: fc_ adds what the interpreter would\n"
+         " * spend, and the clock reaches memory only at exits and before any\n"
+         " * helper that reads it (VDP status, HV counter, Z80 sync) or spends\n"
+         " * by itself (mul, div, idle, exception) */\n"
+         "#define OVER (fc_ >= m->slice_limit)\n"
+         "#define MDFLUSH() (m->cycles += fc_ - st_, m->frame_cycles = fc_, st_ = fc_)\n\n"
          "static int md_gen_next = -1;   /* the entry a region left for the dispatcher */\n";
     for (size_t r = 0; r < regions_.size(); ++r)
         o << "static void r_" << r << "(MdFull *m, unsigned entry) __attribute__((noinline));\n";
     for (size_t r = 0; r < regions_.size(); ++r) {
         const auto &addrs = regions_[r];
-        o << "\nstatic void r_" << r << "(MdFull *m, unsigned entry) {\n    uint32_t pc_;\n    switch (entry) {\n";
+        o << "\nstatic void r_" << r << "(MdFull *m, unsigned entry) {\n"
+          << "    uint32_t pc_;\n    uint32_t fc_ = m->frame_cycles, st_ = fc_;\n    switch (entry) {\n";
         for (uint32_t a : addrs) o << "    case " << ins_.at(a).local << ": goto " << lbl(a) << ";\n";
         o << "    default: __builtin_unreachable();\n    }\n";
         for (size_t i = 0; i < addrs.size(); ++i) {
@@ -647,23 +655,35 @@ std::string Emitter::run(const std::set<uint32_t> &seeds, EmitStats &stats) {
             const unsigned top = in.op >> 12;
             const unsigned base = md_m68k_cycles(in.op);
             unsigned extra = 0;
+            /* a helper that reads the clock (VDP status, HV counter, the
+             * Z80 sync behind a bus read) or spends by itself (mul, div,
+             * idle, exception) sees the flushed one */
+            static const char *const impure[] = {
+                "md_rd8(", "md_rd16(", "md_rd32(", "md_wr8(", "md_wr16(", "md_wr32(",
+                "md_push16(", "md_push32(", "md_pop16(", "md_pop32(",
+                "md_exception(", "md_full_idle(", "md_sbcd(", "md_abcd(",
+                "md_mulu(", "md_muls(", "md_divu(", "md_divs("};
+            bool flushes = false;
+            for (const char *h : impure)
+                if (body.find(h) != std::string::npos) { flushes = true; break; }
             o << lbl(in.addr) << ": /* " << hx(in.op) << " */\n";
             /* MOVEM's per-register time is folded into its code */
-            o << "    md_spend(m, " << base + extra << "u);";
+            o << "    fc_ += " << base + extra << "u;";
+            if (flushes) o << " MDFLUSH();";
             if (top == 6) {
                 const unsigned cc = (in.op >> 8) & 15u;
-                if (cc == 1) o << " md_push32(m, " << hx(in.next) << ");";
+                if (cc == 1) o << " MDFLUSH(); md_push32(m, " << hx(in.next) << ");";
                 if (cc <= 1) {
                     o << " if (OVER) { pc_ = " << hx(in.target) << "; goto out; } " << go(in, in.target) << "\n";
                     continue;
                 }
-                o << " if (md_cc(m, " << cc << ")) { md_spend(m, (unsigned)" << md_m68k_branch_taken(in.op)
-                  << "); if (OVER) { pc_ = " << hx(in.target) << "; goto out; } " << go(in, in.target) << " }\n";
+                o << " if (md_cc(m, " << cc << ")) { fc_ += (unsigned)" << md_m68k_branch_taken(in.op)
+                  << "; if (OVER) { pc_ = " << hx(in.target) << "; goto out; } " << go(in, in.target) << " }\n";
             } else if (top == 5 && (in.op & 0x00f8u) == 0x00c8u) {
                 const unsigned cc = (in.op >> 8) & 15u, dn = in.op & 7u;
                 o << " if (!md_cc(m, " << cc << ")) { const uint16_t v_ = (uint16_t)(m->d[" << dn << "] - 1u); md_setd(m, "
-                  << dn << ", v_, 2); if (v_ != 0xffffu) { md_spend(m, (unsigned)MD_DBCC_LOOP); if (OVER) { pc_ = "
-                  << hx(in.target) << "; goto out; } " << go(in, in.target) << " } md_spend(m, MD_DBCC_EXPIRED); }\n";
+                  << dn << ", v_, 2); if (v_ != 0xffffu) { fc_ += MD_DBCC_LOOP; if (OVER) { pc_ = "
+                  << hx(in.target) << "; goto out; } " << go(in, in.target) << " } fc_ += MD_DBCC_EXPIRED; }\n";
             } else if (in.has_target) {                  /* JMP/JSR to a constant */
                 o << " " << body << " if (OVER) { pc_ = " << hx(in.target) << "; goto out; } " << go(in, in.target) << "\n";
                 continue;
@@ -674,13 +694,13 @@ std::string Emitter::run(const std::set<uint32_t> &seeds, EmitStats &stats) {
             o << "    if (OVER) { pc_ = " << hx(in.next) << "; goto out; }\n";
             if (const unsigned len = md_m68k_idle_loop(rom_.data(), uint32_t(rom_.size()), in.addr)) {
                 const uint16_t bop = w16(in.addr + len);
-                o << "    if (md_cc(m, " << ((bop >> 8) & 15u) << ")) { md_full_idle(m, " << base << "u, 10u, " << hx(in.addr)
-                  << ", " << hx(in.addr + len) << "); return; }\n";
+                o << "    if (md_cc(m, " << ((bop >> 8) & 15u) << ")) { MDFLUSH(); md_full_idle(m, " << base << "u, 10u, "
+                  << hx(in.addr) << ", " << hx(in.addr + len) << "); return; }\n";
                 ++stats.idle_loops;
             }
             if (i + 1 == addrs.size()) o << "    " << go(in, in.next) << "\n";
         }
-        o << "out:\n    m->pc = pc_; return;\ndyn:\n    return;\n}\n";
+        o << "out:\n    MDFLUSH(); m->pc = pc_; return;\ndyn:\n    MDFLUSH(); return;\n}\n";
     }
     std::vector<const Ins *> entries;
     for (const auto &[a, in] : ins_) entries.push_back(&in);
