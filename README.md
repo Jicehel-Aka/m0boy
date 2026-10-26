@@ -37,9 +37,12 @@ ship takes off from the carrier, stage 1 scrolls, squadrons attack with
 visible fire, and the pad answers. Controls: arrows, X = I, Z = II,
 Enter = RUN, Shift = SELECT; a gamepad works too. The CPU budget follows
 the HuC6280's CSL/CSH clock switch (the bug that left the game
-script-locked). The known open items are the attract demo (the machine's
-own demo play is skipped, the title cycle replaces it) and the exact
-stage pacing against the reference. The PC window and the headless
+script-locked) and the `TST #imm,zp/abs` decode (the bug that aborted the
+attract demo at its first 8-frame tick and left a RUN started during it
+in a script-driven game with a dead pad). The attract demo now plays
+like the reference and RUN on the title screen starts a game the pad
+controls; the remaining open item is a few pixels of stage scroll
+against the reference. The PC window and the headless
 harness print the same run_hash, and the .exe's output matches the Linux
 build's byte for byte. See [PC Engine notes](docs/PCE.fr.md).
 
