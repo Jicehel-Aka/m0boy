@@ -13,6 +13,7 @@
 #include "m0boy/megadrive_generator.h"
 #include "m0boy/vectrex_generator.h"
 #include "m0boy/cpu/huc6280/decoder.h"
+#include "m0boy/cpu/m0plus/decoder.h"
 #include "m0boy/cpu/m6502/decoder.h"
 #include "m0boy/cpu/z80/decoder.h"
 #include "recompiler/rom.h"
@@ -168,8 +169,8 @@ void print_usage(const char* program) {
     std::cout << "  --trace               Trace execution analysis (very verbose)\n";
     std::cout << "  --limit <n>           Limit analysis to n instructions\n";
     std::cout << "  -j, --jobs <n>        Parallel workers for codegen and batch generation (0=auto)\n";
-    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8|msx|nes|pce|vectrex|megadrive  Source console (default auto; legacy GB fallback)\n";
-    std::cout << "  --cpu sm83|z80|6502|huc6280|m68k  Check the CPU required by the source console\n";
+    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8|msx|nes|pce|vectrex|megadrive|meta|pokitto  Source console (default auto; raw firmware needs explicit system)\n";
+    std::cout << "  --cpu sm83|z80|6502|huc6280|6809|m68k|m0plus  Check the CPU required by the source console\n";
     std::cout << "  --list-systems       List source consoles, CPUs and available pipelines\n";
     std::cout << "  --list-targets       List destination consoles and their hardware facts\n";
     std::cout << "  --info               Inspect a cartridge without generating code\n";
@@ -2361,6 +2362,44 @@ int main(int argc, char* argv[]) {
                   << "\ncartridge_ram_bytes=" << cartridge->cartridge_ram_bytes
                   << "\nmapper=" << cartridge->mapper << "\n";
         return 0;
+    }
+    if (source.cpu == m0boy::CpuId::m0plus) {
+        std::string error;
+        if (!source.inspect(rom_path, error)) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        if (disasm_only && !analyze_only) {
+            if (specific_bank > 0) {
+                std::cerr << "Error: M0+ firmware images have no banks\n";
+                return 1;
+            }
+            std::ifstream file(rom_path, std::ios::binary);
+            const std::vector<uint8_t> bytes(std::istreambuf_iterator<char>{file}, {});
+            const uint32_t base = source.id == m0boy::SystemId::meta ? 0x4000u : 0u;
+            const uint32_t reset = uint32_t(bytes[4]) | (uint32_t(bytes[5]) << 8) |
+                                   (uint32_t(bytes[6]) << 16) | (uint32_t(bytes[7]) << 24);
+            size_t offset = (reset & ~1u) - base, count = 0;
+            while (offset < bytes.size() && (!limit_instructions || count < limit_instructions)) {
+                try {
+                    const auto instruction = m0boy::cpu::m0plus::decode(
+                        std::span<const uint8_t>(bytes).subspan(offset), base + uint32_t(offset));
+                    std::cout << std::hex << std::uppercase << std::setw(8) << std::setfill('0')
+                              << base + offset << "  " << instruction.mnemonic << std::dec << "\n";
+                    offset += instruction.length;
+                    ++count;
+                } catch (const std::runtime_error& e) {
+                    std::cerr << "Error: " << e.what() << " at file offset " << offset << "\n";
+                    return 1;
+                }
+            }
+            return 0;
+        }
+        if (analyze_only) {
+            std::cerr << "Error: M0+ firmware analysis is not available\n";
+            return 1;
+        }
+        return refuse_target(source, *m0boy::parse_target(target), target);
     }
     if (disasm_only && source.id == m0boy::SystemId::sg1000 && !analyze_only) {
         if (specific_bank > 0) {

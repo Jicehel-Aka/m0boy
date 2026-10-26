@@ -2,6 +2,27 @@
 
 La sélection d’un jeu comporte désormais trois identités indépendantes :
 
+Les images de firmware Cortex-M0+ sont également reconnues comme **sources**
+explicites : `--system meta` pour une application SAMD21 liée à `0x4000`,
+`--system pokitto` pour une application LPC11U68 liée à `0x0000`. Les deux
+partagent `--cpu m0plus`. Un `.bin` brut ne permet pas de déduire sa console :
+il faut donner `--system`. `--info` vérifie les vecteurs de pile et de reset ;
+`--disasm` liste les instructions Thumb depuis le reset, avec `--limit` pour
+borner la lecture. Le désassemblage est linéaire : il peut traiter des données
+comme du code. Les encodages non reconnus sont affichés en `.hword`.
+
+```bash
+build/bin/m0recomp firmware.bin --system meta --cpu m0plus --info
+build/bin/m0recomp firmware.bin --system pokitto --disasm --limit 40
+```
+
+Il n'y a pas encore de générateur ni de runtime de machine source pour ces
+firmwares : `--list-systems` annonce `codegen=unavailable` et une demande de
+`--target` échoue explicitement. Un binaire natif exige l'émulation des
+périphériques SAMD21 ou LPC11U68 et de l'écran, du stockage et des entrées
+avant de pouvoir être exécuté ou transposé. Cette entrée du registre ne
+signifie donc pas qu'un firmware META tourne sur Pokitto, ou inversement.
+
 | Axe | Game Boy | SG-1000 | Game Gear | Master System | PICO-8 |
 | --- | --- | --- | --- | --- | --- |
 | Console d’origine (`--system`) | `gameboy` | `sg1000` | `gg` | `sms` | `pico8` |

@@ -16,6 +16,7 @@ constexpr std::array cpu_table = {
     CpuDescriptor{CpuId::huc6280, "huc6280", true},  // PC Engine; extends the 6502 table
     CpuDescriptor{CpuId::m6809, "6809", false},      // Vectrex: the recompiler decodes it
     CpuDescriptor{CpuId::m68k, "m68k", false}, // bounded compiler decoder, no --disasm listing yet
+    CpuDescriptor{CpuId::m0plus, "m0plus", true},
 };
 
 /* Wired pipelines: where a project generator exists today.  The runtime's
@@ -76,6 +77,13 @@ constexpr std::array system_table = {
      * and rejects ROMs outside this deliberately small profile. */
     SystemDescriptor{SystemId::megadrive, "megadrive", CpuId::m68k, 0x0004,
                      65536, 8192, megadrive::inspect, megadrive_targets},
+    /* Firmware images, not cartridges.  The reset vector is at the image
+     * start; META is linked at 0x4000, Pokitto at zero.  Execution/codegen
+     * requires an emulated board and is not wired yet. */
+    SystemDescriptor{SystemId::meta, "meta", CpuId::m0plus, 0x4004,
+                     32768, 32768, m0plus::inspect_meta, no_targets},
+    SystemDescriptor{SystemId::pokitto, "pokitto", CpuId::m0plus, 0x0004,
+                     32768, 32768, m0plus::inspect_pokitto, no_targets},
 };
 
 /* Facts of each destination.  meta/pokitto: the whole contiguous SRAM is

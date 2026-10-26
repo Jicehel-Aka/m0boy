@@ -12,7 +12,7 @@ static void require(bool condition, const char* message) {
 int main() {
     using namespace m0boy;
     try {
-        require(systems().size() == 10, "Source registry incomplete");
+        require(systems().size() == 12, "Source registry incomplete");
         require(targets().size() == 7, "Target registry incomplete");
         require(parse_target("pc") == TargetId::pc && parse_target("odroid") == TargetId::odroid &&
                 parse_target("aka") == TargetId::aka, "New targets not parsed");
@@ -90,6 +90,12 @@ int main() {
         require(detect_system("game.sgb") == SystemId::gameboy, "SGB is a GB cartridge");
         require(!detect_system("game.bin"), "Raw binary falsely identified");
         require(!parse_cpu("arm") && !parse_system("snes"), "Unknown ids accepted");
+        require(parse_cpu("m0plus") == CpuId::m0plus &&
+                system_descriptor(SystemId::meta).cpu == CpuId::m0plus &&
+                system_descriptor(SystemId::pokitto).cpu == CpuId::m0plus &&
+                !system_descriptor(SystemId::meta).supports(TargetId::pc) &&
+                !system_descriptor(SystemId::pokitto).supports(TargetId::meta) &&
+                !detect_system("firmware.bin"), "M0+ source profiles incorrect");
         std::string error;
         require(!sg1000::Cartridge::from_bytes({}, error) && !error.empty(), "Empty ROM accepted");
         require(!sg1000::Cartridge::from_bytes(std::vector<uint8_t>(0xc001), error),

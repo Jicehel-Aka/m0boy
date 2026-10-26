@@ -20,6 +20,9 @@ set_target_properties(m0boy_cpu_6502 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(m0boy_cpu_huc6280 STATIC src/cpu/huc6280/decoder.cpp)
 target_link_libraries(m0boy_cpu_huc6280 PUBLIC m0boy_cpu_6502)
 set_target_properties(m0boy_cpu_huc6280 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+add_library(m0boy_cpu_m0plus STATIC src/cpu/m0plus/decoder.cpp)
+target_link_libraries(m0boy_cpu_m0plus PUBLIC m0boy_common)
+set_target_properties(m0boy_cpu_m0plus PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(m0boy_frontends STATIC
     src/system.cpp
@@ -31,6 +34,7 @@ add_library(m0boy_frontends STATIC
     src/system/pce/cartridge.cpp
     src/system/megadrive/cartridge.cpp
     src/system/vectrex/cartridge.cpp
+    src/system/m0plus/firmware.cpp
 )
 target_link_libraries(m0boy_frontends PUBLIC m0boy_common)
 set_target_properties(m0boy_frontends PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -121,8 +125,8 @@ add_library(m0boy_cli OBJECT src/main.cpp)
 target_link_libraries(m0boy_cli PRIVATE gbrecomp_core m0boy_cpu_z80)
 add_executable(m0recomp $<TARGET_OBJECTS:m0boy_cli>)
 add_executable(gbrecomp $<TARGET_OBJECTS:m0boy_cli>)
-target_link_libraries(m0recomp PRIVATE gbrecomp_core m0boy_cpu_z80 m0boy_cpu_6502 m0boy_cpu_huc6280)
-target_link_libraries(gbrecomp PRIVATE gbrecomp_core m0boy_cpu_z80 m0boy_cpu_6502 m0boy_cpu_huc6280)
+target_link_libraries(m0recomp PRIVATE gbrecomp_core m0boy_cpu_z80 m0boy_cpu_6502 m0boy_cpu_huc6280 m0boy_cpu_m0plus)
+target_link_libraries(gbrecomp PRIVATE gbrecomp_core m0boy_cpu_z80 m0boy_cpu_6502 m0boy_cpu_huc6280 m0boy_cpu_m0plus)
 target_compile_definitions(m0boy_cli PRIVATE
     GBRECOMP_DEFAULT_RUNTIME_DIR="${PROJECT_SOURCE_DIR}/runtime"
     GBRECOMP_DEFAULT_META_DIR="${PROJECT_SOURCE_DIR}/targets/meta"

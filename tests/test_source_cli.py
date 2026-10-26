@@ -21,6 +21,8 @@ assert "nes cpu=6502 inspect=yes disasm=yes codegen=desktop,meta,pokitto" in lis
 assert "pce cpu=huc6280 inspect=yes disasm=yes codegen=desktop" in listing
 assert "vectrex cpu=6809 inspect=yes disasm=no codegen=meta,pc" in listing
 assert "megadrive cpu=m68k inspect=yes disasm=no codegen=desktop,meta,pc" in listing
+assert "meta cpu=m0plus inspect=yes disasm=yes codegen=unavailable" in listing
+assert "pokitto cpu=m0plus inspect=yes disasm=yes codegen=unavailable" in listing
 targets = run("--list-targets", contains='meta host=no ram=32K')
 assert 'desktop host=yes' in targets and 'pc host=yes' in targets
 assert 'odroid host=no ram=320K psram=4096K' in targets and 'aka host=no ram=320K psram=8192K' in targets
@@ -31,6 +33,34 @@ run("--system", "snes", ok=False, contains="unknown --system")
 assert "sms cpu=z80" in listing and "gg cpu=z80" in listing
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
+    for system, base, stack in (("meta", 0x4000, 0x20008000),
+                                ("pokitto", 0, 0x10008000)):
+        firmware = root / (system + ".bin")
+        image = bytearray(32)
+        image[0:4] = stack.to_bytes(4, "little")
+        image[4:8] = (base + 9).to_bytes(4, "little")
+        image[8:14] = bytes([0x00, 0x20, 0x01, 0x30, 0xFE, 0xE7])
+        firmware.write_bytes(image)
+        run(firmware, "--system", system, "--cpu", "m0plus", "--info",
+            contains=f"system={system}\ncpu=m0plus")
+        listing = run(firmware, "--system", system, "--disasm", "--limit", "3")
+        assert f"{base + 8:08X}  MOV r0, #0" in listing, listing
+        assert "ADD r0, #1" in listing and "B $" in listing, listing
+        image[8:12] = bytes([0x00, 0xF0, 0x00, 0xF8])  # BL to the next instruction
+        firmware.write_bytes(image)
+        assert f"BL ${base + 12:08X}" in run(
+            firmware, "--system", system, "--disasm", "--limit", "1")
+        run(firmware, "--system", system, "--target", "pc", ok=False,
+            contains="code generation is not available")
+        image[4:8] = (base + 8).to_bytes(4, "little")
+        firmware.write_bytes(image)
+        run(firmware, "--system", system, "--info", ok=False,
+            contains="without the Thumb bit")
+        image[4:8] = (base + 9).to_bytes(4, "little")
+        image[0:4] = (0xDEADBEEF).to_bytes(4, "little")
+        firmware.write_bytes(image)
+        run(firmware, "--system", system, "--info", ok=False,
+            contains="invalid initial stack pointer")
     sg = root / "synthetic.SG"
     sg.write_bytes(bytes([0xc3, 0x00, 0x00]) + bytes(16381))
     info = run(sg, "--info", contains="system=sg1000\ncpu=z80")
