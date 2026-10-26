@@ -174,6 +174,15 @@ built firmware in it (`ESPBOY_PIO` for the build).
   The AKA CORE v1.4 wiring follows the official Gamebuino_AKA_lib
   (`targets/consoles/aka/`, `docs/AKA.fr.md`).
 
+## Commits
+
+- The author of a commit stays the session's git user (r043v); an agent that
+  did the work signs the commit with its own name in a `Co-Authored-By:`
+  trailer — `Co-Authored-By: GLM <noreply@z.ai>` for GLM/ZCode, its own name
+  and address for any other agent (e.g.
+  `Co-Authored-By: Claude <noreply@anthropic.com>`). Never commit agent work
+  anonymously.
+
 ## Hygiene
 
 - No ROMs, built firmwares or ROM-derived data in the repository or in a
