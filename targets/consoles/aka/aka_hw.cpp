@@ -117,11 +117,12 @@ extern "C" void m0_lcd_init(void) {
     delay(150);
     command(0x11);
     delay(120);
-    const uint8_t format = 0x55, rotation = 0x60, te = 0;
+    const uint8_t format = 0x55, te = 0;
+    const uint8_t rotation = 0x60 | (AKA_LCD_BGR ? 0x08 : 0); /* MX | MV, + bit BGR de MADCTL */
     command(0x3a, &format, 1);
     command(0x21);
     command(0x13);
-    command(0x36, &rotation, 1); /* official rotation 3: MX | MV, RGB */
+    command(0x36, &rotation, 1); /* rotation officielle 3 (MX | MV) ; ordre RGB/BGR selon AKA_LCD_BGR */
     command(0x29);
     command(0x35, &te, 1);
 }
