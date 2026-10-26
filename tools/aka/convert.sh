@@ -9,7 +9,7 @@
 # Systemes pris en charge pour l'AKA : Game Boy/Color (.gb .gbc), SG-1000 (.sg),
 # Game Gear (.gg), Master System (.sms). Le Mega Drive n'est pas pris en charge.
 # Prerequis : CMake, Ninja, un compilateur C/C++, zlib (dev), Python 3, PlatformIO.
-# Sous Windows : utiliser convert.bat (WSL) ou deposer la ROM sur convert.bat.
+# Sous Windows : utiliser convert_gui.bat (interface, MSYS2 ou WSL).
 set -u
 ici="$(cd "$(dirname "$0")" && pwd)"
 racine="$(cd "$ici/../.." && pwd)"
