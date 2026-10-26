@@ -58,6 +58,8 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
     for (const char *n : {"z80.h", "z80.c", "z80_ops.h"})
         copy_template(o.targets_dir / "sg1000/runtime" / n, src / n);
     copy_template(tpl / "platform/md_full_pc.c", src / "md_full_pc.c");
+    for (const char *n : {"pc_frontend.c", "pc_frontend.h"})
+        copy_template(o.targets_dir / "consoles/pc" / n, src / n);
     std::set<uint32_t> covered;
     covered.insert(be32(rom, 4));
     for (const auto &path : o.coverage) {
@@ -101,7 +103,7 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
         "cmake_minimum_required(VERSION 3.20)\nproject(md_native C)\n"
         "set(CMAKE_C_STANDARD 11)\nfind_package(PkgConfig REQUIRED)\n"
         "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)\n"
-        "add_executable(md_pc src/md_full_pc.c src/md_full_code.c src/md_full_cpu.c "
+        "add_executable(md_pc src/md_full_pc.c src/pc_frontend.c src/md_full_code.c src/md_full_cpu.c "
         "src/md_full_bus.c src/md_full_video.c src/md_full_audio.c src/z80.c src/md_rom.c)\n"
         "target_compile_options(md_pc PRIVATE -O2)\n"
         "target_link_libraries(md_pc PRIVATE PkgConfig::SDL2 m)\n");
@@ -112,7 +114,8 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
         "implemented in this project. SDL2 supplies the window, gamepad and audio output.\n\n"
         "Build: `cmake -G Ninja -S . -B build && ninja -C build`.\n"
         "Run: `build/md_pc` (arrows, X/Z/C, Enter; gamepad B/A/X and Start; Esc quits). "
-        "F8 cycles gm0-style filters; F10 changes scale; F11 toggles fullscreen. "
+        "The image is unfiltered by default. F8 cycles gm0-style filters; "
+        "F10 changes scale; F11 toggles fullscreen. "
         "`--wav FILE` saves 44.1 kHz mono audio.\n"
         "Profile: `build/md_pc --interp --frames 1200 --input start.input --coverage run.cov`, "
         "then regenerate with `m0recomp --coverage run.cov`.\n");

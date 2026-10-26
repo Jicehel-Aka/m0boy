@@ -4,7 +4,9 @@
 harness hôte (`--target desktop`, images PPM et WAV hors écran) et la
 **fenêtre PC** (`--target pc`) — un shell SDL2 (`targets/pce/platform/
 pce_pc.c`) : fenêtre ×3 redimensionnable, clavier (flèches, X = I,
-Z = II, Entrée = RUN, Maj = SELECT, Échap quitte), le son du PSG en file
+Z = II, Entrée = RUN, Maj = SELECT, Échap quitte), manette SDL2 (croix ou
+stick gauche, B = I, A = II, Start = RUN, Back = SELECT) ou joystick générique,
+le son du PSG en file
 SDL, `--frames`/`--ppm` pour une passe hors écran. La HuCard est
 embarquée dans l'exécutable. `tools/pce/build_pc_binaries.sh` construit
 le binaire Linux et un **.exe Windows** (MinGW croisé, `SDL2.dll` à
@@ -15,6 +17,12 @@ déterministe d'une plateforme à l'autre. C'est la même trajectoire que
 la NES : le cœur interprété d'abord, la recompilation HuC6280 → C
 viendra ensuite sur le même modèle (`emitter.cpp` + `nes_gen.h` →
 `pce_gen.h`).
+
+Le frontend SDL commun à toutes les cibles `--target pc` montre l'image sans
+filtre au démarrage. F8 parcourt pixel, DMG, LCD RGB, scanlines et grille ;
+F10 change l'échelle et F11 bascule en plein écran. Les manettes sont
+détectées au démarrage et lors de leur branchement. Les captures `--ppm` et
+`run_hash` restent calculés sur l'image du cœur, indépendamment du filtre.
 
 ```bash
 tools/pce/build_pc_binaries.sh                       # raiden-linux + raiden.exe + SDL2.dll

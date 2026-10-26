@@ -1,9 +1,10 @@
-/* PC display, keyboard and audio for the PCE runtime: the HuCard is
+/* PC display, controller and audio for the PCE runtime: the HuCard is
  * embedded in the project (pce_rom), SDL2 supplies the window and the
  * sound.  The run fingerprint follows the host harness's recipe, so a
  * scripted session here prints the harness's run_hash.  Keyboard:
  * arrows, X = I, Z = II, Enter = RUN, Shift = SELECT, Esc quits. */
 #include "pce.h"
+#include "pc_frontend.h"
 #include <SDL.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -30,18 +31,6 @@ static uint32_t fnv(const void *data, size_t n, uint32_t h) {
     return h;
 }
 
-static uint8_t buttons(void) {
-    const Uint8 *key = SDL_GetKeyboardState(NULL);
-    return (uint8_t)((key[SDL_SCANCODE_UP] ? PCE_BTN_UP : 0) |
-                     (key[SDL_SCANCODE_DOWN] ? PCE_BTN_DOWN : 0) |
-                     (key[SDL_SCANCODE_LEFT] ? PCE_BTN_LEFT : 0) |
-                     (key[SDL_SCANCODE_RIGHT] ? PCE_BTN_RIGHT : 0) |
-                     (key[SDL_SCANCODE_X] ? PCE_BTN_I : 0) |
-                     (key[SDL_SCANCODE_Z] ? PCE_BTN_II : 0) |
-                     (key[SDL_SCANCODE_RETURN] ? PCE_BTN_RUN : 0) |
-                     (key[SDL_SCANCODE_LSHIFT] || key[SDL_SCANCODE_RSHIFT] ? PCE_BTN_SELECT : 0));
-}
-
 int main(int argc, char **argv) {
     unsigned limit = 0;
     const char *ppm = NULL;
@@ -58,23 +47,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "nearest");
-    SDL_Window *window = SDL_CreateWindow("m0boy PC Engine", SDL_WINDOWPOS_CENTERED,
-                                          SDL_WINDOWPOS_CENTERED, 256 * 3,
-                                          240 * 3, SDL_WINDOW_RESIZABLE);
-    SDL_Renderer *renderer = window ? SDL_CreateRenderer(window, -1, 0) : NULL;
-    if (!renderer) {
-        fprintf(stderr, "SDL window: %s\n", SDL_GetError());
-        if (window) SDL_DestroyWindow(window);
-        SDL_Quit();
-        return 1;
-    }
-    SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
-                                             SDL_TEXTUREACCESS_STREAMING, 512, 262);
-    if (!texture) {
-        fprintf(stderr, "SDL texture: %s\n", SDL_GetError());
-        SDL_DestroyRenderer(renderer);
-        SDL_DestroyWindow(window);
+    PcFrontend pc = {0};
+    if (!pc_frontend_open(&pc, "m0boy PC Engine", 256, 240)) {
         SDL_Quit();
         return 1;
     }
@@ -91,19 +65,21 @@ int main(int argc, char **argv) {
     pce_init(pce_rom, PCE_ROM_SIZE);
     machine.row = on_row;
 
-    int running = 1, scaled = 0;
+    int running = 1;
     unsigned carry = 0;
     static int16_t pcm[4096];
     static uint32_t pixels[262 * 512];
     uint64_t deadline = SDL_GetTicks64();
+    unsigned frame_fraction = 0;
     while (running && (!limit || machine.frames < limit)) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event))
-            if (event.type == SDL_QUIT ||
-                (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE))
-                running = 0;
-        if (!running) break;
-        machine.input = buttons();
+        pc_frontend_poll(&pc, 1);
+        if (pc.quit) break;
+        const uint16_t b = pc_frontend_buttons(&pc);
+        machine.input = (uint8_t)((b & PC_UP ? PCE_BTN_UP : 0) |
+            (b & PC_DOWN ? PCE_BTN_DOWN : 0) | (b & PC_LEFT ? PCE_BTN_LEFT : 0) |
+            (b & PC_RIGHT ? PCE_BTN_RIGHT : 0) | (b & PC_A ? PCE_BTN_I : 0) |
+            (b & PC_B ? PCE_BTN_II : 0) | (b & PC_START ? PCE_BTN_RUN : 0) |
+            (b & PC_SELECT ? PCE_BTN_SELECT : 0));
         pce_frame();
         if (audio) {
             carry += AUDIO_RATE * 119210u;
@@ -126,20 +102,14 @@ int main(int argc, char **argv) {
                         ((((c >> 5) & 63u) * 255u / 63u) << 8) |
                         ((c & 31u) * 255u / 31u);
                 }
-            const SDL_Rect src = {0, 0, (int)w, (int)h};
-            SDL_UpdateTexture(texture, &src, pixels, 512 * sizeof pixels[0]);
-            if (!scaled) {
-                SDL_RenderSetLogicalSize(renderer, w, h);
-                scaled = 1;
-            }
-            SDL_RenderClear(renderer);
-            SDL_RenderCopy(renderer, texture, &src, NULL);
-            SDL_RenderPresent(renderer);
+            if (!pc_frontend_present(&pc, pixels, w, h, 512)) { running = 0; break; }
         }
-        deadline += 1000u / 60u;
+        deadline += 16u;
+        frame_fraction += 2u;
+        if (frame_fraction >= 3u) { ++deadline; frame_fraction -= 3u; }
         uint64_t now = SDL_GetTicks64();
         if (deadline > now) SDL_Delay((uint32_t)(deadline - now));
-        else if (now - deadline > 100u) deadline = now;
+        else if (now - deadline > 100u) { deadline = now; frame_fraction = 0; }
     }
     const int saved = !ppm || (machine.have_frame && ({
         FILE *file = fopen(ppm, "wb");
@@ -176,9 +146,7 @@ int main(int argc, char **argv) {
                     machine.vdc.active_width * sizeof rows[0][0], h);
     printf("frames=%u pc=%04x run_hash=%08x\n", machine.frames, machine.cpu.pc, h);
     if (audio) SDL_CloseAudioDevice(audio);
-    SDL_DestroyTexture(texture);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
+    pc_frontend_close(&pc);
     SDL_Quit();
     return !saved;
 }

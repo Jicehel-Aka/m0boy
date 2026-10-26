@@ -68,7 +68,8 @@ output/sonic1-pc/sonic1-linux
 ```
 
 Use arrows or a gamepad D-pad/left stick to move. Keyboard X/Z/C or gamepad
-B/A/X select Mega Drive A/B/C; Enter or gamepad Start starts. F8 cycles the
+B/A/X select Mega Drive A/B/C; Enter or gamepad Start starts. The image is
+unfiltered by default. F8 cycles the
 gm0-style display filters, F10 changes scaling, and F11 toggles fullscreen.
 `--frames N --wav FILE` records 44.1 kHz mono audio without opening a window.
 The FM synthesizer and Z80 timing are experimental; see the Mega Drive notes.
@@ -85,6 +86,12 @@ The FM synthesizer and Z80 timing are experimental; see the Mega Drive notes.
 | PC Engine (HuCards, interpreter; experimental; PC window + harness, no console) | — | — | — |
 | Vectrex (cartridges up to 32 KiB, system ROM built in; experimental) | yes | — | — |
 | Mega Drive (bounded M68k colour-loop profile; experimental) | yes | — | — |
+
+The `--target pc` SDL2 backend is available for Game Boy, SG-1000, Game Gear,
+Master System, PC Engine, Vectrex and Mega Drive. These projects share gamepad
+and joystick hotplug, an unfiltered image by default, F8 display filters,
+F10 scaling and F11 fullscreen. Each system keeps its own keyboard button
+names and audio core; captures and run hashes use the native image.
 
 MSX1 is checked against openMSX (VRAM of the title screens) and against the
 host reference renderer; Gradius 2 (128 KiB, Konami SCC) held 60 game frames

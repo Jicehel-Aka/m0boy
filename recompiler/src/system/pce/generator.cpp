@@ -114,12 +114,14 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
         if (pc_window) {
             /* the SDL2 window: the shell next to src/, the ROM embedded */
             copy_template(tpl / "platform" / "pce_pc.c", src / "pce_pc.c");
+            for (const char* name : { "pc_frontend.c", "pc_frontend.h" })
+                copy_template(o.meta_templates.parent_path() / "consoles" / "pc" / name, src / name);
             write(o.output / "CMakeLists.txt",
                   "cmake_minimum_required(VERSION 3.20)\nproject(" + o.name + "_pce_pc C)\n"
                   "set(CMAKE_C_STANDARD 11)\n"
                   "find_package(PkgConfig REQUIRED)\n"
                   "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)\n"
-                  "add_executable(" + o.name + "_pc src/pce_pc.c ${CMAKE_CURRENT_SOURCE_DIR}/src/pce.c "
+                  "add_executable(" + o.name + "_pc src/pce_pc.c src/pc_frontend.c ${CMAKE_CURRENT_SOURCE_DIR}/src/pce.c "
                   "${CMAKE_CURRENT_SOURCE_DIR}/src/huc6280.c ${CMAKE_CURRENT_SOURCE_DIR}/src/vdc.c "
                   "${CMAKE_CURRENT_SOURCE_DIR}/src/psg.c ${CMAKE_CURRENT_SOURCE_DIR}/src/pce_cart.c)\n"
                   "target_include_directories(" + o.name + "_pc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)\n"
@@ -132,7 +134,9 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                   "runtime; SDL2 supplies the window, the keyboard and the sound.\n\n"
                   "Build: cmake -G Ninja -S . -B build && ninja -C build\n"
                   "Run: build/" + o.name + "_pc (arrows, X = I, Z = II, Enter = RUN, "
-                  "Shift = SELECT, Esc quits; --frames N and --ppm shot.ppm for a headless run)\n");
+                  "Shift = SELECT, Esc quits; gamepad B/A = I/II, Start/Back = RUN/SELECT). "
+                  "No filter by default; F8 cycles filters, F10 scaling, F11 fullscreen. "
+                  "--frames N and --ppm shot.ppm provide a headless run.\n");
             return true;
         }
 

@@ -8,7 +8,11 @@ shared frontend. The card is the file `sd.img` in the working directory —
 Without it the game still runs; saves and states need the image.
 
 - Window: the source console's native resolution, scaled to the window.
-- Pad: arrows, X = A, Z = B, Return = Menu, Escape = Home (hold: options).
+- Pad: arrows or gamepad D-pad/left stick, X = A, Z = B, Return or gamepad Start = Menu,
+  Escape/Backspace or gamepad Back = Home (hold: options). Generic joysticks use
+  their axes/hat and buttons 0–4. Controllers can be connected while running.
+- Display: unfiltered pixels by default; F8 cycles pixel, DMG, LCD RGB,
+  scanlines, grid and back to none. F10 changes scaling; F11 toggles fullscreen.
 
 Build and run:
 

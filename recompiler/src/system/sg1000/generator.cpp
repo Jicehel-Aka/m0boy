@@ -898,7 +898,8 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             const auto common_platform = t.frontend();
             /* files of an earlier generation that this one does not use */
             for (const char* name : { "gg_stream.c", "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h",
-                                      "meta_sd_bus.cpp", "pokitto_sd.c", "pc_hw.c", "pc_hw.h", "pc_sd.c" })
+                                      "meta_sd_bus.cpp", "pokitto_sd.c", "pc_hw.c", "pc_hw.h", "pc_sd.c",
+                                      "pc_frontend.c", "pc_frontend.h" })
                 fs::remove(src / name);
             if (esp32) {
                 if (gg) copy_template(tpl / "platform" / "gg_stream.c", src / "gg_stream.c");
@@ -909,6 +910,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             } else if (o.target == TargetId::pc) {
                 /* the PC's card is the file sd.img: the FAT reader over the
                  * sector calls of pc_sd.c, no SPI protocol (m0_sd.c stays out) */
+                if (gg) copy_template(tpl / "platform" / "gg_stream.c", src / "gg_stream.c");
                 for (const char* name : { "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h" })
                     copy_template(common_platform / name, src / name);
             } else if ((streamed || cart_on_card || states || o.target == TargetId::meta) && !esp) {
@@ -970,7 +972,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             } else if (o.target == TargetId::pc) {
                 /* SDL2 drivers (window, keyboard, audio, clock) and the card
                  * as sd.img; the plain CMake project builds the executable. */
-                for (const char* name : { "pc_hw.c", "pc_hw.h", "pc_sd.c" })
+                for (const char* name : { "pc_hw.c", "pc_hw.h", "pc_sd.c", "pc_frontend.c", "pc_frontend.h" })
                     copy_template(platform / name, src / name);
                 std::error_code list_error;
                 for (const auto& entry : fs::directory_iterator(platform, list_error)) {

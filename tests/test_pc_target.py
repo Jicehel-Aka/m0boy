@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from test_meta_target_e2e import make_rom, run
 from test_sg1000_e2e import fixture as sg_fixture
+from gg_fixture import fixture as gg_fixture
 
 
 def firmware_run(exe, frames, ppm):
@@ -55,6 +56,7 @@ def main():
         assert 'GBL_ROM_SD' not in config          # the executable embeds the ROM
         assert '#define GBL_STATE_NAME ' in config  # states on the sd.img card
         assert (project / 'src/pc_hw.c').is_file() and (project / 'src/pc_sd.c').is_file()
+        assert (project / 'src/pc_frontend.c').is_file()
         assert not list((project / 'src').glob('meta_*'))
         assert not list((project / 'src').glob('pokitto_*'))
         assert not list((project / 'src').glob('espboy_*'))
@@ -63,6 +65,7 @@ def main():
         run([cli, str(gb), '--target', 'meta', '--meta-static', '--meta-precise',
              '--output-prefix', 'e2e', '-o', str(project)])
         assert not (project / 'src/pc_hw.c').exists()
+        assert not (project / 'src/pc_frontend.c').exists()
         assert not (project / 'CMakeLists.txt').exists()
         run([cli, str(gb), '--target', 'pc', '--meta-static', '--meta-precise',
              '--output-prefix', 'e2e', '-o', str(project)])
@@ -86,6 +89,16 @@ def main():
         assert (pce_project / 'src/pce_cart.c').is_file()
         assert 'pkg_check_modules(SDL2' in (pce_project / 'CMakeLists.txt').read_text()
 
+        sega_projects = []
+        for system, extension in (('gg', '.gg'), ('sms', '.sms')):
+            cart = root / ('synthetic' + extension)
+            cart.write_bytes(gg_fixture())
+            sega_project = root / (system + '_pc')
+            run([cli, str(cart), '--system', system, '--target', 'pc', '-o', str(sega_project)])
+            assert (sega_project / 'src/pc_frontend.c').is_file()
+            assert (sega_project / 'src/gg_stream.c').is_file()
+            sega_projects.append((system, sega_project))
+
         if can_build:
             exe = build(project)
             firmware_run(exe, 120, root / 'gb.ppm')
@@ -104,7 +117,9 @@ def main():
             header, _, body = shot.read_bytes().partition(b'\n255\n')
             assert header == b'P6\n256 60', header  # the synthetic card's VDW+1 lines
             assert len({body[i:i + 3] for i in range(0, len(body), 3)}) > 1
-            print('pc: GB, SG-1000 and PCE firmwares built and run head first')
+            for system, sega_project in sega_projects:
+                firmware_run(build(sega_project), 120, root / (system + '.ppm'))
+            print('pc: GB, SG-1000, Game Gear, SMS and PCE built and run head first')
         else:
             print('pc: SDL2 absent, generation checks only')
     finally:

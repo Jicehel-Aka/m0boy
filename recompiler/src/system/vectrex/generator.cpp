@@ -190,12 +190,14 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
                                      "/* the host's --coverage and the dispatcher's counts */\n"
                                      "#define VX_COVERAGE 1\n#define VX_GEN_STATS 1\n");
       copy_template(tpl / "host" / "vectrex_host.c", src / "vectrex_host.c");
+      for (const char* name : {"pc_frontend.c", "pc_frontend.h"})
+        copy_template(o.targets_dir / "consoles/pc" / name, src / name);
       write(o.output / "CMakeLists.txt",
             "cmake_minimum_required(VERSION 3.20)\nproject(vectrex_pc C)\n"
             "set(CMAKE_C_STANDARD 11)\nif(NOT CMAKE_BUILD_TYPE)\n    set(CMAKE_BUILD_TYPE Release)\nendif()\n"
             "find_package(PkgConfig REQUIRED)\n"
             "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)\n"
-            "add_executable(vectrex_pc src/vectrex_host.c src/vectrex.c src/m6809.c src/m6809_run.c "
+            "add_executable(vectrex_pc src/vectrex_host.c src/pc_frontend.c src/vectrex.c src/m6809.c src/m6809_run.c "
             "src/via.c src/psg.c src/vx_cart.c" + std::string(o.interpret ? "" : " src/vx_gen.c") + ")\n"
             "target_link_libraries(vectrex_pc PRIVATE PkgConfig::SDL2 m)\n");
       write(o.output / "README.md",
@@ -207,7 +209,9 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
                 "headless capture (it prints the strokes' run_hash). `--full-boot` keeps the BIOS intro.\n"
                 "`--interp` runs the run loop alone (the reference for the recompiled code); "
                 "`--interp --coverage FILE` records the profile m0recomp's `--coverage` takes.\n"
-                "Arrows: stick; X/Z/A/S: buttons 1-4; Escape: quit. The BIOS is loaded "
+            "Arrows or gamepad stick: stick; X/Z/A/S or gamepad B/A/X/Y: buttons 1-4; "
+            "Escape: quit. No filter by default; F8 cycles filters, F10 scaling, "
+            "F11 fullscreen. The BIOS is loaded "
                 "at run time and never copied into this project.\n");
       write(marker, target + "\n");
       return true;

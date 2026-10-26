@@ -1,4 +1,5 @@
 #include "vectrex.h"
+#include "pc_frontend.h"
 #define VX_W VX_GRID
 #define VX_H VX_GRID
 #include <SDL.h>
@@ -118,11 +119,11 @@ static uint32_t ram_hash(const Vectrex *v) {
     h = (h ^ v->ram[i]) * 16777619u;
   return h;
 }
-static void input(Vectrex *v, const uint8_t *k) {
-  v->joy_x = k[SDL_SCANCODE_LEFT] ? 0 : k[SDL_SCANCODE_RIGHT] ? 255 : 128;
-  v->joy_y = k[SDL_SCANCODE_UP] ? 255 : k[SDL_SCANCODE_DOWN] ? 0 : 128;
-  v->buttons = (k[SDL_SCANCODE_X] ? 1 : 0) | (k[SDL_SCANCODE_Z] ? 2 : 0) |
-               (k[SDL_SCANCODE_A] ? 4 : 0) | (k[SDL_SCANCODE_S] ? 8 : 0);
+static void input(Vectrex *v, uint16_t k) {
+  v->joy_x = k & PC_LEFT ? 0 : k & PC_RIGHT ? 255 : 128;
+  v->joy_y = k & PC_UP ? 255 : k & PC_DOWN ? 0 : 128;
+  v->buttons = (k & PC_A ? 1 : 0) | (k & PC_B ? 2 : 0) |
+               (k & PC_C ? 4 : 0) | (k & PC_D ? 8 : 0);
   v->via.ay[14] = ~v->buttons;
 }
 #ifdef VX_NATIVE
@@ -209,9 +210,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "SDL: %s\n", SDL_GetError());
     return 1;
   }
-  SDL_Window *w = 0;
-  SDL_Renderer *r = 0;
-  SDL_Texture *t = 0;
+  PcFrontend pc = {0};
   SDL_AudioDeviceID audio_device = 0;
   FILE *wav_file = 0;
   unsigned wav_samples = 0;
@@ -225,13 +224,7 @@ int main(int argc, char **argv) {
     wav_header(wav_file, 0);
   }
   if (!headless) {
-    w = SDL_CreateWindow("m0boy Vectrex", SDL_WINDOWPOS_CENTERED,
-                         SDL_WINDOWPOS_CENTERED, 768, 768, 0);
-    r = SDL_CreateRenderer(w, -1, SDL_RENDERER_ACCELERATED);
-    if (!r)
-      r = SDL_CreateRenderer(w, -1, SDL_RENDERER_SOFTWARE);
-    t = SDL_CreateTexture(r, SDL_PIXELFORMAT_ARGB8888,
-                          SDL_TEXTUREACCESS_STREAMING, VX_W, VX_H);
+    if (!pc_frontend_open(&pc, "m0boy Vectrex", VX_W, VX_H)) return 1;
     SDL_AudioSpec requested = {0}, obtained = {0};
     requested.freq = 44100;
     requested.format = AUDIO_S16SYS;
@@ -241,17 +234,14 @@ int main(int argc, char **argv) {
     if (audio_device)
       SDL_PauseAudioDevice(audio_device, 0);
   }
-  int done = 0, frame = 0;
-  while (!done && (frames <= 0 || frame < frames)) {
+  int frame = 0;
+  while (frames <= 0 || frame < frames) {
     Uint32 begin = SDL_GetTicks();
-    SDL_Event e;
-    while (SDL_PollEvent(&e)) {
-      if (e.type == SDL_QUIT ||
-          e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)
-        done = 1;
+    if (!headless) {
+      pc_frontend_poll(&pc, 1);
+      if (pc.quit) break;
+      input(v, pc_frontend_buttons(&pc));
     }
-    if (!headless)
-      input(v, SDL_GetKeyboardState(0));
     for (unsigned i = 0; i < VX_W * VX_H; i++)
       pixels[i] = (uint8_t)(pixels[i] * 3u / 4u);
     vx_frame(v);
@@ -274,22 +264,12 @@ int main(int argc, char **argv) {
       wav_samples += sample_count;
     }
     if (!headless) {
-      void *texels;
-      int pitch;
-      if (SDL_LockTexture(t, 0, &texels, &pitch) == 0) {
-        for (int y = 0; y < VX_H; y++) {
-          uint32_t *row = (uint32_t *)((uint8_t *)texels + y * pitch);
-          for (int x = 0; x < VX_W; x++) {
-            uint8_t z = pixels[y * VX_W + x];
-            row[x] = 0xff000000u | ((uint32_t)(z / 6) << 16) |
-                     ((uint32_t)z << 8) | (z / 5);
-          }
-        }
-        SDL_UnlockTexture(t);
+      static uint32_t rgb[VX_W * VX_H];
+      for (unsigned i = 0; i < VX_W * VX_H; ++i) {
+        uint8_t z = pixels[i];
+        rgb[i] = 0xff000000u | ((uint32_t)(z / 6) << 16) | ((uint32_t)z << 8) | (z / 5);
       }
-      SDL_RenderClear(r);
-      SDL_RenderCopy(r, t, 0, 0);
-      SDL_RenderPresent(r);
+      pc_frontend_present(&pc, rgb, VX_W, VX_H, VX_W);
       Uint32 elapsed = SDL_GetTicks() - begin;
       if (elapsed < 20)
         SDL_Delay(20 - elapsed);
@@ -322,12 +302,7 @@ int main(int argc, char **argv) {
          v->cpu.x, v->cpu.y, v->cpu.u, v->cpu.s, v->cpu.dp, v->cpu.cc,
          v->via.ora, v->via.orb, v->via.t1, v->via.t2, v->via.ifr, v->ram[0x25],
          v->ram[0x26], ram_hash(v), run_hash);
-  if (t)
-    SDL_DestroyTexture(t);
-  if (r)
-    SDL_DestroyRenderer(r);
-  if (w)
-    SDL_DestroyWindow(w);
+  pc_frontend_close(&pc);
   if (audio_device)
     SDL_CloseAudioDevice(audio_device);
   SDL_Quit();

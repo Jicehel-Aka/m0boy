@@ -1,9 +1,10 @@
-/* PC backend, SDL2: the window plays the panel, the keyboard plays the pad,
+/* PC backend, SDL2: the window plays the panel, keyboard/gamepad play the pad,
  * SDL_QueueAudio plays the speaker.  One C file behind the m0_lcd/m0_clock/
  * m0_audio/m0_watchdog interfaces the shared frontends call, after the model
  * of espboy_hw.cpp.  The panel geometry comes from the project's config
  * (PC_COLS/PC_ROWS: 160x144 Game Boy and Game Gear, 256x192 SG-1000/SMS). */
 #include "pc_hw.h"
+#include "pc_frontend.h"
 #if __has_include("gbl.h") /* Game Boy frontend; the Sega ones have sg_audio.h */
 #include "gbl.h"
 #define PC_AUDIO_SET_RATE(r) gbl_apu_set_rate(r)
@@ -32,9 +33,7 @@
  * Gear) — never from defaults of our own. */
 #define PC_AUDIO_RATE 11025u
 
-static SDL_Window *window;
-static SDL_Renderer *renderer;
-static SDL_Texture *texture;
+static PcFrontend frontend;
 static uint32_t frame_pixels[PC_ROWS * PC_COLS];
 static uint32_t lcd_seq;
 static unsigned frames_left;    /* M0_FRAMES: exit after that many frames */
@@ -66,26 +65,24 @@ uint32_t m0_micros(void) {
 
 /* ---- pad and events ------------------------------------------------------ */
 uint8_t pc_buttons(void) {
-    SDL_Event e;
-    while (SDL_PollEvent(&e)) {
-        if (e.type == SDL_QUIT) exit(0);
-    }
+    pc_frontend_poll(&frontend, 0);
+    if (frontend.quit) exit(0);
     /* The boot-error loops never draw frames; under M0_FRAMES the run then
      * ends here instead, so a stuck firmware still exits on the CI. */
     if (frames_left && ++polls > frames_left * 10) {
         dump_ppm();
         exit(0);
     }
-    const Uint8 *k = SDL_GetKeyboardState(NULL);
+    const uint16_t k = pc_frontend_buttons(&frontend);
     uint8_t b = 0;
-    if (k[SDL_SCANCODE_DOWN]) b |= M0_MB_DOWN;
-    if (k[SDL_SCANCODE_LEFT]) b |= M0_MB_LEFT;
-    if (k[SDL_SCANCODE_RIGHT]) b |= M0_MB_RIGHT;
-    if (k[SDL_SCANCODE_UP]) b |= M0_MB_UP;
-    if (k[SDL_SCANCODE_X]) b |= M0_MB_A;
-    if (k[SDL_SCANCODE_Z]) b |= M0_MB_B;
-    if (k[SDL_SCANCODE_RETURN]) b |= M0_MB_MENU;
-    if (k[SDL_SCANCODE_ESCAPE] || k[SDL_SCANCODE_BACKSPACE]) b |= M0_MB_HOME;
+    if (k & PC_DOWN) b |= M0_MB_DOWN;
+    if (k & PC_LEFT) b |= M0_MB_LEFT;
+    if (k & PC_RIGHT) b |= M0_MB_RIGHT;
+    if (k & PC_UP) b |= M0_MB_UP;
+    if (k & PC_A) b |= M0_MB_A;
+    if (k & PC_B) b |= M0_MB_B;
+    if (k & PC_START) b |= M0_MB_MENU;
+    if (k & PC_SELECT) b |= M0_MB_HOME;
     return b;
 }
 
@@ -104,13 +101,8 @@ static void dump_ppm(void) {
 }
 
 void m0_lcd_init(void) {
-    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO);
-    window = SDL_CreateWindow("m0boy", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                              PC_COLS * 3, PC_ROWS * 3, SDL_WINDOW_RESIZABLE);
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    SDL_RenderSetLogicalSize(renderer, PC_COLS, PC_ROWS);
-    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
-                                SDL_TEXTUREACCESS_STREAMING, PC_COLS, PC_ROWS);
+    SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS);
+    if (!pc_frontend_open(&frontend, "m0boy", PC_COLS, PC_ROWS)) exit(1);
     const char *frames = getenv("M0_FRAMES");
     if (frames) frames_left = (unsigned)strtoul(frames, NULL, 10);
     ppm_path = getenv("M0_PPM");
@@ -136,12 +128,7 @@ void m0_lcd_fill(uint16_t color) {
     for (unsigned y = 0; y < PC_ROWS; y++) m0_lcd_send_rows(line, (uint8_t)y, 1);
 }
 void m0_lcd_end_frame(void) {
-    if (renderer) {
-        SDL_UpdateTexture(texture, NULL, frame_pixels, PC_COLS * 4);
-        SDL_RenderClear(renderer);
-        SDL_RenderCopy(renderer, texture, NULL, NULL);
-        SDL_RenderPresent(renderer);
-    }
+    pc_frontend_present(&frontend, frame_pixels, PC_COLS, PC_ROWS, PC_COLS);
     if (frames_left && !--frames_left) {
         dump_ppm();
         exit(0);

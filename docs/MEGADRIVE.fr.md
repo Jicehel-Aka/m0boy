@@ -41,7 +41,8 @@ Flèches pour bouger, X/Z/C pour A/B/C, Entrée pour Start, Échap pour quitter.
 Une manette SDL2 utilise la croix ou le stick gauche, B/A/X pour A/B/C et Start.
 Un joystick non reconnu comme manette utilise son chapeau ou ses axes et ses
 boutons 0–3 pour A/B/C/Start. Le branchement à chaud est pris en charge.
-F8 parcourt les filtres de gm0 (pixel, DMG, LCD RGB, scanlines, grille, aucun),
+L'image est sans filtre par défaut. F8 parcourt les filtres de gm0 (pixel,
+DMG, LCD RGB, scanlines, grille, puis aucun),
 F10 change l'échelle et F11 bascule en plein écran. Les filtres ne modifient
 pas les captures ni le hachage de l'image native.
 
@@ -49,8 +50,9 @@ gm0 reste un programme voisin facultatif pour exécuter les firmwares des
 consoles portables. Son interface SDL2 est intégrée à son émulation matérielle
 et n'expose pas de bibliothèque de rendu ou de manette. En faire une dépendance
 du projet Mega Drive généré importerait les machines META/Pokitto/ESPboy et
-Zlib sans servir le cœur 68000. Le frontend PC reprend donc localement les
-commandes et la géométrie 3× de ses filtres, avec SDL2 comme seule dépendance.
+Zlib sans servir le cœur 68000. Le module SDL commun à toutes les cibles PC
+reprend donc ses commandes et la géométrie 3× de ses filtres, avec SDL2 comme
+seule dépendance.
 
 Le PC exécute désormais le Z80 de m0boy pour le pilote sonore, décode ses
 8 KiB de RAM, sa fenêtre ROM, le bus et les ports YM2612/PSG. Le PSG génère
