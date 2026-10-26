@@ -21,8 +21,9 @@ static unsigned pattern_pixel(const MdFull *m, unsigned tile, unsigned x, unsign
 static unsigned plane_pixel(const MdFull *m, unsigned plane, unsigned x, unsigned y,
                             unsigned *priority) {
     unsigned wcode = m->vdp_reg[16] & 3u, hcode = (m->vdp_reg[16] >> 4) & 3u;
-    unsigned width = 32u << (wcode == 2 ? 0 : wcode);
-    unsigned height = 32u << (hcode == 2 ? 0 : hcode);
+    /* Size codes: 0 = 32 cells, 1 = 64, 3 = 128 (2 is invalid, read as 32). */
+    unsigned width = wcode == 3 ? 128u : wcode == 1 ? 64u : 32u;
+    unsigned height = hcode == 3 ? 128u : hcode == 1 ? 64u : 32u;
     unsigned scroll_mode = m->vdp_reg[11] & 3u;
     unsigned hrow = scroll_mode == 3 ? y : scroll_mode == 2 ? y & ~7u : 0;
     unsigned hbase = (m->vdp_reg[13] & 0x3fu) << 10;
@@ -39,14 +40,33 @@ static unsigned plane_pixel(const MdFull *m, unsigned plane, unsigned x, unsigne
     unsigned nibble = pattern_pixel(m, entry, col, row);
     return nibble ? (((entry >> 9) & 0x30u) | nibble) : 0;
 }
+/* Window plane (registers 3, 17, 18): it replaces plane A left or right of
+ * the 16-pixel column of register 17 and above or below the 8-line row of
+ * register 18; it never scrolls.  Returns -1 where plane A shows instead. */
+static int window_pixel(const MdFull *m, unsigned x, unsigned y, unsigned width,
+                        unsigned *priority) {
+    const unsigned hreg = m->vdp_reg[17], vreg = m->vdp_reg[18];
+    const unsigned hx = (hreg & 0x1fu) * 16u, vy = (vreg & 0x1fu) * 8u;
+    const int in_h = hreg & 0x80u ? x >= hx : x < hx;
+    const int in_v = vreg & 0x80u ? y >= vy : y < vy;
+    if (!in_h && !in_v) return -1;
+    const unsigned cells = width == 320u ? 64u : 32u;
+    const unsigned base = (m->vdp_reg[3] & (width == 320u ? 0x3cu : 0x3eu)) << 10;
+    const unsigned entry = vram_word(m, base + (((y >> 3) * cells + (x >> 3)) << 1));
+    const unsigned row = entry & 0x1000u ? 7u - (y & 7u) : y & 7u;
+    const unsigned col = entry & 0x0800u ? 7u - (x & 7u) : x & 7u;
+    *priority = !!(entry & 0x8000u);
+    const unsigned nibble = pattern_pixel(m, entry, col, row);
+    return nibble ? (int)(((entry >> 9) & 0x30u) | nibble) : 0;
+}
 /* Sprites of line y into idx/pri (0 = none), first in link order wins.
  * Per line at most 20 sprites and 320 pixels in H40 (16 and 256 in H32);
- * a sprite at x = 0 masks the later ones once an earlier one is on the line. */
+ * a sprite at x = 0 masks the later ones once a sprite with x != 0 is on the line. */
 static void sprite_line(const MdFull *m, unsigned y, unsigned width, uint8_t *idx, uint8_t *pri) {
     const unsigned base = (m->vdp_reg[5] & (width == 320u ? 0x7eu : 0x7fu)) << 9;
     const unsigned max_sprites = width == 320u ? 80u : 64u, line_sprites = width == 320u ? 20u : 16u;
     unsigned link = 0, found = 0, pixels = 0;
-    int masked = 0;
+    int masked = 0, shown = 0;
     for (unsigned i = 0; i < max_sprites; ++i) {
         const unsigned a = base + link * 8u;
         const unsigned sy = vram_word(m, a) & 0x1ffu, shape = vram_word(m, a + 2u);
@@ -55,7 +75,8 @@ static void sprite_line(const MdFull *m, unsigned y, unsigned width, uint8_t *id
         const int dy = (int)y - (int)sy + 128;
         if (dy >= 0 && (unsigned)dy < h) {
             if (++found > line_sprites) break;
-            if (sx == 0u && found > 1u) masked = 1;
+            if (sx == 0u && shown) masked = 1;
+            if (sx != 0u) shown = 1;
             for (unsigned dx = 0; dx < w && !masked; ++dx) {
                 if (++pixels > width) break;
                 const int x = (int)sx - 128 + (int)dx;
@@ -85,7 +106,8 @@ void md_full_render_line(const MdFull *m, unsigned y, uint32_t *row) {
         unsigned index = m->vdp_reg[7] & 63u;
         if (x < width) {
             unsigned pa = 0, pb = 0;
-            const unsigned a = plane_pixel(m, 0, x, y, &pa), b = plane_pixel(m, 1, x, y, &pb);
+            const int w = window_pixel(m, x, y, width, &pa);
+            const unsigned a = w >= 0 ? (unsigned)w : plane_pixel(m, 0, x, y, &pa), b = plane_pixel(m, 1, x, y, &pb);
             const unsigned s = sprite[x], ps = sprite_pri[x];
             if (b && !pb) index = b;
             if (a && !pa) index = a;

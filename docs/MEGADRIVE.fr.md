@@ -104,8 +104,8 @@ Le CPU tourne par tranches d'une ligne (488 cycles, 262 lignes) : le VDP
 rend chaque ligne à la fin de la sienne, l'interruption verticale part à la
 ligne 224 et l'interruption horizontale suit le compteur du registre 10, si
 bien qu'un gestionnaire H-int qui change palette ou défilement touche la
-ligne suivante. Les sprites sont lus par ligne, avec les limites de 20
-sprites et 320 pixels (16 et 256 en H32) et le masquage par x = 0. Une
+ligne suivante. Les sprites sont lus par ligne (plans de 32, 64 ou 128 cellules, plan Window), avec les limites de 20
+sprites et 320 pixels (16 et 256 en H32) et le masquage par x = 0 après un sprite d'x non nul. Une
 boucle d'attente (`TST`, `BTST #` ou `CMPI` sur une adresse absolue de RAM,
 puis `Bcc.s` vers elle) est consommée d'un coup jusqu'à la fin de sa
 tranche, à l'endroit exact où l'exécution pas à pas se serait arrêtée.
