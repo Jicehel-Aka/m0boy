@@ -42,14 +42,19 @@ cartouche synthétique dont il vérifie hash et pixels.
 - **HuC6280** (`huc6280.c`) : le jeu d'instructions complet, comptes de
   cycles et états de reset tirés du cœur mednafen (beetle-pce-libretro,
   `huc6280_ops.inc`), recoupés sur le stub de boot de Raiden lui-même.
-  Les opcodes 65C02 (BRA, STZ, TSB/TRB, (zp), PHX/PHY…), les siens (TAM/
-  TMA, BSR 8 bits, ST0/1/2, RMB/SMB, BBR/BBS, TST, les cinq block moves
-  TII/TDD/TIN/TIA/TAI à $73/$C3/$D3/$E3/$F3, SET, CLA/CLX/CLY, SXY/SAX/
-  SAY, CSL/CSH), le mode T (ADC/AND/ORA/EOR sur zp[X]), le décimal, les
-  vecteurs ($FFF6 BRK/IRQ2, $FFF8 IRQ1=VDC, $FFFA timer). Les opcodes
-  illégaux sont des NOP d'un octet et deux cycles — aucun jeu du périmètre
-  n'en dépend. CSH/CSL posent le drapeau de vitesse sans changer le
-  décompte (le premier jeu du périmètre passe en CSH tôt).
+  Les opcodes 65C02 (BRA, STZ, TSB/TRB, (zp), BIT #, PHX/PHY…), les siens
+  (TAM/TMA en masque de bits, BSR 8 bits — il pousse l'adresse de l'octet
+  de displacement, le RTS +1 retombe après l'instruction : une erreur
+  d'un octet ici faisait sauter l'instruction suivant chaque BSR et
+  gelait le démarrage de Raiden —, ST0/1/2, RMB/SMB, BBR/BBS, TST, les
+  cinq block moves TII/TDD/TIN/TIA/TAI à $73/$C3/$D3/$E3/$F3, SET,
+  CLA/CLX/CLY, SXY/SAX/SAY, CSL/CSH), le mode T (ADC/AND/ORA/EOR sur
+  zp[X]), le décimal, les vecteurs ($FFF6 BRK/IRQ2 — le BRK du 6280
+  vecte bien par $FFF6, vérifié contre mednafen —, $FFF8 IRQ1=VDC,
+  $FFFA timer). Les opcodes illégaux sont des NOP d'un octet et deux
+  cycles — aucun jeu du périmètre n'en dépend. CSH/CSL posent le drapeau
+  de vitesse sans changer le décompte (le premier jeu du périmètre passe
+  en CSH tôt).
 - **Mémoire** : les huit registres MPR fenêtrent l'espace 2 Mio par 8 Kio ;
   TAM bit 0 = MPR0. La WRAM de 8 Kio est le page $F8 **et ses miroirs
   $F9-$FB** (le hardware les décode sur quatre pages — Raiden mappe $FB).
@@ -114,23 +119,37 @@ rejouera sur le harness quand l'application gm0 saura la lancer).
   — un TIA autogénéré vers le port VCE), IRQ VBlank + RCR, SATB DMA,
   écran titre exact : kanji 雷電, logo RAIDEN™, texte « FROM NEC / © 1990
   SEIBU KAIHATSU INC. / ALL RIGHTS RESERVED / © 1991 HUDSON SOFT ».
-  Avec RUN posé au bon moment (l'écran « PUSH RUN BUTTON »), le jeu
-  démarre : vaisseau au décollage sur l'océan, score, HUD vies/bombes.
-  run_hash stable d'une exécution à l'autre (builds trace et non-trace
-  identiques).
+  RUN sur le titre lance la partie et la partie se joue : le vaisseau
+  décolle du porte-avions, la stage 1 défile (océan, côte, chars),
+  les ennemis arrivent, les entrées répondent (déplacements, tir,
+  bombardement — le compte de bombes baisse). Le gel « avant de vraiment
+  jouer » d'avant le correctif BSR est diagnostiqué et compris : la
+  boucle objet du jeu (banque 8, $4900-$4912) sautait le PLA qui suit
+  son `BSR`, un octet mort restait dans la pile, le RTS final partait
+  dans la page matérielle et la tempête de BRK→RTI qui suit laissait le
+  programme principal attendre le drapeau vblank $207E pour toujours.
+  run_hash stable d'une exécution à l'autre, inchangé à l'image 300
+  (97ae6d24 — la phase titre ne passe pas par BSR).
 - **Comparaison de référence** : le cœur mednafen (beetle-pce-libretro)
-  piloté par un mini frontend libretro rejoue la même session. La
-  progression frame à frame colle (titre, transition, écran PUSH RUN) ;
-  mednafen vu « en plein jeu » plus tôt vient du calage de l'entrée RUN
-  entre les deux sessions, pas d'une divergence du cœur — le traceur
-  fidèle au flux réel (`PCE_TRACE` dans `huc6280_run`) ne voit aucun BRK
-  parasite ni drapeau I posé hors des dispatches d'IRQ après le lancement.
+  piloté par un mini frontend libretro. Le titre colle image pour image
+  (300 frames identiques) et l'initialisation suit (flash tank, fondu).
+  À partir de la transition de l'attract les deux cœurs divergent :
+  mednafen enchaîne sur la démo jouée par la machine, le cœur m0boy
+  retourne au titre (cycle titre → flash → fondu → titre). Le diagnostic
+  de la session a aussi démenti la note antérieure « progression frame à
+  frame » : le gameplay vu alors était la démo de la référence, et le
+  « décalage d'entrée RUN » un faux pli — pendant la démo, mednafen
+  ignore RUN là où le cœur m0boy, rendu au bon état de titre, le prend.
 - **e2e synthétique** (`tests/test_pce_e2e.py`) : cartouche générée en
   Python (vecteurs, TAM, VDC, VCE), deux exécutions même hash, pixels du
   fond et du caractère vérifiés.
 
 ## Chantiers suivants
 
+- L'attract : la démo jouée par la machine (mednafen la joue de ~700 à
+  ~2115) reste sautée — l'init de démo s'enlise dans le chargeur VRAM
+  par ligne (banque 5, $4411-$4500) et l'état repart au titre. Trancher
+  ce qui manque (un drapeau, un timing de charge) contre la référence.
 - Le gameplay au long cours : la session mednafen recoupée frame à frame
   (mêmes entrées, mêmes frames) pour trancher les écarts fins de timing
   (timer aux frontières de ligne, SATB un peu tôt, DMA instantané).

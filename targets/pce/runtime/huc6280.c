@@ -499,11 +499,12 @@ void huc6280_run(huc6280_t *cpu, uint32_t until) {
             { const unsigned lo_ = rd(cpu, 0xFFF6); const unsigned hi_ = rd(cpu, 0xFFF7);
               pc_ = (uint16_t)(lo_ | hi_ << 8); }
             left = 8; break;
-        /* BSR: a relative call */
+        /* BSR: a relative call; the return address is the displacement
+         * byte's own address (RTS's +1 lands past the instruction) */
         case 0x44: { const int8_t off = (int8_t)rd(cpu, (uint16_t)(pc_ + 1));
-            const uint16_t ret = (uint16_t)(pc_ + 2);
+            const uint16_t ret = (uint16_t)(pc_ + 1);
             push(cpu, (uint8_t)(ret >> 8)); push(cpu, (uint8_t)ret);
-            pc_ = (uint16_t)(ret + off); left = 8; break; }
+            pc_ = (uint16_t)(pc_ + 2 + off); left = 8; break; }
         /* stack */
         case 0x48: push(cpu, a_); left = 3; break;
         case 0xDA: push(cpu, x_); left = 3; break;
