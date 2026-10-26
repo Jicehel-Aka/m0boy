@@ -38,6 +38,32 @@ intègrent la ROM passée au script ; gardez-les dans `output/`, conformément �
 la règle qui exclut les exécutables dérivés de ROMs du dépôt et des archives.
 
 Flèches pour bouger, X/Z/C pour A/B/C, Entrée pour Start, Échap pour quitter.
+Une manette SDL2 utilise la croix ou le stick gauche, B/A/X pour A/B/C et Start.
+Un joystick non reconnu comme manette utilise son chapeau ou ses axes et ses
+boutons 0–3 pour A/B/C/Start. Le branchement à chaud est pris en charge.
+F8 parcourt les filtres de gm0 (pixel, DMG, LCD RGB, scanlines, grille, aucun),
+F10 change l'échelle et F11 bascule en plein écran. Les filtres ne modifient
+pas les captures ni le hachage de l'image native.
+
+gm0 reste un programme voisin facultatif pour exécuter les firmwares des
+consoles portables. Son interface SDL2 est intégrée à son émulation matérielle
+et n'expose pas de bibliothèque de rendu ou de manette. En faire une dépendance
+du projet Mega Drive généré importerait les machines META/Pokitto/ESPboy et
+Zlib sans servir le cœur 68000. Le frontend PC reprend donc localement les
+commandes et la géométrie 3× de ses filtres, avec SDL2 comme seule dépendance.
+
+Le PC exécute désormais le Z80 de m0boy pour le pilote sonore, décode ses
+8 KiB de RAM, sa fenêtre ROM, le bus et les ports YM2612/PSG. Le PSG génère
+trois voies carrées et du bruit ; les six voies FM du YM2612 et son DAC
+produisent du PCM mono à 44,1 kHz par SDL2. `--wav FILE` l'enregistre même
+en mode sans fenêtre (`--frames N`). `audio_hash` permet de comparer le code
+68000 natif et l'interpréteur. La synthèse FM est simplifiée : enveloppes,
+algorithmes, minuteries et modulation ne sont pas encore fidèles au circuit.
+Le Z80 est avancé une fois par image après le 68000 : la synchronisation des
+écritures audio et les interruptions restent approximatives. Le son de Sonic
+est audible dans le test avec ROM locale, mais sa forme d'onde n'a pas été
+comparée à une Mega Drive.
+
 SDL2 est la seule dépendance du frontend PC. `--frames N --ppm FILE` permet
 une capture sans fenêtre visible, et `--input FILE` rejoue des lignes
 `trame masque` où haut=1, bas=2, gauche=4, droite=8, A=16, B=32, C=64 et
@@ -57,8 +83,8 @@ Le test facultatif `megadrive_sonic_pc_native` utilise la ROM Sonic locale,
 collecte le profil du titre et d'une séquence Start/jump, puis vérifie que la
 génération C donne les mêmes états et pixels que l'interpréteur, sans fallback
 sur cette séquence. Ne pas confondre ce résultat avec une compatibilité
-générale : Sonic 1 est jouable dans ce frontend, mais l'audio, les sprites,
-plusieurs modes du VDP, le Z80 et d'autres cartouches restent incomplets. Le
+générale : Sonic 1 est jouable dans ce frontend, mais les sprites,
+plusieurs modes du VDP, la fidélité sonore et d'autres cartouches restent incomplets. Le
 profil META conserve encore son ancien sous-ensemble restreint ; la jouabilité
 sur matériel embarqué n'est pas établie.
 

@@ -45,16 +45,22 @@ def main():
         start.write_text("600 128\n602 0\n1050 8\n1150 0\n1300 64\n1310 0\n")
         gameplay = run(player, "--interp", "--frames", "1500", "--input", start,
                        "--coverage", root / "game.cov",
-                       "--ppm", root / "game.ppm", env=env)
+                       "--ppm", root / "game.ppm", "--wav", root / "interp.wav", env=env)
         assert field(gameplay, "frames") == "1500", gameplay
         assert field(gameplay, "fault") == "0", gameplay
         run(args.recompiler, "--system", "megadrive", args.rom, "--target", "pc",
             "--coverage", root / "title.cov", "--coverage", root / "game.cov", "-o", project)
         run("ninja", "-C", project / "build")
-        native = run(player, "--frames", "1500", "--input", start, "--ppm", root / "native.ppm", env=env)
+        native = run(player, "--frames", "1500", "--input", start, "--ppm", root / "native.ppm",
+                     "--wav", root / "native.wav", env=env)
         assert field(native, "fallback_hits") == "0", native
         assert field(native, "run_hash") == field(gameplay, "run_hash"), (gameplay, native)
         assert field(native, "image_hash") == field(gameplay, "image_hash"), (gameplay, native)
+        assert field(native, "audio_hash") == field(gameplay, "audio_hash"), (gameplay, native)
+        sound = (root / "interp.wav").read_bytes()
+        assert sound[:4] == b"RIFF" and sound[8:12] == b"WAVE"
+        assert len(set(sound[-44100 * 2:])) > 100, "Sonic title/gameplay audio is silent"
+        assert sound == (root / "native.wav").read_bytes(), "native/interpreter audio differs"
         print(title.strip())
         print(gameplay.strip())
         print(native.strip())

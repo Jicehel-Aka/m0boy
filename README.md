@@ -43,8 +43,9 @@ An experimental Mega Drive M68k recompiler profile generates META, desktop
 harness and SDL2 PC projects. The PC project emits covered 68000 opcodes as C
 and has an in-tree 68000 fallback, 64 KiB work RAM, VRAM and a Plane A tile
 renderer. Sonic 1 reaches Green Hill and responds to movement and jump input in
-the native C project. VDP features, sound and META compatibility remain
-incomplete. See
+the native C project. The PC frontend now accepts SDL gamepads, has gm0-style
+display filters, and produces experimental Z80/PSG/YM2612 audio (SDL or WAV).
+VDP features, FM accuracy and META compatibility remain incomplete. See
 [Mega Drive notes](docs/MEGADRIVE.fr.md).
 
 Build local Linux and Windows PC binaries from a locally supplied Sonic ROM
@@ -54,6 +55,19 @@ toolchain and its SDL2 package. The Linux executable and Windows `.exe` plus
 `SDL2.dll` are written under `output/sonic1-pc/` by default. These generated
 ROM-containing files stay out of Git and release archives; see the Mega Drive
 notes for controls and details.
+
+```bash
+tools/megadrive/build_pc_binaries.sh \
+  'roms/md/Sonic The Hedgehog (USA, Europe).md' output/sonic1-pc
+output/sonic1-pc/sonic1-linux
+# On Windows, keep sonic1.exe and SDL2.dll in the same folder.
+```
+
+Use arrows or a gamepad D-pad/left stick to move. Keyboard X/Z/C or gamepad
+B/A/X select Mega Drive A/B/C; Enter or gamepad Start starts. F8 cycles the
+gm0-style display filters, F10 changes scaling, and F11 toggles fullscreen.
+`--frames N --wav FILE` records 44.1 kHz mono audio without opening a window.
+The FM synthesizer and Z80 timing are experimental; see the Mega Drive notes.
 
 | Source | META | Pokitto | ESPboy |
 |---|---|---|---|

@@ -4,6 +4,7 @@ the independent opcode-decoding reference. The commercial ROM profile is
 intentionally outside this first bounded subset."""
 import re
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -86,6 +87,17 @@ def tiled_image():
     return bytes(rom)
 
 
+def psg_image():
+    rom = bytearray(rom_image())
+    pc = 0x200
+    for value in (0x80, 0x10, 0x90):  # tone 0x100, full volume on channel 0
+        for word in (0x33fc, value, 0x00c0, 0x0010):
+            rom[pc:pc + 2] = word.to_bytes(2, "big")
+            pc += 2
+    rom[pc:pc + 2] = (0x60fe).to_bytes(2, "big")
+    return bytes(rom)
+
+
 def run(*args, success=True, env=None):
     result = subprocess.run([str(x) for x in args], text=True, capture_output=True, env=env)
     if (result.returncode == 0) != success:
@@ -142,6 +154,20 @@ def main():
         assert re.search(r"run_hash=([a-f0-9]+)", tile_native).group(1) == re.search(r"run_hash=([a-f0-9]+)", tile_interp).group(1)
         tile_capture = (work / "tile.ppm").read_bytes().split(b"\n", 3)[3]
         assert tile_capture[:6] == bytes((255, 0, 0, 0, 0, 0)), tile_capture[:6]
+        tone_rom = work / "tone.md"
+        tone_rom.write_bytes(psg_image())
+        tone_pc = work / "tone_pc"
+        run(exe, tone_rom, "--system", "megadrive", "--target", "pc", "-o", tone_pc)
+        run("cmake", "-G", "Ninja", "-S", tone_pc, "-B", tone_pc / "build")
+        run("ninja", "-C", tone_pc / "build")
+        tone_exe = tone_pc / "build" / "md_pc"
+        tone_native = run(tone_exe, "--frames", "4", "--wav", work / "tone.wav", env=pc_env)
+        tone_interp = run(tone_exe, "--interp", "--frames", "4", env=pc_env)
+        assert re.search(r"audio_hash=([a-f0-9]+)", tone_native).group(1) == re.search(
+            r"audio_hash=([a-f0-9]+)", tone_interp).group(1)
+        audio = (work / "tone.wav").read_bytes()[44:]
+        samples = struct.unpack("<%dh" % (len(audio) // 2), audio)
+        assert max(samples) - min(samples) > 1000, "PSG tone was not synthesized"
         md = work / "meta"
         run(exe, rom, "--system", "megadrive", "--target", "meta",
             "--meta-precise", "-o", md)

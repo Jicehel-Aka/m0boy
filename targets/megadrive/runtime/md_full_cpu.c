@@ -483,6 +483,7 @@ void md_full_frame(MdFull *m, int native) {
         if (m->instructions > 1000000000u) { m->fault = 6; break; }
     }
     ++m->frames;
+    md_full_sound_frame(m);
 }
 
 uint32_t md_full_hash(const MdFull *m) {

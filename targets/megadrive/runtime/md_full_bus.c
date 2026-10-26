@@ -13,7 +13,7 @@ void md_full_reset(MdFull *m) {
     m->sr = 0x2700;
     m->vdp_reg[15] = 2;
     m->pad_th = 0x40;
-    m->z80_reset = 1;
+    md_full_audio_reset(m);
 }
 
 static uint8_t pad_read(MdFull *m) {
@@ -45,7 +45,7 @@ uint8_t md_full_read8(MdFull *m, uint32_t addr) {
     addr &= 0xffffffu;
     if (addr < md_rom_size) return md_rom[addr];
     if (addr >= 0xff0000u) return m->ram[addr & 0xffffu];
-    if (addr >= 0xa00000u && addr < 0xa10000u) return 0;
+    if (addr >= 0xa00000u && addr < 0xa10000u) return md_full_sound_read(m, addr & 0xffffu);
     if (addr >= 0xa10000u && addr <= 0xa1001fu) {
         switch (addr & 0x1eu) {
         case 0: return 0x80;  /* NTSC/export version */
@@ -149,7 +149,7 @@ void md_full_write8(MdFull *m, uint32_t addr, uint8_t v) {
     if (addr >= 0xff0000u) {
         m->ram[addr & 0xffffu] = v; return;
     }
-    if (addr >= 0xa00000u && addr < 0xa10000u) return;
+    if (addr >= 0xa00000u && addr < 0xa10000u) { md_full_sound_write(m, addr & 0xffffu, v); return; }
     if (addr >= 0xa10000u && addr <= 0xa1001fu) {
         if ((addr & 0x1eu) == 2u) m->pad_th = v & 0x40u;
         else if ((addr & 0x1eu) == 8u) m->pad_control = v;
@@ -158,12 +158,22 @@ void md_full_write8(MdFull *m, uint32_t addr, uint8_t v) {
     if (addr >= 0xa11000u && addr < 0xa12000u) {
         if (!(addr & 1u)) {
             if ((addr & 0xff00u) == 0x1100u) m->z80_bus = !!v;
-            else if ((addr & 0xff00u) == 0x1200u) m->z80_reset = !!v;
+            else if ((addr & 0xff00u) == 0x1200u) {
+                const uint8_t run = !!v;
+                if (run && !m->z80_reset) {
+                    z80_reset(&m->sound_cpu);
+                    m->sound_cpu.cycles = ((uint64_t)m->frames * 127856u + m->frame_cycles) * 7u / 15u;
+                }
+                m->z80_reset = run;
+            }
         }
         return;
     }
     if (addr >= 0xa14000u && addr < 0xa14004u) return;
     if (addr >= 0xc00000u && addr <= 0xc0001fu) {
+        if ((addr & 0x1fu) == 0x11u || (addr & 0x1fu) == 0x10u) {
+            md_full_sound_write(m, 0x7f11u, v); return;
+        }
         md_full_write16(m, addr & ~1u, (uint16_t)(v << 8 | v));
         return;
     }
@@ -189,7 +199,7 @@ void md_full_write16(MdFull *m, uint32_t addr, uint16_t v) {
             } else vdp_store(m, v);
             return;
         }
-        if ((addr & 0x1cu) == 0x10u) return; /* PSG */
+        if ((addr & 0x1cu) == 0x10u) { md_full_sound_write(m, 0x7f11u, (uint8_t)v); return; }
     }
     md_full_write8(m, addr, v >> 8);
     md_full_write8(m, addr + 1u, (uint8_t)v);

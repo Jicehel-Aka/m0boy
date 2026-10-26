@@ -53,8 +53,10 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
     for (const char *n : {"md.h", "md.c", "md_code.c", "md_host.c"})
         fs::remove(src / n);
     fs::remove(o.output / "rom.md");
-    for (const char *n : {"md_full.h", "md_full_cpu.c", "md_full_bus.c", "md_full_video.c"})
+    for (const char *n : {"md_full.h", "md_full_cpu.c", "md_full_bus.c", "md_full_video.c", "md_full_audio.c"})
         copy_template(tpl / "runtime" / n, src / n);
+    for (const char *n : {"z80.h", "z80.c", "z80_ops.h"})
+        copy_template(o.targets_dir / "sg1000/runtime" / n, src / n);
     copy_template(tpl / "platform/md_full_pc.c", src / "md_full_pc.c");
     std::set<uint32_t> covered;
     covered.insert(be32(rom, 4));
@@ -100,16 +102,18 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
         "set(CMAKE_C_STANDARD 11)\nfind_package(PkgConfig REQUIRED)\n"
         "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)\n"
         "add_executable(md_pc src/md_full_pc.c src/md_full_code.c src/md_full_cpu.c "
-        "src/md_full_bus.c src/md_full_video.c src/md_rom.c)\n"
+        "src/md_full_bus.c src/md_full_video.c src/md_full_audio.c src/z80.c src/md_rom.c)\n"
         "target_compile_options(md_pc PRIVATE -O2)\n"
-        "target_link_libraries(md_pc PRIVATE PkgConfig::SDL2)\n");
+        "target_link_libraries(md_pc PRIVATE PkgConfig::SDL2 m)\n");
     write(o.output / "README.md", "# Mega Drive native PC project: " + o.name + "\n\n"
         "The ROM's 68000 opcodes recorded by coverage are emitted as C cases in "
         "`src/md_full_code.c`; uncovered instructions use the in-tree 68000 decoder. "
-        "The VDP, RAM and controller are implemented in this project. SDL2 only opens "
-        "the PC window and reads keys.\n\n"
+        "The VDP, RAM, Z80 sound CPU, PSG and approximate YM2612 synthesis are "
+        "implemented in this project. SDL2 supplies the window, gamepad and audio output.\n\n"
         "Build: `cmake -G Ninja -S . -B build && ninja -C build`.\n"
-        "Run: `build/md_pc` (arrows, X/Z/C, Enter; Esc quits).\n"
+        "Run: `build/md_pc` (arrows, X/Z/C, Enter; gamepad B/A/X and Start; Esc quits). "
+        "F8 cycles gm0-style filters; F10 changes scale; F11 toggles fullscreen. "
+        "`--wav FILE` saves 44.1 kHz mono audio.\n"
         "Profile: `build/md_pc --interp --frames 1200 --input start.input --coverage run.cov`, "
         "then regenerate with `m0recomp --coverage run.cov`.\n");
     write(marker, "pc\n");
