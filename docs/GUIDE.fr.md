@@ -192,7 +192,7 @@ a la forme `<frame> <boutons>`, avec les boutons joints par `+` : `a`, `b`,
 ./compile.sh mes_roms/ sortie/      # autres dossiers
 PLAY=1 ./compile.sh                 # ouvre aussi une fenêtre pour jouer soi-même
 PACK=0 ./compile.sh                 # sans compression de la ROM en flash (défaut : compressée si elle tient)
-AUTO_SECONDS=60 AUTO_REDO=1 ./compile.sh   # refaire une partie automatique plus longue
+AUTO_SECONDS=600 AUTO_REDO=1 ./compile.sh   # refaire une partie automatique encore plus longue
 REPLAY=1 ./compile.sh               # rejouer les parties à la main enregistrées
 ```
 

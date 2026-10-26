@@ -143,9 +143,9 @@ function parseArgs(argv) {
     emu: env('EMU', '0') === '1',
     jobs: num(env('JOBS', ''), Math.max(1, Math.floor(os.cpus().length / 4))),
     autoSeeds: num(env('AUTO_SEEDS', ''), 8),
-    autoFrames: num(env('AUTO_FRAMES', ''), 36000),
-    autoLongFrames: num(env('AUTO_LONG_FRAMES', ''), 108000),
-    autoSeconds: num(env('AUTO_SECONDS', ''), 60),
+    autoFrames: num(env('AUTO_FRAMES', ''), 1080000),
+    autoLongFrames: num(env('AUTO_LONG_FRAMES', ''), 3240000),
+    autoSeconds: num(env('AUTO_SECONDS', ''), 300),
     profilesDir: env('PROFILES_DIR', path.join(ROOT, 'profiles')),
     sessionsDir: null,
   };

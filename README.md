@@ -210,7 +210,13 @@ ctest --test-dir build --output-on-failure
 Before compiling a game, `compile.sh` plays it by itself on the host: random
 sessions, a session without input (logos, attract mode), and coverage-guided
 explorations that keep a snapshot of every state where new code or data showed
-up and play on from there. The sessions record what code ran, how often, and
+up and play on from there. The budgets are set in frames of game time, with a
+real-time cap as the guard: the random sessions aim for 1 080 000 frames each
+(about five hours of game; the first seed three times more), the no-input
+session for 108 000 frames (half an hour, long enough to sit through the
+attract demos), and every session stops at 300 s of real time
+(`AUTO_SECONDS`) — a conversion spends minutes per game, whatever the host's
+speed. The sessions record what code ran, how often, and
 which ROM sectors were read. They are kept per ROM in one store shared by
 every target console (`profiles/<gb|sg|gg|sms>/<game>/`), so a later
 conversion reuses them and a session you play yourself extends them. Each

@@ -96,18 +96,22 @@
 #   AUTO=1        (défaut) chaque ROM est jouée sans fenêtre ni son, avec des
 #                 touches aléatoires (Start de temps en temps), à pleine
 #                 vitesse : AUTO_SEEDS parties en parallèle (défaut : une par
-#                 cœur) pendant AUTO_SECONDS secondes (défaut 20), pour
-#                 trouver le code chaud à compiler.  Les parties automatiques
-#                 de plusieurs ROMs passent une à une (elles prennent tous
-#                 les cœurs) ; le reste du lot continue en parallèle.
+#                 cœur) de AUTO_FRAMES images (défaut 1 080 000 : 5 h de jeu
+#                 à 60 fps ; la graine 1 trois fois plus, AUTO_LONG_FRAMES),
+#                 AUTO_SECONDS secondes de temps réel au plus (défaut 300 :
+#                 le vrai garde-fou), pour trouver le code chaud à compiler.
+#                 Les parties automatiques de plusieurs ROMs passent une à
+#                 une (elles prennent tous les cœurs) ; le reste du lot
+#                 continue en parallèle.
 #   JOBS=n        ROMs traitées en parallèle (défaut : cœurs / 4 ; 1 avec PLAY=1)
 #   AUTO_REDO=1   refaire la partie automatique même si elle est déjà enregistrée
 #                 (sinon seules les graines manquantes sont jouées)
 #   DEMO=1        (GB, défaut) une partie de plus sans aucune touche, pendant
-#                 DEMO_SECONDS secondes (défaut AUTO_SECONDS x 3) à pleine
-#                 vitesse : titre, puis les démos que beaucoup de jeux jouent
-#                 seuls dans plusieurs niveaux (coverage-demo) ; les parties
-#                 au hasard appuient sur Start et ne les voient jamais.
+#                 DEMO_FRAMES images (défaut 108000 : 30 mn de jeu),
+#                 AUTO_SECONDS de temps réel au plus : titre, puis les démos
+#                 que beaucoup de jeux jouent seuls dans plusieurs niveaux
+#                 (coverage-demo) ; les parties au hasard appuient sur Start
+#                 et ne les voient jamais.
 #   REPLAY=1      rejouer les parties à la main enregistrées (profils à jour)
 #   EXPLORERS=n   (toutes plateformes, défaut 4) explorations guidées par la
 #                 couverture (--explore des harnais, targets/common/host/
@@ -289,17 +293,18 @@ STATIC="${STATIC:-1}"
 AUTO="${AUTO:-1}"
 NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 # Précalcul : AUTO_SEEDS parties aléatoires en parallèle par ROM (une par
-# cœur), chacune jouée à pleine vitesse pendant AUTO_SECONDS secondes de
-# temps réel (3 000 à 12 000 frames par seconde selon le jeu).
+# cœur), chacune jouée à pleine vitesse jusqu'à AUTO_FRAMES images ou
+# AUTO_SECONDS secondes de temps réel, la première des deux bornes (3 000 à
+# 12 000 frames par seconde selon le jeu).
 AUTO_SEEDS="${AUTO_SEEDS:-$NPROC}"
-AUTO_SECONDS="${AUTO_SECONDS:-20}"
+AUTO_SECONDS="${AUTO_SECONDS:-300}"
 # ROMs traitées en parallèle (1 avec PLAY=1) ; journal de chacune dans
 # out/<jeu>/compile.log.
 JOBS="${JOBS:-$(( NPROC / 4 > 0 ? NPROC / 4 : 1 ))}"
 AUTO_REDO="${AUTO_REDO:-0}"
 DEMO="${DEMO:-1}"
-DEMO_SECONDS="${DEMO_SECONDS:-$((AUTO_SECONDS * 3))}"
-case "$DEMO_SECONDS" in ''|*[!0-9]*) echo "[x] DEMO_SECONDS doit être un entier."; exit 1 ;; esac
+DEMO_FRAMES="${DEMO_FRAMES:-108000}" # sans touche : 30 mn de jeu à 60 fps
+case "$DEMO_FRAMES" in ''|*[!0-9]*) echo "[x] DEMO_FRAMES doit être un entier."; exit 1 ;; esac
 REPLAY="${REPLAY:-0}"
 EXPLORERS="${EXPLORERS:-${SG_EXPLORERS:-4}}"
 EXPLORE_FRAMES="${EXPLORE_FRAMES:-${SG_EXPLORE_FRAMES:-}}" # vide : selon la plateforme
@@ -1341,16 +1346,16 @@ build_game() { # $1 rom, $2 préfixe, $3 dossier du jeu (dernier composant), $4 
   fi
 
   # b2a) DEMO=1 : une partie sans aucune touche (titre, démos dans
-  #     plusieurs niveaux), à pleine vitesse pendant DEMO_SECONDS secondes,
-  #     images comptées sans limite.  Pas de fichier d'entrées : couverture
-  #     et profil de lectures enregistrés directement.
+  #     plusieurs niveaux), DEMO_FRAMES images (défaut 108000 : 30 mn de
+  #     jeu), AUTO_SECONDS secondes de temps réel au plus.  Pas de fichier
+  #     d'entrées : couverture et profil de lectures enregistrés directement.
   [ "$AUTO_REDO" = "1" ] && rm -f "$store"/coverage-demo.cov "$store"/romdata-demo.prof "$out_dir"/coverage-demo.cov "$out_dir"/romdata-demo.prof
-  if [ "$AUTO" = "1" ] && [ "$DEMO" = "1" ] && [ "$DEMO_SECONDS" -gt 0 ] &&
+  if [ "$AUTO" = "1" ] && [ "$DEMO" = "1" ] && [ "$DEMO_FRAMES" -gt 0 ] &&
      [ ! -f "$store/coverage-demo.cov" ]; then
-    echo "[i] Démo : ${DEMO_SECONDS} s sans touche"
+    echo "[i] Démo : ${DEMO_FRAMES} images sans touche (AUTO_SECONDS s de temps réel au plus)"
     local guard=()
-    command -v timeout > /dev/null && guard=(timeout $((DEMO_SECONDS + 30)))
-    "${guard[@]}" "$out_dir/host/build/${prefix}_profile" --interp --frames 0 --max-seconds "$DEMO_SECONDS" \
+    command -v timeout > /dev/null && guard=(timeout $((AUTO_SECONDS + 30)))
+    "${guard[@]}" "$out_dir/host/build/${prefix}_profile" --interp --frames "$DEMO_FRAMES" --max-seconds "$AUTO_SECONDS" \
       --coverage "$out_dir/coverage-demo.tmp" --rom-profile-out "$out_dir/romdata-demo.prof" > /dev/null 2>&1 &&
       mv "$out_dir/coverage-demo.tmp" "$out_dir/coverage-demo.cov"
     rm -f "$out_dir/coverage-demo.tmp"

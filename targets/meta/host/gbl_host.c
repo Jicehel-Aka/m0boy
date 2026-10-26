@@ -81,7 +81,7 @@ static void state_mix(const void *p, size_t n) {
 static struct { uint32_t frame; const char *path; } dumps[MAX_DUMPS];
 static int dump_count;
 
-#define MAX_INPUTS 65536
+#define MAX_INPUTS 262144 /* les parties automatiques d'aujourd'hui : 3,2 M images, une ligne sur 20 */
 static struct { uint32_t frame; uint8_t buttons; } inputs[MAX_INPUTS];
 static int input_count, input_pos;
 
