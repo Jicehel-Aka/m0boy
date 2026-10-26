@@ -2734,9 +2734,9 @@ int main(int argc, char* argv[]) {
             g_meta_stream != -1 || !g_rom_profiles.empty() || g_meta_resident ||
             emit_android_project || !native_patch_manifest_path.empty() ||
             !symbol_file_path.empty() || !annotation_file_path.empty() ||
-            specific_bank > 0 || !manual_entry_points.empty() || !trace_file_path.empty() ||
-            meta_precise || !coverage_paths.empty()) {
-            std::cerr << "Error: unsupported PC Engine option; use --target desktop or pc\n";
+            specific_bank > 0 || !manual_entry_points.empty() || !trace_file_path.empty()) {
+            std::cerr << "Error: unsupported PC Engine option; use --target, --coverage, --meta-precise, "
+                         "--nes-interp, --meta-code-budget and --meta-bytes-per-instruction\n";
             return 1;
         }
         m0boy::pce::GenerateOptions options;
@@ -2749,12 +2749,24 @@ int main(int argc, char* argv[]) {
         options.output = output_dir.empty() ? fs::path(options.name + "_pce_" + target) : fs::path(output_dir);
         options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
         options.compiler = meta_compiler;
+        options.coverage = coverage_paths;
+        options.precise = meta_precise;
+        options.interpret = nes_interp;
+        options.code_budget_bytes = g_meta_code_budget;
+        if (meta_bpi_set) options.bytes_per_instruction = meta_bpi;
         std::string error;
-        if (!m0boy::pce::generate(rom_path, options, error)) {
+        m0boy::pce::GenerateStats stats;
+        if (!m0boy::pce::generate(rom_path, options, stats, error)) {
             std::cerr << "Error: " << error << "\n";
             return 1;
         }
         std::cout << "Generated PC Engine project for " << target << ": " << options.output << "\n";
+        if (nes_interp)
+            std::cout << "  mode:               interpreter only (--nes-interp)\n";
+        else
+            std::cout << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played)\n"
+                      << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
+                      << (meta_precise ? "  mode:               precise (budget checked after every instruction)\n" : "");
         return 0;
     }
     if (!source.supports(*m0boy::parse_target(target))) {

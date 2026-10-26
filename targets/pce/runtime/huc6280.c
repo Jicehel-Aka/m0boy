@@ -6,15 +6,24 @@
  * ADC/AND/ORA/EOR read and write the zero page at X; it clears itself
  * after every instruction but SET, RTI and PLP.  Decimal mode follows the
  * mednafen core, quirks included (the Z flag from the raw nibble sum). */
+#if __has_include("pce_config.h") /* a generated project's: PCE_NATIVE */
+#include "pce_config.h"
+#endif
 #include "huc6280.h"
 
 /* the debug tracer's per-instruction hook (the harness builds with
- * -DPCE_TRACE and provides pce_trace_step) */
+ * -DPCE_TRACE and provides pce_trace_step); the dyn hook marks the
+ * addresses a dynamic transfer (RTS, RTI, a jump through a pointer, an
+ * interrupt) landed on — the recompiler's entries the static walk cannot
+ * see */
 #ifdef PCE_TRACE
 extern void pce_trace_step(uint16_t pc);
+extern void pce_trace_dyn(uint16_t pc);
 #define PCE_TRACE_HOOK(pc) pce_trace_step(pc)
+#define PCE_DYN_HOOK(pc) pce_trace_dyn(pc)
 #else
 #define PCE_TRACE_HOOK(pc) ((void)0)
+#define PCE_DYN_HOOK(pc) ((void)0)
 #endif
 
 /* the hot state — PC, the stack pointer, the registers and the bus's
@@ -90,6 +99,7 @@ static uint8_t rd_out(huc6280_t *cpu, uint16_t at) {
     const int8_t off = (int8_t)rd(cpu, (uint16_t)(pc_ + 1)); \
     if (take) { pc_ = (uint16_t)(pc_ + 2 + off); left = 4; } \
     else { pc_ = (uint16_t)(pc_ + 2); left = 2; } \
+    pc_set = 1; \
 } while (0)
 
 /* the interrupt sequence: 8 cycles, B pushed clear, T and D cleared */
@@ -187,7 +197,12 @@ void huc6280_reset(huc6280_t *cpu) {
     cpu->p = PCE_P_I;
 }
 
-void huc6280_run(huc6280_t *cpu, uint32_t until) {
+#ifdef PCE_NATIVE
+#define PCE_INTERP_FN static void huc6280_interp
+#else
+#define PCE_INTERP_FN void huc6280_run
+#endif
+PCE_INTERP_FN(huc6280_t *cpu, uint32_t until) {
     /* signed: an instruction runs past `until`, the budget goes negative
      * and the overshoot stays in cpu->cycles */
     int32_t budget = (int32_t)(until - cpu->cycles);
@@ -197,9 +212,13 @@ void huc6280_run(huc6280_t *cpu, uint32_t until) {
     uint8_t *wbase_[8];
     uint32_t left;
     int keep_t;
+    int pc_set; /* the case put an address in pc_ by itself (a branch, a
+        jump, a return): the step below must not move it — a branch or a
+        jump to its own address leaves pc_ where it stands, on purpose */
     for (unsigned i = 0; i < 8; i++) { rbase_[i] = cpu->rbase[i]; wbase_[i] = cpu->wbase[i]; }
     while (budget > 0) {
         keep_t = 0;
+        pc_set = 0;
         const uint16_t pc0 = pc_; /* the cases move pc_; the one-byte ones
             leave it on the opcode and the step below advances it */
         if (cpu->irq_low & cpu->irq_mask && !(p_ & PCE_P_I)) {
@@ -208,6 +227,7 @@ void huc6280_run(huc6280_t *cpu, uint32_t until) {
             else if (cpu->irq_low & PCE_IQ_IRQ1) vector = 0xFFF8;
             INTERRUPT(vector);
             budget -= 8;
+            PCE_DYN_HOOK(pc_);
             PCE_TRACE_HOOK(pc_);
             continue;
         }
@@ -461,7 +481,8 @@ void huc6280_run(huc6280_t *cpu, uint32_t until) {
             const int take_ = setbit ? (m_ >> ((op >> 4) & 7)) & 1 : !((m_ >> ((op >> 4) & 7)) & 1); \
             const int8_t off_ = (int8_t)rd(cpu, (uint16_t)(pc_ + 2)); \
             if (take_) { pc_ = (uint16_t)(pc_ + 3 + off_); left = 8; } \
-            else { pc_ = (uint16_t)(pc_ + 3); left = 6; } } while (0)
+            else { pc_ = (uint16_t)(pc_ + 3); left = 6; } \
+            pc_set = 1; } while (0)
         case 0x0F: BBRBBS(0); break;
         case 0x1F: BBRBBS(0); break;
         case 0x2F: BBRBBS(0); break;
@@ -480,39 +501,39 @@ void huc6280_run(huc6280_t *cpu, uint32_t until) {
         case 0xFF: BBRBBS(1); break;
         #undef BBRBBS
         /* jumps, calls, returns */
-        case 0x4C: pc_ = A_ABS(); left = 4; break;
+        case 0x4C: pc_ = A_ABS(); left = 4; pc_set = 1; break;
         case 0x6C: { /* the 6502's page-wrap bug, faithfully */
             const uint16_t ptr = A_ABS();
             const unsigned lo_ = rd(cpu, ptr);
             const unsigned hi_ = rd(cpu, (uint16_t)((ptr & 0xFF00u) | ((ptr + 1) & 0xFFu)));
-            pc_ = (uint16_t)(lo_ | hi_ << 8); left = 7; break; }
+            pc_ = (uint16_t)(lo_ | hi_ << 8); left = 7; pc_set = 1; PCE_DYN_HOOK(pc_); break; }
         case 0x7C: { const uint16_t ptr = (uint16_t)(A_ABS() + x_);
             const unsigned lo_ = rd(cpu, ptr);
             const unsigned hi_ = rd(cpu, (uint16_t)(ptr + 1));
-            pc_ = (uint16_t)(lo_ | hi_ << 8); left = 7; break; }
+            pc_ = (uint16_t)(lo_ | hi_ << 8); left = 7; pc_set = 1; PCE_DYN_HOOK(pc_); break; }
         case 0x20: { const unsigned lo_ = rd(cpu, (uint16_t)(pc_ + 1)); pc_ += 2;
             const uint16_t ret = pc_; /* the high operand byte's address, as the 6502 */
             push(cpu, (uint8_t)(ret >> 8)); push(cpu, (uint8_t)ret);
             const unsigned hi_ = rd(cpu, pc_);
-            pc_ = (uint16_t)(hi_ << 8 | lo_); left = 7; break; }
+            pc_ = (uint16_t)(hi_ << 8 | lo_); left = 7; pc_set = 1; break; }
         case 0x60: { const uint8_t lo8 = pop(cpu), hi8 = pop(cpu);
-            pc_ = (uint16_t)(lo8 | hi8 << 8); pc_++; left = 7; break; }
+            pc_ = (uint16_t)(lo8 | hi8 << 8); pc_++; left = 7; pc_set = 1; PCE_DYN_HOOK(pc_); break; }
         case 0x40: p_ = pop(cpu); keep_t = 1;
             { const uint8_t lo8 = pop(cpu), hi8 = pop(cpu); pc_ = (uint16_t)(lo8 | hi8 << 8); }
-            left = 7; break;
+            left = 7; pc_set = 1; PCE_DYN_HOOK(pc_); break;
         case 0x00: pc_ += 2; /* past the signature byte, as the 6502 */
             push(cpu, (uint8_t)(pc_ >> 8)); push(cpu, (uint8_t)pc_);
             push(cpu, (uint8_t)(p_ | PCE_P_B));
             p_ |= PCE_P_I; p_ &= (uint8_t)~PCE_P_D;
             { const unsigned lo_ = rd(cpu, 0xFFF6); const unsigned hi_ = rd(cpu, 0xFFF7);
               pc_ = (uint16_t)(lo_ | hi_ << 8); }
-            left = 8; break;
+            left = 8; pc_set = 1; PCE_DYN_HOOK(pc_); break;
         /* BSR: a relative call; the return address is the displacement
          * byte's own address (RTS's +1 lands past the instruction) */
         case 0x44: { const int8_t off = (int8_t)rd(cpu, (uint16_t)(pc_ + 1));
             const uint16_t ret = (uint16_t)(pc_ + 1);
             push(cpu, (uint8_t)(ret >> 8)); push(cpu, (uint8_t)ret);
-            pc_ = (uint16_t)(pc_ + 2 + off); left = 8; break; }
+            pc_ = (uint16_t)(pc_ + 2 + off); left = 8; pc_set = 1; break; }
         /* stack */
         case 0x48: push(cpu, a_); left = 3; break;
         case 0xDA: push(cpu, x_); left = 3; break;
@@ -570,7 +591,7 @@ void huc6280_run(huc6280_t *cpu, uint32_t until) {
             break;
         }
         }
-        if (pc_ == pc0) pc_ = (uint16_t)(pc0 + 1); /* a one-byte instruction */
+        if (!pc_set && pc_ == pc0) pc_ = (uint16_t)(pc0 + 1); /* a one-byte instruction */
         if (!keep_t) p_ &= (uint8_t)~PCE_P_T;
         budget -= left;
     }
@@ -582,3 +603,78 @@ void huc6280_run(huc6280_t *cpu, uint32_t until) {
     cpu->p = p_;
     cpu->cycles = until - (uint32_t)budget;
 }
+
+#ifdef PCE_NATIVE
+/* Recompiled code (pce_gen.c) in front of the interpreter.  The loop is the
+ * interpreter's own — the interrupt line, then one step — except that a
+ * step is a call into the recompiled entry at (pc, MPR context) when there
+ * is one: it runs until the slice is spent (precisely: after the
+ * instruction that spends it, the same boundary as the interpreter;
+ * otherwise at its next check), or until a transfer it cannot follow.  The
+ * context check makes a re-mapped window fall back instead of running the
+ * wrong bytes.  Anything else — code in WRAM, contexts the walk could not
+ * prove, what the budget left out — is interpreted one instruction at a
+ * time.  pce_native = 0 is the reference (--interp). */
+#include "pce_gen.h"
+
+int pce_native = 1;
+
+/* the interpreter's push (its wr through the window tables) at the
+ * dispatcher's reach */
+static void disp_push(huc6280_t *cpu, uint8_t v) {
+    const uint16_t at = (uint16_t)(0x2100u | cpu->s);
+    uint8_t *b = cpu->wbase[at >> 13];
+    if (b) b[at & 0x1FFFu] = v;
+    else pce_bus_write(at, v);
+    cpu->s--;
+}
+
+void huc6280_run(huc6280_t *cpu, uint32_t until) {
+    if (!pce_native) { huc6280_interp(cpu, until); return; }
+    int32_t budget = (int32_t)(until - cpu->cycles);
+    while (budget > 0) {
+        if (cpu->irq_low & cpu->irq_mask && !(cpu->p & PCE_P_I)) {
+            unsigned vector = 0xFFF6; /* IRQ2 */
+            if (cpu->irq_low & PCE_IQ_TIMER) vector = 0xFFFA;
+            else if (cpu->irq_low & PCE_IQ_IRQ1) vector = 0xFFF8;
+            disp_push(cpu, (uint8_t)(cpu->pc >> 8));
+            disp_push(cpu, (uint8_t)cpu->pc);
+            disp_push(cpu, (uint8_t)(cpu->p & ~PCE_P_B));
+            cpu->p |= PCE_P_I;
+            cpu->p &= (uint8_t)~(PCE_P_T | PCE_P_D);
+            cpu->pc = (uint16_t)(rd_out(cpu, (uint16_t)vector) | rd_out(cpu, (uint16_t)(vector + 1)) << 8);
+            budget -= 8;
+            continue;
+        }
+        /* BRA/JMP to themselves in a ROM window, a game waiting for its
+         * interrupt: the rest of the slice in laps of 4 cycles, as the
+         * recompiled loop spends it (emitter.cpp), without entering it
+         * each line */
+        {
+            const uint8_t *b = cpu->rbase[cpu->pc >> 13];
+            if (b && b >= cpu->rom && b < cpu->rom + cpu->rom_bytes) {
+                const unsigned at = cpu->pc & 0x1FFFu;
+                const uint8_t op = b[at];
+                const unsigned o1 = b[(at + 1u) & 0x1FFFu], o2 = b[(at + 2u) & 0x1FFFu];
+                if ((op == 0x80 && o1 == 0xFEu) ||
+                    (op == 0x4C && (uint16_t)(o1 | o2 << 8) == cpu->pc)) {
+                    budget = PCE_SPIN4(budget);
+                    break;
+                }
+            }
+        }
+        uint64_t mpr = 0;
+        for (unsigned i = 0; i < 8; i++) mpr |= (uint64_t)cpu->mpr[i] << (8 * i);
+        const int entry = pce_gen_lookup(cpu->pc, mpr);
+        if (entry >= 0) {
+            budget = pce_gen_enter(entry, budget);
+            continue;
+        }
+        /* one instruction: a budget of one cycle is spent by any of them */
+        cpu->cycles = until - (uint32_t)budget;
+        huc6280_interp(cpu, cpu->cycles + 1u);
+        budget = (int32_t)(until - cpu->cycles);
+    }
+    cpu->cycles = until - (uint32_t)budget;
+}
+#endif

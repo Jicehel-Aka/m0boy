@@ -52,6 +52,7 @@ add_library(gbrecomp_core STATIC
     src/system/nes/emitter.cpp
     src/system/nes/generator.cpp
     src/system/pce/generator.cpp
+    src/system/pce/emitter.cpp
     src/system/megadrive/generator.cpp
     src/system/megadrive/emitter.cpp
     src/system/vectrex/emitter.cpp

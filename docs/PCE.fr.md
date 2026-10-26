@@ -14,15 +14,11 @@ côté), sur le modèle du Mega Drive : les sessions de jeu de
 `tools/profile/m0search.py` (la graine écran titre puis RUN, des
 sessions aléatoires, les rejeux manuels passés avec `EXTRA_INPUT`)
 tournent sur le harnais et stockent leur couverture HuC6280 fusionnée
-dans `search/` — elle attend le HuC6280 → C recompilé ; en attendant,
-les binaires livrés restent l'interpréteur et la recherche prouve que
-le jeu se joue. Le shell et le harness impriment le
+dans `search/` — le profil que le recompilateur HuC6280 → C attend
+(voir plus bas). Le shell et le harness impriment le
 même `run_hash` (la recette du fingerprint est la même), et le .exe
 produit l'image du binaire Linux **octet pour octet** — le cœur est
-déterministe d'une plateforme à l'autre. C'est la même trajectoire que
-la NES : le cœur interprété d'abord, la recompilation HuC6280 → C
-viendra ensuite sur le même modèle (`emitter.cpp` + `nes_gen.h` →
-`pce_gen.h`).
+déterministe d'une plateforme à l'autre.
 
 Le frontend SDL commun à toutes les cibles `--target pc` montre l'image sans
 filtre au démarrage. F8 parcourt pixel, DMG, LCD RGB, scanlines et grille ;
@@ -188,7 +184,62 @@ reçoit des boutons (fermeture propre à la sortie, sur Échap comme sur
   légèrement en avance) et le rythme exact de ce décalage.
 - **e2e synthétique** (`tests/test_pce_e2e.py`) : cartouche générée en
   Python (vecteurs, TAM, VDC, VCE), deux exécutions même hash, pixels du
-  fond et du caractère vérifiés.
+  fond et du caractère vérifiés ; la même cartouche en projet précis
+  imprime le hash de l'interpréteur.
+
+## Le recompilateur HuC6280 → C
+
+Le modèle NES (`emitter.cpp` + `nes_gen.h` → `pce_gen.h`) : les
+instructions atteintes sont groupées par adresse en régions, une fonction
+C chacune, avec le budget signé de l'interpréteur, et l'interpréteur en
+repli (`huc6280.c` sous `PCE_NATIVE`, `pce_native = 0` ou `--interp`).
+La spécificité PCE est le mapping : une instance d'instruction est une
+adresse **sous un contexte MPR** (les huit registres de page, empaquetés).
+La marche statique part des vecteurs sous le contexte du reset (tous les
+MPR à $00, la page 0 de la cartouche) et suit les paires `LDA #imm` /
+`TAM #mask` vers les contextes que le boot mapped réellement ; un TAM
+qu'elle ne peut pas prouver (A inconnu, une table de bancs) laisse ce
+chemin à l'interpréteur. Le dispatcher n'entre dans une entrée que si les
+huit octets MPR de la machine sont encore ceux du contexte — une fenêtre
+remappée retombe dans l'interpréteur au lieu d'exécuter les mauvais
+octets. Les lectures ROM dont le contexte fait des constantes sont
+plouflées ; tout le reste passe par les macros de l'interpréteur
+(`PCE_RD`/`PCE_WR` sur les copies locales de rbase/wbase), cycle pour
+cycle : même compte (décimal +1, mode T +2, déplacements de blocs
+17+6n), mêmes accès bus dans le même ordre, T rendu après chaque
+instruction comme l'interpréteur (SET, RTI et PLP exceptés). Les sorties
+d'une région retournent toutes au dispatcher (RTS, RTI, sauts par
+pointeur, budget épuisé) ; les boucles `BRA`/`JMP` sur elles-mêmes sont
+passées d'un coup (`m0_idle.h`, 4 cycles par tour). Le mode précis
+(`--meta-precise`) vérifie le budget après chaque instruction et sort de
+la région après toute instruction pouvant toucher le bus d'E/S ou le
+contrôleur d'interruption, pour échantillonner la ligne IRQ exactement où
+l'interpréteur le fait.
+
+La couverture du harness (`--coverage`) porte les contextes : le tracer
+enregistre, par adresse, les octets MPR sous lesquels elle a tourné
+(quatre au plus) et les atterrissages dynamiques (RTS, RTI, sauts par
+pointeur, interruptions — drapeau `d`) ; la fusion de `m0search.py`
+rassemble le tout par (adresse, contexte). Le générateur sème la marche
+avec ces paires et classe les instances par compte d'exécutions — ce que
+le jeu a prouvé joué sous un contexte que la marche statique ne voyait
+pas se compile au tour suivant. Règle : un projet `--meta-precise`
+imprime le `run_hash` de `--interp`, de la marche statique seule puis
+avec le profil (`tests/test_pce_e2e.py`, cartouche d'exercice : TAM entre
+pages, mode T, décimal, déplacements de blocs, BSR, BBR/BBS, TST,
+routine copiée en WRAM, interruption timer avec RTI, opcode non
+documenté).  **Raiden (USA)**, 768 Kio : le projet précis de la marche
+statique seule imprime le hash de l'interpréteur (`c6637372` à l'image
+300, la même valeur que l'interpréteur seul et que les binaires livrés),
+et le profilé le garde jusqu'à ~1 300 des 9 096 adresses du profil de
+jeu (le mode rapide est en plus ×30 sur 300 images du titre).  Reste
+ouvert : avec le profil complet, une instance compilée par une graine
+que la marche n'a pas prouvée diverge encore — le diff d'écritures WRAM
+horodatées et l'anneau des pc du dispatcher dans les projets générés
+sont l'outil (les correctifs déjà tirés de la chasse : le drapeau T
+rendu après chaque instruction, les sorties de région après un TAM dont
+le banc n'est pas prouvé, la longueur 3 de `JMP (ind)`, et dans le
+cœur lui-même un `pc0` qui déviait un saut à sa propre adresse).
 
 ## Chantiers suivants
 
@@ -202,9 +253,11 @@ reçoit des boutons (fermeture propre à la sortie, sur Échap comme sur
   sprite des bords de lignes montre des artefacts de découpe (limite des
   16 sprites de ligne ou fetch des demi-motifs 32 px — à trancher contre
   la même référence).
-- Le recompilateur HuC6280 → C (le modèle NES : régions, profils depuis
-  le harness, interpréteur en repli) et la cible META — la VRAM de 64 Kio
-  ne tient pas dans les 32 Kio de SRAM : il faudra la fenêtrer en flash
-  comme la ROM Sega.
+- La cible META du recompilateur — la VRAM de 64 Kio ne tient pas dans
+  les 32 Kio de SRAM : il faudra la fenêtrer en flash comme la ROM Sega.
+- Les contextes que la marche ne prouve pas (les jeux qui changent de
+  banc par une table) ne se compilent qu'avec un profil ; une extension
+  du tracer qui compterait par contexte permettrait des profils plus
+  complets encore.
 - Le PSG complet (LFO, balance, polynôme de bruit) et l'entrée audio du
   harness comparée à la référence.

@@ -159,8 +159,16 @@ built firmware in it (`ESPBOY_PIO` for the build).
   synthetic cartridge; the PCE joins `tests/test_pc_target.py`; Raiden
   boots to its exact title screen and the .exe matches the Linux build
   byte for byte.  The sprite text's line-edge clipping is the known
-  open item; the HuC6280 → C recompiler and a console target follow the
-  NES plan (64 KiB of VRAM will need flash windowing on the META).
+  open item.  The HuC6280 → C recompiler follows the NES plan
+  (`recompiler/src/system/pce/emitter.cpp`, `pce_gen.h`, the dispatcher
+  in `huc6280.c` under `PCE_NATIVE`): an instruction instance is an
+  address under one MPR context — the static walk proves contexts
+  through `LDA #imm`/`TAM #mask` pairs, coverage carries the contexts it
+  ran under, and the dispatcher enters an entry only when the machine's
+  MPR bytes still match.  Rule: a `--meta-precise` project prints the
+  `--interp` run_hash, from the static walk and with a profile
+  (`tests/test_pce_e2e.py`, synthetic cartridges).  The console target
+  waits on flash windowing for the 64 KiB of VRAM on the META.
   Mega Drive PC (`--system megadrive --target pc`, `docs/MEGADRIVE.fr.md`):
   `recompiler/src/system/megadrive/emitter.cpp` (68000 -> C regions, the
   dispatcher in the generated `md_full_code.c`), the interpreter and line

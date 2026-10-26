@@ -1,7 +1,13 @@
 /* PCE host harness: a HuCard image in the machine, N frames out, the
  * display's window as a PPM, the sound as a WAV, and the run's
  * fingerprint (CPU, WRAM, VRAM, SATB, palette, frame — the same contract
- * shape as the other runtimes). */
+ * shape as the other runtimes).  Built with the recompiled code
+ * (PCE_NATIVE), --interp runs the interpreter instead: the reference a
+ * precise project must match.  --coverage writes the interpreter's
+ * executions per address, the MPR contexts they ran under (the bank
+ * windows are part of an address's identity for the recompiler), and the
+ * addresses a dynamic transfer (RTS, RTI, a jump through a pointer, an
+ * interrupt) landed on. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +22,10 @@ extern const uint8_t pce_rom[];
 
 #define AUDIO_RATE 11025u
 
+#ifdef PCE_NATIVE
+extern int pce_native;
+#endif
+
 static uint16_t frame[262][512];
 static void on_row(void *host, unsigned line, const uint16_t *pixels, unsigned width) {
     (void)host;
@@ -29,22 +39,53 @@ static uint32_t fnv(const void *data, size_t n, uint32_t h) {
     return h;
 }
 
-/* the HuC6280 interpreter calls this every instruction when the build
- * defines PCE_TRACE (the generated host projects do); --coverage dumps it */
+/* the HuC6280 interpreter calls these every instruction when the build
+ * defines PCE_TRACE (the generated host projects do); --coverage dumps
+ * them.  The MPR bytes of the instruction (up to four contexts an
+ * address) and the dynamic landings go with it: the recompiler keys its
+ * instances by both. */
 static uint32_t pc_hits[65536];
-void pce_trace_step(uint16_t pc) { pc_hits[pc]++; }
+static uint8_t pc_dyn[65536];
+#define PCE_CTX_MAX 4
+static uint64_t pc_ctx[65536][PCE_CTX_MAX];
+static uint8_t pc_ctx_n[65536];
+
+static uint64_t mpr_now(void) {
+    uint64_t m = 0;
+    for (unsigned i = 0; i < 8; i++) m |= (uint64_t)machine.cpu.mpr[i] << (8 * i);
+    return m;
+}
+void pce_trace_step(uint16_t pc) {
+    pc_hits[pc]++;
+    const uint64_t m = mpr_now();
+    const uint8_t n = pc_ctx_n[pc];
+    for (uint8_t i = 0; i < n; i++)
+        if (pc_ctx[pc][i] == m) return;
+    if (n < PCE_CTX_MAX) {
+        pc_ctx[pc][n] = m;
+        pc_ctx_n[pc] = (uint8_t)(n + 1);
+    }
+}
+void pce_trace_dyn(uint16_t pc) { pc_dyn[pc] = 1; }
 
 int main(int argc, char **argv) {
     const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0, *coverage = 0;
     unsigned frames = 60;
+    int interp = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) ppm = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_path = argv[++i];
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) coverage = argv[++i];
+        else if (!strcmp(argv[i], "--interp")) interp = 1;
         else rom_path = argv[i];
     }
+#ifdef PCE_NATIVE
+    /* the profile counts the interpreter's steps: every instruction then */
+    pce_native = !(interp || coverage);
+#endif
+    (void)interp;
     const uint8_t *rom;
     uint32_t rom_bytes;
     if (!rom_path) {
@@ -160,10 +201,16 @@ int main(int argc, char **argv) {
     if (coverage) {
         FILE *out = fopen(coverage, "w");
         if (!out) { fprintf(stderr, "cannot write %s\n", coverage); return 2; }
-        fprintf(out, "# m0boy PCE coverage: address, HuC6280 instructions started\n");
+        fprintf(out, "# m0boy PCE coverage: address, the MPR contexts it ran under"
+                     " (MPR0 first, up to %d), HuC6280 instructions started,"
+                     " d = reached by RTS/RTI/a jump through a pointer/an interrupt\n", PCE_CTX_MAX);
         for (unsigned pc = 0; pc < 65536; pc++)
-            if (pc_hits[pc])
-                fprintf(out, "%04x %u\n", pc, pc_hits[pc]);
+            if (pc_hits[pc]) {
+                fprintf(out, "%04x", pc);
+                for (unsigned i = 0; i < pc_ctx_n[pc]; i++)
+                    fprintf(out, " %016llx", (unsigned long long)pc_ctx[pc][i]);
+                fprintf(out, " %u%s\n", (unsigned)pc_hits[pc], pc_dyn[pc] ? " d" : "");
+            }
         fclose(out);
     }
     printf("frames=%u cycles=%u pc=%04x run_hash=%08x\n",
