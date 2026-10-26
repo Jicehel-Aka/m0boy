@@ -74,3 +74,33 @@ Les journaux de cette validation sont dans `logs/aka-*` et
 puis CPU/machine AKA repassés après les derniers ajustements de stockage
 et de hauteur de surface Sega. La reconstruction des symboles BunnyMark
 et son essai sont spécifiques au firmware fourni.
+
+## Jeux réels dans gm0 (2026-10-26)
+
+`TARGET=aka ./compile.sh` construit sans erreur Super Mario Land (World).gb
+et Ristar (USA).gg : firmwares de 996 Ko et 1,0 Mo (partition 0x370000,
+RAM statique 44/320 Kio pour Mario, ROM de Ristar en flash), emballés pour
+le launcher avec les fichiers de boot et `FLASH.txt`. Le harnais hôte du
+projet Mario affiche l'écran titre à l'image 600 ; le test synthétique
+(`tests/test_aka_target.py` avec `AKA_PIO` et `AKA_GM0`) repasse
+intégralement le même jour.
+
+Dans gm0 (branche `aka`, `79490f1`, reconstruit), les mêmes firmwares ne
+montrent pas l'image du jeu :
+
+- Mario, build profilé de `compile.sh` : faute Xtensa pendant l'init de
+  l'application, avant l'image 30 — appel ROM `memset` à arguments
+  incohérents (destination 0x6, taille ≈ 1 Gio), identique aux images
+  30, 120 et 600.
+- Mario et Ristar régénérés sans profil (`--meta-static --meta-precise`,
+  sans couverture) : pas de faute, l'écran reste uniforme (vert du fond
+  DMG `e0f8d0` pour Mario, noir pour Ristar) — le frontend peint une fois
+  puis la partie ne vient pas.
+- Cartouche synthétique : marche (image non uniforme, aucune ligne
+  « AKA: »), même gm0, même chaîne.
+
+La suspicion va à la machine AKA expérimentale de gm0 (réveil de la boucle
+de l'application : fin de DMA LCD, flux audio, délais de tâche — invisibles
+sur une cartouche de test qui dessine dès la première image), sans qu'un
+bug du frontend AKA soit exclu. Une carte physique reste l'arbitre ; ne pas
+en déduire une compatibilité des jeux réels sur l'AKA.
