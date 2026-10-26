@@ -116,7 +116,7 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
         "Run: `build/md_pc` (arrows, X/Z/C, Enter; gamepad B/A/X and Start; Esc quits). "
         "The image is unfiltered by default. F8 cycles gm0-style filters; "
         "F10 changes scale; F11 toggles fullscreen. "
-        "`--wav FILE` saves 44.1 kHz mono audio.\n"
+        "`--wav FILE` saves 44.1 kHz stereo audio.\n"
         "Profile: `build/md_pc --interp --frames 1200 --input start.input --coverage run.cov`, "
         "then regenerate with `m0recomp --coverage run.cov`.\n");
     write(marker, "pc\n");

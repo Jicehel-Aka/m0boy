@@ -54,17 +54,40 @@ Zlib sans servir le cœur 68000. Le module SDL commun à toutes les cibles PC
 reprend donc ses commandes et la géométrie 3× de ses filtres, avec SDL2 comme
 seule dépendance.
 
-Le PC exécute désormais le Z80 de m0boy pour le pilote sonore, décode ses
-8 KiB de RAM, sa fenêtre ROM, le bus et les ports YM2612/PSG. Le PSG génère
-trois voies carrées et du bruit ; les six voies FM du YM2612 et son DAC
-produisent du PCM mono à 44,1 kHz par SDL2. `--wav FILE` l'enregistre même
-en mode sans fenêtre (`--frames N`). `audio_hash` permet de comparer le code
-68000 natif et l'interpréteur. La synthèse FM est simplifiée : enveloppes,
-algorithmes, minuteries et modulation ne sont pas encore fidèles au circuit.
-Le Z80 est avancé une fois par image après le 68000 : la synchronisation des
-écritures audio et les interruptions restent approximatives. Le son de Sonic
-est audible dans le test avec ROM locale, mais sa forme d'onde n'a pas été
-comparée à une Mega Drive.
+Le PC exécute le Z80 de m0boy pour le pilote sonore, décode ses 8 KiB de
+RAM, sa fenêtre ROM, le bus et les ports YM2612/PSG. Le 68000, le Z80, le
+YM2612 et le PSG partagent l'horloge maître NTSC : avant chaque accès du
+68000 à l'espace Z80, au PSG ou aux lignes BUSREQ/RESET, le Z80 et la
+synthèse rattrapent l'instant de cet accès, et chaque écriture YM/PSG du Z80
+prend effet à son cycle. Les échantillons DAC (le « SEGA » et les percussions
+de Sonic) sont donc rendus à leur cadence. L'interruption du Z80 est tenue
+une ligne à partir du début du blanking vertical. Le YM2612 est remis à zéro
+avec le Z80, comme sur la console.
+
+Le YM2612 produit un échantillon toutes les 144 horloges (53,3 kHz) :
+générateur de phase 20 bits avec détune et multiplicateur, tables log-sinus
+et exponentielle, enveloppes ADSR à compteur global (taux, échelle de touche,
+niveau de sustain), SSG-EG (répétition, alternance, maintien, inversion),
+huit algorithmes, rétroaction, mode spécial du canal 3 et mode CSM,
+minuteries A/B et leurs drapeaux, drapeau busy (32 horloges internes après
+une écriture de données), panoramique, DAC, LFO (AM, et PM approchée).
+Chaque voie passe par le DAC 9 bits du YM2612 discret, avec son effet
+d'échelle (un pas de plus aux niveaux positifs, le signe sur un côté muet).
+Le PSG (SN76489 de Sega) compte à 223,7 kHz, avec son bruit à registre
+16 bits. Le mélange est rééchantillonné à 44,1 kHz stéréo, puis le continu
+est retiré ; `--wav FILE` l'enregistre même sans fenêtre (`--frames N`), et
+`audio_hash` permet de comparer le code 68000 natif et l'interpréteur.
+
+Le 68000 compte quatre cycles par mot lu ou écrit sur le bus (opcode,
+extensions, opérandes, pile), plus les cycles internes des branchements,
+modes indexés et prédécrémentés, multiplications, divisions, décalages et
+interruptions. Ce décompte reste une approximation : préchargement et états
+d'attente ne sont pas modélisés, et le DMA du VDP ne bloque pas le CPU.
+
+Les filtres analogiques de sortie, qui changent selon le modèle de console,
+ne sont pas reproduits. Le test `megadrive_m68k_end_to_end` mesure la
+fréquence d'une voix FM et d'une voix PSG synthétiques ; le son de Sonic n'a
+pas été comparé à une Mega Drive.
 
 SDL2 est la seule dépendance du frontend PC. `--frames N --ppm FILE` permet
 une capture sans fenêtre visible, et `--input FILE` rejoue des lignes

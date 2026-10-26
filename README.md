@@ -71,8 +71,8 @@ Use arrows or a gamepad D-pad/left stick to move. Keyboard X/Z/C or gamepad
 B/A/X select Mega Drive A/B/C; Enter or gamepad Start starts. The image is
 unfiltered by default. F8 cycles the
 gm0-style display filters, F10 changes scaling, and F11 toggles fullscreen.
-`--frames N --wav FILE` records 44.1 kHz mono audio without opening a window.
-The FM synthesizer and Z80 timing are experimental; see the Mega Drive notes.
+`--frames N --wav FILE` records 44.1 kHz stereo audio without opening a window.
+The YM2612, PSG and Z80 share one clock; the sound has not been compared with a console (see the Mega Drive notes).
 
 | Source | META | Pokitto | ESPboy |
 |---|---|---|---|

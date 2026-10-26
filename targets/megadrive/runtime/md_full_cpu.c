@@ -6,18 +6,26 @@ typedef struct { unsigned kind, reg, size; uint32_t addr, imm; } Ea;
 
 static uint32_t mask(unsigned size) { return size == 1 ? 0xffu : size == 2 ? 0xffffu : 0xffffffffu; }
 static uint32_t sign(unsigned size) { return size == 1 ? 0x80u : size == 2 ? 0x8000u : 0x80000000u; }
-static uint16_t fetch16(MdFull *m) { uint16_t v = md_full_read16(m, m->pc); m->pc += 2; return v; }
-static uint32_t fetch32(MdFull *m) { uint32_t v = md_full_read32(m, m->pc); m->pc += 4; return v; }
+/* Time: four cycles per bus word (the clock advances before the access, so
+ * the sound chips see it at its cycle), plus the internal cycles of
+ * branches, multiplications, divisions and shifts.  Prefetch and wait
+ * states are not modelled. */
+static void spend(MdFull *m, unsigned cycles) { m->cycles += cycles; m->frame_cycles += cycles; }
+static uint16_t fetch16(MdFull *m) { spend(m, 4); uint16_t v = md_full_read16(m, m->pc); m->pc += 2; return v; }
+static uint32_t fetch32(MdFull *m) { spend(m, 8); uint32_t v = md_full_read32(m, m->pc); m->pc += 4; return v; }
 static uint32_t read_size(MdFull *m, uint32_t a, unsigned size) {
+    spend(m, size == 4 ? 8 : 4);
     return size == 1 ? md_full_read8(m, a) : size == 2 ? md_full_read16(m, a) : md_full_read32(m, a);
 }
 static void write_size(MdFull *m, uint32_t a, unsigned size, uint32_t v) {
+    spend(m, size == 4 ? 8 : 4);
     if (size == 1) md_full_write8(m, a, v);
     else if (size == 2) md_full_write16(m, a, v);
     else md_full_write32(m, a, v);
 }
 static uint32_t index_disp(MdFull *m, uint32_t base) {
     uint16_t ext = fetch16(m);
+    spend(m, 2);
     unsigned reg = (ext >> 12) & 7u;
     int32_t index = (ext & 0x8000u) ? (int32_t)m->a[reg] : (int32_t)m->d[reg];
     if (!(ext & 0x0800u)) index = (int16_t)index;
@@ -34,6 +42,7 @@ static Ea ea(MdFull *m, unsigned bits, unsigned size) {
         m->a[e.reg] += size == 1 && e.reg == 7 ? 2u : size;
         break;
     case 4:
+        spend(m, 2);
         m->a[e.reg] -= size == 1 && e.reg == 7 ? 2u : size;
         e.addr = m->a[e.reg];
         break;
@@ -113,17 +122,16 @@ static int condition(MdFull *m, unsigned cc) {
     default: return !!(sr & Z) || (!!(sr & N) != !!(sr & V));
     }
 }
-static void push16(MdFull *m, uint16_t v) { m->a[7] -= 2; md_full_write16(m, m->a[7], v); }
-static void push32(MdFull *m, uint32_t v) { m->a[7] -= 4; md_full_write32(m, m->a[7], v); }
-static uint16_t pop16(MdFull *m) { uint16_t v = md_full_read16(m, m->a[7]); m->a[7] += 2; return v; }
-static uint32_t pop32(MdFull *m) { uint32_t v = md_full_read32(m, m->a[7]); m->a[7] += 4; return v; }
+static void push16(MdFull *m, uint16_t v) { m->a[7] -= 2; write_size(m, m->a[7], 2, v); }
+static void push32(MdFull *m, uint32_t v) { m->a[7] -= 4; write_size(m, m->a[7], 4, v); }
+static uint16_t pop16(MdFull *m) { uint16_t v = (uint16_t)read_size(m, m->a[7], 2); m->a[7] += 2; return v; }
+static uint32_t pop32(MdFull *m) { uint32_t v = read_size(m, m->a[7], 4); m->a[7] += 4; return v; }
 
 void md_full_execute(MdFull *m, uint16_t op) {
     const unsigned top = op >> 12, reg = (op >> 9) & 7u, bits = op & 63u;
     unsigned size;
     m->last_opcode = op;
-    m->cycles += 8;
-    m->frame_cycles += 8;
+    spend(m, 4);   /* opcode fetch */
     ++m->instructions;
     if (top == 1 || top == 2 || top == 3) {
         size = top == 1 ? 1 : top == 2 ? 4 : 2;
@@ -150,6 +158,8 @@ void md_full_execute(MdFull *m, uint16_t op) {
         if (!(op & 255u)) disp = (int16_t)fetch16(m);
         if (cc == 1) { push32(m, m->pc); m->pc = (uint32_t)(m->fault_pc + 2u + disp); }
         else if (condition(m, cc)) m->pc = (uint32_t)(m->fault_pc + 2u + disp);
+        else { spend(m, 4); return; }
+        spend(m, (op & 255u) ? 6 : 2);
         return;
     }
     if (top == 5) {
@@ -160,8 +170,9 @@ void md_full_execute(MdFull *m, uint16_t op) {
                 if (!condition(m, cc)) {
                     uint16_t v = (uint16_t)(m->d[bits & 7u] - 1u);
                     m->d[bits & 7u] = (m->d[bits & 7u] & 0xffff0000u) | v;
-                    if (v != 0xffffu) m->pc = m->fault_pc + 2u + disp;
-                }
+                    if (v != 0xffffu) { m->pc = m->fault_pc + 2u + disp; spend(m, 2); }
+                    else spend(m, 6);
+                } else spend(m, 4);
             } else {
                 Ea dst = ea(m, bits, 1);
                 ea_write(m, dst, condition(m, cc) ? 0xffu : 0u);
@@ -173,6 +184,7 @@ void md_full_execute(MdFull *m, uint16_t op) {
         size = 1u << size;
         uint32_t v = (op >> 9) & 7u; if (!v) v = 8;
         Ea dst = ea(m, bits, size);
+        if (dst.kind <= 1 && (size == 4 || dst.kind == 1)) spend(m, 4);
         if (dst.kind == 1) {
             if (op & 0x0100u) m->a[dst.reg] -= v;
             else m->a[dst.reg] += v;
@@ -236,8 +248,8 @@ void md_full_execute(MdFull *m, uint16_t op) {
     }
     if (top == 4) {
         if (op == 0x4e71) return;
-        if (op == 0x4e75) { m->pc = pop32(m); return; }
-        if (op == 0x4e73) { m->sr = pop16(m); m->pc = pop32(m); return; }
+        if (op == 0x4e75) { m->pc = pop32(m); spend(m, 4); return; }
+        if (op == 0x4e73) { m->sr = pop16(m); m->pc = pop32(m); spend(m, 4); return; }
         if (op == 0x4e72) { m->sr = fetch16(m); m->stopped = 1; return; }
         if (op == 0x4e70) return;
         if ((op & 0xfff8u) == 0x4e50u) {
@@ -260,6 +272,7 @@ void md_full_execute(MdFull *m, uint16_t op) {
             uint32_t target = ea_address(m, bits);
             if ((op & 0xffc0u) == 0x4e80u) push32(m, m->pc);
             m->pc = target;
+            spend(m, 4);
             return;
         }
         if ((op & 0xf1c0u) == 0x41c0u) { m->a[reg] = ea_address(m, bits); return; }
@@ -281,6 +294,7 @@ void md_full_execute(MdFull *m, uint16_t op) {
         if ((op & 0xfb80u) == 0x4880u) {
             size = op & 0x0040u ? 4 : 2;
             uint16_t list = fetch16(m);
+            spend(m, 4);
             unsigned mode = (bits >> 3) & 7u, ar = bits & 7u;
             Ea dst = ea(m, bits, size);
             uint32_t addr = dst.addr;
@@ -332,6 +346,7 @@ void md_full_execute(MdFull *m, uint16_t op) {
             size = mode == 3 ? 2 : 4;
             Ea src = ea(m, bits, size);
             uint32_t v = ea_read(m, src);
+            spend(m, top == 11 ? 2 : 4);
             if (size == 2) v = (uint32_t)(int32_t)(int16_t)v;
             if (top == 9) m->a[reg] -= v;
             else if (top == 13) m->a[reg] += v;
@@ -354,6 +369,7 @@ void md_full_execute(MdFull *m, uint16_t op) {
             size = 2;
             Ea src = ea(m, bits, size);
             uint32_t v = ea_read(m, src);
+            spend(m, top == 12 ? 66 : mode == 7 ? 154 : 136);
             if (top == 12) {
                 uint32_t result = (mode == 7) ? (uint32_t)((int32_t)(int16_t)v * (int32_t)(int16_t)m->d[reg]) :
                     (uint32_t)(uint16_t)v * (uint16_t)m->d[reg];
@@ -376,12 +392,14 @@ void md_full_execute(MdFull *m, uint16_t op) {
             } else if ((op & 0x00f8u) == 0x0048u) {
                 uint32_t t = m->a[reg]; m->a[reg] = m->a[r]; m->a[r] = t;
             } else { uint32_t t = m->d[reg]; m->d[reg] = m->a[r]; m->a[r] = t; }
+            spend(m, 2);
             return;
         }
         if (mode <= 2 || (mode >= 4 && mode <= 6)) {
             size = 1u << (mode & 3u);
             if (mode <= 2) {
                 Ea src = ea(m, bits, size);
+                if (size == 4) spend(m, src.kind <= 1 || src.kind == 8 ? 4 : 2);
                 uint32_t v = ea_read(m, src), old = m->d[reg] & mask(size), result;
                 if (top == 8) result = old | v;
                 else if (top == 12) result = old & v;
@@ -424,6 +442,7 @@ void md_full_execute(MdFull *m, uint16_t op) {
         size = 1u << size;
         unsigned count = (op & 0x0020u) ? (m->d[(op >> 9) & 7u] & 63u) : ((op >> 9) & 7u);
         if (!(op & 0x0020u) && !count) count = 8;
+        spend(m, (size == 4 ? 4u : 2u) + 2u * count);
         unsigned type = (op >> 3) & 3u, left = !!(op & 0x0100u);
         unsigned r = bits & 7u;
         uint32_t v = m->d[r] & mask(size), last = 0;
@@ -453,12 +472,14 @@ void md_full_step_interp(MdFull *m) {
     m->fault_pc = m->pc;
     if (m->coverage && m->pc < m->coverage_bytes * 8u)
         m->coverage[m->pc >> 3] |= (uint8_t)(1u << (m->pc & 7u));
-    uint16_t op = fetch16(m);
+    uint16_t op = md_full_read16(m, m->pc);   /* timed by md_full_execute */
+    m->pc += 2;
     if (!m->fault) md_full_execute(m, op);
 }
 
 static void interrupt(MdFull *m, unsigned level) {
     if ((m->sr >> 8 & 7u) >= level) return;
+    spend(m, 32);   /* with the three stack words: 44 cycles */
     push32(m, m->pc);
     push16(m, m->sr);
     m->sr = (m->sr & 0xf8ffu) | (level << 8);

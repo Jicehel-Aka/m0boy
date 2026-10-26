@@ -157,15 +157,8 @@ void md_full_write8(MdFull *m, uint32_t addr, uint8_t v) {
     }
     if (addr >= 0xa11000u && addr < 0xa12000u) {
         if (!(addr & 1u)) {
-            if ((addr & 0xff00u) == 0x1100u) m->z80_bus = !!v;
-            else if ((addr & 0xff00u) == 0x1200u) {
-                const uint8_t run = !!v;
-                if (run && !m->z80_reset) {
-                    z80_reset(&m->sound_cpu);
-                    m->sound_cpu.cycles = ((uint64_t)m->frames * 127856u + m->frame_cycles) * 7u / 15u;
-                }
-                m->z80_reset = run;
-            }
+            if ((addr & 0xff00u) == 0x1100u) md_full_sound_control(m, 0, !!v);
+            else if ((addr & 0xff00u) == 0x1200u) md_full_sound_control(m, 1, !!v);
         }
         return;
     }

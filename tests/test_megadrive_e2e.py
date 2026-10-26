@@ -98,6 +98,29 @@ def psg_image():
     return bytes(rom)
 
 
+def fm_image():
+    """Channel 1, algorithm 7, only S4 audible: F-number 0x23c, block 4."""
+    rom = bytearray(rom_image())
+    writes = [(0x22, 0x00), (0x27, 0x00), (0x2b, 0x00), (0x40, 0x7f), (0x44, 0x7f), (0x48, 0x7f),
+              (0x3c, 0x01), (0x4c, 0x00), (0x5c, 0x1f), (0x6c, 0x00), (0x7c, 0x00), (0x8c, 0x0f),
+              (0xb0, 0x07), (0xb4, 0xc0), (0xa4, 0x22), (0xa0, 0x3c), (0x28, 0x80)]
+    pc = 0x200
+    for reg, value in writes:
+        for port, byte in ((0x4000, reg), (0x4001, value)):
+            for word in (0x13fc, byte, 0x00a0, port):  # move.b #byte,($a0xxxx).l
+                rom[pc:pc + 2] = word.to_bytes(2, "big")
+                pc += 2
+    rom[pc:pc + 2] = (0x60fe).to_bytes(2, "big")
+    return bytes(rom)
+
+
+def wav_frequency(samples):
+    """Frequency of the left channel from its rising zero crossings."""
+    left = samples[0::2]
+    rising = [i for i in range(1, len(left)) if left[i - 1] < 0 <= left[i]]
+    return (len(rising) - 1) * 44100 / (rising[-1] - rising[0])
+
+
 def run(*args, success=True, env=None):
     result = subprocess.run([str(x) for x in args], text=True, capture_output=True, env=env)
     if (result.returncode == 0) != success:
@@ -168,6 +191,24 @@ def main():
         audio = (work / "tone.wav").read_bytes()[44:]
         samples = struct.unpack("<%dh" % (len(audio) // 2), audio)
         assert max(samples) - min(samples) > 1000, "PSG tone was not synthesized"
+        # Tone 0x100: 3579545 / (32 * 256) = 437 Hz.
+        assert abs(wav_frequency(samples[2000:]) - 437.0) < 5, wav_frequency(samples[2000:])
+        fm_rom = work / "fm.md"
+        fm_rom.write_bytes(fm_image())
+        fm_pc = work / "fm_pc"
+        run(exe, fm_rom, "--system", "megadrive", "--target", "pc", "-o", fm_pc)
+        run("cmake", "-G", "Ninja", "-S", fm_pc, "-B", fm_pc / "build")
+        run("ninja", "-C", fm_pc / "build")
+        fm_exe = fm_pc / "build" / "md_pc"
+        fm_native = run(fm_exe, "--frames", "30", "--wav", work / "fm.wav", env=pc_env)
+        fm_interp = run(fm_exe, "--interp", "--frames", "30", env=pc_env)
+        assert re.search(r"audio_hash=([a-f0-9]+)", fm_native).group(1) == re.search(
+            r"audio_hash=([a-f0-9]+)", fm_interp).group(1)
+        audio = (work / "fm.wav").read_bytes()[44:]
+        samples = struct.unpack("<%dh" % (len(audio) // 2), audio)
+        # 0x23c << 4 >> 1 per FM sample of 2^20: 572 * 8 * 7670454 / 144 / 2^20 = 232.5 Hz.
+        assert abs(wav_frequency(samples[8000:]) - 232.5) < 2, wav_frequency(samples[8000:])
+        assert max(samples[8000:]) > 2000 and samples[8000::2] == samples[8001::2], "FM channel 1 not centred"
         md = work / "meta"
         run(exe, rom, "--system", "megadrive", "--target", "meta",
             "--meta-precise", "-o", md)

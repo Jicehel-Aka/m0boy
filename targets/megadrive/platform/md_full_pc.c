@@ -34,12 +34,12 @@ static int write_ppm(const char *path, const uint32_t *pixels) {
     }
     return fclose(f) == 0;
 }
-static void wav_header(FILE *f, uint32_t samples) {
-    const uint32_t bytes = samples * 2u;
+static void wav_header(FILE *f, uint32_t frames) {
+    const uint32_t bytes = frames * 4u;
     const uint8_t h[44] = {'R','I','F','F', (uint8_t)(bytes + 36u), (uint8_t)((bytes + 36u) >> 8),
         (uint8_t)((bytes + 36u) >> 16), (uint8_t)((bytes + 36u) >> 24), 'W','A','V','E',
-        'f','m','t',' ', 16,0,0,0, 1,0, 1,0, 0x44,0xac,0,0, 0x88,0x58,1,0,
-        2,0, 16,0, 'd','a','t','a', (uint8_t)bytes, (uint8_t)(bytes >> 8),
+        'f','m','t',' ', 16,0,0,0, 1,0, 2,0, 0x44,0xac,0,0, 0x10,0xb1,2,0,
+        4,0, 16,0, 'd','a','t','a', (uint8_t)bytes, (uint8_t)(bytes >> 8),
         (uint8_t)(bytes >> 16), (uint8_t)(bytes >> 24)};
     fseek(f, 0, SEEK_SET);
     fwrite(h, 1, sizeof h, f);
@@ -101,7 +101,7 @@ int main(int argc, char **argv) {
         }
         if (!pc_frontend_open(&pc, "m0boy Mega Drive", W, H)) return 1;
         SDL_AudioSpec wanted = {0};
-        wanted.freq = 44100; wanted.format = AUDIO_S16SYS; wanted.channels = 1; wanted.samples = 1024;
+        wanted.freq = 44100; wanted.format = AUDIO_S16SYS; wanted.channels = 2; wanted.samples = 1024;
         audio_device = SDL_OpenAudioDevice(NULL, 0, &wanted, NULL, 0);
         if (audio_device) SDL_PauseAudioDevice(audio_device, 0);
         else fprintf(stderr, "SDL audio: %s\n", SDL_GetError());
@@ -119,11 +119,12 @@ int main(int argc, char **argv) {
             scripted = events[event_at++].mask;
         m->pad = (uint8_t)(scripted | (limit ? 0u : pc_frontend_buttons(&pc)));
         md_full_frame(m, !interp);
-        int16_t pcm[735];
-        md_full_audio_render(m, pcm, 735);
-        if (wav_file) { fwrite(pcm, sizeof *pcm, 735, wav_file); wav_samples += 735; }
-        if (audio_device && SDL_GetQueuedAudioSize(audio_device) < 44100u * sizeof *pcm / 4u)
-            SDL_QueueAudio(audio_device, pcm, sizeof pcm);
+        int16_t pcm[2 * 4096];
+        const unsigned audio_frames = md_full_audio_read(m, pcm, 4096);
+        if (wav_file) { fwrite(pcm, 2 * sizeof *pcm, audio_frames, wav_file); wav_samples += audio_frames; }
+        /* Keep at most about 0.15 s queued so sound follows the picture. */
+        if (audio_device && SDL_GetQueuedAudioSize(audio_device) < 44100u * 4u * 15u / 100u)
+            SDL_QueueAudio(audio_device, pcm, audio_frames * 2u * sizeof *pcm);
         if (!limit && !m->fault) {
             md_full_render(m, pixels, W);
             if (!pc_frontend_present(&pc, pixels, W, H, W)) { running = 0; break; }
