@@ -61,13 +61,13 @@ uint8_t md_full_read8(MdFull *m, uint32_t addr) {
         return (addr & 1u) ? (uint8_t)v : (uint8_t)(v >> 8);
     }
     if (addr >= 0xa14000u && addr < 0xa14004u) return 0;
-    m->fault = 1; m->fault_pc = m->pc;
+    m->fault = 1; m->fault_pc = m->pc; m->slice_limit = 0;
     return 0xff;
 }
 
 uint16_t md_full_read16(MdFull *m, uint32_t addr) {
     addr &= 0xffffffu;
-    if (addr & 1u) { m->fault = 3; m->fault_pc = m->pc; return 0xffff; }
+    if (addr & 1u) { m->fault = 3; m->fault_pc = m->pc; m->slice_limit = 0; return 0xffff; }
     if (addr >= 0xc00000u && addr <= 0xc0001fu) {
         if ((addr & 0x1cu) == 4u) { m->vdp_pending = 0; return vdp_status(m); }
         if ((addr & 0x1cu) == 8u) return (uint16_t)((m->frame_cycles / 488u) << 8);
@@ -102,7 +102,7 @@ static void vdp_store(MdFull *m, uint16_t v) {
         m->vsram[addr % 80u] = (uint8_t)(v >> 8);
         m->vsram[(addr + 1u) % 80u] = (uint8_t)v;
         break;
-    default: m->fault = 4; m->fault_pc = m->pc; break;
+    default: m->fault = 4; m->fault_pc = m->pc; m->slice_limit = 0; break;
     }
     m->vdp_addr = (m->vdp_addr + m->vdp_reg[15]) & 0xffffu;
 }
@@ -135,6 +135,7 @@ static void vdp_control(MdFull *m, uint16_t v) {
     if (!m->vdp_pending && (v & 0xc000u) == 0x8000u) {
         unsigned reg = (v >> 8) & 31u;
         if (reg < 24u) m->vdp_reg[reg] = v & 255u;
+        if (reg <= 1u) m->slice_limit = 0;   /* interrupt enables: recheck */
         return;
     }
     if (!m->vdp_pending) { m->vdp_first = v; m->vdp_pending = 1; return; }
@@ -170,12 +171,12 @@ void md_full_write8(MdFull *m, uint32_t addr, uint8_t v) {
         md_full_write16(m, addr & ~1u, (uint16_t)(v << 8 | v));
         return;
     }
-    m->fault = 1; m->fault_pc = m->pc;
+    m->fault = 1; m->fault_pc = m->pc; m->slice_limit = 0;
 }
 
 void md_full_write16(MdFull *m, uint32_t addr, uint16_t v) {
     addr &= 0xffffffu;
-    if (addr & 1u) { m->fault = 3; m->fault_pc = m->pc; return; }
+    if (addr & 1u) { m->fault = 3; m->fault_pc = m->pc; m->slice_limit = 0; return; }
     if (addr >= 0xff0000u) {
         m->ram[addr & 0xffffu] = v >> 8;
         m->ram[(addr + 1u) & 0xffffu] = (uint8_t)v;

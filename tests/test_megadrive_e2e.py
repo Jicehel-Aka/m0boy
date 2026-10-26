@@ -10,6 +10,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from md_fixture import random_code_image  # noqa: E402
+
 
 def rom_image():
     rom = bytearray(0x300)
@@ -121,6 +124,27 @@ def wav_frequency(samples):
     return (len(rising) - 1) * 44100 / (rising[-1] - rising[0])
 
 
+def hint_image():
+    """Backdrop blue from the vertical interrupt, red from the horizontal one
+    every 100 lines: rows 0-99 blue, 100-223 red."""
+    rom = bytearray(rom_image())
+    hint, vint = 0x280, 0x2a0
+    rom[28 * 4:28 * 4 + 4] = hint.to_bytes(4, "big")
+    rom[30 * 4:30 * 4 + 4] = vint.to_bytes(4, "big")
+    words = []
+    for reg in (0x8164, 0x8014, 0x8a63, 0x8f02, 0x8700):   # display + V-int, H-int, every 100 lines
+        words += [0x33fc, reg, 0x00c0, 0x0004]
+    words += [0x46fc, 0x2000, 0x60fe]                      # interrupts on; BRA self
+
+    def put(at, ws):
+        for i, w in enumerate(ws):
+            rom[at + 2 * i:at + 2 * i + 2] = w.to_bytes(2, "big")
+    put(0x200, words)
+    for at, colour in ((hint, 0x000e), (vint, 0x0e00)):    # CRAM 0 <- colour; RTE
+        put(at, [0x23fc, 0xc000, 0x0000, 0x00c0, 0x0004, 0x33fc, colour, 0x00c0, 0x0000, 0x4e73])
+    return bytes(rom)
+
+
 def run(*args, success=True, env=None):
     result = subprocess.run([str(x) for x in args], text=True, capture_output=True, env=env)
     if (result.returncode == 0) != success:
@@ -209,6 +233,40 @@ def main():
         # 0x23c << 4 >> 1 per FM sample of 2^20: 572 * 8 * 7670454 / 144 / 2^20 = 232.5 Hz.
         assert abs(wav_frequency(samples[8000:]) - 232.5) < 2, wav_frequency(samples[8000:])
         assert max(samples[8000:]) > 2000 and samples[8000::2] == samples[8001::2], "FM channel 1 not centred"
+        hint_rom = work / "hint.md"
+        hint_rom.write_bytes(hint_image())
+        hint_pc = work / "hint_pc"
+        run(exe, hint_rom, "--system", "megadrive", "--target", "pc", "-o", hint_pc)
+        run("cmake", "-G", "Ninja", "-S", hint_pc, "-B", hint_pc / "build")
+        run("ninja", "-C", hint_pc / "build")
+        for mode in ((), ("--interp",)):
+            run(hint_pc / "build" / "md_pc", *mode, "--frames", "3", "--ppm", work / "hint.ppm", env=pc_env)
+            pixels = (work / "hint.ppm").read_bytes().split(b"\n", 3)[3]
+            row = lambda y: pixels[y * 320 * 3:y * 320 * 3 + 3]
+            assert row(0) == row(99) == bytes((0, 0, 255)), (row(0), row(99))
+            assert row(100) == row(223) == bytes((255, 0, 0)), (row(100), row(223))
+        # Random 68000 code (tests/md_fixture.py): the C from the static walk
+        # alone and the C from an interpreter profile end on the
+        # interpreter's run, image and sound; the profiled one never falls back.
+        for seed in (1, 2, 3):
+            rand_rom = work / f"random{seed}.md"
+            rand_rom.write_bytes(random_code_image(seed))
+            rand_pc = work / f"random{seed}_pc"
+            run(exe, rand_rom, "--system", "megadrive", "--target", "pc", "-o", rand_pc)
+            run("cmake", "-G", "Ninja", "-S", rand_pc, "-B", rand_pc / "build")
+            run("ninja", "-C", rand_pc / "build")
+            rand_exe = rand_pc / "build" / "md_pc"
+            reference = run(rand_exe, "--interp", "--frames", "200", "--coverage", rand_pc / "run.cov", env=pc_env)
+            walked = run(rand_exe, "--frames", "200", env=pc_env)
+            run(exe, rand_rom, "--system", "megadrive", "--target", "pc", "--coverage", rand_pc / "run.cov", "-o", rand_pc)
+            run("ninja", "-C", rand_pc / "build")
+            profiled = run(rand_exe, "--frames", "200", env=pc_env)
+            for output in (reference, walked, profiled):
+                assert re.search(r"fault=0\b", output), output
+                for name in ("run_hash", "image_hash", "audio_hash"):
+                    assert re.search(name + r"=(\w+)", output).group(1) == re.search(name + r"=(\w+)", reference).group(1), \
+                        (seed, name, reference, output)
+            assert re.search(r"fallback_hits=0\b", profiled), profiled
         md = work / "meta"
         run(exe, rom, "--system", "megadrive", "--target", "meta",
             "--meta-precise", "-o", md)

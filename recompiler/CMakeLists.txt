@@ -53,6 +53,7 @@ add_library(gbrecomp_core STATIC
     src/system/nes/generator.cpp
     src/system/pce/generator.cpp
     src/system/megadrive/generator.cpp
+    src/system/megadrive/emitter.cpp
     src/system/vectrex/emitter.cpp
     src/system/vectrex/generator.cpp
     src/symbol_table.cpp

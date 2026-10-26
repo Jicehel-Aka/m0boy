@@ -64,30 +64,51 @@ de Sonic) sont donc rendus à leur cadence. L'interruption du Z80 est tenue
 une ligne à partir du début du blanking vertical. Le YM2612 est remis à zéro
 avec le Z80, comme sur la console.
 
-Le YM2612 produit un échantillon toutes les 144 horloges (53,3 kHz) :
-générateur de phase 20 bits avec détune et multiplicateur, tables log-sinus
-et exponentielle, enveloppes ADSR à compteur global (taux, échelle de touche,
-niveau de sustain), SSG-EG (répétition, alternance, maintien, inversion),
-huit algorithmes, rétroaction, mode spécial du canal 3 et mode CSM,
-minuteries A/B et leurs drapeaux, drapeau busy (32 horloges internes après
-une écriture de données), panoramique, DAC, LFO (AM, et PM approchée).
-Chaque voie passe par le DAC 9 bits du YM2612 discret, avec son effet
-d'échelle (un pas de plus aux niveaux positifs, le signe sur un côté muet).
-Le PSG (SN76489 de Sega) compte à 223,7 kHz, avec son bruit à registre
-16 bits. Le mélange est rééchantillonné à 44,1 kHz stéréo, puis le continu
-est retiré ; `--wav FILE` l'enregistre même sans fenêtre (`--frames N`), et
-`audio_hash` permet de comparer le code 68000 natif et l'interpréteur.
+Le YM2612 (`md_ym2612.c`) produit un échantillon toutes les 144 horloges
+(53,3 kHz) : générateur de phase 20 bits avec détune et multiplicateur, tables
+log-sinus et exponentielle, enveloppes à compteur global (taux, échelle de
+touche, niveau de sustain, seuil de silence), SSG-EG, huit algorithmes,
+rétroaction, mode spécial du canal 3 et CSM, LFO AM/PM, minuteries A/B,
+drapeau busy (32 horloges internes après une écriture de données),
+panoramique, DAC, et le DAC 9 bits du YM2612 discret avec sa discontinuité
+autour de zéro. L'état des touches est lu une fois par échantillon, comme sur
+la puce. Le PSG (SN76489 de Sega) compte à 223,7 kHz, avec son bruit à
+registre 16 bits. Le mélange est rééchantillonné à 44,1 kHz stéréo, puis le
+continu est retiré ; `--wav FILE` l'enregistre même sans fenêtre
+(`--frames N`), `--ym-log FILE` garde chaque écriture YM2612 avec son
+échantillon, et `audio_hash` permet de comparer le code natif et
+l'interpréteur.
 
-Le 68000 compte quatre cycles par mot lu ou écrit sur le bus (opcode,
-extensions, opérandes, pile), plus les cycles internes des branchements,
-modes indexés et prédécrémentés, multiplications, divisions, décalages et
-interruptions. Ce décompte reste une approximation : préchargement et états
-d'attente ne sont pas modélisés, et le DMA du VDP ne bloque pas le CPU.
+ymfm (Aaron Giles, BSD-3, recoupé avec Nuked-OPN2) sert d'oracle de test et
+n'entre jamais dans un projet généré : clonez-le dans `output/deps/ymfm` (ou
+passez `-DYMFM_DIR=`) et ctest construit `md_ym_compare`, qui rejoue un
+journal d'écritures dans les deux. `megadrive_ym2612_matches_ymfm` exige les
+mêmes échantillons, une fois mis à l'échelle de ymfm, sur des journaux
+aléatoires qui parcourent algorithmes, SSG-EG, LFO, canal 3 spécial et DAC ;
+avec la ROM locale, le test Sonic rejoue aussi les 26 s de sa séquence. Le
+CSM n'est pas couvert (les minuteries de ymfm dépendent de son hôte). Les
+filtres analogiques de sortie, qui changent selon le modèle de console, ne
+sont pas reproduits, et le son n'a pas été comparé à une Mega Drive.
 
-Les filtres analogiques de sortie, qui changent selon le modèle de console,
-ne sont pas reproduits. Le test `megadrive_m68k_end_to_end` mesure la
-fréquence d'une voix FM et d'une voix PSG synthétiques ; le son de Sonic n'a
-pas été comparé à une Mega Drive.
+Le 68000 suit les temps du manuel MC68000 (`md_m68k_time.h`) : temps de
+chaque instruction et de ses modes d'adressage, branchements pris ou non,
+DBcc, Scc, décalages par registre, MOVEM par registre, MULU/MULS selon les
+bits et DIVU/DIVS selon les étapes de la division, 44 cycles par
+interruption. États d'attente, préchargement fin et blocage du CPU pendant le
+DMA du VDP ne sont pas modélisés. Le jeu d'instructions comprend ADDX/SUBX,
+CMPM, ABCD/SBCD/NBCD, TAS, CHK, TRAP/TRAPV, RTR, MOVEP, les exceptions
+(division par zéro, instructions illégales, lignes A et F) et le changement
+de pile superviseur/utilisateur.
+
+Le CPU tourne par tranches d'une ligne (488 cycles, 262 lignes) : le VDP
+rend chaque ligne à la fin de la sienne, l'interruption verticale part à la
+ligne 224 et l'interruption horizontale suit le compteur du registre 10, si
+bien qu'un gestionnaire H-int qui change palette ou défilement touche la
+ligne suivante. Les sprites sont lus par ligne, avec les limites de 20
+sprites et 320 pixels (16 et 256 en H32) et le masquage par x = 0. Une
+boucle d'attente (`TST`, `BTST #` ou `CMPI` sur une adresse absolue de RAM,
+puis `Bcc.s` vers elle) est consommée d'un coup jusqu'à la fin de sa
+tranche, à l'endroit exact où l'exécution pas à pas se serait arrêtée.
 
 SDL2 est la seule dépendance du frontend PC. `--frames N --ppm FILE` permet
 une capture sans fenêtre visible, et `--input FILE` rejoue des lignes
@@ -96,20 +117,36 @@ Start=128.
 
 ## Profil natif
 
+Le générateur traduit le 68000 en C (`recompiler/src/system/megadrive/emitter.cpp`,
+`src/md_full_code.c`) sur le modèle des cœurs NES et Vectrex : les
+instructions atteintes depuis les vecteurs et le profil sont regroupées par
+adresses contiguës en régions, une fonction C chacune, avec des `goto`
+internes. Chaque sortie revient au dispatcher (`md_full_step_native`), qui
+cherche l'entrée suivante ; RTS, RTE, sauts par registre et exceptions
+laissent `pc` à chercher, et ce qui n'a pas d'entrée (code en RAM, adresse
+jamais atteinte) passe par l'interpréteur. Le C généré appelle les mêmes
+aides que l'interpréteur (`md_m68k_ops.h`), plie les mêmes temps
+(`md_m68k_time.h`), lit les opérandes ROM constants comme constantes et
+vérifie la fin de tranche après chaque instruction : un projet doit donner le
+`run_hash`, l'`image_hash` et l'`audio_hash` de `--interp`.
+
 La couverture des adresses 68000 exécutées se collecte avec `md_pc --interp
---coverage FILE`. Passez un ou plusieurs fichiers au générateur avec
-`--coverage FILE` pour émettre ces adresses dans `src/md_full_code.c` comme
-cases C contenant les opcodes ROM constants. Le programme fonctionne déjà
-sans profil, via le décodeur interne. Les zones RAM exécutables restent dans
-le décodeur. Les compteurs `native_hits` et `fallback_hits` rendent ce partage
-visible ; `--interp` sert de référence pour comparer `run_hash` et `image_hash`.
+--coverage FILE`, puis se passe au générateur avec `--coverage FILE` (une ou
+plusieurs fois). Sans profil, le parcours statique depuis les vecteurs suffit
+souvent ; `native_hits` (entrées de région) et `fallback_hits` (instructions
+interprétées) rendent le partage visible. `megadrive_m68k_end_to_end`
+compare l'interpréteur, le C du seul parcours statique et le C profilé sur
+des programmes 68000 aléatoires (`tests/md_fixture.py` : presque tout le jeu
+d'instructions, exceptions, interruptions V et H, boucle d'attente), et
+vérifie les bandes de couleur d'une H-int.
 
 Le test facultatif `megadrive_sonic_pc_native` utilise la ROM Sonic locale,
 collecte le profil du titre et d'une séquence Start/jump, puis vérifie que la
 génération C donne les mêmes états et pixels que l'interpréteur, sans fallback
 sur cette séquence. Ne pas confondre ce résultat avec une compatibilité
-générale : Sonic 1 est jouable dans ce frontend, mais les sprites,
-plusieurs modes du VDP, la fidélité sonore et d'autres cartouches restent incomplets. Le
+générale : Sonic 1 est jouable dans ce frontend, mais le plan fenêtre, le
+mode ombre/surbrillance et l'entrelacement du VDP manquent, et d'autres
+cartouches n'ont pas été essayées. Le
 profil META conserve encore son ancien sous-ensemble restreint ; la jouabilité
 sur matériel embarqué n'est pas établie.
 

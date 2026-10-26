@@ -52,6 +52,9 @@ static uint32_t image_hash(const uint32_t *pixels) {
     }
     return h;
 }
+static void ym_log(void *user, uint64_t sample, unsigned bank, uint8_t reg, uint8_t value) {
+    fprintf((FILE *)user, "%llu %u %02x %02x\n", (unsigned long long)sample, bank, reg, value);
+}
 static int save_coverage(const char *path, const MdFull *m) {
     FILE *f = fopen(path, "w");
     if (!f) { perror(path); return 0; }
@@ -62,15 +65,16 @@ static int save_coverage(const char *path, const MdFull *m) {
 int main(int argc, char **argv) {
     unsigned limit = 0;
     int interp = 0;
-    const char *ppm = NULL, *script = NULL, *coverage = NULL, *wav = NULL;
+    const char *ppm = NULL, *script = NULL, *coverage = NULL, *wav = NULL, *ym_path = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) limit = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) script = argv[++i];
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) ppm = argv[++i];
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) coverage = argv[++i];
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
+        else if (!strcmp(argv[i], "--ym-log") && i + 1 < argc) ym_path = argv[++i];
         else if (!strcmp(argv[i], "--interp")) interp = 1;
-        else { fprintf(stderr, "usage: md_pc [--frames N] [--input SCRIPT] [--ppm FILE] [--wav FILE] [--coverage FILE] [--interp]\n"); return 2; }
+        else { fprintf(stderr, "usage: md_pc [--frames N] [--input SCRIPT] [--ppm FILE] [--wav FILE] [--ym-log FILE] [--coverage FILE] [--interp]\n"); return 2; }
     }
     Event *events = NULL;
     size_t event_count = 0, event_at = 0;
@@ -78,13 +82,20 @@ int main(int argc, char **argv) {
         fprintf(stderr, "invalid input script\n"); free(events); return 2;
     }
     MdFull *m = calloc(1, sizeof *m);
-    uint32_t *pixels = malloc(W * H * sizeof *pixels);
+    uint32_t *pixels = calloc(W * H, sizeof *pixels);
     if (!m || !pixels) { free(m); free(pixels); free(events); return 1; }
     md_full_reset(m);
     if (coverage) {
         m->coverage_bytes = (md_rom_size + 7u) / 8u;
         m->coverage = calloc(m->coverage_bytes, 1);
         if (!m->coverage) { free(m); free(pixels); free(events); return 1; }
+    }
+    FILE *ym_file = NULL;
+    if (ym_path) {
+        ym_file = fopen(ym_path, "w");
+        if (!ym_file) { perror(ym_path); return 1; }
+        m->ym_log = ym_log;
+        m->ym_log_user = ym_file;
     }
     PcFrontend pc = {0};
     SDL_AudioDeviceID audio_device = 0;
@@ -118,6 +129,9 @@ int main(int argc, char **argv) {
         while (event_at < event_count && events[event_at].frame == m->frames)
             scripted = events[event_at++].mask;
         m->pad = (uint8_t)(scripted | (limit ? 0u : pc_frontend_buttons(&pc)));
+        /* The VDP draws into pixels line by line; without a window only
+         * the last frame is needed. */
+        m->screen = !limit || m->frames + 1u >= limit ? pixels : NULL;
         md_full_frame(m, !interp);
         int16_t pcm[2 * 4096];
         const unsigned audio_frames = md_full_audio_read(m, pcm, 4096);
@@ -126,7 +140,6 @@ int main(int argc, char **argv) {
         if (audio_device && SDL_GetQueuedAudioSize(audio_device) < 44100u * 4u * 15u / 100u)
             SDL_QueueAudio(audio_device, pcm, audio_frames * 2u * sizeof *pcm);
         if (!limit && !m->fault) {
-            md_full_render(m, pixels, W);
             if (!pc_frontend_present(&pc, pixels, W, H, W)) { running = 0; break; }
             deadline += 16u;
             frame_fraction += 2u;
@@ -136,9 +149,9 @@ int main(int argc, char **argv) {
             else if (now - deadline > 100u) { deadline = now; frame_fraction = 0; }
         }
     }
-    md_full_render(m, pixels, W);
     int okay = (!ppm || write_ppm(ppm, pixels)) && (!coverage || save_coverage(coverage, m));
     if (wav_file) { wav_header(wav_file, wav_samples); if (fclose(wav_file)) okay = 0; }
+    if (ym_file && fclose(ym_file)) okay = 0;
     printf("frames=%u pc=%06x fault=%u fault_pc=%06x opcode=%04x native_hits=%u fallback_hits=%u run_hash=%08x image_hash=%08x audio_hash=%08x\n",
         m->frames, m->pc, m->fault, m->fault_pc, m->last_opcode,
         m->native_hits, m->fallback_hits, md_full_hash(m), image_hash(pixels), m->audio_hash);

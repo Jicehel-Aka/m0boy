@@ -156,6 +156,16 @@ built firmware in it (`ESPBOY_PIO` for the build).
   byte for byte.  The sprite text's line-edge clipping is the known
   open item; the HuC6280 → C recompiler and a console target follow the
   NES plan (64 KiB of VRAM will need flash windowing on the META).
+  Mega Drive PC (`--system megadrive --target pc`, `docs/MEGADRIVE.fr.md`):
+  `recompiler/src/system/megadrive/emitter.cpp` (68000 -> C regions, the
+  dispatcher in the generated `md_full_code.c`), the interpreter and line
+  scheduler in `targets/megadrive/runtime/md_full_cpu.c`; both share
+  `md_m68k_ops.h` and the timings of `md_m68k_time.h`.  Rule: a project
+  prints the `--interp` run_hash/image_hash/audio_hash, from the static walk
+  and with a profile (`tests/test_megadrive_e2e.py`, random code from
+  `tests/md_fixture.py`); with the ROM, Sonic native = interpreter with no
+  fallback.  YM2612 changes: `megadrive_ym2612_matches_ymfm` (ymfm in
+  `output/deps/ymfm` as a test oracle only) must stay exact.
   The AKA CORE v1.4 wiring follows the official Gamebuino_AKA_lib
   (`targets/consoles/aka/`, `docs/AKA.fr.md`).
 

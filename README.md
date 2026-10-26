@@ -72,7 +72,10 @@ B/A/X select Mega Drive A/B/C; Enter or gamepad Start starts. The image is
 unfiltered by default. F8 cycles the
 gm0-style display filters, F10 changes scaling, and F11 toggles fullscreen.
 `--frames N --wav FILE` records 44.1 kHz stereo audio without opening a window.
-The YM2612, PSG and Z80 share one clock; the sound has not been compared with a console (see the Mega Drive notes).
+The 68000 is recompiled to C (regions behind a dispatcher, MC68000 timings);
+the YM2612 matches ymfm sample for sample in the tests, the PSG and Z80 share
+its clock, and the VDP runs line by line with horizontal interrupts. The sound
+has not been compared with a console (see the Mega Drive notes).
 
 | Source | META | Pokitto | ESPboy |
 |---|---|---|---|

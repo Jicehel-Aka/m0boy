@@ -39,50 +39,65 @@ static unsigned plane_pixel(const MdFull *m, unsigned plane, unsigned x, unsigne
     unsigned nibble = pattern_pixel(m, entry, col, row);
     return nibble ? (((entry >> 9) & 0x30u) | nibble) : 0;
 }
-static unsigned sprite_pixel(const MdFull *m, unsigned x, unsigned y, unsigned *priority) {
-    unsigned base = (m->vdp_reg[5] & 0x7eu) << 9;
-    unsigned link = 0;
-    for (unsigned i = 0; i < 80; ++i) {
-        unsigned a = base + link * 8u;
-        unsigned sy = vram_word(m, a) & 0x1ffu;
-        unsigned shape = vram_word(m, a + 2u);
-        unsigned tile = vram_word(m, a + 4u);
-        unsigned sx = vram_word(m, a + 6u) & 0x1ffu;
-        unsigned w = (((shape >> 10) & 3u) + 1u) * 8u;
-        unsigned h = (((shape >> 8) & 3u) + 1u) * 8u;
-        int dx = (int)x - (int)sx + 128, dy = (int)y - (int)sy + 128;
-        if (dx >= 0 && dy >= 0 && (unsigned)dx < w && (unsigned)dy < h) {
-            unsigned col = tile & 0x0800u ? w - 1u - (unsigned)dx : (unsigned)dx;
-            unsigned row = tile & 0x1000u ? h - 1u - (unsigned)dy : (unsigned)dy;
-            unsigned pattern = (tile & 0x7ffu) + (col >> 3) * (h >> 3) + (row >> 3);
-            unsigned nibble = pattern_pixel(m, pattern, col & 7u, row & 7u);
-            if (nibble) { *priority = !!(tile & 0x8000u); return ((tile >> 9) & 0x30u) | nibble; }
+/* Sprites of line y into idx/pri (0 = none), first in link order wins.
+ * Per line at most 20 sprites and 320 pixels in H40 (16 and 256 in H32);
+ * a sprite at x = 0 masks the later ones once an earlier one is on the line. */
+static void sprite_line(const MdFull *m, unsigned y, unsigned width, uint8_t *idx, uint8_t *pri) {
+    const unsigned base = (m->vdp_reg[5] & (width == 320u ? 0x7eu : 0x7fu)) << 9;
+    const unsigned max_sprites = width == 320u ? 80u : 64u, line_sprites = width == 320u ? 20u : 16u;
+    unsigned link = 0, found = 0, pixels = 0;
+    int masked = 0;
+    for (unsigned i = 0; i < max_sprites; ++i) {
+        const unsigned a = base + link * 8u;
+        const unsigned sy = vram_word(m, a) & 0x1ffu, shape = vram_word(m, a + 2u);
+        const unsigned tile = vram_word(m, a + 4u), sx = vram_word(m, a + 6u) & 0x1ffu;
+        const unsigned w = (((shape >> 10) & 3u) + 1u) * 8u, h = (((shape >> 8) & 3u) + 1u) * 8u;
+        const int dy = (int)y - (int)sy + 128;
+        if (dy >= 0 && (unsigned)dy < h) {
+            if (++found > line_sprites) break;
+            if (sx == 0u && found > 1u) masked = 1;
+            for (unsigned dx = 0; dx < w && !masked; ++dx) {
+                if (++pixels > width) break;
+                const int x = (int)sx - 128 + (int)dx;
+                if (x < 0 || x >= (int)width || idx[x]) continue;
+                const unsigned col = tile & 0x0800u ? w - 1u - dx : dx;
+                const unsigned row = tile & 0x1000u ? h - 1u - (unsigned)dy : (unsigned)dy;
+                const unsigned pattern = (tile & 0x7ffu) + (col >> 3) * (h >> 3) + (row >> 3);
+                const unsigned nibble = pattern_pixel(m, pattern, col & 7u, row & 7u);
+                if (nibble) { idx[x] = (uint8_t)(((tile >> 9) & 0x30u) | nibble); pri[x] = !!(tile & 0x8000u); }
+            }
+            if (masked || pixels > width) break;
         }
         link = shape & 0x7fu;
         if (!link) break;
     }
-    return 0;
+}
+
+void md_full_render_line(const MdFull *m, unsigned y, uint32_t *row) {
+    const unsigned width = m->vdp_reg[12] & 1u ? 320u : 256u;
+    uint32_t palette[64];
+    for (unsigned i = 0; i < 64; ++i) palette[i] = colour(m, i);
+    const uint32_t backdrop = palette[m->vdp_reg[7] & 63u];
+    if (!(m->vdp_reg[1] & 0x40u)) { for (unsigned x = 0; x < 320; ++x) row[x] = backdrop; return; }
+    uint8_t sprite[320] = {0}, sprite_pri[320] = {0};
+    sprite_line(m, y, width, sprite, sprite_pri);
+    for (unsigned x = 0; x < 320; ++x) {
+        unsigned index = m->vdp_reg[7] & 63u;
+        if (x < width) {
+            unsigned pa = 0, pb = 0;
+            const unsigned a = plane_pixel(m, 0, x, y, &pa), b = plane_pixel(m, 1, x, y, &pb);
+            const unsigned s = sprite[x], ps = sprite_pri[x];
+            if (b && !pb) index = b;
+            if (a && !pa) index = a;
+            if (s && !ps) index = s;
+            if (b && pb) index = b;
+            if (a && pa) index = a;
+            if (s && ps) index = s;
+        }
+        row[x] = index == (m->vdp_reg[7] & 63u) ? backdrop : palette[index];
+    }
 }
 
 void md_full_render(const MdFull *m, uint32_t *pixels, unsigned stride) {
-    unsigned width = m->vdp_reg[12] & 1u ? 320u : 256u;
-    unsigned backdrop = m->vdp_reg[7] & 63u;
-    for (unsigned y = 0; y < 224; ++y) {
-        for (unsigned x = 0; x < 320; ++x) {
-            unsigned index = backdrop;
-            if (x < width && (m->vdp_reg[1] & 0x40u)) {
-                unsigned pa = 0, pb = 0, ps = 0;
-                unsigned a = plane_pixel(m, 0, x, y, &pa);
-                unsigned b = plane_pixel(m, 1, x, y, &pb);
-                unsigned s = sprite_pixel(m, x, y, &ps);
-                if (b && !pb) index = b;
-                if (a && !pa) index = a;
-                if (s && !ps) index = s;
-                if (b && pb) index = b;
-                if (a && pa) index = a;
-                if (s && ps) index = s;
-            }
-            pixels[y * stride + x] = colour(m, index);
-        }
-    }
+    for (unsigned y = 0; y < 224; ++y) md_full_render_line(m, y, pixels + y * stride);
 }

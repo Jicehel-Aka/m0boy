@@ -182,6 +182,23 @@ if(BUILD_TESTS)
                     --recompiler "$<TARGET_FILE:m0recomp>"
                     --rom "${PROJECT_SOURCE_DIR}/roms/md/Sonic The Hedgehog (USA, Europe).md")
     endif()
+    # The YM2612 against ymfm (BSD-3, a test oracle only, never linked into a
+    # generated project): clone https://github.com/aaronsgiles/ymfm there.
+    set(YMFM_DIR "${PROJECT_SOURCE_DIR}/output/deps/ymfm" CACHE PATH "ymfm sources for the YM2612 comparison")
+    if(EXISTS "${YMFM_DIR}/src/ymfm_opn.cpp")
+        add_executable(md_ym_compare tests/md_ym_compare.cpp targets/megadrive/runtime/md_ym2612.c
+            "${YMFM_DIR}/src/ymfm_opn.cpp" "${YMFM_DIR}/src/ymfm_adpcm.cpp"
+            "${YMFM_DIR}/src/ymfm_ssg.cpp" "${YMFM_DIR}/src/ymfm_misc.cpp")
+        target_include_directories(md_ym_compare PRIVATE "${YMFM_DIR}/src" targets/megadrive/runtime)
+        target_link_libraries(md_ym_compare PRIVATE m)
+        add_test(NAME megadrive_ym2612_matches_ymfm
+            COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_md_ym_ymfm.py"
+                    "$<TARGET_FILE:md_ym_compare>")
+        if(EXISTS "${PROJECT_SOURCE_DIR}/roms/md/Sonic The Hedgehog (USA, Europe).md")
+            set_property(TEST megadrive_sonic_pc_native APPEND PROPERTY ENVIRONMENT
+                "MD_YM_COMPARE=$<TARGET_FILE:md_ym_compare>")
+        endif()
+    endif()
     add_executable(test_megadrive_pad tests/test_megadrive_pad.c targets/megadrive/runtime/md.c)
     target_include_directories(test_megadrive_pad PRIVATE targets/megadrive/runtime)
     add_test(NAME megadrive_pad_bus COMMAND test_megadrive_pad)

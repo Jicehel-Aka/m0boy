@@ -3,24 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "z80.h"
+#include "md_ym2612.h"
 
-/* YM2612 operator; op index 0..3 is S1..S4 (registers +0, +8, +4, +12). */
-typedef struct {
-    uint32_t phase;
-    uint16_t att;
-    uint8_t state, key, ssg_invert;
-    int16_t out, prev;
-} MdFmOperator;
-typedef struct {
-    uint8_t addr[2], reg[2][256], fnum_latch, special_latch, status;
-    uint16_t fnum[6], special_fnum[3];
-    uint8_t block[6], special_block[3];
-    MdFmOperator op[6][4];
-    uint16_t eg_cnt, timer_a, timer_b;
-    uint8_t eg_timer, timer_b_sub, lfo_step, lfo_sub;
-    uint8_t reg_key[6], csm_key;   /* key bits from register 0x28 and from CSM */
-    uint64_t busy_until;           /* master clock */
-} MdYm2612;
 typedef struct {
     uint16_t tone[3], counter[4], lfsr;
     uint8_t volume[4], noise, latch, high[4];
@@ -48,12 +32,22 @@ typedef struct {
     int32_t audio_last[2], audio_dc[2];
     int16_t audio_out[2 * 4096];
     uint32_t audio_frames, audio_hash;
-    uint8_t stopped, fault, irq_pending;
+    /* Optional: every YM2612 data write, with the FM sample it precedes. */
+    void (*ym_log)(void *user, uint64_t sample, unsigned bank, uint8_t reg, uint8_t value);
+    void *ym_log_user;
+    uint8_t stopped, fault, irq_pending;   /* irq_pending: vertical interrupt */
+    uint8_t hint_pending, hint_counter;
+    uint16_t line;
+    /* The CPU runs in slices that end with a line; a generated region stops
+     * once frame_cycles reaches slice_limit, which events that may let an
+     * interrupt in (SR, VDP interrupt enables, STOP) set to zero. */
+    uint32_t slice_limit;
     uint32_t cycles, frame_cycles, frames, instructions;
     uint32_t native_hits, fallback_hits;
     uint32_t fault_pc;
     uint8_t *coverage;
     size_t coverage_bytes;
+    uint32_t *screen;   /* 320x224 ARGB, drawn line by line when set */
 } MdFull;
 
 extern const uint8_t md_rom[];
@@ -68,8 +62,10 @@ void md_full_write32(MdFull *m, uint32_t addr, uint32_t value);
 void md_full_execute(MdFull *m, uint16_t op);
 void md_full_step_interp(MdFull *m);
 void md_full_step_native(MdFull *m);
+void md_full_idle(MdFull *m, unsigned a, unsigned b, uint32_t test_pc, uint32_t branch_pc);
 void md_full_frame(MdFull *m, int native);
 void md_full_render(const MdFull *m, uint32_t *pixels, unsigned stride);
+void md_full_render_line(const MdFull *m, unsigned y, uint32_t *row);
 void md_full_audio_reset(MdFull *m);
 void md_full_sound_write(MdFull *m, uint32_t addr, uint8_t value);
 uint8_t md_full_sound_read(MdFull *m, uint32_t addr);

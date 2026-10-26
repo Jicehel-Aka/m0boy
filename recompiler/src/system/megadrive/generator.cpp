@@ -1,4 +1,5 @@
 #include "m0boy/megadrive_generator.h"
+#include "emitter.h"
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
@@ -53,7 +54,7 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
     for (const char *n : {"md.h", "md.c", "md_code.c", "md_host.c"})
         fs::remove(src / n);
     fs::remove(o.output / "rom.md");
-    for (const char *n : {"md_full.h", "md_full_cpu.c", "md_full_bus.c", "md_full_video.c", "md_full_audio.c"})
+    for (const char *n : {"md_full.h", "md_full_cpu.c", "md_full_bus.c", "md_full_video.c", "md_full_audio.c", "md_ym2612.h", "md_ym2612.c", "md_m68k_time.h", "md_m68k_ops.h"})
         copy_template(tpl / "runtime" / n, src / n);
     for (const char *n : {"z80.h", "z80.c", "z80_ops.h"})
         copy_template(o.targets_dir / "sg1000/runtime" / n, src / n);
@@ -75,21 +76,16 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
             covered.insert(pc);
         }
     }
-    std::ostringstream gen;
-    gen << "/* ROM 68000 instructions selected from execution coverage. The opcode is "
-           "constant here; uncovered and RAM code use the reference decoder. */\n"
-           "#include \"md_full.h\"\n"
-           "void md_full_step_native(MdFull *m) {\n"
-           "  uint32_t pc = m->pc;\n  switch (pc) {\n";
-    for (uint32_t pc : covered) {
-        gen << "    case " << hex(pc) << ":\n"
-               "      m->fault_pc = pc; m->pc = pc + 2u;\n"
-               "      if (m->coverage && pc < m->coverage_bytes * 8u) "
-               "m->coverage[pc >> 3] |= (uint8_t)(1u << (pc & 7u));\n"
-               "      ++m->native_hits; md_full_execute(m, " << hex(be16(rom, pc)) << "); return;\n";
+    /* every exception vector into ROM, with the profile, seeds the walk */
+    for (uint32_t v = 2; v < 64 && v * 4 + 3 < rom.size(); ++v) {
+        const uint32_t to = be32(rom, v * 4);
+        if (to < rom.size() && !(to & 1u)) covered.insert(to);
     }
-    gen << "    default: md_full_step_interp(m); return;\n  }\n}\n";
-    write(src / "md_full_code.c", gen.str());
+    EmitStats stats;
+    const std::string code = emit_m68k(rom, covered, stats);
+    write(src / "md_full_code.c", code);
+    std::printf("megadrive: %zu instructions in %zu regions, %zu idle loops\n",
+                stats.compiled, stats.regions, stats.idle_loops);
     std::ostringstream data;
     data << "#include <stdint.h>\nconst uint32_t md_rom_size = " << rom.size() << "u;\n"
             "const uint8_t md_rom[] = {\n";
@@ -104,14 +100,15 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
         "set(CMAKE_C_STANDARD 11)\nfind_package(PkgConfig REQUIRED)\n"
         "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)\n"
         "add_executable(md_pc src/md_full_pc.c src/pc_frontend.c src/md_full_code.c src/md_full_cpu.c "
-        "src/md_full_bus.c src/md_full_video.c src/md_full_audio.c src/z80.c src/md_rom.c)\n"
+        "src/md_full_bus.c src/md_full_video.c src/md_full_audio.c src/md_ym2612.c src/z80.c src/md_rom.c)\n"
         "target_compile_options(md_pc PRIVATE -O2)\n"
         "target_link_libraries(md_pc PRIVATE PkgConfig::SDL2 m)\n");
     write(o.output / "README.md", "# Mega Drive native PC project: " + o.name + "\n\n"
-        "The ROM's 68000 opcodes recorded by coverage are emitted as C cases in "
-        "`src/md_full_code.c`; uncovered instructions use the in-tree 68000 decoder. "
-        "The VDP, RAM, Z80 sound CPU, PSG and approximate YM2612 synthesis are "
-        "implemented in this project. SDL2 supplies the window, gamepad and audio output.\n\n"
+        "The ROM's 68000 code reached from the vectors and the coverage profile is "
+        "recompiled to C in `src/md_full_code.c` (regions behind a dispatcher); code "
+        "it does not reach runs on the in-tree 68000 interpreter. The VDP (line by line), "
+        "RAM, Z80 sound CPU, PSG and YM2612 are implemented in this project. "
+        "SDL2 supplies the window, gamepad and audio output.\n\n"
         "Build: `cmake -G Ninja -S . -B build && ninja -C build`.\n"
         "Run: `build/md_pc` (arrows, X/Z/C, Enter; gamepad B/A/X and Start; Esc quits). "
         "The image is unfiltered by default. F8 cycles gm0-style filters; "

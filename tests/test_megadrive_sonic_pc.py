@@ -44,8 +44,10 @@ def main():
         start = root / "start.input"
         start.write_text("600 128\n602 0\n1050 8\n1150 0\n1300 64\n1310 0\n")
         gameplay = run(player, "--interp", "--frames", "1500", "--input", start,
-                       "--coverage", root / "game.cov",
+                       "--coverage", root / "game.cov", "--ym-log", root / "ym.log",
                        "--ppm", root / "game.ppm", "--wav", root / "interp.wav", env=env)
+        if os.environ.get("MD_YM_COMPARE"):   # Sonic's own writes, through ymfm
+            print(run(os.environ["MD_YM_COMPARE"], root / "ym.log", "--exact").strip())
         assert field(gameplay, "frames") == "1500", gameplay
         assert field(gameplay, "fault") == "0", gameplay
         run(args.recompiler, "--system", "megadrive", args.rom, "--target", "pc",
