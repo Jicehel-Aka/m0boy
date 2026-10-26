@@ -54,6 +54,20 @@ en RAM, avec persistance .SAV sur la carte. La partition application conserve
 Ne pas extrapoler ces vérifications à une compatibilité générale avec les
 firmwares ESP-IDF ni à une mesure de performance de l'AKA.
 
+## Conversion simple (une ROM, un zip)
+
+```bash
+tools/aka/convert.sh jeu.gg                 # -> ./aka-out/<Jeu>.zip
+tools/aka/convert.sh -r jeu.sms             # -r : couverture courte, plus rapide
+tools/aka/convert.sh -o sortie dossier_de_roms/
+```
+Sous Windows : `tools\aka\convert.bat jeu.gg`, ou glisser-déposer des ROMs sur
+`convert.bat` (WSL requis ; le dossier `aka-out` apparaît à côté de la ROM).
+Le script construit le recompilateur à la première utilisation, copie les ROMs
+dans un dossier de travail, lance `TARGET=aka ./compile.sh` sans question et
+range les `.zip` à plat. Décompresser un zip à la racine de la carte SD.
+Game Boy/Color, SG-1000, Game Gear et Master System seulement.
+
 ## Conversion et essai
 
 `TARGET=aka ./compile.sh` produit le dossier du launcher : `firmware.bin`,
