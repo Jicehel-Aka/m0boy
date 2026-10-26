@@ -35,11 +35,11 @@ constexpr std::array pico8_targets = {TargetId::desktop, TargetId::meta, TargetI
 constexpr std::array msx_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto};
 // NES: the recompiled pipeline on the META, the Pokitto and the desktop
 // harness.
-// PC Engine: the interpreter on the desktop harness (the consoles wait
-// on the picture's budget; a 768 KiB HuCard does not fit a 256 KiB
-// flash either).
+// PC Engine: the interpreter on the desktop harness and the PC's SDL2
+// window (the consoles wait on the picture's budget; a 768 KiB HuCard
+// does not fit a 256 KiB flash either).
 constexpr std::array nes_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto};
-constexpr std::array pce_targets = {TargetId::desktop};
+constexpr std::array pce_targets = {TargetId::desktop, TargetId::pc};
 // Vectrex: the 6809 recompiled in front of the interpreter on the META,
 // and the SDL host (pc).
 constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc};

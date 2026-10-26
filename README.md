@@ -26,11 +26,15 @@ on the ESPboy, an image to flash).
 ## What runs where
 
 An experimental PC Engine interpreter generates desktop harness projects
-(`--system pce --target desktop`): the full HuC6280 (the mednafen core's
+and PC (SDL2) window projects (`--system pce --target desktop|pc`,
+`tools/pce/build_pc_binaries.sh` builds a Linux binary and a Windows
+.exe with the HuCard embedded): the full HuC6280 (the mednafen core's
 opcode table and cycle counts, the 65C02 set and the Hudson extensions),
 the VDC, VCE, timer, pad and a reduced PSG. Raiden boots through its
 HuCard menu to the exact title screen and reaches gameplay from a RUN
-input; the sprite text's line-edge clipping is the known open item. See
+input; the sprite text's line-edge clipping is the known open item. The
+PC window and the headless harness print the same run_hash, and the
+.exe's output matches the Linux build's byte for byte. See
 [PC Engine notes](docs/PCE.fr.md).
 
 An experimental Vectrex pipeline is available for the META (the system ROM
@@ -78,7 +82,7 @@ The FM synthesizer and Z80 timing are experimental; see the Mega Drive notes.
 | MSX1 (ASCII8/16, Konami and Konami SCC mappers; AY-3-8910 and SCC sound; experimental) | yes | yes | — |
 | PICO-8 | yes | yes | yes |
 | NES (NROM: 16/32 KiB PRG, 8 KiB CHR ROM; experimental) | yes | yes | — |
-| PC Engine (HuCards, interpreter; experimental) | desktop harness only | — | — |
+| PC Engine (HuCards, interpreter; experimental; PC window + harness, no console) | — | — | — |
 | Vectrex (cartridges up to 32 KiB, system ROM built in; experimental) | yes | — | — |
 | Mega Drive (bounded M68k colour-loop profile; experimental) | yes | — | — |
 

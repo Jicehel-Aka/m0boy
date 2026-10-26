@@ -2696,7 +2696,7 @@ int main(int argc, char* argv[]) {
             !symbol_file_path.empty() || !annotation_file_path.empty() ||
             specific_bank > 0 || !manual_entry_points.empty() || !trace_file_path.empty() ||
             meta_precise || !coverage_paths.empty()) {
-            std::cerr << "Error: unsupported PC Engine option; use --target desktop\n";
+            std::cerr << "Error: unsupported PC Engine option; use --target desktop or pc\n";
             return 1;
         }
         m0boy::pce::GenerateOptions options;

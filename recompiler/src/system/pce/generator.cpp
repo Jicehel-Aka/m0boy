@@ -49,8 +49,8 @@ std::string rom_data(const uint8_t* data, size_t n) {
 bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& error) {
     error.clear();
     try {
-        if (o.target != TargetId::desktop)
-            throw std::runtime_error("PC Engine projects target the desktop harness (--target desktop)");
+        if (o.target != TargetId::desktop && o.target != TargetId::pc)
+            throw std::runtime_error("PC Engine projects target the desktop harness or the PC window (--target desktop|pc)");
         const auto tpl = o.meta_templates.parent_path() / "pce";
         if (!fs::is_regular_file(tpl / "runtime" / "pce.c"))
             throw std::runtime_error("PC Engine templates missing next to targets/meta");
@@ -77,8 +77,12 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             for (const auto& e : fs::directory_iterator(o.output)) foreign = foreign || e.path().filename() != "compile.log";
             if (foreign) throw std::runtime_error("Output directory is not a PC Engine project; choose a fresh directory");
         }
-        if (fs::exists(marker) && read(marker) != "desktop\n")
-            throw std::runtime_error("Use a separate output directory for each destination");
+        if (fs::exists(marker)) {
+            const std::string expected = o.target == TargetId::pc ? "pc\n" : "desktop\n";
+            if (read(marker) != expected)
+                throw std::runtime_error("Use a separate output directory for each destination");
+        }
+        const bool pc_window = o.target == TargetId::pc;
         const auto src = o.output / "src";
         fs::create_directories(src);
         fs::create_directories(o.output / "host");
@@ -106,6 +110,31 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
               "target_include_directories(" + o.name + "_host PRIVATE ${SRC})\n"
               "target_compile_definitions(" + o.name + "_host PRIVATE PCE_EMBEDDED)\n"
               "target_compile_options(" + o.name + "_host PRIVATE -w)\ntarget_link_libraries(" + o.name + "_host PRIVATE m)\n");
+
+        if (pc_window) {
+            /* the SDL2 window: the shell next to src/, the ROM embedded */
+            copy_template(tpl / "platform" / "pce_pc.c", src / "pce_pc.c");
+            write(o.output / "CMakeLists.txt",
+                  "cmake_minimum_required(VERSION 3.20)\nproject(" + o.name + "_pce_pc C)\n"
+                  "set(CMAKE_C_STANDARD 11)\n"
+                  "find_package(PkgConfig REQUIRED)\n"
+                  "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)\n"
+                  "add_executable(" + o.name + "_pc src/pce_pc.c ${CMAKE_CURRENT_SOURCE_DIR}/src/pce.c "
+                  "${CMAKE_CURRENT_SOURCE_DIR}/src/huc6280.c ${CMAKE_CURRENT_SOURCE_DIR}/src/vdc.c "
+                  "${CMAKE_CURRENT_SOURCE_DIR}/src/psg.c ${CMAKE_CURRENT_SOURCE_DIR}/src/pce_cart.c)\n"
+                  "target_include_directories(" + o.name + "_pc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)\n"
+                  "target_compile_definitions(" + o.name + "_pc PRIVATE PCE_EMBEDDED)\n"
+                  "target_compile_options(" + o.name + "_pc PRIVATE -O2 -w)\n"
+                  "target_link_libraries(" + o.name + "_pc PRIVATE PkgConfig::SDL2 m)\n");
+            write(marker, "pc\n");
+            write(o.output / "README.md",
+                  "# PC Engine project: " + o.name + "\n\nThe HuCard interpreted on the HuC6280/VDC "
+                  "runtime; SDL2 supplies the window, the keyboard and the sound.\n\n"
+                  "Build: cmake -G Ninja -S . -B build && ninja -C build\n"
+                  "Run: build/" + o.name + "_pc (arrows, X = I, Z = II, Enter = RUN, "
+                  "Shift = SELECT, Esc quits; --frames N and --ppm shot.ppm for a headless run)\n");
+            return true;
+        }
 
         write(marker, "desktop\n");
         write(o.output / "README.md",

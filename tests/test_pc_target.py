@@ -76,6 +76,16 @@ def main():
         assert '#define SG_OUT_WIDTH 256' in sg_config
         assert '#define GG_STATE_SLOTS 10' in sg_config
 
+        # the PCE window project: the runtime, the SDL2 shell, the ROM as data
+        from test_pce_e2e import build_rom as pce_rom
+        pce = root / 'synthetic.pce'
+        pce.write_bytes(pce_rom())
+        pce_project = root / 'pce_pc'
+        run([cli, str(pce), '--system', 'pce', '--target', 'pc', '-o', str(pce_project)])
+        assert (pce_project / 'src/pce_pc.c').is_file()
+        assert (pce_project / 'src/pce_cart.c').is_file()
+        assert 'pkg_check_modules(SDL2' in (pce_project / 'CMakeLists.txt').read_text()
+
         if can_build:
             exe = build(project)
             firmware_run(exe, 120, root / 'gb.ppm')
@@ -85,7 +95,16 @@ def main():
             firmware_run(exe, 120, root / 'sg.ppm')
             header = (root / 'sg.ppm').read_bytes().split(b'\n')[1]
             assert header == b'256 192', header  # the TMS9918A's own screen
-            print('pc: GB and SG-1000 firmwares built and run head first')
+            exe = build(pce_project)
+            env = dict(os.environ, SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
+            shot = root / 'pce.ppm'
+            result = subprocess.run([str(exe), '--frames', '120', '--ppm', str(shot)],
+                                    env=env, capture_output=True, text=True, timeout=120)
+            assert result.returncode == 0, (result.stdout, result.stderr)
+            header, _, body = shot.read_bytes().partition(b'\n255\n')
+            assert header == b'P6\n256 60', header  # the synthetic card's VDW+1 lines
+            assert len({body[i:i + 3] for i in range(0, len(body), 3)}) > 1
+            print('pc: GB, SG-1000 and PCE firmwares built and run head first')
         else:
             print('pc: SDL2 absent, generation checks only')
     finally:

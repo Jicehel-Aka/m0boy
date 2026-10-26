@@ -1,17 +1,27 @@
 # PC Engine (`--system pce`)
 
-`--system pce` (extension `.pce`) génère un projet PC Engine : la HuCard
-est interprétée par le runtime HuC6280/VDC (`targets/pce/runtime/`) sur le
-harness hôte (`--target desktop`). C'est la même trajectoire que la NES :
-le cœur interprété d'abord, la recompilation HuC6280 → C viendra ensuite
-sur le même modèle (`emitter.cpp` + `nes_gen.h` → `pce_gen.h`).
+`--system pce` (extension `.pce`) génère deux formes de projets : le
+harness hôte (`--target desktop`, images PPM et WAV hors écran) et la
+**fenêtre PC** (`--target pc`) — un shell SDL2 (`targets/pce/platform/
+pce_pc.c`) : fenêtre ×3 redimensionnable, clavier (flèches, X = I,
+Z = II, Entrée = RUN, Maj = SELECT, Échap quitte), le son du PSG en file
+SDL, `--frames`/`--ppm` pour une passe hors écran. La HuCard est
+embarquée dans l'exécutable. `tools/pce/build_pc_binaries.sh` construit
+le binaire Linux et un **.exe Windows** (MinGW croisé, `SDL2.dll` à
+côté), sur le modèle du Mega Drive. Le shell et le harness impriment le
+même `run_hash` (la recette du fingerprint est la même), et le .exe
+produit l'image du binaire Linux **octet pour octet** — le cœur est
+déterministe d'une plateforme à l'autre. C'est la même trajectoire que
+la NES : le cœur interprété d'abord, la recompilation HuC6280 → C
+viendra ensuite sur le même modèle (`emitter.cpp` + `nes_gen.h` →
+`pce_gen.h`).
 
 ```bash
-build/bin/gbrecomp --system pce "Raiden (USA).pce" --target desktop -o out/raiden_pce
-cmake -G Ninja -S out/raiden_pce/host -B out/raiden_pce/host/build
-ninja -C out/raiden_pce/host/build
-out/raiden_pce/host/build/Raiden__USA__host --frames 300 --ppm shot.ppm
-# frames=300 cycles=35890450 pc=4e2f run_hash=97ae6d24
+tools/pce/build_pc_binaries.sh                       # raiden-linux + raiden.exe + SDL2.dll
+build/bin/gbrecomp --system pce "Raiden (USA).pce" --target pc -o out/raiden_pc
+cmake -G Ninja -S out/raiden_pc -B out/raiden_pc/build && ninja -C out/raiden_pc/build
+out/raiden_pc/build/Raiden__USA__pc --frames 300 --ppm shot.ppm
+# frames=300 pc=4e2f run_hash=97ae6d24  (le harness donne le même)
 ```
 
 Le harness imprime le `run_hash` (CPU, WRAM, VRAM, SATB, palette, frame),
