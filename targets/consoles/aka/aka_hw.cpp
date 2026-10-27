@@ -12,8 +12,9 @@
 #include "esp32_config.h"
 #include "m0_target.h"
 
-/* 1: the glass is BGR-wired (testé sur la carte : les canaux sortaient
- * inversés avec le seul RGB) ; 0 remettrait la rotation officielle. */
+/* MADCTL bit 3 as the official library sets it (ST7789V_MADCTRL_RGB, 0x08, in
+ * gb_ll_lcd.h): the glass is BGR-wired, the bit puts the channels right.  0
+ * would show red and blue swapped. */
 #ifndef AKA_LCD_BGR
 #define AKA_LCD_BGR 1
 #endif
@@ -70,9 +71,15 @@ extern "C" uint8_t esp32_buttons(void) {
 }
 extern "C" void esp32_restart(void) { ESP.restart(); for (;;) {} }
 
-/* LCD: wait for each DMA before reusing the line buffer. Input pixels are
- * already byte-swapped by M0_COLOR, so hardware byte swapping is disabled. */
+/* LCD: wait for each DMA before reusing the line buffer.  The pixels are
+ * native RGB565; the i80 peripheral swaps the bytes of each one on the wire
+ * (swap_color_bytes, as the official library does) — no software swap. */
 static esp_lcd_panel_io_handle_t panel;
+/* What the panel is set to: the init below sends these very values, and gm0
+ * reads them to model the glass (MADCTL bit 3 = BGR, i80 byte swap). */
+extern "C" const struct m0_aka_lcd_setup {
+    uint8_t madctl, colmod, swap_color_bytes, inversion;
+} m0_aka_lcd __attribute__((used)) = {uint8_t(0x60u | (AKA_LCD_BGR ? 0x08u : 0u)), 0x55, 1, 1};
 static SemaphoreHandle_t color_done;
 /* free slots of the async wide path: the producer takes one per queued
  * batch, the transfer-done ISR gives it back.  The count matches the
@@ -135,22 +142,20 @@ extern "C" void m0_lcd_init(void) {
     io.trans_queue_depth = WIDE_QUEUE + 2;
     io.on_color_trans_done = color_sent;
     io.lcd_cmd_bits = io.lcd_param_bits = 8;
+    io.flags.swap_color_bytes = m0_aka_lcd.swap_color_bytes;
     io.dc_levels.dc_idle_level = io.dc_levels.dc_data_level = io.dc_levels.dc_dummy_level = 1;
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i80(bus, &io, &panel));
     command(0x01);
     delay(150);
     command(0x11);
     delay(120);
-    /* The glass's rotation is the official library's (MX | MV).  The RGB/BGR
-     * wiring question stays in MADCTL — no software byte swap anywhere: the
-     * Sega frontends and the Mega Drive both send native RGB565.  If the
-     * panel ever shows the channels swapped, flip AKA_LCD_BGR in the
-     * project's esp32_config.h; no code change. */
-    const uint8_t format = 0x55, rotation = 0x60u | (AKA_LCD_BGR ? 0x08u : 0u), te = 0;
-    command(0x3a, &format, 1);
+    /* The official library's sequence: COLMOD 16 bits, INVON, NORON, rotation 3
+     * (MX | MV) with MADCTL's bit 3 set for the BGR-wired glass. */
+    const uint8_t te = 0;
+    command(0x3a, &m0_aka_lcd.colmod, 1);
     command(0x21);
     command(0x13);
-    command(0x36, &rotation, 1);
+    command(0x36, &m0_aka_lcd.madctl, 1);
     command(0x29);
     command(0x35, &te, 1);
 }

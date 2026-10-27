@@ -27,10 +27,16 @@ qu'après la fin du transfert. Les boutons passent par les expandeurs,
 RUN étant actif haut, les autres actifs bas. Le joystick complète la croix.
 A/B : jeu ; RUN ou D : Start ; MENU ou C : options. L1/R1, NeoPixels,
 batterie et vibreur ne sont pas exploités par m0boy. La question RGB/BGR du
-verre reste dans le MADCTL (`AKA_LCD_BGR` de l'esp32_config.h, **1 par
-défaut — la dalle est câblée BGR, testé sur la carte**) : aucun échange
-d'octets logiciel, les frontends envoient du RGB565 natif — le Mega Drive
-comme les Sega. Les frontends Sega
+verre reste dans le MADCTL, comme la bibliothèque officielle (rotation 3 =
+MX|MV avec le bit 3 `ST7789V_MADCTRL_RGB` = 0x08, `AKA_LCD_BGR` = 1 par
+défaut) ; l'échange des octets de chaque pixel est fait par le bus i80 en
+matériel (`swap_color_bytes = 1`, comme `gb_ll_lcd.c`). Aucun échange
+logiciel : tous les frontends envoient du RGB565 natif (`M0_COLOR` natif sur
+l'AKA, `*_PANEL_SWAP` à 0). Le firmware exporte `m0_aka_lcd` (MADCTL,
+COLMOD, `swap_color_bytes`, inversion), les valeurs que son init envoie ;
+gm0 les lit pour modéliser l'écran (bit BGR, échange d'octets du bus). Les
+bits MX/MV/MY ne sont pas modélisés : le tampon est déjà en paysage.
+Les frontends Sega
 montrent 120 lignes visibles (GG 144→120, SMS et SG 192→120) que le panneau
 zoome ×2 depuis la rangée 0 (`M0_PANEL_SRC_ROWS`) ; avant, le plan META de
 128 rangées s'étalait en pas de 1,875, d'où un mauvais cadrage et des sauts

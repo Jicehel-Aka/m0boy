@@ -245,8 +245,9 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
      * phosphor (28.8 KiB) asks for 60. */
     write(src / "vx_config.h",
           std::string("#pragma once\n"
-                      "/* the panel's wire order: the META's SPI and the AKA's i80 take the high byte first */\n"
-                      "#define VX_PANEL_SWAP 1\n" + native +
+                      "/* the panel's colour order: the META's SPI takes the high byte first; the AKA's i80 swaps the bytes in hardware */\n"
+                      "#define VX_PANEL_SWAP ") + (o.target == TargetId::aka ? "0" : "1") + "\n" + native +
+              std::string(
                       "#define VX_FULL_BOOT ") +
               (o.full_boot ? "1" : "0") + "\n" +
               "#define VX_STATE_NAME \"" + sd + ".ST8\"\n" +
