@@ -18,11 +18,6 @@
 #define AKA_LCD_BL 45
 #define AKA_LCD_TE 47
 #define AKA_LCD_DATA {3, 46, 9, 10, 11, 12, 13, 14}
-/* Ordre des couleurs du panneau : 0 = RGB (MADCTL 0x60, ancien reglage), 1 = BGR (MADCTL 0x68).
- * Si rouge et bleu sont inverses a l'ecran, changer cette valeur. */
-#ifndef AKA_LCD_BGR
-#define AKA_LCD_BGR 1
-#endif
 #define AKA_I2S_BCLK 18
 #define AKA_I2S_WS 17
 #define AKA_I2S_DOUT 8
