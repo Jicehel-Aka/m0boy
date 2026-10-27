@@ -66,24 +66,30 @@ jobs:
       - name: Assemblage du paquet
         shell: pwsh
         run: |
-          $d = "AKA-Convertisseur"
+          # Le paquet est assemble HORS du depot : sinon robocopy se recopie lui-meme (imbrication sans fin).
+          $racine = (Get-Location).Path
+          $pack = Join-Path $env:RUNNER_TEMP "pack"
+          $d = Join-Path $pack "AKA-Convertisseur"
           New-Item -ItemType Directory -Force $d | Out-Null
           Copy-Item dist/AKA-Convertisseur.exe $d/
-          # m0boy sans .git, sorties ni ROMs
-          robocopy . "$d/m0boy" /E /XD .git out roms /XF *.sms *.gg *.gb *.gbc *.sg | Out-Null
+          # m0boy : sans .git, sorties, ROMs, pre-chargement PlatformIO ni dossier PyInstaller
+          robocopy $racine "$d/m0boy" /E /XD .git out roms pio-core dist "$racine\build\AKA-Convertisseur" /XF *.sms *.gg *.gb *.gbc *.sg *.spec | Out-Null
           # MSYS2 allege (pas de doc, pages man, langues, cache pacman)
           $m = "${{ steps.msys.outputs.msys2-location }}"
           robocopy $m "$d/msys64" /E /XD "$m\var\cache" "$m\mingw64\share\doc" "$m\mingw64\share\man" "$m\mingw64\share\info" "$m\mingw64\share\locale" "$m\usr\share\doc" "$m\usr\share\man" "$m\usr\share\info" "$m\usr\share\locale" | Out-Null
-          Move-Item pio-core "$d/pio-core" -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force "$d/m0boy/pio-core" -ErrorAction SilentlyContinue
+          Move-Item "$racine\pio-core" "$d/pio-core"
           @"
-          AKA-Convertisseur : double-clic sur AKA-Convertisseur.exe, glisser une ROM (.gb .gbc .sg .gg .sms)
+          AKA-Convertisseur : double-clic sur AKA-Convertisseur.exe, glisser une ROM (.gb .gbc .sg .gg .sms .md)
           dans la fenetre (ou « Ajouter des ROMs »), « Convertir ». Les .zip sortent dans le dossier choisi :
           les decompresser a la racine de la carte SD de l'AKA.
           Premiere conversion : quelques minutes. Ne rien deplacer : l'exe cherche msys64, m0boy et pio-core a cote de lui.
           "@ | Set-Content "$d/LISEZ-MOI.txt"
-          7z a -tzip -mx=5 AKA-Convertisseur-win64.zip $d | Out-Null
-          (Get-Item AKA-Convertisseur-win64.zip).Length / 1MB
+          # Tailles (pour reperer un dossier trop gros)
+          Get-ChildItem $d | ForEach-Object { $t = (Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum; "{0,-14} {1,8:N0} Mo" -f $_.Name, ($t/1MB) }
+          Push-Location $pack
+          7z a -tzip -mx=5 "$racine\AKA-Convertisseur-win64.zip" AKA-Convertisseur | Out-Null
+          Pop-Location
+          "Zip : {0:N0} Mo" -f ((Get-Item "$racine\AKA-Convertisseur-win64.zip").Length / 1MB)
 
       - uses: actions/upload-artifact@v4
         with:
@@ -104,7 +110,7 @@ jobs:
           if ((Get-Item AKA-Convertisseur-win64.zip).Length -lt 1900MB) {
             Copy-Item AKA-Convertisseur-win64.zip release/
           } else {
-            7z a -t7z -v1900m -mx=1 release/AKA-Convertisseur-win64.7z AKA-Convertisseur | Out-Null
+            7z a -t7z -v1900m -mx=1 release/AKA-Convertisseur-win64.7z (Join-Path $env:RUNNER_TEMP 'pack\AKA-Convertisseur') | Out-Null
             "Paquet decoupe : telecharger tous les .7z.00N dans le meme dossier, puis ouvrir le .7z.001 avec 7-Zip." | Set-Content release/LISEZ-MOI-volumes.txt
           }
           Get-ChildItem release | Select-Object Name, @{n="Mo";e={[int]($_.Length/1MB)}}
