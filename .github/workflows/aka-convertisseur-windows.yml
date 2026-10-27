@@ -7,6 +7,9 @@ on:
   push:
     tags: ['aka-convertisseur-v*']
 
+permissions:
+  contents: write
+
 jobs:
   paquet:
     runs-on: windows-latest
@@ -21,7 +24,7 @@ jobs:
           install: >-
             zip unzip
             mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
-            mingw-w64-x86_64-zlib mingw-w64-x86_64-python mingw-w64-x86_64-python-pip
+            mingw-w64-x86_64-zlib mingw-w64-x86_64-SDL2 mingw-w64-x86_64-python mingw-w64-x86_64-python-pip
 
       - name: Recompilateur m0boy
         shell: msys2 {0}
@@ -78,3 +81,13 @@ jobs:
           name: AKA-Convertisseur-win64
           path: AKA-Convertisseur-win64.zip
           compression-level: 0
+
+      # Sur un tag aka-convertisseur-v* : publie aussi une release (limite GitHub : 2 Gio par fichier ;
+      # si le zip est plus gros, le prendre dans les artefacts).
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/aka-convertisseur-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: AKA-Convertisseur-win64.zip
+          name: Convertisseur AKA ${{ github.ref_name }}
+          body: "Glisser une ROM (Game Boy, SG-1000, Game Gear, Master System, Mega Drive experimental) dans AKA-Convertisseur.exe ; les .zip de sortie vont a la racine de la carte SD de l'AKA."

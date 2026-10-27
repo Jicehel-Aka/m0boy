@@ -19,7 +19,7 @@ ICI = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
 # Paquet autonome : AKA-Convertisseur.exe + m0boy\\ + msys64\\ + pio-core\\ dans le meme dossier.
 PAQUET = FROZEN and os.path.isdir(os.path.join(ICI, "msys64")) and os.path.isdir(os.path.join(ICI, "m0boy"))
 SCRIPT = os.path.join(ICI, "m0boy", "tools", "aka", "convert.sh") if PAQUET else os.path.join(ICI, "convert.sh")
-EXT = (".gb", ".gbc", ".sg", ".gg", ".sms", ".zip")
+EXT = (".gb", ".gbc", ".sg", ".gg", ".sms", ".md", ".gen", ".smd", ".zip")
 
 
 def _abs(p):
@@ -95,7 +95,7 @@ def run_gui():
 
     frame = tk.Frame(root, padx=10, pady=10)
     frame.pack(fill="both", expand=True)
-    tk.Label(frame, text="ROMs (Game Boy, SG-1000, Game Gear, Master System) — glisse-les ici ou utilise les boutons :",
+    tk.Label(frame, text="ROMs (Game Boy, SG-1000, Game Gear, Master System, Mega Drive) — glisse-les ici ou utilise les boutons :",
              anchor="w").pack(fill="x")
     lst = tk.Listbox(frame, height=6)
     lst.pack(fill="x")
@@ -107,7 +107,7 @@ def run_gui():
 
     def add_files():
         for f in filedialog.askopenfilenames(title="Choisir des ROMs",
-                filetypes=[("ROMs", "*.gb *.gbc *.sg *.gg *.sms *.zip"), ("Tous", "*.*")]):
+                filetypes=[("ROMs", "*.gb *.gbc *.sg *.gg *.sms *.md *.gen *.smd *.zip"), ("Tous", "*.*")]):
             if f not in roms:
                 roms.append(f)
         refresh()

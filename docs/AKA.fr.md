@@ -80,7 +80,9 @@ WSL ; PlatformIO s'installe côté Windows (`pip install platformio`).
 Le script construit le recompilateur à la première utilisation, copie les ROMs
 dans un dossier de travail, lance `TARGET=aka ./compile.sh` sans question et
 range les `.zip` à plat. Décompresser un zip à la racine de la carte SD.
-Game Boy/Color, SG-1000, Game Gear et Master System seulement.
+Game Boy/Color, SG-1000, Game Gear, Master System et, en expérimental, Mega Drive (`.md`, `.gen`, `.smd`) :
+pour le Mega Drive, le script rejoue une partie automatique (entrées aléatoires) sur PC pour établir le profil natif, puis
+génère le projet AKA et le compile. Un zip ou un dossier de ROMs est accepté.
 
 ## Conversion et essai
 
