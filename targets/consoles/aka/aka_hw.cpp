@@ -12,10 +12,10 @@
 #include "esp32_config.h"
 #include "m0_target.h"
 
-/* 0 when the glass is RGB-wired (the official library's choice); flip it in
- * the project's esp32_config.h if the panel ever shows the channels swapped. */
+/* 1: the glass is BGR-wired (testé sur la carte : les canaux sortaient
+ * inversés avec le seul RGB) ; 0 remettrait la rotation officielle. */
 #ifndef AKA_LCD_BGR
-#define AKA_LCD_BGR 0
+#define AKA_LCD_BGR 1
 #endif
 #include "m0_scale.h"
 extern "C" {
