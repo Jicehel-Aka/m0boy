@@ -126,14 +126,14 @@ def main():
             exe = build(project)
             firmware_run(exe, 120, root / 'gb.ppm')
             header = (root / 'gb.ppm').read_bytes().split(b'\n')[1]
-            assert header == b'160 128', header  # the META view, columns intact
+            assert header == b'160 144', header  # the DMG's own lines, native
             exe = build(sg_project)
             firmware_run(exe, 120, root / 'sg.ppm')
             header = (root / 'sg.ppm').read_bytes().split(b'\n')[1]
             assert header == b'256 192', header  # the TMS9918A's own screen
             nes_exe = None
             for system, project, dims in (('msx', msx_project, b'256 192'),
-                                          ('nes', nes_project, b'160 128')):
+                                          ('nes', nes_project, b'256 240')):
                 exe = build(project)
                 firmware_run(exe, 60, root / (system + '.ppm'))
                 assert (root / (system + '.ppm')).read_bytes().split(b'\n')[1] == dims

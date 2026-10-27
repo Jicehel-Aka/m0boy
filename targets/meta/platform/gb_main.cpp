@@ -343,7 +343,12 @@ static void pace_frame(void) {
 
 #if M0_SCALED_MODES
 static const char *const mode_names[META_MODE_COUNT] = {"SMOOTH", "TILE", "BLEND", "DARK",
-                                                        "CROP", "SKIP", "TBLEND"};
+                                                        "CROP", "SKIP", "TBLEND"
+#if defined(GBL_TARGET_PC) && GBL_TARGET_PC
+                                                        ,
+                                                        "NATIVE" /* the DMG's own 160x144 */
+#endif
+    };
 #define SCREEN_MODES META_MODE_COUNT
 #else /* Pokitto: unscaled, gm0's 200x176, or 200x176 with every line */
 static const char *const mode_names[POKITTO_MODE_COUNT] = {"1:1", "200x176", "200x176 entier"};
@@ -823,7 +828,11 @@ int main(void) {
     m0_audio_init();
 
 #if M0_SCALED_MODES
+#if defined(GBL_TARGET_PC) && GBL_TARGET_PC
+    gbl_display_set_mode(META_MODE_NATIVE); /* the PC window plays 160x144 */
+#else
     gbl_display_set_mode(META_MODE_TBLEND); /* TILE without META_TBLEND */
+#endif
 #else
     gbl_display_set_mode(0);
 #endif

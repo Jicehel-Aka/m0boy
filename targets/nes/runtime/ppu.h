@@ -7,8 +7,12 @@
  * Two renderers share the register model:
  *   the panel renderer (every build): colour indices per line, scaled to
  *     160x128 rows in panel byte order (ppu.c, "the panel picture");
- *   the reference renderer (NES_PPU_REFERENCE, the host harness): the
- *     256-pixel RGB565 line the panel picture is checked against. */
+ *   the reference renderer (NES_PPU_REFERENCE, the host harness, and the
+ *     PC's display: nes.h pulls the generated project's nes_config.h in
+ *     first, so every translation unit sees the same struct fields). */
+#if __has_include("nes_config.h")
+#include "nes_config.h"
+#endif
 #ifndef NES_PPU_H
 #define NES_PPU_H
 

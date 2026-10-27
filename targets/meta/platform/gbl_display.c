@@ -98,7 +98,11 @@ static uint16_t strip[META_LCD_BUFFERS][160 * META_STRIP_LINES] __attribute__((a
 static uint32_t strip_seq[META_LCD_BUFFERS]; /* transfer that last used each buffer */
 static uint8_t strip_cur, strip_fill, strip_row0;
 
+#if defined(GBL_TARGET_PC) && GBL_TARGET_PC
+static uint8_t display_mode = META_MODE_NATIVE; /* the PC window plays 160x144 */
+#else
 static uint8_t display_mode = META_MODE_TILE; /* until gbl_display_set_mode */
+#endif
 #if META_MERGE_MODES || META_TBLEND
 /* Buffers of one mode at a time (gbl_display_set_mode rebuilds them):
  * BLEND and DARK keep their merged line and table, TBLEND the held lines. */
@@ -232,7 +236,11 @@ static void set_index_palette(uint8_t on) {
 uint8_t gbl_display_mode(void) { return display_mode; }
 
 void gbl_display_set_mode(uint8_t mode) {
+#if defined(GBL_TARGET_PC) && GBL_TARGET_PC
+    if (mode >= META_MODE_COUNT) mode = META_MODE_NATIVE;
+#else
     if (mode >= META_MODE_COUNT) mode = META_MODE_TBLEND;
+#endif
 #if !META_MERGE_MODES
     if (mode == META_MODE_BLEND || mode == META_MODE_DARK) mode = META_MODE_CROP;
 #endif
@@ -301,7 +309,14 @@ uint16_t *m0_menu_scratch(unsigned *rows) {
 
 /* Per-line layout of the current mode: what each DMG line becomes. */
 enum { L_ROW, L_HOLD, L_MERGE, L_DROP };
-#if META_DISPLAY_COMPACT
+/* The PC's NATIVE mode is not in the compile-time table (gbl_display_
+ * layout.h indexes the console modes); the RAM layout takes over. */
+#if META_DISPLAY_COMPACT && !(defined(GBL_TARGET_PC) && GBL_TARGET_PC)
+#define DL_COMPACT 1
+#else
+#define DL_COMPACT 0
+#endif
+#if DL_COMPACT
 #include "gbl_display_layout.h"
 static const uint8_t *line_kind = display_layout[META_MODE_TILE][0];
 static const uint8_t *line_row = display_layout[META_MODE_TILE][1];
@@ -310,7 +325,7 @@ static uint8_t line_kind[144], line_row[144];
 #endif
 
 static void build_layout(void) {
-#if META_DISPLAY_COMPACT
+#if DL_COMPACT
     line_kind = display_layout[display_mode][0];
     line_row = display_layout[display_mode][1];
 #else
@@ -335,6 +350,9 @@ static void build_layout(void) {
                  : ((ly & 7) == 0 && ly && ly != 64 && ly != 96) ? L_MERGE : L_ROW;
             break;
         case META_MODE_SMOOTH: kind = L_ROW; break; /* rows handled apart */
+#if defined(GBL_TARGET_PC) && GBL_TARGET_PC
+        case META_MODE_NATIVE: break; /* every line is its own row (row++ below) */
+#endif
         default: kind = r9 == 7 ? L_HOLD : r9 == 8 ? L_MERGE : L_ROW; break;
         }
         line_kind[ly] = kind;

@@ -229,7 +229,11 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
                 write(src / "sg_audio.h", "#pragma once\n#include \"nes.h\"\n"
                                           "#define sg_platform_audio_rate nes_audio_set_rate\n"
                                           "#define sg_platform_audio_render nes_audio_render\n");
-                write(src / "nes_config.h", config.str() + "#define PC_COLS 160\n#define PC_ROWS 128\n");
+                /* the PC plays the NES's own 256x240: the reference renderer
+                 * (NES_PPU_REFERENCE) is the display, the panel plan stays off */
+                write(src / "nes_config.h", config.str() +
+                      "#define PC_COLS 256\n#define PC_ROWS 240\n#define M0_SCREEN_ROWS 240\n"
+                      "#define NES_PPU_REFERENCE 1\n");
                 write(o.output / "CMakeLists.txt", replace(read(pc / "CMakeLists.txt.in"), "@NAME@", o.name));
             } else if (pokitto) {
                 copy_template(t.frontend() / "m0_sd.c", src / "m0_sd.c");

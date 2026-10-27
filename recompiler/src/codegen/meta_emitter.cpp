@@ -2167,7 +2167,13 @@ std::string Generator::emit_config(std::string& error) const {
       << (opt_.espboy
               ? "#define GBL_TARGET_ESPBOY 1\n#define GBL_ERAM_ON_SD 0\n"
               : std::string())
-      << (opt_.pc ? "#define GBL_TARGET_PC 1\n#define GBL_ERAM_ON_SD 0\n" : std::string())
+      << (opt_.pc ? "#define GBL_TARGET_PC 1\n#define GBL_ERAM_ON_SD 0\n"
+                    /* the PC window plays the DMG's own 160x144 (NES and SG
+                     * write the same geometry into their configs); guarded,
+                     * m0_target.h keeps its defaults elsewhere */
+                    "#ifndef PC_ROWS\n#define PC_ROWS 144\n#endif\n"
+                    "#ifndef M0_SCREEN_ROWS\n#define M0_SCREEN_ROWS 144\n#endif\n"
+                  : std::string())
       << (opt_.pokitto ? "#define GBL_TARGET_POKITTO 1\n" : "")
       << (opt_.odroid ? "#define GBL_TARGET_ODROID 1\n" : "")
       << (opt_.aka ? "#define GBL_TARGET_AKA 1\n#define GBL_ERAM_ON_SD 0\n" : "")

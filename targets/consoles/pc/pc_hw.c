@@ -23,8 +23,10 @@
 #include "m0_clock.h"
 #include "m0_lcd.h"
 #include "m0_menu.h" /* M0_MB_*: the button bits pc_buttons returns */
-#if __has_include("sg_config.h") /* SG/GG/SMS: PC_COLS/PC_ROWS live there */
+#if __has_include("sg_config.h") /* SG/GG/SMS/MSX: PC_COLS/PC_ROWS live there */
 #include "sg_config.h"
+#elif __has_include("nes_config.h") /* NES: the native 256x240's config */
+#include "nes_config.h"
 #endif
 #include "m0_target.h" /* PC_COLS/PC_ROWS: this project's panel geometry */
 
