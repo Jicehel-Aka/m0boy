@@ -5,6 +5,10 @@ name: Convertisseur AKA (Windows)
 on:
   workflow_dispatch:
     inputs:
+      complet:
+        description: "Paquet COMPLET (MSYS2 + PlatformIO inclus, plusieurs Go) au lieu du paquet leger (exe + sources, ~15 Mo)"
+        type: boolean
+        default: false
       publier:
         description: "Creer aussi une release GitHub ?"
         type: boolean
@@ -26,6 +30,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: msys2/setup-msys2@v2
+        if: ${{ inputs.complet }}
         id: msys
         with:
           msystem: MINGW64
@@ -36,12 +41,14 @@ jobs:
             mingw-w64-x86_64-zlib mingw-w64-x86_64-SDL2 mingw-w64-x86_64-python mingw-w64-x86_64-python-pip
 
       - name: Recompilateur m0boy
+        if: ${{ inputs.complet }}
         shell: msys2 {0}
         run: |
           cmake -G Ninja -B build .
           ninja -C build
 
       - name: PlatformIO + chaine ESP32-S3 (pre-chargement)
+        if: ${{ inputs.complet }}
         shell: msys2 {0}
         run: |
           pip install --break-system-packages platformio
@@ -65,6 +72,8 @@ jobs:
 
       - name: Assemblage du paquet
         shell: pwsh
+        env:
+          COMPLET: ${{ inputs.complet }}
         run: |
           # Le paquet est assemble HORS du depot : sinon robocopy se recopie lui-meme (imbrication sans fin).
           $racine = (Get-Location).Path
@@ -74,15 +83,18 @@ jobs:
           Copy-Item dist/AKA-Convertisseur.exe $d/
           # m0boy : sans .git, sorties, ROMs, pre-chargement PlatformIO ni dossier PyInstaller
           robocopy $racine "$d/m0boy" /E /XD .git out roms pio-core dist "$racine\build\AKA-Convertisseur" /XF *.sms *.gg *.gb *.gbc *.sg *.spec | Out-Null
-          # MSYS2 allege (pas de doc, pages man, langues, cache pacman)
-          $m = "${{ steps.msys.outputs.msys2-location }}"
-          robocopy $m "$d/msys64" /E /XD "$m\var\cache" "$m\mingw64\share\doc" "$m\mingw64\share\man" "$m\mingw64\share\info" "$m\mingw64\share\locale" "$m\usr\share\doc" "$m\usr\share\man" "$m\usr\share\info" "$m\usr\share\locale" | Out-Null
-          Move-Item "$racine\pio-core" "$d/pio-core"
+          if ($env:COMPLET -eq "true") {
+            # MSYS2 allege (pas de doc, pages man, langues, cache pacman)
+            $m = "${{ steps.msys.outputs.msys2-location }}"
+            robocopy $m "$d/msys64" /E /XD "$m\var\cache" "$m\mingw64\share\doc" "$m\mingw64\share\man" "$m\mingw64\share\info" "$m\mingw64\share\locale" "$m\usr\share\doc" "$m\usr\share\man" "$m\usr\share\info" "$m\usr\share\locale" | Out-Null
+            Move-Item "$racine\pio-core" "$d/pio-core"
+          }
           @"
           AKA-Convertisseur : double-clic sur AKA-Convertisseur.exe, glisser une ROM (.gb .gbc .sg .gg .sms .md)
           dans la fenetre (ou « Ajouter des ROMs »), « Convertir ». Les .zip sortent dans le dossier choisi :
           les decompresser a la racine de la carte SD de l'AKA.
-          Premiere conversion : quelques minutes. Ne rien deplacer : l'exe cherche msys64, m0boy et pio-core a cote de lui.
+          Premiere conversion : quelques minutes. Ne rien deplacer : l'exe cherche m0boy (et msys64, pio-core si presents) a cote de lui.
+          Paquet leger : utilise MSYS2 (C:\msys64 : gcc, cmake, ninja, zlib, SDL2, python) et PlatformIO deja installes sur le PC.
           "@ | Set-Content "$d/LISEZ-MOI.txt"
           # Tailles (pour reperer un dossier trop gros)
           Get-ChildItem $d | ForEach-Object { $t = (Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum; "{0,-14} {1,8:N0} Mo" -f $_.Name, ($t/1MB) }

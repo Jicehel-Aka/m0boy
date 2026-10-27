@@ -17,8 +17,10 @@ import threading
 FROZEN = getattr(sys, "frozen", False)
 ICI = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
 # Paquet autonome : AKA-Convertisseur.exe + m0boy\\ + msys64\\ + pio-core\\ dans le meme dossier.
+# Paquet complet : msys64\\ + pio-core\\ fournis. Paquet leger : seulement l'exe + m0boy\\ (MSYS2 et PlatformIO de la machine).
+M0BOY_SH = os.path.join(ICI, "m0boy", "tools", "aka", "convert.sh")
 PAQUET = FROZEN and os.path.isdir(os.path.join(ICI, "msys64")) and os.path.isdir(os.path.join(ICI, "m0boy"))
-SCRIPT = os.path.join(ICI, "m0boy", "tools", "aka", "convert.sh") if PAQUET else os.path.join(ICI, "convert.sh")
+SCRIPT = M0BOY_SH if os.path.isfile(M0BOY_SH) else os.path.join(ICI, "convert.sh")
 EXT = (".gb", ".gbc", ".sg", ".gg", ".sms", ".md", ".gen", ".smd", ".zip")
 
 
