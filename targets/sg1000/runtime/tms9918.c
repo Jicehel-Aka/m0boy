@@ -579,6 +579,14 @@ static void pair_filtered(unsigned ya, unsigned tx, const uint8_t *over_a, const
 
 /* Device renderer: SG_OUT_WIDTH RGB565 pixels, box-filtered. */
 static void out_line(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n) {
+#if SG_OUT_WIDTH == SG_WIDTH /* the PC keeps the TMS9918A's own 256 columns:
+                              * the reference line, palette applied 1:1 — no
+                              * filter, nothing cropped */
+    uint8_t px[SG_WIDTH];
+    ref_line(y, px, spr, n);
+    const uint16_t *pal = machine.palette;
+    for (unsigned i = 0; i < SG_OUT_WIDTH; i++) out[i] = m0_panel(pal[px[i] & 15]);
+#else
     sg1000_t *m = &machine;
     const uint16_t *pal = m->palette;
     const uint16_t bd = pal[m->vdp[7] & 15];
@@ -638,6 +646,7 @@ static void out_line(unsigned y, uint16_t *out, const sprite_t *spr, unsigned n)
         for (unsigned tx = 0; touched; tx++, touched >>= 1)
             if (touched & 1) tile_filtered(y, tx, over, out + tx * 5);
     }
+#endif
 }
 
 /* Reference line (256 colour indices) -> device line, the same filter. */

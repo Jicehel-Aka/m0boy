@@ -113,14 +113,19 @@ def main():
         assert 'pkg_check_modules(SDL2' in (pce_project / 'CMakeLists.txt').read_text()
 
         sega_projects = []
-        for system, extension in (('gg', '.gg'), ('sms', '.sms')):
+        for system, extension, cols, rows in (('gg', '.gg', 160, 144), ('sms', '.sms', 256, 192)):
             cart = root / ('synthetic' + extension)
             cart.write_bytes(gg_fixture())
             sega_project = root / (system + '_pc')
             run([cli, str(cart), '--system', system, '--target', 'pc', '-o', str(sega_project)])
             assert (sega_project / 'src/pc_frontend.c').is_file()
             assert (sega_project / 'src/gg_stream.c').is_file()
-            sega_projects.append((system, sega_project))
+            # the PC window is the source console's own screen: the Game
+            # Gear's 160x144, the Master System's whole 256x192 (no crop)
+            sega_config = (sega_project / 'src/sg_config.h').read_text()
+            assert f'#define PC_COLS {cols}' in sega_config and f'#define PC_ROWS {rows}' in sega_config, sega_config
+            assert f'#define GG_OUT_WIDTH {cols}' in sega_config, sega_config
+            sega_projects.append((system, sega_project, cols, rows))
 
         if can_build:
             exe = build(project)
@@ -166,8 +171,10 @@ def main():
             header, _, body = shot.read_bytes().partition(b'\n255\n')
             assert header == b'P6\n256 60', header  # the synthetic card's VDW+1 lines
             assert len({body[i:i + 3] for i in range(0, len(body), 3)}) > 1
-            for system, sega_project in sega_projects:
+            for system, sega_project, cols, rows in sega_projects:
                 firmware_run(build(sega_project), 120, root / (system + '.ppm'))
+                header = (root / (system + '.ppm')).read_bytes().split(b'\n')[1]
+                assert header == f'{cols} {rows}'.encode(), header
 
             # ---- recorded sessions replay in the harnesses ----
             # Each window plays a script (its harness's dialect), records

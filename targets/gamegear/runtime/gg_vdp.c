@@ -209,7 +209,7 @@ static int background(unsigned y, uint16_t *out, uint32_t *bg_prio, const sprite
     const uint8_t *vram = m->vram;
     const unsigned names = (m->vdp[2] & 0x0eu) << 10;
     const unsigned hs = (y < 16 && (m->vdp[0] & 0x40)) ? 0 : m->vdp[8];
-    const unsigned first = (GG_LEFT - hs) & 255, fine = first & 7, tx0 = first >> 3;
+    const unsigned first = (GG_WIN_LEFT - hs) & 255, fine = first & 7, tx0 = first >> 3;
     const unsigned slot0 = fine ? 5 : 6; /* VDP column of the first tile */
     unsigned row = y + m->vscroll;
     if (row >= 224) row -= 224;
@@ -227,7 +227,7 @@ static int background(unsigned y, uint16_t *out, uint32_t *bg_prio, const sprite
     uint32_t near = 0; /* tiles under a sprite: tile k shows pixels 8k - fine .. 8k + 7 - fine */
     const int width = 8 << (m->vdp[1] & 1);
     for (unsigned i = 0; i < n; i++) {
-        const int lo = spr[i].x - GG_LEFT + (int)fine, hi = lo + width - 1;
+        const int lo = spr[i].x - (int)GG_WIN_LEFT + (int)fine, hi = lo + width - 1;
         if (hi < 0 || lo >= 8 * 21) continue;
         const unsigned k0 = lo < 0 ? 0 : (unsigned)lo >> 3, k1 = hi >= 8 * 21 ? 20 : (unsigned)hi >> 3;
         near |= (2u << k1) - (1u << k0);
@@ -255,7 +255,7 @@ static void draw_sprites(const sprite_t *spr, unsigned n, uint16_t *out, const u
     for (unsigned k = n; k-- > 0;) { /* lower numbers drawn last: on top */
         const uint32_t w = row_fields(spr[k].planes, 0);
         if (!w) continue;
-        const int x0 = spr[k].x - GG_LEFT;
+        const int x0 = spr[k].x - (int)GG_WIN_LEFT;
         if (!zoom && !prio && x0 >= 0 && x0 <= GG_WIDTH - 8) { /* the usual case: whole, in front */
             uint16_t *o = out + x0;
             for (uint32_t v = w; v; v >>= 4, o++)
@@ -639,6 +639,20 @@ static void tms_render(unsigned y, uint16_t *out, const tms_sprite_t *t, unsigne
 }
 
 void gg_render_line(unsigned y, uint16_t *out) {
+#if GG_OUT_WIDTH != GG_WIDTH /* native panel (PC Master System project): the
+                              * whole line, palette applied 1:1 — the indices
+                              * renderers, no box filter, no window crop */
+    uint8_t px[256];
+    if (GG_KOREAN150 && !(machine.vdp[0] & 4)) {
+        tms_sprite_t t[4];
+        const unsigned n = (machine.vdp[1] & 0x40) ? tms_sprites(y, t) : 0;
+        tms_indices(y, px, t, n, 0xffffffffu);
+        for (unsigned i = 0; i < GG_OUT_WIDTH; i++) out[i] = tms_solid[px[i] & 15];
+        return;
+    }
+    gg_render_indices(y, px);
+    for (unsigned i = 0; i < GG_OUT_WIDTH; i++) out[i] = machine.pal[px[i]];
+#else
     if (GG_KOREAN150 && !(machine.vdp[0] & 4)) { /* TMS9918 modes, below */
         tms_sprite_t t[4];
         tms_render(y, out, t, (machine.vdp[1] & 0x40) ? tms_sprites(y, t) : 0);
@@ -647,6 +661,7 @@ void gg_render_line(unsigned y, uint16_t *out) {
     sprite_t spr[8];
     const unsigned n = (machine.vdp[1] & 0x40) ? line_sprites(y, spr) : 0;
     render(y, out, spr, n);
+#endif
 }
 
 static void vdp_line(unsigned y) {
@@ -854,7 +869,7 @@ unsigned gg_render_selftest(void) {
     unsigned bad = 0;
     uint16_t a[GG_ROW_STRIDE], b[GG_ROW_STRIDE];
     sprite_t cover[23]; /* sprites over every pixel: the whole priority mask */
-    for (unsigned i = 0; i < 23; i++) cover[i].x = (int16_t)(GG_LEFT - 8 + 8 * (int)i);
+    for (unsigned i = 0; i < 23; i++) cover[i].x = (int16_t)((int)GG_WIN_LEFT - 8 + 8 * (int)i);
     for (unsigned round = 0; round < 16; round++) {
         for (unsigned i = 0; i < 16384; i++) { r = r * 1103515245u + 12345u; m->vram[i] = (uint8_t)(r >> 16); }
         for (unsigned i = 0; i < 32; i++) { r = r * 1103515245u + 12345u; m->pal[i] = (uint16_t)(r >> 8); }

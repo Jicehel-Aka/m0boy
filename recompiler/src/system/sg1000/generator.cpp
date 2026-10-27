@@ -669,13 +669,16 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             const size_t slots = std::min<size_t>(10, (0x03B000 / 4096 - ram_blocks) / slot_blocks);
             config << "#define GG_STATE_SLOTS " << slots << " /* in flash */\n#define GG_STATE_SLOT_SECTORS " << sectors << "\n";
         }
-        /* PC: the window is the source console's own resolution (pc_hw.c),
-         * and the SG-1000 keeps the TMS9918A's 256 columns where the
-         * consoles resample to their panel's 160. */
-        if (o.target == TargetId::pc)
-            config << "#define PC_COLS " << (gg ? 160 : 256) << "\n#define PC_ROWS " << (gg ? 144 : 192) << "\n"
-                   << "#define M0_SCREEN_ROWS " << (gg ? 144 : 192) << "\n"
-                   << (gg ? "" : "#define SG_OUT_WIDTH 256\n");
+        /* PC: the window is the source console's own resolution (pc_hw.c).
+         * Game Gear 160x144; SG-1000, Master System and MSX 256x192 — the
+         * Master System keeps its whole picture where the consoles crop it
+         * to the Game Gear's window (SG_OUT_WIDTH/GG_OUT_WIDTH). */
+        if (o.target == TargetId::pc) {
+            const bool narrow = gg && !o.mastersystem;
+            config << "#define PC_COLS " << (narrow ? 160 : 256) << "\n#define PC_ROWS " << (narrow ? 144 : 192) << "\n"
+                   << "#define M0_SCREEN_ROWS " << (narrow ? 144 : 192) << "\n"
+                   << (gg ? "#define GG_OUT_WIDTH " : "#define SG_OUT_WIDTH ") << (narrow ? 160 : 256) << "\n";
+        }
         /* Pokitto: the sector cache lives in the 2 KiB USB RAM bank, which
          * the Master System shares with its pair tables. */
         if (gg && (streamed || cart_on_card) && o.target == TargetId::pokitto && !o.mastersystem)

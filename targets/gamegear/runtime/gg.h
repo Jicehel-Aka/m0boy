@@ -48,6 +48,12 @@ extern "C" {
 #define GG_LINE_IRQ_AT 200
 #define GG_WIDTH 160
 #define GG_HEIGHT 144
+/* Device line width: the Game Gear window's own 160, box-filtered from the
+ * VDP's 256 columns; a generated PC Master System project keeps all 256
+ * columns 1:1 (sg_config.h) — no filter, no window crop. */
+#ifndef GG_OUT_WIDTH
+#define GG_OUT_WIDTH GG_WIDTH
+#endif
 #define GG_TOP 24                     /* first VDP line shown */
 #define GG_LEFT 48                    /* first VDP column shown */
 /* Generated projects fix the system (GG_SMS); the generic host chooses at
@@ -59,10 +65,17 @@ extern "C" {
 #endif
 #define GG_WIN_TOP (GG_IS_SMS ? 0u : (unsigned)GG_TOP)
 #define GG_WIN_LINES (GG_IS_SMS ? (unsigned)GG_ACTIVE : (unsigned)GG_HEIGHT)
+/* First source column shown: the Game Gear window's crop, or all of them at
+ * the native 256. */
+#if GG_OUT_WIDTH == GG_WIDTH
+#define GG_WIN_LEFT GG_LEFT
+#else
+#define GG_WIN_LEFT 0u
+#endif
 /* Rows given to the renderer have this many writable pixels on each side
  * (fine scroll writes whole tiles). */
 #define GG_ROW_PAD 8
-#define GG_ROW_STRIDE (GG_WIDTH + 2 * GG_ROW_PAD)
+#define GG_ROW_STRIDE (GG_OUT_WIDTH + 2 * GG_ROW_PAD)
 /* Cartridge RAM: a 16 KiB window at 8000-BFFF, two banks (FFFC bit 2) */
 #if defined(GG_CART_RAM_8K) /* ESPboy: 8 KiB in RAM, mirrored over the window */
 #define GG_CART_RAM_SIZE 8192
