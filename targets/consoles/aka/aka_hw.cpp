@@ -165,12 +165,13 @@ extern "C" uint32_t m0_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows
     return ++lcd_seq;
 }
 extern "C" uint32_t m0_lcd_done_seq(void) { return lcd_seq; }
-#if __has_include("md_config.h")
-/* The Mega Drive's 320-column rows go out 1:1 (no 160-column rescale);
- * the rows already sit in the panel's RGB565 wire order.  The async path
- * sets the address window once per frame, then streams whole batches of
- * rows: the producer renders into a small ring of them and waits on a
- * slot only when every queued transfer is still in flight. */
+#if __has_include("md_config.h") || __has_include("vx_config.h")
+/* The Mega Drive's and the Vectrex's 320-column rows go out 1:1 (no
+ * 160-column rescale); the rows already sit in the panel's RGB565 wire
+ * order.  The async path sets the address window once per frame, then
+ * streams whole batches of rows: the producer renders into a small ring
+ * of them and waits on a slot only when every queued transfer is still
+ * in flight. */
 extern "C" uint32_t m0_lcd_send_wide(const void *buf, uint8_t row0, uint8_t rows) {
     const uint16_t *p = (const uint16_t *)buf;
     for (unsigned y = 0; y < rows; y++) {

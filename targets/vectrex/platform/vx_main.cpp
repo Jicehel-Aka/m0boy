@@ -2,11 +2,13 @@
  * AKA): the cartridge and the system ROM (vx_cart.c) on the core in
  * ../runtime, the console's LCD, audio, clock and button drivers.
  *
- * The 512x512 beam square is drawn at 128x128 in a 4-bit phosphor (8 KiB),
- * centred on the panel.  The frame's 30000 cycles run in 128 slices; after
- * each one the next panel row is sent and fades, so the LCD's DMA overlaps
- * the emulation instead of following it (the META; on the ESP32 panels the
- * send is synchronous and the fade still spans two frames).  A stroke stays
+ * The 512x512 beam square is drawn 1:1 in a 4-bit phosphor at the panel's
+ * full height (the META's 128 rows, 8 KiB; the AKA's 240x240, 28.8 KiB,
+ * its rows going out at 320 columns), centred on the panel.  The frame's
+ * 30000 cycles run in VX_SIZE slices; after each one the next panel row
+ * is sent and fades, so the LCD's DMA overlaps the emulation instead of
+ * following it (the META; on the ESP32 panels the send is synchronous and
+ * the fade still spans two frames).  A stroke stays
  * lit for two frames (VX_FADE): the games that draw at 25 Hz do not blink.
  *
  * Buttons: the d-pad is the stick, A, B, MENU and HOME the four buttons;
@@ -33,8 +35,18 @@ extern "C" {
 extern const uint8_t vectrex_bios[];
 }
 
+/* The beam's square rasterizes at the panel's full height (the META's
+ * 128 rows, the AKA's 240 of its 320x240 glass), centred; on the AKA each
+ * row then goes out 1:1 at 320 columns (m0_lcd_send_wide): every phosphor
+ * pixel is a panel pixel, nothing resamples. */
+#if M0_TARGET_ESP32
+#define VX_OUT_COLS 320
+#define VX_SIZE 240
+#else
+#define VX_OUT_COLS 160
 #define VX_SIZE 128
-#define VX_LEFT ((160 - VX_SIZE) / 2)
+#endif
+#define VX_LEFT ((VX_OUT_COLS - VX_SIZE) / 2)
 /* 4-bit levels lost per frame */
 #define VX_FADE 8
 
@@ -62,7 +74,12 @@ static inline uint32_t fade_word(uint32_t w) {
     return r;
 #endif
 }
-static uint16_t line_buffer[2][160] __attribute__((aligned(4)));
+static uint16_t line_buffer[2][VX_OUT_COLS] __attribute__((aligned(4)));
+#if M0_TARGET_ESP32
+/* the option menu draws 160-column rows (m0_lcd_send_rows resamples them
+ * onto the glass): apart from the game's wider rows */
+static uint16_t menu_rows[2][160] __attribute__((aligned(4)));
+#endif
 static uint32_t line_sequence[2];
 static unsigned line_slot;
 static uint32_t deadline;
@@ -136,10 +153,19 @@ extern "C" void vx_draw(Vectrex *, int32_t x0, int32_t y0, int32_t x1, int32_t y
     draw_hash((uint32_t)y1);
     draw_hash(z << 16 | cycles);
 #endif
+    /* the full beam grid (512 pixels, 131072 beam units a side) fits the
+     * phosphor's height; the META's shift is this multiply at 128 */
+#if M0_TARGET_ESP32
+    x0 = (int32_t)((int64_t)x0 * VX_SIZE >> 17);
+    y0 = (int32_t)((int64_t)y0 * VX_SIZE >> 17);
+    x1 = (int32_t)((int64_t)x1 * VX_SIZE >> 17);
+    y1 = (int32_t)((int64_t)y1 * VX_SIZE >> 17);
+#else
     x0 >>= 10;
     y0 >>= 10;
     x1 >>= 10;
     y1 >>= 10;
+#endif
     if (!vx_clip(&x0, &y0, &x1, &y1, VX_SIZE, VX_SIZE)) return;
     int dx = x1 - x0, dy = y1 - y0;
     int sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
@@ -196,7 +222,7 @@ static void panel_row(unsigned r) {
     }
     if (!skip_video) {
         uint16_t *out = line_buffer[line_slot];
-        for (unsigned x = 0; x < VX_LEFT; x++) out[x] = out[160 - 1 - x] = palette[0];
+        for (unsigned x = 0; x < VX_LEFT; x++) out[x] = out[VX_OUT_COLS - 1 - x] = palette[0];
         uint32_t *o = (uint32_t *)(out + VX_LEFT);
         uint32_t *w = (uint32_t *)row;
         for (unsigned x = 0; x < VX_SIZE / 8; x++) {
@@ -208,7 +234,11 @@ static void panel_row(unsigned r) {
             o += 4;
             w[x] = fade_word(b);
         }
+#if M0_TARGET_ESP32
+        line_sequence[line_slot] = m0_lcd_send_wide(out, (uint8_t)r, 1);
+#else
         line_sequence[line_slot] = m0_lcd_send_rows(out, (uint8_t)r, 1);
+#endif
         line_slot ^= 1;
         while ((int32_t)(m0_lcd_done_seq() - line_sequence[line_slot]) < 0) {}
     } else {
@@ -248,7 +278,11 @@ extern "C" void vx_audio_render(uint8_t *buffer, unsigned n) {
 /* ---- option menu (sg_menu.h) ---- */
 extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
     *rows = 2;
+#if M0_TARGET_ESP32
+    return menu_rows[0];
+#else
     return line_buffer[0];
+#endif
 }
 static void restart(void) {
     machine.bios = vectrex_bios;

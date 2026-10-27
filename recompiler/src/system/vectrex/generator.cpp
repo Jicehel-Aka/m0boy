@@ -241,6 +241,8 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
     write(src / "vx_cart.c", cart + "\n/* The system ROM (E000-FFFF). */\nconst uint8_t vectrex_bios[8192] = {\n" +
                                  bytes(bios.data(), bios.size()) + "};\n");
     const std::string sd = state_base(o.name);
+    /* A state slot: the META's phosphor fits 24 sectors; the AKA's 240x240
+     * phosphor (28.8 KiB) asks for 60. */
     write(src / "vx_config.h",
           std::string("#pragma once\n"
                       "/* the panel's wire order: the META's SPI and the AKA's i80 take the high byte first */\n"
@@ -250,7 +252,8 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
               "#define VX_STATE_NAME \"" + sd + ".ST8\"\n" +
               "#define VX_STATE_NAME83 \"" + name83(sd, "ST8") + "\"\n" +
               "#define VX_BIN_NAME83 \"" + name83(sd, "BIN") + "\"\n" +
-              "#define VX_STATE_SLOTS 10\n#define VX_STATE_SLOT_SECTORS 24\n");
+              "#define VX_STATE_SLOTS 10\n#define VX_STATE_SLOT_SECTORS " +
+              (o.target == TargetId::aka ? "60" : "24") + "\n");
     copy_template(tpl / "platform" / "vx_main.cpp", src / "vx_main.cpp");
 
     const fs::path common = o.targets_dir / "common";
@@ -342,9 +345,11 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
           o.target == TargetId::aka
               ? "# Vectrex AKA: " + o.name +
                     "\n\n" +
-                    std::string(o.interpret ? "The cartridge interpreted (6809, VIA, AY-3-8912) and drawn at 128x128.\n\n"
+                    std::string(o.interpret ? "The cartridge interpreted (6809, VIA, AY-3-8912), the beam drawn\n"
+                                              "1:1 at the panel's 240x240 (320-column rows).\n\n"
                                             : "The 6809 recompiled to C (src/vx_gen.c) in front of the interpreter, the VIA\n"
-                                              "and the AY-3-8912 emulated, the beam drawn at 128x128.\n\n") +
+                                              "and the AY-3-8912 emulated, the beam drawn 1:1 at the panel's 240x240\n"
+                                              "(320-column rows).\n\n") +
                     "The system ROM is built into this firmware: do not distribute it.\n\n"
                     "Firmware: pio run  (flash with pio run -t upload)\n\n"
                     "Save states live on the card, at its root, as " + sd + ".ST8.\n"
