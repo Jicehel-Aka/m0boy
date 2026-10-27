@@ -4,6 +4,15 @@ name: Convertisseur AKA (Windows)
 # Lancer a la main (Actions > Convertisseur AKA > Run workflow) ; le zip est dans les artefacts.
 on:
   workflow_dispatch:
+    inputs:
+      publier:
+        description: "Creer aussi une release GitHub ?"
+        type: boolean
+        default: false
+      version:
+        description: "Numero de version de la release (ex. 1.0.0), si publier est coche"
+        type: string
+        default: "1.0.0"
   push:
     tags: ['aka-convertisseur-v*']
 
@@ -82,12 +91,30 @@ jobs:
           path: AKA-Convertisseur-win64.zip
           compression-level: 0
 
-      # Sur un tag aka-convertisseur-v* : publie aussi une release (limite GitHub : 2 Gio par fichier ;
-      # si le zip est plus gros, le prendre dans les artefacts).
+      # Release : sur un tag aka-convertisseur-v*, ou au lancement manuel si "publier" est coche.
+      # Limite GitHub : 2 Gio par fichier ; au-dela, le paquet est decoupe en volumes 7z (.7z.001, .002...).
+      - name: Preparer la release
+        id: rel
+        if: ${{ startsWith(github.ref, 'refs/tags/aka-convertisseur-v') || (github.event_name == 'workflow_dispatch' && inputs.publier) }}
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") { $tag = "aka-convertisseur-v${{ inputs.version }}" } else { $tag = "${{ github.ref_name }}" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          New-Item -ItemType Directory -Force release | Out-Null
+          if ((Get-Item AKA-Convertisseur-win64.zip).Length -lt 1900MB) {
+            Copy-Item AKA-Convertisseur-win64.zip release/
+          } else {
+            7z a -t7z -v1900m -mx=1 release/AKA-Convertisseur-win64.7z AKA-Convertisseur | Out-Null
+            "Paquet decoupe : telecharger tous les .7z.00N dans le meme dossier, puis ouvrir le .7z.001 avec 7-Zip." | Set-Content release/LISEZ-MOI-volumes.txt
+          }
+          Get-ChildItem release | Select-Object Name, @{n="Mo";e={[int]($_.Length/1MB)}}
+
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/aka-convertisseur-v')
+        if: ${{ steps.rel.outcome == 'success' }}
         uses: softprops/action-gh-release@v2
         with:
-          files: AKA-Convertisseur-win64.zip
-          name: Convertisseur AKA ${{ github.ref_name }}
+          tag_name: ${{ steps.rel.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Convertisseur AKA ${{ steps.rel.outputs.tag }}
+          files: release/*
           body: "Glisser une ROM (Game Boy, SG-1000, Game Gear, Master System, Mega Drive experimental) dans AKA-Convertisseur.exe ; les .zip de sortie vont a la racine de la carte SD de l'AKA."
