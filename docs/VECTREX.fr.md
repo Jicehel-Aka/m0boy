@@ -154,9 +154,16 @@ le profil de 3 000 trames) :
 | + VIA : état analogique en cache, registre à décalage par table, accès directs | 31,6 | 30,8 ms |
 | + panneau : fondu par mot de 8 pixels, paires de pixels par table | 32,2 | 30,2 ms |
 | + VIA en Thumb-1 (`via_asm.S`), écritures sans effet sautées | 36,6 | 26,6 ms |
+| + événements sans effet sur la signature analogique sautés (motif plein,
+  T1 libre), vélocité pliée dans la dérivée, détecteur de boucle armé dès la
+  deuxième lecture, `vx_draw` sans plafond de ligne par pixel, recherche de
+  région cachée | ~38 | 22,0 ms (moyenne trames 2000-8000 de la démo) |
 
-La console tourne à 72 MHz : 26,6 ms font ~1,9 M cycles par trame, 50 Hz
-en demandent 1,44 M. Le code en SRAM, qui échappe aux états d'attente de
+La console tourne à 72 MHz : 22,0 ms font ~1,55 M cycles par trame, 50 Hz
+en demandent 1,44 M — l'émulation seule est à ~91 % du budget, mais les
+images/s réelles restent ~38 : le rendu audio du frontal (hors
+`vx_busy_us`) et la VIA du milieu de démo tiennent encore le jeu à l'écart
+du 50. Le code en SRAM, qui échappe aux états d'attente de
 la flash, est exclu : il a planté la META à 72 MHz
 (`targets/meta/README.md`).
 
@@ -174,13 +181,13 @@ Côté C, une écriture qui ne change aucune entrée de la signature (ORA
 mux coupé et rampe arrêtée, ORB sur les bits de son ou du mux, T1H déjà
 lancé) ne recalcule plus rien.
 
-Ce qui reste (profil gm0 de Berzerk) : `via_tick` ~16 % (≈1 350 tours de
-boucle par trame, dont ~640 sans événement, le reste d'un intervalle après
-le dernier), le code recompilé ~15 %, `via_write` ~9 %, le tracé et le
-panneau ~12 %. Les événements du registre à décalage (deux par trait,
-~580 par trame) sont la majorité : la suite serait de les éviter pour les
-motifs pleins (0xFF), ce que le modèle actuel ne permet pas sans changer
-les traits produits.
+Ce qui reste (profil PC de la console, `meta-usb.py prof`, démo de
+Berzerk) : `via_tick` ~18 % (les événements du registre à décalage, deux
+par trait, dont les motifs pleins ne touchent plus la signature), la pile
+VIA au total ~60 %, le code recompilé ~13 %, le tracé et le panneau ~7 %.
+La suite tiendrait dans les événements du registre à décalage eux-mêmes,
+que le modèle actuel ne permet pas d'éviter pour les motifs pleins sans
+changer les traits produits.
 
 Vérification de l'assembleur (sans exécution possible sur l'hôte) : un
 firmware construit avec `-DVX_DRAW_HASH` hache chaque trait et les
@@ -198,6 +205,15 @@ WAV identiques sur 6 ; le test en lockstep des deux cœurs passe. Le
 panneau : même table de fondu vérifiée sur 100 000 mots, images gm0
 identiques à trame de jeu égale hors des lignes déjà envoyées de la trame
 suivante.
+
+Les optimisations de 2026-10-27 (événements sans effet sautés, vélocité
+pliée dans la dérivée, détecteur de boucle armé, signature des événements
+patchée dans l'assembleur, `vx_draw` sans plafond de ligne par pixel,
+recherche de région cachée) : `vectrex_end_to_end` et
+`vectrex_core_smoke` passent ; `vx_draw_hash` de la version assembleur
+égal à la version C et à la version d'avant, trame de jeu 1500, Berzerk
+et Scramble (replay d'entrées). Pas de resweep de la collection : la
+précision des changements repose sur le test e2e et les hachages ci-dessus.
 
 ### Avant la recompilation (estimations gm0, pas des mesures sur console)
 

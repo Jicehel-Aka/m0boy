@@ -16,6 +16,7 @@ constexpr std::array cpu_table = {
     CpuDescriptor{CpuId::huc6280, "huc6280", true},  // PC Engine; extends the 6502 table
     CpuDescriptor{CpuId::m6809, "6809", false},      // Vectrex: the recompiler decodes it
     CpuDescriptor{CpuId::m68k, "m68k", false}, // bounded compiler decoder, no --disasm listing yet
+    CpuDescriptor{CpuId::w65c816, "w65c816", false}, // SNES 5A22; every byte is a defined opcode
     CpuDescriptor{CpuId::m0plus, "m0plus", true},
 };
 
@@ -44,7 +45,10 @@ constexpr std::array pce_targets = {TargetId::desktop, TargetId::pc};
 // Vectrex: the 6809 recompiled in front of the interpreter on the META,
 // and the SDL host (pc).
 constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc};
-constexpr std::array megadrive_targets = {TargetId::desktop, TargetId::meta, TargetId::pc};
+constexpr std::array megadrive_targets = {TargetId::desktop, TargetId::meta, TargetId::pc, TargetId::aka};
+// SNES, phase 1: the 65C816's interpreter and recompiler on the desktop
+// harness — the picture (PPU, APU) comes later.
+constexpr std::array snes_targets = {TargetId::desktop};
 constexpr std::array<TargetId, 0> no_targets {};
 
 constexpr std::array system_table = {
@@ -77,6 +81,11 @@ constexpr std::array system_table = {
      * and rejects ROMs outside this deliberately small profile. */
     SystemDescriptor{SystemId::megadrive, "megadrive", CpuId::m68k, 0x0004,
                      65536, 8192, megadrive::inspect, megadrive_targets},
+    /* SNES phase 1: the CPU only.  128 KiB of WRAM and the runtime's own
+     * buffers; the ROM banks live through the LoROM/HiROM windows.  The
+     * PPU's 64 KiB VRAM and the APU's 64 KiB A-RAM join with the picture. */
+    SystemDescriptor{SystemId::snes, "snes", CpuId::w65c816, 0x00fffc,
+                     131072, 139264, snes::inspect, snes_targets},
     /* Firmware images, not cartridges.  The reset vector is at the image
      * start; META is linked at 0x4000, Pokitto at zero.  Execution/codegen
      * requires an emulated board and is not wired yet. */
@@ -180,6 +189,7 @@ std::optional<SystemId> detect_system(const std::filesystem::path& path) {
     if (ext == ".pce") return SystemId::pce;
     if (ext == ".vec") return SystemId::vectrex;
     if (ext == ".md" || ext == ".gen") return SystemId::megadrive;
+    if (ext == ".sfc" || ext == ".smc" || ext == ".swc") return SystemId::snes;
     if (ext == ".rom") { // a MSX ROM starts with "AB"
         std::ifstream file(path, std::ios::binary);
         char header[2] = {};

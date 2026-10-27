@@ -63,10 +63,6 @@ static inline __attribute__((always_inline)) void settle_calm(VIA *p) {
     calm = p->sr_wait;
   p->calm = calm;
 }
-static inline __attribute__((always_inline)) void settle(VIA *p) {
-  settle_velocity(p);
-  settle_calm(p);
-}
 static inline int32_t clamp(int32_t x) {
   return x < -VX_LIMIT ? -VX_LIMIT : x > VX_LIMIT ? VX_LIMIT : x;
 }
@@ -127,6 +123,14 @@ static inline __attribute__((always_inline)) void sound(VIA *p) {
       p->ay_epoch++;
   }
 }
+/* an event only moves what analog() reads through CB2 (the blanking, when
+ * ACR bit 4 takes it) or T1's output (the ramp, one-shot under ACR bit 7):
+ * an event outside those cases leaves the signature alone */
+static inline int event_touches_sig(const VIA *p, int t1_event, int cb2_moved) {
+  if (t1_event && (p->acr & 0x80) && !(p->acr & 0x40))
+    return 1;
+  return (p->acr & 0x10) && cb2_moved;
+}
 /* cycles until the next IFR flag can rise (T1, T2, the shift register) */
 static uint32_t next_event(const VIA *p) {
   uint32_t n = 0xffffffffu;
@@ -145,18 +149,37 @@ static uint32_t next_event(const VIA *p) {
  * the registers the same, no bus write and no other VIA access in between:
  * a polling loop without side effects.  Every iteration before the next flag would read
  * the same value, so they are skipped whole: the cycles and the VIA (the
- * beam included) advance as if they had run. */
+ * beam included) advance as if they had run.  The register snapshot moves
+ * only once the pc, the value and the bus witnesses have matched once (bit
+ * 7 of spin_ifr, spare: the register's flags stop at bit 6): a scattered
+ * IFR read costs four stores instead of thirteen, and a real loop skips
+ * from its third read — the same cycles to the flag, the skip being a
+ * whole count of the loop's period. */
 void vx_skip_spin(Vectrex *v);
 #define skip_spin vx_skip_spin /* via_asm.S calls it */
+uint32_t vx_spin_dbg[6];
 void vx_skip_spin(Vectrex *v) {
   VIA *p = &v->via;
   M6809 *c = &v->cpu;
   const uint8_t ifr = p->ifr;
-  if (p->spin_pc == c->pc && p->spin_ifr == ifr &&
-      p->spin_accesses + 1 == p->accesses &&
-      p->spin_writes == c->writes && p->spin_a == c->a && p->spin_b == c->b &&
-      p->spin_x == c->x && p->spin_y == c->y && p->spin_u == c->u &&
-      p->spin_s == c->s && p->spin_dp == c->dp && p->spin_cc == c->cc &&
+  vx_spin_dbg[4]++;
+  if (p->spin_pc != c->pc || (uint8_t)(p->spin_ifr & 0x7f) != ifr ||
+      p->spin_accesses + 1 != p->accesses || p->spin_writes != c->writes) {
+    p->spin_pc = c->pc;
+    p->spin_ifr = ifr; /* bit 7 clear: not armed */
+    p->spin_accesses = p->accesses;
+    p->spin_writes = c->writes;
+    return;
+  }
+  if (!(p->spin_ifr & 0x80)) {
+    p->spin_ifr = (uint8_t)(ifr | 0x80);
+    p->spin_accesses = p->accesses;
+    p->spin_writes = c->writes;
+    goto snapshot;
+  }
+  if (p->spin_a == c->a && p->spin_b == c->b && p->spin_x == c->x &&
+      p->spin_y == c->y && p->spin_u == c->u && p->spin_s == c->s &&
+      p->spin_dp == c->dp && p->spin_cc == c->cc &&
       !((p->ier & 0x7f) && !(c->cc & 0x10))) {
     const uint32_t period = c->cycles - p->spin_cycles;
     uint32_t room = next_event(p);
@@ -174,11 +197,8 @@ void vx_skip_spin(Vectrex *v) {
       p->skipped += skip;
     }
   }
-  p->spin_pc = c->pc;
-  p->spin_ifr = ifr;
+snapshot:
   p->spin_cycles = c->cycles;
-  p->spin_accesses = p->accesses;
-  p->spin_writes = c->writes;
   p->spin_a = c->a;
   p->spin_b = c->b;
   p->spin_x = c->x;
@@ -409,8 +429,12 @@ _Static_assert(offsetof(VIA, beam_x) == 28 && offsetof(VIA, beam_y) == 32 &&
 #else
 static inline __attribute__((always_inline)) void advance(Vectrex *v, unsigned n);
 void via_tick(Vectrex *v, unsigned n) {
+  /* the velocity follows the ramp: nothing else in a tick moves it */
+  const int ramp = v->via.ramp;
   advance(v, n);
-  settle(&v->via);
+  if (v->via.ramp != ramp)
+    settle_velocity(&v->via);
+  settle_calm(&v->via);
 }
 static inline __attribute__((always_inline)) void advance(Vectrex *v, unsigned n) {
   VIA *p = &v->via;
@@ -442,13 +466,15 @@ static inline __attribute__((always_inline)) void advance(Vectrex *v, unsigned n
      * Only a change of CB2 (the blanking) or the last bit (the flag) is an
      * event: the bits equal to CB2 before it are applied in one go. */
     const int shifting = (p->acr & 0x1c) == 0x18 && p->sr_bits < 8;
-    unsigned sr_event = 0, sr_at = 0;
+    unsigned sr_event = 0, sr_at = 0, clamped = 0;
     if (shifting) {
       const unsigned left = 8u - p->sr_bits;
       /* 1 + the bits from bit 7 down equal to CB2, at most `left` */
       unsigned e = 1u + vx_sr_lead[p->sr ^ (p->cb2 ? 0xffu : 0u)];
-      if (e > left)
+      if (e > left) {
         e = left;
+        clamped = 1; /* every bit left equals CB2: the blanking holds */
+      }
       sr_at = p->sr_wait + 2u * (e - 1u);
       if (sr_at <= step) {
         if (sr_at < step)
@@ -486,8 +512,15 @@ static inline __attribute__((always_inline)) void advance(Vectrex *v, unsigned n
       else
         p->t1_armed = 0;
     }
-    if (t1_event || sr_event)
-      touch(v);
+    if (t1_event || sr_event) {
+      /* a stroke ends only where the analog state changed; an event that
+       * cannot move it (a solid shift pattern, T1 free-running or not
+       * driving the ramp) skips the derive and the compare whole */
+      if (event_touches_sig(p, t1_event, (int)(sr_event && !clamped)))
+        touch(v);
+      else
+        vx_spin_dbg[5]++;
+    }
   }
 }
 #endif

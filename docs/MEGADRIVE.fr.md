@@ -170,3 +170,21 @@ Une ROM synthétique de test vérifie aussi l'en-tête, les vecteurs, l'exécuti
 du décodeur, la génération C et le rendu d'une tuile. La ROM libre de
 [blastcomp](https://github.com/staruwos/blastcomp) a servi à valider la
 reconnaissance du format, mais n'est pas incluse dans le dépôt.
+
+## Gamebuino AKA
+
+`--target aka` produit le même projet natif pour l'ESP32-S3 de la Gamebuino
+AKA (`docs/AKA.fr.md`) : machine `md_full` en SRAM (64 Kio de work RAM, 64 Kio
+de VRAM, la SRAM de cartouche, le Z80 et le son — 77 % du budget statique),
+framebuffer ARGB de 320×224 en PSRAM rempli ligne à ligne par le VDP pendant
+la trame, lignes converties en RGB565 et poussées 1:1 au centre du panneau
+320×240 (8 lignes noires de part et d'autre), audio décimé en mono 8 bits
+11 025 Hz (l'anneau commun des consoles ESP32). Le profil vient des sessions
+PC (`--coverage` des projets `*-pc`). A = A, B = B, MENU/C = C, RUN/D =
+Start, le joystick complète la croix. Pas de menu d'options, pas d'états ;
+la SRAM de cartouche reste volatile. Sonic 1, Sonic 3, Castle of Illusion et
+QuackShot se construisent ainsi (`pio run`) ; les firmwares n'ont pas été
+exécutés sur la console — gm0, qui peint les firmwares Sega réels de façon
+incomplète sur sa machine AKA, montre un écran noir. La construction du
+YM2612 et du PSG ne contient plus de virgule flottante (tables log-sinus,
+exponentielle et amplitudes précalculées en constantes, audio bit-exact).

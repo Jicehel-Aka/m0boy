@@ -5,6 +5,7 @@
  * --nes-interp) and the desktop harness or the PC window. */
 #include "m0boy/pce_generator.h"
 #include "m0boy/pce_emitter.h"
+#include "m0boy/console_project.h"
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -113,8 +114,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
     error.clear();
     stats = {};
     try {
-        if (o.target != TargetId::desktop && o.target != TargetId::pc)
-            throw std::runtime_error("PC Engine projects target the desktop harness or the PC window (--target desktop|pc)");
+        if (o.target != TargetId::desktop && o.target != TargetId::pc && o.target != TargetId::aka)
+            throw std::runtime_error("PC Engine projects target the desktop harness, the PC window or the Gamebuino AKA (--target desktop|pc|aka)");
         const auto tpl = o.meta_templates.parent_path() / "pce";
         if (!fs::is_regular_file(tpl / "runtime" / "pce.c"))
             throw std::runtime_error("PC Engine templates missing next to targets/meta");
@@ -141,12 +142,14 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             for (const auto& e : fs::directory_iterator(o.output)) foreign = foreign || e.path().filename() != "compile.log";
             if (foreign) throw std::runtime_error("Output directory is not a PC Engine project; choose a fresh directory");
         }
+        const std::string target_name = o.target == TargetId::pc ? "pc"
+                                      : o.target == TargetId::aka ? "aka" : "desktop";
         if (fs::exists(marker)) {
-            const std::string expected = o.target == TargetId::pc ? "pc\n" : "desktop\n";
-            if (read(marker) != expected)
+            if (read(marker) != target_name + "\n")
                 throw std::runtime_error("Use a separate output directory for each destination");
         }
         const bool pc_window = o.target == TargetId::pc;
+        const bool console = o.target == TargetId::aka;
         const auto src = o.output / "src";
         fs::create_directories(src);
         fs::create_directories(o.output / "host");
@@ -159,6 +162,15 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
               "#define PCE_ROM_SIZE " + std::to_string(rom_bytes) + "u\n";
         /* the recompiled code's dispatcher (huc6280.c) */
         if (!o.interpret) config += "#ifndef PCE_NATIVE\n#define PCE_NATIVE 1\n#endif\n";
+        if (console) {
+            /* the HuCard rides in the app partition (0x370000) with the
+             * firmware: above ~2.5 MiB the image no longer fits whole */
+            if (rom_bytes > 0x280000u)
+                throw std::runtime_error("HuCard too large for the AKA's app partition whole (" +
+                                         std::to_string(rom_bytes) + " bytes; the streaming plan follows)");
+            /* the panel doubles the 120 planned rows (aka_hw.cpp's zoom) */
+            config += "#define M0_SCREEN_ROWS 120\n";
+        }
         write(src / "pce_config.h", config);
 
         for (const char* name :
@@ -185,6 +197,58 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             stats.covered = es.covered;
             stats.regions = es.regions;
             stats.entries = es.entries;
+        }
+
+        if (console) {
+            /* The Gamebuino AKA (ESP32-S3): the shared frontend, the ESP32
+             * core and the AKA's pins; PlatformIO builds and flashes the
+             * project (every *.in rendered to the root).  The HuCard rides
+             * in flash whole. */
+            const auto t = project::Templates::from_meta(o.meta_templates);
+            copy_template(tpl / "platform" / "pce_main.cpp", src / "pce_main.cpp");
+            project::copy_frontend(t, src);
+            /* the scaling helpers the core's adapter samples with
+             * (m0_scale.h: m0_nearest, m0_row_of) */
+            copy_template(o.meta_templates.parent_path() / "common" / "runtime" / "m0_scale.h",
+                          src / "m0_scale.h");
+            /* the card driver (m0_sd.c over esp32_sd.cpp's hooks) and the
+             * save-state machinery's headers stay with the family */
+            for (const char* name : { "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h" })
+                copy_template(t.frontend() / name, src / name);
+            const auto core = o.meta_templates.parent_path() / "common" / "consoles" / "esp32";
+            for (const char* name : { "esp32_hw.cpp", "esp32_hw.h", "esp32_sd.cpp" })
+                copy_template(core / name, src / name);
+            const auto platform = t.console(TargetId::aka);
+            copy_template(platform / "esp32_config.h", src / "esp32_config.h");
+            copy_template(platform / "aka_hw.cpp", src / "aka_hw.cpp");
+            copy_template(platform / "aka_hw.h", src / "aka_hw.h");
+            fs::create_directories(o.output / "boards");
+            copy_template(platform / "boards" / "gamebuino_aka.json",
+                          o.output / "boards" / "gamebuino_aka.json");
+            std::error_code list_error;
+            for (const auto& entry : fs::directory_iterator(platform, list_error)) {
+                if (entry.is_directory() || entry.path().extension() != ".in") continue;
+                write(o.output / entry.path().stem(), replace(read(entry.path()), "@NAME@", o.name));
+            }
+            /* the audio hooks the ESP32 core finds by its sg_audio.h:
+             * pce_audio_render/pce_audio_set_rate at the fixed 11025 Hz */
+            write(src / "sg_audio.h", "#pragma once\n#include \"pce.h\"\n"
+                                      "#define sg_platform_audio_rate pce_audio_set_rate\n"
+                                      "#define sg_platform_audio_render pce_audio_render\n");
+            /* m0_audio.h's constants: 119210 CPU cycles per frame (CSH) at
+             * 7159090 Hz master */
+            project::write_audio(t, o.target, src, "119210u", "7159090u", "pce.h",
+                                 "pce_audio_render", "pce_audio_set_rate");
+            project::write_config(o.target, src);
+            project::write_profile(o.target, src, {false, false, false});
+            write(marker, target_name + "\n");
+            write(o.output / "README.md",
+                  "# PC Engine project: " + o.name + " (Gamebuino AKA)\n\n" +
+                  (native ? std::string("The HuCard's HuC6280 code recompiled to C (src/pce_gen.c) on the HuC6280/VDC\n"
+                                        "runtime, the interpreter for the rest.\n\n")
+                          : std::string("The HuCard interpreted on the HuC6280/VDC runtime.\n\n")) +
+                  "Firmware: pio run  (flash with pio run -t upload)\n");
+            return true;
         }
 
         /* the harness sits next to src/ in a generated project, not next to

@@ -8,7 +8,12 @@
 #include <SPI.h>
 #include <esp_timer.h>
 #include "esp32_hw.h"
-#if __has_include("gbl.h") /* Game Boy frontend; the Sega ones have sg_audio.h */
+#if __has_include("md_audio.h") /* the Mega Drive's own audio path */
+#include "md_audio.h"
+#define ESP32_AUDIO_SET_RATE(r) md_platform_audio_rate(r)
+#define ESP32_AUDIO_RENDER(p, n) md_platform_audio_render(p, n)
+#define ESP32_AUDIO_FRAME_SAMPLES(r, f) md_audio_frame_samples(r, f)
+#elif __has_include("gbl.h") /* Game Boy frontend; the Sega ones have sg_audio.h */
 #include "gbl.h"
 #define ESP32_AUDIO_SET_RATE(r) gbl_apu_set_rate(r)
 #define ESP32_AUDIO_RENDER(p, n) gbl_apu_render(p, n)
@@ -16,6 +21,9 @@
 #include "sg_audio.h"
 #define ESP32_AUDIO_SET_RATE(r) sg_platform_audio_rate(r)
 #define ESP32_AUDIO_RENDER(p, n) sg_platform_audio_render(p, n)
+#endif
+#ifndef ESP32_AUDIO_FRAME_SAMPLES /* the Game Boy's frame, m0_audio.h's constants */
+#define ESP32_AUDIO_FRAME_SAMPLES(r, f) m0_audio_frame_samples(r, f)
 #endif
 extern "C" {
 #include "m0_audio.h"
@@ -103,14 +111,21 @@ extern "C" void m0_lcd_init(void) {
     esp32_lcd_cs(1);
     next_row = 0xFFFF;
 }
+/* The rows the frontend sends span this many screen rows (the Sega
+ * frontends' 120 visible rows zoom x2 onto the panel; the default is the
+ * whole M0_SCREEN_ROWS picture). */
+#ifndef M0_PANEL_SRC_ROWS
+#define M0_PANEL_SRC_ROWS M0_SCREEN_ROWS
+#endif
+
 extern "C" uint32_t m0_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
     const uint16_t *p = (const uint16_t *)buf;
     esp32_lcd_cs(0);
     for (unsigned y = 0; y < rows; y++) {
         const unsigned src = row0 + y;
         if (src >= M0_SCREEN_ROWS) break;
-        unsigned py = src * ESP32_PANEL_ROWS / M0_SCREEN_ROWS;
-        const unsigned py_end = (src + 1) * ESP32_PANEL_ROWS / M0_SCREEN_ROWS;
+        unsigned py = src * ESP32_PANEL_ROWS / M0_PANEL_SRC_ROWS;
+        const unsigned py_end = (src + 1) * ESP32_PANEL_ROWS / M0_PANEL_SRC_ROWS;
         for (unsigned x = 0; x < ESP32_PANEL_COLS; x++)
             line[x] = p[m0_nearest(x, 160, ESP32_PANEL_COLS)];
         do {
@@ -180,7 +195,7 @@ extern "C" void m0_audio_init(void) {
 }
 extern "C" void m0_audio_frame(void) {
     uint8_t samples[192];
-    unsigned n = m0_audio_frame_samples(ESP32_AUDIO_RATE, &audio_frac);
+    unsigned n = ESP32_AUDIO_FRAME_SAMPLES(ESP32_AUDIO_RATE, &audio_frac);
     if (n > sizeof samples) n = sizeof samples;
     ESP32_AUDIO_RENDER(samples, n);
     if (audio_paused) return;
