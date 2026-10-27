@@ -59,6 +59,8 @@ void generate_full_native(const std::vector<uint8_t> &rom, const GenerateOptions
     fs::remove(o.output / "rom.md");
     for (const char *n : {"md_full.h", "md_full_cpu.c", "md_full_bus.c", "md_full_video.c", "md_full_audio.c", "md_ym2612.h", "md_ym2612.c", "md_m68k_time.h", "md_m68k_ops.h"})
         copy_template(tpl / "runtime" / n, src / n);
+    if (o.target == TargetId::aka)
+        copy_template(tpl / "runtime/md_video_asm.S", src / "md_video_asm.S");
     for (const char *n : {"z80.h", "z80.c", "z80_ops.h"})
         copy_template(o.targets_dir / "sg1000/runtime" / n, src / n);
     if (pc) {
@@ -110,7 +112,7 @@ void generate_full_native(const std::vector<uint8_t> &rom, const GenerateOptions
             "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)\n"
             "add_executable(md_pc src/md_full_pc.c src/pc_frontend.c src/md_full_code.c src/md_full_cpu.c "
             "src/md_full_bus.c src/md_full_video.c src/md_full_audio.c src/md_ym2612.c src/z80.c src/md_rom.c)\n"
-            "target_compile_options(md_pc PRIVATE -O2)\n"
+            "target_compile_options(md_pc PRIVATE -O3)\n"
             "target_link_libraries(md_pc PRIVATE PkgConfig::SDL2 m)\n");
     } else {
         /* The ESP32 console project: the family's shared core, the console's
@@ -132,15 +134,16 @@ void generate_full_native(const std::vector<uint8_t> &rom, const GenerateOptions
         project::write_profile(o.target, src, {false, false, false}, false);
         write(src / "md_config.h",
               "#pragma once\n#define MD_ROM_SIZE " + std::to_string(rom.size()) + "u\n"
-              "#define MD_ROWS 224u\n#define MD_PANEL_ROW0 8u\n");
+              "#define MD_ROWS 224u\n#define MD_PANEL_ROW0 8u\n"
+              "#define MD_VIDEO_ASM 1\n");
         fs::create_directories(o.output / "boards");
         copy_template(platform / "boards" / "gamebuino_aka.json", o.output / "boards" / "gamebuino_aka.json");
         std::error_code list_error;
         for (const auto &entry : fs::directory_iterator(platform, list_error)) {
             if (entry.is_directory() || entry.path().extension() != ".in") continue;
-            /* the 68000 core has RAM to spare (77% of 320 KiB): -O2, not -Os */
+            /* the 68000 core lives on hot loops: -O3, not PlatformIO's -Os */
             write(o.output / entry.path().stem(),
-                  replace(replace(read(entry.path()), "@NAME@", o.name), "-Os", "-O2"));
+                  replace(replace(read(entry.path()), "@NAME@", o.name), "-Os", "-O3"));
         }
     }
     write(o.output / "README.md", pc ?

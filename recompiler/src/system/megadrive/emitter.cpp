@@ -635,16 +635,20 @@ std::string Emitter::run(const std::set<uint32_t> &seeds, EmitStats &stats) {
          "/* the region's own cycle shadow: fc_ adds what the interpreter would\n"
          " * spend, and the clock reaches memory only at exits and before any\n"
          " * helper that reads it (VDP status, HV counter, Z80 sync) or spends\n"
-         " * by itself (mul, div, idle, exception) */\n"
-         "#define OVER (fc_ >= m->slice_limit)\n"
-         "#define MDFLUSH() (m->cycles += fc_ - st_, m->frame_cycles = fc_, st_ = fc_)\n\n"
+         " * by itself (mul, div, idle, exception).  The slice budget lives in\n"
+         " * the register lim_ between helpers: only a helper can move it\n"
+         " * (md_set_sr, a VDP register write, a fault), so MDFLUSH reloads it\n"
+         " * and impure instructions reload it again after their body. */\n"
+         "#define OVER (fc_ >= lim_)\n"
+         "#define MDFLUSH() (m->cycles += fc_ - st_, m->frame_cycles = fc_, st_ = fc_, lim_ = m->slice_limit)\n\n"
          "static int md_gen_next = -1;   /* the entry a region left for the dispatcher */\n";
     for (size_t r = 0; r < regions_.size(); ++r)
         o << "static void r_" << r << "(MdFull *m, unsigned entry) __attribute__((noinline));\n";
     for (size_t r = 0; r < regions_.size(); ++r) {
         const auto &addrs = regions_[r];
         o << "\nstatic void r_" << r << "(MdFull *m, unsigned entry) {\n"
-          << "    uint32_t pc_;\n    uint32_t fc_ = m->frame_cycles, st_ = fc_;\n    switch (entry) {\n";
+          << "    uint32_t pc_;\n    uint32_t fc_ = m->frame_cycles, st_ = fc_;\n"
+          << "    uint32_t lim_ = m->slice_limit;\n    switch (entry) {\n";
         for (uint32_t a : addrs) o << "    case " << ins_.at(a).local << ": goto " << lbl(a) << ";\n";
         o << "    default: __builtin_unreachable();\n    }\n";
         for (size_t i = 0; i < addrs.size(); ++i) {
@@ -662,7 +666,7 @@ std::string Emitter::run(const std::set<uint32_t> &seeds, EmitStats &stats) {
                 "md_rd8(", "md_rd16(", "md_rd32(", "md_wr8(", "md_wr16(", "md_wr32(",
                 "md_push16(", "md_push32(", "md_pop16(", "md_pop32(",
                 "md_exception(", "md_full_idle(", "md_sbcd(", "md_abcd(",
-                "md_mulu(", "md_muls(", "md_divu(", "md_divs("};
+                "md_mulu(", "md_muls(", "md_divu(", "md_divs(", "md_set_sr("};
             bool flushes = false;
             for (const char *h : impure)
                 if (body.find(h) != std::string::npos) { flushes = true; break; }
@@ -672,7 +676,7 @@ std::string Emitter::run(const std::set<uint32_t> &seeds, EmitStats &stats) {
             if (flushes) o << " MDFLUSH();";
             if (top == 6) {
                 const unsigned cc = (in.op >> 8) & 15u;
-                if (cc == 1) o << " MDFLUSH(); md_push32(m, " << hx(in.next) << ");";
+                if (cc == 1) o << " MDFLUSH(); md_push32(m, " << hx(in.next) << "); lim_ = m->slice_limit;";
                 if (cc <= 1) {
                     o << " if (OVER) { pc_ = " << hx(in.target) << "; goto out; } " << go(in, in.target) << "\n";
                     continue;
@@ -685,10 +689,12 @@ std::string Emitter::run(const std::set<uint32_t> &seeds, EmitStats &stats) {
                   << dn << ", v_, 2); if (v_ != 0xffffu) { fc_ += MD_DBCC_LOOP; if (OVER) { pc_ = "
                   << hx(in.target) << "; goto out; } " << go(in, in.target) << " } fc_ += MD_DBCC_EXPIRED; }\n";
             } else if (in.has_target) {                  /* JMP/JSR to a constant */
-                o << " " << body << " if (OVER) { pc_ = " << hx(in.target) << "; goto out; } " << go(in, in.target) << "\n";
+                o << " " << body << (flushes ? " lim_ = m->slice_limit;" : "")
+                  << " if (OVER) { pc_ = " << hx(in.target) << "; goto out; } " << go(in, in.target) << "\n";
                 continue;
             } else {
                 o << " " << body << "\n";
+                if (flushes) o << "    lim_ = m->slice_limit;\n";
                 if (!in.falls) continue;
             }
             o << "    if (OVER) { pc_ = " << hx(in.next) << "; goto out; }\n";

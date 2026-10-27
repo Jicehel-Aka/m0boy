@@ -74,11 +74,16 @@ extern "C" void esp32_restart(void) { ESP.restart(); for (;;) {} }
  * already byte-swapped by M0_COLOR, so hardware byte swapping is disabled. */
 static esp_lcd_panel_io_handle_t panel;
 static SemaphoreHandle_t color_done;
+/* free slots of the async wide path: the producer takes one per queued
+ * batch, the transfer-done ISR gives it back */
+static SemaphoreHandle_t wide_slots;
+#define WIDE_QUEUE 8
 static uint32_t lcd_seq;
 static uint16_t line[320] __attribute__((aligned(64)));
 static bool color_sent(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *) {
     BaseType_t wake = pdFALSE;
     xSemaphoreGiveFromISR(color_done, &wake);
+    if (wide_slots) xSemaphoreGiveFromISR(wide_slots, &wake);
     return wake == pdTRUE;
 }
 static void command(int cmd, const void *data = nullptr, size_t n = 0) {
@@ -107,6 +112,8 @@ extern "C" void m0_lcd_init(void) {
     ledcWrite(0, 64);
     color_done = xSemaphoreCreateBinary();
     ESP_ERROR_CHECK(color_done ? ESP_OK : ESP_ERR_NO_MEM);
+    wide_slots = xSemaphoreCreateCounting(WIDE_QUEUE, WIDE_QUEUE);
+    ESP_ERROR_CHECK(wide_slots ? ESP_OK : ESP_ERR_NO_MEM);
     esp_lcd_i80_bus_handle_t bus;
     esp_lcd_i80_bus_config_t config = {};
     config.dc_gpio_num = AKA_LCD_DC;
@@ -115,14 +122,14 @@ extern "C" void m0_lcd_init(void) {
     const int data[] = AKA_LCD_DATA;
     for (unsigned i = 0; i < 8; i++) config.data_gpio_nums[i] = data[i];
     config.bus_width = 8;
-    config.max_transfer_bytes = sizeof line;
+    config.max_transfer_bytes = WIDE_QUEUE * sizeof line;
     config.psram_trans_align = 64;
     config.sram_trans_align = 64;
     ESP_ERROR_CHECK(esp_lcd_new_i80_bus(&config, &bus));
     esp_lcd_panel_io_i80_config_t io = {};
     io.cs_gpio_num = -1; /* CS tied low on CORE v1.4 */
     io.pclk_hz = 20000000;
-    io.trans_queue_depth = 1;
+    io.trans_queue_depth = WIDE_QUEUE + 2;
     io.on_color_trans_done = color_sent;
     io.lcd_cmd_bits = io.lcd_param_bits = 8;
     io.dc_levels.dc_idle_level = io.dc_levels.dc_data_level = io.dc_levels.dc_dummy_level = 1;
@@ -157,7 +164,10 @@ extern "C" uint32_t m0_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows
 extern "C" uint32_t m0_lcd_done_seq(void) { return lcd_seq; }
 #if __has_include("md_config.h")
 /* The Mega Drive's 320-column rows go out 1:1 (no 160-column rescale);
- * the rows already sit in the panel's RGB565 wire order. */
+ * the rows already sit in the panel's RGB565 wire order.  The async path
+ * sets the address window once per frame, then streams whole batches of
+ * rows: the producer renders into a small ring of them and waits on a
+ * slot only when every queued transfer is still in flight. */
 extern "C" uint32_t m0_lcd_send_wide(const void *buf, uint8_t row0, uint8_t rows) {
     const uint16_t *p = (const uint16_t *)buf;
     for (unsigned y = 0; y < rows; y++) {
@@ -165,6 +175,20 @@ extern "C" uint32_t m0_lcd_send_wide(const void *buf, uint8_t row0, uint8_t rows
         draw_line(row0 + y);
     }
     return ++lcd_seq;
+}
+extern "C" void m0_lcd_wide_begin(uint8_t row0, uint8_t rows) {
+    const uint8_t x[] = {0, 0, 1, 63};
+    const uint8_t r[] = {uint8_t(row0 >> 8), uint8_t(row0),
+                         uint8_t((row0 + rows - 1) >> 8), uint8_t(row0 + rows - 1)};
+    command(0x2a, x, sizeof x);
+    command(0x2b, r, sizeof r);
+}
+extern "C" void m0_lcd_wide_queue(const void *batch, uint8_t rows) {
+    xSemaphoreTake(wide_slots, portMAX_DELAY);
+    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(panel, 0x2c, batch, 320u * 2u * rows));
+}
+extern "C" void m0_lcd_wide_flush(void) {
+    while (uxSemaphoreGetCount(wide_slots) < WIDE_QUEUE) vTaskDelay(1);
 }
 #endif
 extern "C" int m0_lcd_busy(void) { return 0; }
