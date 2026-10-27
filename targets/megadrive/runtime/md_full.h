@@ -71,6 +71,18 @@ extern const uint32_t md_rom_size;
 void md_full_reset(MdFull *m);
 /* Rebuilds the CRAM palette LUTs (after an external state load). */
 void md_full_cram_sync(MdFull *m);
+/* What one line's render needs besides VRAM: the registers, VSRAM and the
+ * CRAM RGB565 LUT as they were at the end of that line.  The ESP32
+ * frontend captures one per active line and has the second core render the
+ * line later; VRAM itself is read at render time, so a write during active
+ * display can show through — the registers and the palette cannot. */
+typedef struct {
+    uint16_t reg[24];
+    uint8_t vsram[80];
+    uint16_t cram[64];
+} MdLineCtx;
+void md_full_line_ctx(const MdFull *m, MdLineCtx *c);
+void md_full_render_line565_ctx(const MdFull *m, const MdLineCtx *c, unsigned y, uint16_t *row);
 uint8_t md_full_read8(MdFull *m, uint32_t addr);
 uint16_t md_full_read16(MdFull *m, uint32_t addr);
 uint32_t md_full_read32(MdFull *m, uint32_t addr);

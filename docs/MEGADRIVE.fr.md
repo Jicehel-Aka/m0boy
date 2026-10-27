@@ -186,23 +186,37 @@ AKA (`docs/AKA.fr.md`), compilé en -O3. Machine `md_full` en SRAM interne
 et pas de framebuffer : le VDP rend chaque ligne RGB565, pendant la trame,
 directement dans un anneau de quatre lots de 8 lignes en SRAM que le DMA du
 bus i80 vide pendant que l'émulation continue (la fenêtre d'adressage du
-panneau est posée une fois par trame, les lots partent en file) — rien ne
-va en PSRAM. La palette est tenue à jour à chaque écriture CRAM (LUT ARGB
-pour le rendu de référence, LUT RGB565 pour le panneau), le rendu trace des
-colonnes de tuiles entières (entrée de nametable et priorité une fois par
-colonne, colonnes de motif deux pixels par octet de motif) et les tranches
-de tuiles tournent en assembleur Xtensa (`md_video_asm.S`, deux pixels par
-octet lu), comparé au C par `md_span_selftest` au démarrage (écran rouge si
-le noyau diverge) ; `MD_VIDEO_ASM=0` dans `md_config.h` garde le C. Le
-moteur audio émet la ligne 44,1 kHz depuis une position courante (plus de
-division 64 bits par échantillon) et la phase d'interruption du Z80 avance
-d'un conditional-subtract par instruction (plus de modulo 64 bits que le
-driver sonore paie à chaque pas). Le profil vient des sessions PC
-(`--coverage` des projets `*-pc`). A = A, B = B, MENU/C = C, RUN/D =
-Start, le joystick complète la croix. Pas de menu d'options, pas d'états ;
-la SRAM de cartouche reste volatile. Sonic 1, Sonic 3, Castle of Illusion et
-QuackShot se construisent ainsi (`pio run`) ; les firmwares n'ont pas été
-exécutés sur la console — gm0, qui peint les firmwares Sega réels de façon
-incomplète sur sa machine AKA, montre un écran noir. La construction du
+panneau est posée une fois par trame, les lots partent en file ; un lot n'est
+rempli qu'après la prise de son créneau DMA, dont le nombre égale l'anneau —
+le transfert qui le lisait encore est alors fini) — rien ne va en PSRAM. La
+palette est tenue à jour à chaque écriture CRAM (LUT ARGB pour le rendu de
+référence, LUT RGB565 pour le panneau), le rendu trace des colonnes de tuiles
+entières (entrée de nametable et priorité une fois par colonne, colonnes de
+motif deux pixels par octet de motif) et les tranches de tuiles tournent en
+assembleur Xtensa (`md_video_asm.S`, deux pixels par octet lu), comparé au C
+par `md_span_selftest` au démarrage (écran rouge si le noyau diverge) ;
+`MD_VIDEO_ASM=0` dans `md_config.h` garde le C. Le second cœur rend : la
+tâche d'émulation ne capture par ligne que ce que le rendu lit hors VRAM
+(`MdLineCtx` : registres VDP, VSRAM, LUT CRAM — 256 octets, mesuré à ~0,2 %
+de la trame côté hôte) et une tâche sur le cœur 0 dessine chaque lot de 8
+lignes un lot en retard, via `md_full_render_line565_ctx`, puis le donne au
+DMA ; l'émulation ne peut passer devant que d'un lot. La VRAM elle-même est
+lue au moment du rendu : une écriture 68000 pendant l'affichage actif peut
+donc traverser une ligne (effet visible seulement si un jeu réécrit des
+motifs ou la nametable à chaud) ; registres, VSRAM et palette sont ceux de la
+ligne. Estimation (comptage d'instructions hôte, pas une mesure console) :
+~6,0 M instructions par trame sur chaque cœur au lieu de ~12,0 M pour
+émulation + rendu enchaînés sur un seul — chemin critique divisé par deux
+par rapport au dernier estimé à 60-90 ms/trame, soit de l'ordre de 22 à 33
+images par seconde attendues. Le moteur audio émet la ligne 44,1 kHz depuis
+une position courante (plus de division 64 bits par échantillon) et la phase
+d'interruption du Z80 avance d'un conditional-subtract par instruction (plus
+de modulo 64 bits que le driver sonore paie à chaque pas). Le profil vient
+des sessions PC (`--coverage` des projets `*-pc`). A = A, B = B, MENU/C = C,
+RUN/D = Start, le joystick complète la croix. Pas de menu d'options, pas
+d'états ; la SRAM de cartouche reste volatile. Sonic 1, Sonic 3, Castle of
+Illusion et QuackShot se construisent ainsi (`pio run`) ; les firmwares n'ont
+pas été exécutés sur la console — gm0, qui peint les firmwares Sega réels de
+façon incomplète sur sa machine AKA, montre un écran noir. La construction du
 YM2612 et du PSG ne contient plus de virgule flottante (tables log-sinus,
 exponentielle et amplitudes précalculées en constantes, audio bit-exact).

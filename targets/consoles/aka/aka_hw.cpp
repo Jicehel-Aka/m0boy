@@ -75,9 +75,12 @@ extern "C" void esp32_restart(void) { ESP.restart(); for (;;) {} }
 static esp_lcd_panel_io_handle_t panel;
 static SemaphoreHandle_t color_done;
 /* free slots of the async wide path: the producer takes one per queued
- * batch, the transfer-done ISR gives it back */
+ * batch, the transfer-done ISR gives it back.  The count matches the
+ * frontends' ring of batches exactly: taking a slot means the oldest
+ * transfer in flight has completed, so the batch buffer the caller is
+ * about to refill is free again (transfers complete in queue order). */
 static SemaphoreHandle_t wide_slots;
-#define WIDE_QUEUE 8
+#define WIDE_QUEUE 4
 static uint32_t lcd_seq;
 static uint16_t line[320] __attribute__((aligned(64)));
 static bool color_sent(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *) {
@@ -183,8 +186,12 @@ extern "C" void m0_lcd_wide_begin(uint8_t row0, uint8_t rows) {
     command(0x2a, x, sizeof x);
     command(0x2b, r, sizeof r);
 }
-extern "C" void m0_lcd_wide_queue(const void *batch, uint8_t rows) {
+/* Reserve the batch buffer before filling it (the transfer that still
+ * reads it is then known to be done), submit once it is full. */
+extern "C" void m0_lcd_wide_reserve(void) {
     xSemaphoreTake(wide_slots, portMAX_DELAY);
+}
+extern "C" void m0_lcd_wide_submit(const void *batch, uint8_t rows) {
     ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(panel, 0x2c, batch, 320u * 2u * rows));
 }
 extern "C" void m0_lcd_wide_flush(void) {

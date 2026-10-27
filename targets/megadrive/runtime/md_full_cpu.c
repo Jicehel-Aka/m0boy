@@ -480,7 +480,12 @@ void md_full_frame(MdFull *m, int native) {
         m->line = (uint16_t)line;
         if (line == ACTIVE_LINES) m->irq_pending = 1;        /* vertical blank */
         run_slice(m, (line + 1u) * LINE_CYCLES, native);
-        if (line < ACTIVE_LINES && m->screen) md_full_render_line(m, line, m->screen + line * 320u);
+        if (line < ACTIVE_LINES) {
+            /* the frontend hook first (the ESP32 one captures the line's
+             * registers for its second core), then the reference row */
+            if (m->line_hook) m->line_hook(m->hook_user, m, line);
+            if (m->screen) md_full_render_line(m, line, m->screen + line * 320u);
+        }
         /* The horizontal counter counts active lines (and the first blank
          * one) and is reloaded during the vertical blank. */
         if (line <= ACTIVE_LINES) {

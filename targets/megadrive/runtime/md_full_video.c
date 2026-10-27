@@ -18,9 +18,9 @@ void md_span_run(uint8_t *dst, uint8_t *pri, const uint8_t *pat, unsigned pal, u
 static uint16_t vram_word(const MdFull *m, unsigned a) {
     return (uint16_t)(m->vram[a & 0xffffu] << 8 | m->vram[(a + 1u) & 0xffffu]);
 }
-static int16_t vsram_word(const MdFull *m, unsigned a) {
+static int16_t vs_word(const uint8_t *vs, unsigned a) {
     a %= 80u;
-    return (int16_t)(m->vsram[a] << 8 | m->vsram[(a + 1u) % 80u]);
+    return (int16_t)(vs[a] << 8 | vs[(a + 1u) % 80u]);
 }
 static unsigned pattern_pixel(const MdFull *m, unsigned tile, unsigned x, unsigned y) {
     unsigned a = ((tile & 0x7ffu) * 32u + y * 4u + (x >> 1)) & 0xffffu;
@@ -29,8 +29,9 @@ static unsigned pattern_pixel(const MdFull *m, unsigned tile, unsigned x, unsign
 /* Sprites of line y into idx/pri (0 = none), first in link order wins.
  * Per line at most 20 sprites and 320 pixels in H40 (16 and 256 in H32);
  * a sprite at x = 0 masks the later ones once a sprite with x != 0 is on the line. */
-static void sprite_line(const MdFull *m, unsigned y, unsigned width, uint8_t *idx, uint8_t *pri) {
-    const unsigned base = (m->vdp_reg[5] & (width == 320u ? 0x7eu : 0x7fu)) << 9;
+static void sprite_line(const MdFull *m, const uint16_t *reg, unsigned y, unsigned width,
+                        uint8_t *idx, uint8_t *pri) {
+    const unsigned base = (reg[5] & (width == 320u ? 0x7eu : 0x7fu)) << 9;
     const unsigned max_sprites = width == 320u ? 80u : 64u, line_sprites = width == 320u ? 20u : 16u;
     unsigned link = 0, found = 0, pixels = 0;
     int masked = 0, shown = 0;
@@ -139,43 +140,47 @@ static unsigned entry_col0(unsigned entry, unsigned px) {
 
 /* The line's palette indices, one per column.  Same layering as the pixel
  * reference this replaces (window over plane A where in_h or in_v holds,
- * B under A, sprites on top, high priority over low). */
-static void render_indices(const MdFull *m, unsigned y, uint8_t *idx) {
-    const unsigned width = m->vdp_reg[12] & 1u ? 320u : 256u;
-    const unsigned backdrop = m->vdp_reg[7] & 63u;
-    if (!(m->vdp_reg[1] & 0x40u)) { memset(idx, (int)backdrop, 320); return; }
+ * B under A, sprites on top, high priority over low).  The registers and
+ * VSRAM come in as parameters: the caller passes the machine's, or a
+ * captured MdLineCtx's (the second-core render, one batch behind) — VRAM
+ * is always read through `m`, live. */
+static void render_indices(const MdFull *m, const uint16_t *reg, const uint8_t *vs,
+                           unsigned y, uint8_t *idx) {
+    const unsigned width = reg[12] & 1u ? 320u : 256u;
+    const unsigned backdrop = reg[7] & 63u;
+    if (!(reg[1] & 0x40u)) { memset(idx, (int)backdrop, 320); return; }
 
     uint8_t spr[320], spr_pri[320];
     memset(spr, 0, sizeof spr);
     memset(spr_pri, 0, sizeof spr_pri);
-    sprite_line(m, y, width, spr, spr_pri);
+    sprite_line(m, reg, y, width, spr, spr_pri);
 
     /* both planes: base, cell grid, H scroll of this line's row, and the
      * V scroll (one value, or one per 16-pixel column band) */
-    const unsigned scroll_mode = m->vdp_reg[11] & 3u;
+    const unsigned scroll_mode = reg[11] & 3u;
     const unsigned hrow = scroll_mode == 3u ? y : scroll_mode == 2u ? y & ~7u : 0;
-    const unsigned hbase = (m->vdp_reg[13] & 0x3fu) << 10;
-    const int vs_columns = m->vdp_reg[11] & 4u;
+    const unsigned hbase = (reg[13] & 0x3fu) << 10;
+    const int vs_columns = reg[11] & 4u;
     unsigned base[2], mask_x[2], mask_y[2], pw[2];
     int hs[2];
-    int16_t vs[2][20];
+    int16_t vs_tab[2][20];
     for (unsigned p = 0; p < 2; ++p) {
-        const unsigned wcode = m->vdp_reg[16] & 3u, hcode = (m->vdp_reg[16] >> 4) & 3u;
+        const unsigned wcode = reg[16] & 3u, hcode = (reg[16] >> 4) & 3u;
         pw[p] = wcode == 3u ? 128u : wcode == 1u ? 64u : 32u;
         const unsigned height = hcode == 3u ? 128u : hcode == 1u ? 64u : 32u;
-        base[p] = p ? (m->vdp_reg[4] & 7u) << 13 : (m->vdp_reg[2] & 0x38u) << 10;
+        base[p] = p ? (reg[4] & 7u) << 13 : (reg[2] & 0x38u) << 10;
         mask_x[p] = pw[p] * 8u - 1u;
         mask_y[p] = height * 8u - 1u;
         hs[p] = (int)(int16_t)vram_word(m, hbase + hrow * 4u + p * 2u);
         for (unsigned b = 0; b < 20; ++b)
-            vs[p][b] = vs_columns ? vsram_word(m, b * 4u + p * 2u) : vsram_word(m, p * 2u);
+            vs_tab[p][b] = vs_columns ? vs_word(vs, b * 4u + p * 2u) : vs_word(vs, p * 2u);
     }
 
     /* window plane (registers 3, 17, 18): over A where in_h or in_v holds */
-    const unsigned hreg = m->vdp_reg[17], vreg = m->vdp_reg[18];
+    const unsigned hreg = reg[17], vreg = reg[18];
     const unsigned hx = (hreg & 0x1fu) * 16u, vy = (vreg & 0x1fu) * 8u;
     const int window_line = vreg & 0x80u ? y >= vy : y < vy;
-    const unsigned wbase = (m->vdp_reg[3] & (width == 320u ? 0x3cu : 0x3eu)) << 10;
+    const unsigned wbase = (reg[3] & (width == 320u ? 0x3cu : 0x3eu)) << 10;
     const unsigned wcells = width == 320u ? 64u : 32u;
 
     for (unsigned x0 = 0; x0 < 320u; x0 += 8u) {
@@ -184,7 +189,7 @@ static void render_indices(const MdFull *m, unsigned y, uint8_t *idx) {
         /* plane B */
         {
             const unsigned px0 = (unsigned)(x0 - hs[1]) & mask_x[1];
-            const unsigned py = (y + (unsigned)(int16_t)vs[1][band]) & mask_y[1];
+            const unsigned py = (y + (unsigned)(int16_t)vs_tab[1][band]) & mask_y[1];
             const unsigned head = (8u - (px0 & 7u)) & 7u;
             const unsigned e = vram_word(m, base[1] + (((py >> 3) * pw[1] + (px0 >> 3)) << 1));
             span_pixels(m, e, entry_row(e, py), entry_col0(e, px0), entry_dir(e), head, b, b_pri);
@@ -201,7 +206,7 @@ static void render_indices(const MdFull *m, unsigned y, uint8_t *idx) {
             span_pixels(m, e, entry_row(e, y), entry_col0(e, x0), entry_dir(e), 8, a, a_pri);
         } else {
             const unsigned px0 = (unsigned)(x0 - hs[0]) & mask_x[0];
-            const unsigned py = (y + (unsigned)(int16_t)vs[0][band]) & mask_y[0];
+            const unsigned py = (y + (unsigned)(int16_t)vs_tab[0][band]) & mask_y[0];
             const unsigned head = (8u - (px0 & 7u)) & 7u;
             const unsigned e = vram_word(m, base[0] + (((py >> 3) * pw[0] + (px0 >> 3)) << 1));
             span_pixels(m, e, entry_row(e, py), entry_col0(e, px0), entry_dir(e), head, a, a_pri);
@@ -229,16 +234,28 @@ static void render_indices(const MdFull *m, unsigned y, uint8_t *idx) {
     }
 }
 
+void md_full_line_ctx(const MdFull *m, MdLineCtx *c) {
+    memcpy(c->reg, m->vdp_reg, sizeof c->reg);
+    memcpy(c->vsram, m->vsram, sizeof c->vsram);
+    memcpy(c->cram, m->cram_565, sizeof c->cram);
+}
+
 void md_full_render_line(const MdFull *m, unsigned y, uint32_t *row) {
     uint8_t idx[320];
-    render_indices(m, y, idx);
+    render_indices(m, m->vdp_reg, m->vsram, y, idx);
     for (unsigned x = 0; x < 320; ++x) row[x] = m->cram_argb[idx[x]];
 }
 
 void md_full_render_line565(const MdFull *m, unsigned y, uint16_t *row) {
     uint8_t idx[320];
-    render_indices(m, y, idx);
+    render_indices(m, m->vdp_reg, m->vsram, y, idx);
     for (unsigned x = 0; x < 320; ++x) row[x] = m->cram_565[idx[x]];
+}
+
+void md_full_render_line565_ctx(const MdFull *m, const MdLineCtx *c, unsigned y, uint16_t *row) {
+    uint8_t idx[320];
+    render_indices(m, c->reg, c->vsram, y, idx);
+    for (unsigned x = 0; x < 320; ++x) row[x] = c->cram[idx[x]];
 }
 
 void md_full_render(const MdFull *m, uint32_t *pixels, unsigned stride) {
