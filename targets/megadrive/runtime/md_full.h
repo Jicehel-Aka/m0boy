@@ -57,6 +57,9 @@ typedef struct MdFull {
     uint32_t cycles, frame_cycles, frames, instructions;
     uint32_t native_hits, fallback_hits;
     uint32_t fault_pc;
+    /* distinct PCs the interpreter started, the explorer's novelty
+     * (m0_explore.h); moves with the coverage bitmap, host only */
+    uint32_t coverage_locations;
     uint8_t *coverage;
     size_t coverage_bytes;
     uint32_t *screen;   /* 320x224 ARGB, drawn line by line when set */

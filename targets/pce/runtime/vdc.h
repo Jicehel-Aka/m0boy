@@ -18,7 +18,7 @@ extern "C" {
 
 #include <stdint.h>
 
-#define VDC_VRAM_WORDS 65536
+#define VDC_VRAM_WORDS 32768 /* 64 KiB, addressed as 16-bit words */
 
 /* status bits, cleared by the status read */
 #define VDCS_CR 0x01 /* sprite #0 collision */

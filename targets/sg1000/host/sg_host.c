@@ -23,7 +23,7 @@ static uint8_t cart_ram[SG_CART_RAM_SIZE];
 static FILE *audio;
 static uint32_t audio_samples;
 static int audio_error;
-static unsigned frames = 300, buttons, start_frame = ~0u, pause_frame = ~0u, explore_frames;
+static unsigned frames = 300, buttons, start_frame = ~0u, pause_frame = ~0u;
 #if SG_MSX
 /* banked cartridges: locations are page << 16 | pc, allocated once the ROM is known */
 #ifdef SG_MSX_TRACE
@@ -54,13 +54,16 @@ static void inputs(void) {
     sg1000_pause(machine.frames == pause_frame || (played & 64));
 }
 #ifndef SG_GENERATED
-/* --explore frames: the coverage-guided player of m0_explore.h, from the
- * start or from snapshots of the machine (and cartridge RAM) that reached
- * code never seen.  No START: the console's pause button is not on the pad. */
-#include "m0_explore.h"
+/* --explore frames: the coverage-guided player of m0_explore.h (the glue
+ * in m0_explore_host.h), from the start or from snapshots of the machine
+ * (and cartridge RAM) that reached code never seen.  No START: the
+ * console's pause button is not on the pad.  The novelty is read at the
+ * segment's ends only: the machine struct must stay byte-identical for
+ * the console firmware, so it carries no live discovery count, and a
+ * segment plays whole instead of stopping on a discovery. */
+#include "m0_explore_host.h"
 typedef struct { sg1000_t machine; uint8_t cart[SG_CART_RAM_SIZE]; } snapshot_t;
-static m0x_t explorer;
-static unsigned explore_on;
+static m0xh_t xh;
 static void snapshot_save(void *ctx, void *state) {
     snapshot_t *s = state;
     (void)ctx;
@@ -83,28 +86,29 @@ static uint32_t explore_novelty(void) { /* program counters reached so far */
 #endif
     return n;
 }
-static void explore(unsigned total) {
+static void explore_play(unsigned count) {
+    (void)count; /* the segments bound themselves: m0x_keys ends them */
+    machine.stop = 0;
+    sg1000_run();
+}
+static void explore(void) {
     const m0x_machine_t m = { 0, sizeof(snapshot_t), snapshot_save, snapshot_load, M0X_NO_START };
     machine.row = 0; /* nothing is drawn: the game does not need it */
     machine.ref_row = 0;
-    if (!m0x_begin(&explorer, &m, random_state, total)) return;
-    explore_on = 1;
-    do {
-        machine.stop = 0;
-        sg1000_run();
-    } while (m0x_next(&explorer, explore_novelty()));
-    fprintf(stderr, "explore: %u frames, %u segments, %u snapshots, %u locations\n", explorer.frames,
-            explorer.segments, explorer.pool_size, explore_novelty());
+    m0xh_run(&xh, &m, explore_novelty, explore_play, 0);
+    machine.frames = xh.x.frames; /* the snapshots rewound it */
+}
+static unsigned explore_keys(unsigned k) {
+    return (unsigned)(k & M0X_UP ? 1 : 0) | (k & M0X_DOWN ? 2 : 0) | (k & M0X_LEFT ? 4 : 0) |
+           (k & M0X_RIGHT ? 8 : 0) | (k & M0X_B1 ? 16 : 0) | (k & M0X_B2 ? 32 : 0);
 }
 #endif
 static void frame(void *ctx) {
     (void)ctx;
 #ifndef SG_GENERATED
-    if (explore_on) {
-        const unsigned k = m0x_keys(&explorer);
-        if (k == M0X_END) machine.stop = 1;
-        else sg1000_buttons(0, (uint8_t)((k & M0X_UP ? 1 : 0) | (k & M0X_DOWN ? 2 : 0) | (k & M0X_LEFT ? 4 : 0) |
-                                         (k & M0X_RIGHT ? 8 : 0) | (k & M0X_B1 ? 16 : 0) | (k & M0X_B2 ? 32 : 0)));
+    if (xh.on) {
+        sg1000_buttons(0, (uint8_t)explore_keys(m0xh_keys(&xh, explore_keys)));
+        machine.stop = xh.stop; /* M0X_END: the segment is spent */
         return;
     }
 #endif
@@ -191,13 +195,24 @@ int main(int argc, char **argv) {
             if (strchr(argv[++i], ':')) input_script = argv[i];
             else if (!m0_input_load(&input_file, argv[i], input_names, 7)) { perror(argv[i]); return 2; }
         }
-        else if (!strcmp(argv[i], "--random") && i + 1 < argc) random_state = m0_random_seed(argv[++i]);
+        else if (!strcmp(argv[i], "--random") && i + 1 < argc) {
+            random_state = m0_random_seed(argv[++i]);
 #ifndef SG_GENERATED
-        else if (!strcmp(argv[i], "--explore") && i + 1 < argc) explore_frames = (unsigned)strtoul(argv[++i], 0, 0);
+            xh.seed = random_state; /* the explorer draws from the same seed */
+#endif
+        }
+#ifndef SG_GENERATED
+        else if (m0xh_arg(&xh, argc, argv, &i)) { /* --explore frames */ }
 #endif
         else if (argv[i][0] != '-' && !rom_path) rom_path = argv[i];
         else { fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]); return 1; }
     }
+#ifndef SG_GENERATED
+    if (xh.total && !cov_path) {
+        fprintf(stderr, "--explore needs --coverage: the explorer's novelty is the trace\n");
+        return 2;
+    }
+#endif
     uint8_t *loaded = 0;
     const uint8_t *rom;
     size_t size;
@@ -261,7 +276,7 @@ int main(int argc, char **argv) {
     }
     inputs();
 #ifndef SG_GENERATED
-    if (explore_frames && cov_path) { explore(explore_frames); machine.frames = explorer.frames; }
+    if (xh.total) explore();
     else
 #endif
     if (frames) sg1000_run();

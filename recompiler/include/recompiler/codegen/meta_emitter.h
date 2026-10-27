@@ -64,6 +64,11 @@ struct MetaTargetOptions {
      * streaming (ROMs of 256 KiB or more) or to a plain build when the
      * compressed ROM leaves too little flash for code. */
     bool pack = false;
+    /* --meta-sweep: every bank's CALL ($CD) and JP abs ($C3) offers its
+     * target as a speculative entry (m0boy/sweep.h), so the callers
+     * behind a bank table compile without a play session having run
+     * there; the budget ranks them with the static analysis's candidates */
+    bool sweep = false;
 };
 
 struct MetaTargetStats {

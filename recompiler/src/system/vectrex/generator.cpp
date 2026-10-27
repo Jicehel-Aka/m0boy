@@ -167,6 +167,7 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
       EmitOptions eo;
       eo.precise = o.precise;
       eo.max_instructions = o.max_instructions;
+      eo.sweep = o.sweep;
       /* the META's 256 KiB less the bootloader's 16: the runtime, the
        * drivers and the system ROM (56), the cartridge, a margin (4); the
        * rest for as many instructions as it holds, played ones first.
@@ -201,6 +202,9 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
                                      "/* the host's --coverage and the dispatcher's counts */\n"
                                      "#define VX_COVERAGE 1\n#define VX_GEN_STATS 1\n");
       copy_template(tpl / "host" / "vectrex_host.c", src / "vectrex_host.c");
+      /* the harness's --explore player */
+      copy_template(o.targets_dir / "common/host" / "m0_explore.h", src / "m0_explore.h");
+      copy_template(o.targets_dir / "common/host" / "m0_explore_host.h", src / "m0_explore_host.h");
       for (const char* name : {"pc_frontend.c", "pc_frontend.h"})
         copy_template(o.targets_dir / "consoles/pc" / name, src / name);
       write(o.output / "CMakeLists.txt",

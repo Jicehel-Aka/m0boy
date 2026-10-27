@@ -251,9 +251,11 @@ void vx_fast_boot_hook(Vectrex *v);
 
 #ifdef VX_COVERAGE
 /* the host's --coverage: instructions started per address (the run loop
- * sees them all under --interp), the recompiler's profile */
+ * sees them all under --interp), the recompiler's profile, and the
+ * distinct addresses played, the explorer's novelty (m0_explore.h) */
 uint32_t vx_coverage_hits[65536];
-#define COVER(pc) (vx_coverage_hits[(pc)]++)
+uint32_t vx_coverage_locations;
+#define COVER(pc) do { if (!vx_coverage_hits[(pc)]++) vx_coverage_locations++; } while (0)
 #else
 #define COVER(pc) ((void)0)
 #endif

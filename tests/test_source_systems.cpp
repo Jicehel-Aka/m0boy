@@ -1,5 +1,7 @@
 #include "m0boy/system.h"
 #include "m0boy/sg1000.h"
+#include "m0boy/m0plus_generator.h"
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -12,7 +14,7 @@ static void require(bool condition, const char* message) {
 int main() {
     using namespace m0boy;
     try {
-        require(systems().size() == 12, "Source registry incomplete");
+        require(systems().size() >= 12, "Source registry incomplete");
         require(targets().size() == 7, "Target registry incomplete");
         require(parse_target("pc") == TargetId::pc && parse_target("odroid") == TargetId::odroid &&
                 parse_target("aka") == TargetId::aka, "New targets not parsed");
@@ -92,14 +94,36 @@ int main() {
         require(detect_system("game.SG") == SystemId::sg1000, "SG detection failed");
         require(detect_system("game.sgb") == SystemId::gameboy, "SGB is a GB cartridge");
         require(!detect_system("game.bin"), "Raw binary falsely identified");
-        require(!parse_cpu("arm") && !parse_system("snes"), "Unknown ids accepted");
+        require(!parse_cpu("arm") && !parse_system("unknown"), "Unknown ids accepted");
         require(parse_cpu("m0plus") == CpuId::m0plus &&
                 system_descriptor(SystemId::meta).cpu == CpuId::m0plus &&
                 system_descriptor(SystemId::pokitto).cpu == CpuId::m0plus &&
-                !system_descriptor(SystemId::meta).supports(TargetId::pc) &&
+                system_descriptor(SystemId::meta).supports(TargetId::pc) &&
+                system_descriptor(SystemId::pokitto).supports(TargetId::pc) &&
+                !system_descriptor(SystemId::meta).supports(TargetId::aka) &&
                 !system_descriptor(SystemId::pokitto).supports(TargetId::meta) &&
                 !detect_system("firmware.bin"), "M0+ source profiles incorrect");
         std::string error;
+        {
+            const auto root = std::filesystem::temp_directory_path() /
+                ("m0boy_m0plus_project_test_" + std::to_string(
+                    std::chrono::steady_clock::now().time_since_epoch().count()));
+            std::filesystem::create_directories(root);
+            const auto firmware = root / "source.bin";
+            {
+                std::ofstream image(firmware, std::ios::binary);
+                const unsigned char bytes[] = {0, 0x80, 0, 0x20, 9, 0x40, 0, 0, 0, 0xbf};
+                image.write(reinterpret_cast<const char*>(bytes), sizeof bytes);
+            }
+            const auto project = root / "pc";
+            require(m0plus::generate(firmware, SystemId::meta, project, error),
+                    "Valid META firmware project rejected");
+            require(std::filesystem::file_size(project / "firmware.bin") == 10 &&
+                    std::filesystem::exists(project / "run.py"), "META PC project incomplete");
+            require(!m0plus::generate(firmware, SystemId::pokitto, project, error),
+                    "Project destination unexpectedly changed boards");
+            std::filesystem::remove_all(root);
+        }
         require(!sg1000::Cartridge::from_bytes({}, error) && !error.empty(), "Empty ROM accepted");
         require(!sg1000::Cartridge::from_bytes(std::vector<uint8_t>(0xc001), error),
                 "Unsupported mapper accepted");

@@ -62,9 +62,14 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
 - `compile.sh`, `tools/meta-compiler/`: batch conversion (shell and Node).
 - `tools/profile/`: the per-game profile store (`m0profile.py`, `play.sh`,
   `m0romsim.cpp`) and `m0search.py`, the generic play search shared by every
-  core's harness (random or recorded sessions through `--explore`/`--random`
-  where the harness has them, generated input scripts elsewhere, `--input`
-  replays, merged coverage for the generator).
+  core's harness (`--explore FRAMES --random SEED` coverage-guided sessions
+  through `targets/common/host/m0_explore.h` + `m0_explore_host.h` — every
+  coverage core has one: GB checkpoints at its runtime safe points, SG-1000
+  plays whole segments; PICO-8 stays scripted — plus generated input
+  scripts, `--input` replays, merged coverage for the generator). Bounded
+  sweeps of call/jump targets the reachability walk cannot prove:
+  `--pce-sweep`, `--nes-sweep`, `--vectrex-sweep`, `--megadrive-sweep`,
+  `--meta-sweep`, discipline in `recompiler/include/m0boy/sweep.h`.
 - `tools/gb-emu/`: gamebuino-emulator fork used for profiling runs.
 
 ## Build and test

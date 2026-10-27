@@ -14,6 +14,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from md_fixture import random_code_image  # noqa: E402
 
 
+def sweep_image():
+    """The walk stops at JMP (A0); a JSR abs.l and a JMP abs.l in the dead
+    code point at the handler only --megadrive-sweep reaches (the handler
+    spins on its own JMP abs.l, both sides identically)."""
+    rom = bytearray(0x8000)
+    rom[0:4] = (0x00fff000).to_bytes(4, "big")
+    rom[4:8] = (0x200).to_bytes(4, "big")
+    rom[0x100:0x10c] = b"SEGA GENESIS"
+    handler, table, rte = 0x600, 0x400, 0x500
+    rom[rte:rte + 2] = b"\x4e\x73"                                    # RTE
+    for v in range(2, 64):
+        rom[v * 4:v * 4 + 4] = rte.to_bytes(4, "big")
+    rom[table:table + 4] = handler.to_bytes(4, "big")
+
+    def put(at, *words):
+        for i, word in enumerate(words):
+            rom[at + 2 * i:at + 2 * i + 2] = word.to_bytes(2, "big")
+
+    put(0x200, 0x41f9)                                                # LEA table,A0
+    rom[0x202:0x206] = table.to_bytes(4, "big")
+    put(0x206, 0x4ed0)                                                # JMP (A0)
+    put(0x300, 0x4eb9)                                                # JSR abs.l handler
+    rom[0x302:0x306] = handler.to_bytes(4, "big")
+    put(0x306, 0x4ef9)                                                # JMP abs.l handler
+    rom[0x308:0x30c] = handler.to_bytes(4, "big")
+    put(handler, 0x4ef9)                                              # JMP abs.l: the tight spin
+    rom[handler + 2:handler + 6] = handler.to_bytes(4, "big")
+    return bytes(rom)
+
+
 def rom_image():
     rom = bytearray(0x300)
     rom[0:4] = (0x00fff000).to_bytes(4, "big")
@@ -334,6 +364,34 @@ def main():
                     assert re.search(name + r"=(\w+)", output).group(1) == re.search(name + r"=(\w+)", reference).group(1), \
                         (seed, name, reference, output)
             assert re.search(r"fallback_hits=0\b", profiled), profiled
+        # --megadrive-sweep: the handler behind JMP (A0) compiles too (a
+        # bigger generated file) and no hash moves; --explore plays seeded
+        # segments, the interpreter's coverage being the novelty
+        sweep_rom = work / "sweep.md"
+        sweep_rom.write_bytes(sweep_image())
+        plain_pc = work / "sweep_plain"
+        swept_pc = work / "sweep_swept"
+        run(exe, sweep_rom, "--system", "megadrive", "--target", "pc", "-o", plain_pc)
+        run(exe, sweep_rom, "--system", "megadrive", "--target", "pc", "--megadrive-sweep", "-o", swept_pc)
+        assert len((swept_pc / "src" / "md_full_code.c").read_text()) > \
+            len((plain_pc / "src" / "md_full_code.c").read_text()), "the sweep compiled nothing more"
+        for pc_build in (plain_pc, swept_pc):
+            run("cmake", "-G", "Ninja", "-S", pc_build, "-B", pc_build / "build")
+            run("ninja", "-C", pc_build / "build")
+            swept_ref = run(pc_build / "build" / "md_pc", "--frames", "3", "--interp", env=pc_env)
+            swept_out = run(pc_build / "build" / "md_pc", "--frames", "3", env=pc_env)
+            assert re.search(r"fault=0\b", swept_out), swept_out
+            for name in ("run_hash", "image_hash", "audio_hash"):
+                assert re.search(name + r"=(\w+)", swept_out).group(1) == \
+                    re.search(name + r"=(\w+)", swept_ref).group(1), (pc_build.name, name)
+        explore_locations = None
+        for _ in range(2):
+            ecov = work / "md_explore.cov"
+            run(pc / "build" / "md_pc", "--explore", "600", "--random", "3", "--coverage", ecov, env=pc_env)
+            found = [l for l in ecov.read_text().splitlines() if l.strip()]
+            assert len(found) > 5, f"the explorer discovered almost nothing ({len(found)})"
+            assert explore_locations in (None, len(found)), "unstable explore coverage"
+            explore_locations = len(found)
         md = work / "meta"
         run(exe, rom, "--system", "megadrive", "--target", "meta",
             "--meta-precise", "-o", md)

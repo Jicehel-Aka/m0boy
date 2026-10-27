@@ -1,5 +1,6 @@
-/* Save states for the Gamebuino META: GBL_STATE_SLOTS slots in a file the
- * converters create (GBL_STATE_NAME), found at boot like the save file. */
+/* Save states: GBL_STATE_SLOTS slots in a file the converters create
+ * (GBL_STATE_NAME), found at boot like the save file.  The PC keeps the
+ * same slot area in a plain file of its own, created on the first save. */
 #ifndef META_STATE_H
 #define META_STATE_H
 

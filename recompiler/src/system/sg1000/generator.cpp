@@ -886,6 +886,7 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
             copy_template(common_dir / "host" / "m0_host_util.h", o.output / "host" / "m0_host_util.h");
             copy_template(common_dir / "host" / "m0_rom_trace.h", o.output / "host" / "m0_rom_trace.h");
             copy_template(common_dir / "host" / "m0_explore.h", o.output / "host" / "m0_explore.h"); /* -DM0_ROM_TRACE=ON */
+            copy_template(common_dir / "host" / "m0_explore_host.h", o.output / "host" / "m0_explore_host.h");
         }
 
         if (o.target != TargetId::desktop) {

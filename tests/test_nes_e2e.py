@@ -18,6 +18,7 @@
    the loader at 0x39000 with a valid vector checksum."""
 
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -370,6 +371,31 @@ def recompiler(work):
     host = project(rom, work / "fast", "--coverage", coverage)
     out = run(host, *frames)
     assert run_hash(out) != "run_hash=00000000", out
+
+    # the sweep: the PRG's JSR/JMP targets outside the walk compile too
+    # (more instructions than the walk alone) and the run does not move
+    plain_text = run(GBRECOMP, "--system", "nes", rom, "--target", "desktop",
+                     "--output-prefix", "synth", "-o", work / "precise", "--meta-precise")
+    swept_text = run(GBRECOMP, "--system", "nes", rom, "--target", "desktop",
+                     "--output-prefix", "synth", "-o", work / "sweep", "--meta-precise", "--nes-sweep")
+    build = work / "sweep" / "host" / "build"
+    run("cmake", "-G", "Ninja", "-S", work / "sweep" / "host", "-B", build, "-DCMAKE_BUILD_TYPE=Release")
+    run("ninja", "-C", build)
+    swept = run_hash(run(build / "synth_host", *frames))
+    assert swept == reference, f"precise with sweep {swept} != interpreter {reference}"
+    compiled = lambda t: int(re.search(r"(\d+) compiled", t).group(1))
+    assert compiled(swept_text) > compiled(plain_text), \
+        f"the sweep compiled nothing more ({compiled(swept_text)} vs {compiled(plain_text)})"
+
+    # the explorer: two seeded runs discover the same addresses
+    explore_locations = None
+    for _ in range(2):
+        cov = work / "explore.cov"
+        run(host, "--explore", "900", "--random", "3", "--coverage", cov)
+        found = [l for l in cov.read_text().splitlines() if not l.startswith("#")]
+        assert len(found) > 10, f"the explorer discovered almost nothing ({len(found)})"
+        assert explore_locations in (None, len(found)), "unstable explore coverage"
+        explore_locations = len(found)
     return reference
 
 

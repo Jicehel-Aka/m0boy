@@ -19,6 +19,7 @@ struct GenerateOptions {
     std::vector<std::filesystem::path> coverage; /* the harness's --coverage files */
     bool precise = false;         /* --meta-precise: the interpreter's slices, exactly */
     bool interpret = false;       /* no recompiled code (--nes-interp) */
+    bool sweep = false;           /* --nes-sweep: the walk also seeds from the PRG's JSR/JMP targets */
     size_t code_budget_bytes = 0; /* 0: the target's default */
     unsigned bytes_per_instruction = 0; /* 0: the default estimate */
 };

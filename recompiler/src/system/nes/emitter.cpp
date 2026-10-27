@@ -17,6 +17,7 @@
  * ends on the same instruction; the fast mode checks it only at labels and
  * at most every `check_cycles` cycles, a slice overrunning by that much. */
 #include "m0boy/nes_emitter.h"
+#include "m0boy/sweep.h"
 #include <algorithm>
 #include <cstdio>
 #include <deque>
@@ -246,30 +247,48 @@ void Emitter::select(const std::vector<CoverageEntry>& coverage, EmitStats& stat
     std::stable_sort(hot.begin(), hot.end(), [](const auto& a, const auto& b) { return a.hits > b.hits; });
     std::map<uint16_t, Ins> found;
     std::vector<uint16_t> order;
-    std::deque<uint16_t> work;
-    auto visit = [&](uint16_t at) {
+    std::deque<uint16_t> work, swept_q;
+    auto visit = [&](uint16_t at, std::deque<uint16_t>& sink, m0::Sweep* budget) {
         if (found.count(at)) return;
         Ins in;
         if (!decode(at, in)) return;
+        if (budget && !budget->take()) return;
         found[at] = in;
         order.push_back(at);
-        work.push_back(at);
+        sink.push_back(at);
     };
-    auto drain = [&] {
-        while (!work.empty()) {
-            const Ins in = found[work.front()];
-            work.pop_front();
-            if (in.falls) visit(in.next);
-            if (in.has_target) visit(in.target);
+    auto drain = [&](std::deque<uint16_t>& queue, m0::Sweep* budget) {
+        while (!queue.empty()) {
+            const Ins in = found[queue.front()];
+            queue.pop_front();
+            if (in.falls) visit(in.next, queue, budget);
+            if (in.has_target) visit(in.target, queue, budget);
         }
     };
     std::map<uint16_t, const CoverageEntry*> played;
     for (const auto& e : hot) played[e.pc] = &e;
-    for (const auto& e : hot) visit(e.pc);
+    for (const auto& e : hot) visit(e.pc, work, nullptr);
     const size_t covered = order.size();
     for (uint16_t v : { uint16_t(0xFFFC), uint16_t(0xFFFA), uint16_t(0xFFFE) })
-        visit(uint16_t(rom(v) | (rom(uint16_t(v + 1)) << 8)));
-    drain();
+        visit(uint16_t(rom(v) | (rom(uint16_t(v + 1)) << 8)), work, nullptr);
+    drain(work, nullptr);
+    /* the sweep: the PRG's JSR ($20) and JMP abs ($4C) whose target the
+     * walk did not reach — the jump-table handlers the reachability
+     * cannot prove, compiled the same way.  Nothing lands there until
+     * the game jumps (NROM has no context: the dispatcher enters by PC),
+     * but the generated file grows: the swept instructions rank after
+     * the played ones and take what the code budget has left
+     * (m0/sweep.h), the walk itself never being capped. */
+    m0::Sweep swept(m0::sweep_room(covered, opt_.max_instructions));
+    if (opt_.sweep)
+        for (uint32_t at = 0x8000; at < 0x10000; at++) {
+            const uint8_t op = rom(uint16_t(at));
+            if (op != 0x20 && op != 0x4C) continue;
+            const uint16_t target = uint16_t(rom(uint16_t(at + 1)) | rom(uint16_t(at + 2)) << 8);
+            if (target < 0x8000) continue; /* the code lives in PRG */
+            visit(target, swept_q, &swept);
+        }
+    drain(swept_q, &swept);
     const size_t keep = opt_.max_instructions ? std::min(order.size(), opt_.max_instructions) : order.size();
     for (size_t i = 0; i < keep; i++) {
         Ins in = found[order[i]];

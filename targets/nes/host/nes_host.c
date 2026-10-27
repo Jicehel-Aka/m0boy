@@ -18,6 +18,7 @@
 #include "../../consoles/pc/pc_input.h"
 #define M0_PANEL_SWAP 0 /* the harness's projects are desktop ones (nes_config.h) */
 #include "m0_scale.h"
+#include "m0_explore_host.h"
 #ifdef NES_EMBEDDED
 #include "../src/nes_config.h"
 extern const uint8_t nes_prg[];
@@ -32,6 +33,7 @@ extern int nes_native;
 #ifdef NES_COVERAGE
 extern uint32_t nes_coverage_hits[0x8000];
 extern uint8_t nes_coverage_dynamic[0x8000];
+extern uint32_t nes_coverage_locations; /* distinct addresses played: the explorer's novelty */
 #endif
 
 static uint16_t frame[240][256];
@@ -87,11 +89,106 @@ static void state_write(void *data, uint32_t bytes, void *ctx) {
     }
 }
 
+/* --explore frames (m0_explore.h through m0_explore_host.h): the
+ * coverage-guided player, from the start or from snapshots that reached
+ * code never seen; needs --coverage (the novelty is the trace's distinct
+ * addresses), plays with no --input and no sound.  A snapshot is the
+ * machine's own state stream (nes_state_io) through the snapshot's
+ * bytes; the harness's callbacks go back on after a load. */
+static m0xh_t xh;
+static pc_input_t script = {0};
+static FILE *audio;
+static uint32_t audio_bytes;
+static unsigned skip;
+#ifdef NES_COVERAGE
+static uint8_t *snap_buf;
+static uint32_t snap_pos;
+static int snap_load;
+static void snap_io(void *data, uint32_t bytes, void *ctx) {
+    (void)ctx;
+    if (snap_load)
+        memcpy(data, snap_buf + snap_pos, bytes);
+    else
+        memcpy(snap_buf + snap_pos, data, bytes);
+    snap_pos += bytes;
+}
+static void snapshot_save(void *ctx, void *state) {
+    (void)ctx;
+    snap_buf = (uint8_t *)state;
+    snap_pos = 0;
+    snap_load = 0;
+    nes_state_io(snap_io, 0, 0);
+}
+static void snapshot_load(void *ctx, const void *state) {
+    (void)ctx;
+    snap_buf = (void *)state;
+    snap_pos = 0;
+    snap_load = 1;
+    nes_state_io(snap_io, 0, 1);
+    machine.row = on_row;
+    machine.ppu.panel = on_panel;
+    machine.ppu.panel_out = panel;
+}
+static unsigned explore_keys(unsigned k) {
+    unsigned keys = 0;
+    if (k & M0X_B1) keys |= 1;    /* A */
+    if (k & M0X_B2) keys |= 2;    /* B */
+    if (k & M0X_START) keys |= 8;
+    if (k & M0X_UP) keys |= 16;
+    if (k & M0X_DOWN) keys |= 32;
+    if (k & M0X_LEFT) keys |= 64;
+    if (k & M0X_RIGHT) keys |= 128;
+    return keys;
+}
+static uint32_t explore_locations(void) { return nes_coverage_locations; }
+static void host_frame(unsigned f);
+static void explore_play(unsigned count) {
+    for (unsigned f = 0; !xh.stop && (xh.on || f < count); f++) host_frame(f);
+}
+static void explore(void) {
+    const m0x_machine_t m = {0, nes_state_bytes(), snapshot_save, snapshot_load, 0};
+    if (!m0xh_run(&xh, &m, explore_locations, explore_play, 0)) return;
+    machine.frames = xh.x.frames; /* the snapshots rewound it */
+}
+#endif
+
+static void host_frame(unsigned f) {
+#ifdef NES_COVERAGE
+    if (xh.on) {
+        machine.input = (uint8_t)explore_keys(m0xh_keys(&xh, explore_keys));
+        machine.ppu.skip = skip && machine.frames % skip == skip - 1;
+        nes_frame();
+        /* a discovery stops the frame run at this boundary: the machine
+         * is checkpointed with the observation, the segment goes on */
+        m0xh_seen(&xh, nes_coverage_locations);
+        return;
+    }
+#endif
+    machine.input = (uint8_t)pc_input_keys(&script, f);
+    machine.ppu.skip = skip && machine.frames % skip == skip - 1;
+    nes_frame();
+    if (audio) {
+        uint8_t samples[256];
+        /* 29780.5 CPU cycles per frame: the samples that covers */
+        static unsigned carry;
+        carry += AUDIO_RATE * 29780u;
+        unsigned count = carry / 1789773u;
+        carry %= 1789773u;
+        if (count > sizeof samples) count = sizeof samples;
+        nes_audio(samples, count, AUDIO_RATE);
+        fwrite(samples, 1, count, audio);
+        audio_bytes += count;
+    }
+}
+static void play(unsigned count) {
+    for (unsigned f = 0; f < count; f++) host_frame(f);
+}
+
 int main(int argc, char **argv) {
     const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0, *coverage = 0;
     const char *save_state = 0, *load_state = 0;
     int interp = 0;
-    unsigned frames = 60, skip = 0;
+    unsigned frames = 60;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--ppm") && i + 1 < argc) ppm = argv[++i];
@@ -103,6 +200,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--skip") && i + 1 < argc) skip = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--rows") && i + 1 < argc) rows = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--interp")) interp = 1;
+        else if (m0xh_arg(&xh, argc, argv, &i)) { /* --explore, --random */ }
         else rom_path = argv[i];
     }
     uint8_t header[16] = {0};
@@ -114,7 +212,8 @@ int main(int argc, char **argv) {
         prg_bytes = NES_PRG_SIZE; chr_bytes = NES_CHR_SIZE;
         header[6] = (uint8_t)(NES_VERTICAL_MIRROR ? 1 : 0);
 #else
-        fprintf(stderr, "usage: nes_host rom.nes [--frames n] [--ppm f] [--wav f] [--input f]\n");
+        fprintf(stderr, "usage: nes_host rom.nes [--frames n] [--ppm f] [--wav f] [--input f] "
+                        "[--coverage file] [--explore frames --random seed]\n");
         return 2;
 #endif
     } else {
@@ -137,6 +236,12 @@ int main(int argc, char **argv) {
 #endif
 #ifndef NES_COVERAGE
     if (coverage) { fprintf(stderr, "built without NES_COVERAGE\n"); return 2; }
+    if (xh.total) { fprintf(stderr, "--explore: this build does not record coverage\n"); return 2; }
+#else
+    if (xh.total && !coverage) {
+        fprintf(stderr, "--explore needs --coverage: the explorer's novelty is the trace's addresses\n");
+        return 2;
+    }
 #endif
     (void)interp;
     nes_init(prg, prg_bytes, chr, chr_bytes, header[6] & 1);
@@ -155,31 +260,14 @@ int main(int argc, char **argv) {
      * frame, buttons by name ('#' lines are comments) */
     static const char *const nes_names[8] = {
         "a", "b", "select", "start", "up", "down", "left", "right"};
-    pc_input_t script = {0};
     if (input_path && !pc_input_load(&script, input_path, nes_names, 8)) return 2;
-    FILE *audio = wav ? fopen(wav, "wb") : 0;
+    audio = wav ? fopen(wav, "wb") : 0;
     if (audio) { /* the header is patched once the length is known */
         const char silence[44] = {0};
         fwrite(silence, 1, 44, audio);
     }
-    uint32_t audio_bytes = 0;
-    for (unsigned f = 0; f < frames; f++) {
-        machine.input = (uint8_t)pc_input_keys(&script, machine.frames);
-        machine.ppu.skip = skip && machine.frames % skip == skip - 1;
-        nes_frame();
-        if (audio) {
-            uint8_t samples[256];
-            /* 29780.5 CPU cycles per frame: the samples that covers */
-            static unsigned carry;
-            carry += AUDIO_RATE * 29780u;
-            unsigned count = carry / 1789773u;
-            carry %= 1789773u;
-            if (count > sizeof samples) count = sizeof samples;
-            nes_audio(samples, count, AUDIO_RATE);
-            fwrite(samples, 1, count, audio);
-            audio_bytes += count;
-        }
-    }
+    if (xh.total && coverage) explore();
+    else play(frames);
     if (save_state) {
         FILE *out = fopen(save_state, "wb");
         if (!out) { perror(save_state); return 2; }
@@ -255,7 +343,7 @@ int main(int argc, char **argv) {
     }
 #endif
     printf("frames=%u cycles=%u pc=%04x frame=%u run_hash=%08x\n",
-           frames, (unsigned)machine.cpu.cycles, machine.cpu.pc, machine.ppu.frame, h);
+           machine.frames, (unsigned)machine.cpu.cycles, machine.cpu.pc, machine.ppu.frame, h);
     printf("panel_rows=%u out_mismatch=%u hit_mismatch=%u\n", (unsigned)out_rows, (unsigned)out_mismatch,
            (unsigned)machine.ppu.hit_mismatch);
     return 0;

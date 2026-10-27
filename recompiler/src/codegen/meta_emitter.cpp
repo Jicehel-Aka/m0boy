@@ -19,6 +19,7 @@
 
 #include "recompiler/codegen/meta_emitter.h"
 #include "m0boy/rom_storage.h"
+#include "m0boy/sweep.h"
 #include "recompiler/decoder.h"
 #include "recompiler/codegen/register_ir.h"
 
@@ -456,6 +457,34 @@ bool Generator::load_coverage(MetaTargetStats& stats, std::string& error) {
         }
     }
     stats.covered = cov.size();
+
+    /* --meta-sweep: every bank's CALL ($CD) and JP abs ($C3) offers its
+     * target as an entry, the callers behind a bank table included.  A
+     * target below $4000 keys under bank 0 (fixed), one in the switchable
+     * window under the bank it was read from — the dispatcher checks the
+     * mapped bank at run time, so a wrongly assumed bank never runs
+     * anything.  The candidates carry the entry flag only (2): no
+     * execution count, the budget ranks them with the static analysis's
+     * speculative code. */
+    if (opt_.sweep) {
+        size_t swept = 0;
+        for (uint16_t bank = 0; bank < rom_.bank_count() && swept < m0::kSweepDefault; bank++) {
+            for (unsigned at = bank ? 0x4000u : 0u; at < 0x8000u && swept < m0::kSweepDefault; at++) {
+                if (rom_.read_banked(bank, static_cast<uint16_t>(at)) != 0xCD &&
+                    rom_.read_banked(bank, static_cast<uint16_t>(at)) != 0xC3)
+                    continue;
+                if (at + 2 >= 0x8000u) break;
+                const uint16_t to = static_cast<uint16_t>(
+                    rom_.read_banked(bank, static_cast<uint16_t>(at + 1)) |
+                    rom_.read_banked(bank, static_cast<uint16_t>(at + 2)) << 8);
+                const uint32_t k = key(to < 0x4000u ? static_cast<uint16_t>(0) : bank, to);
+                if (!cov.count(k)) {
+                    cov[k] = 2;
+                    swept++;
+                }
+            }
+        }
+    }
 
     std::vector<Ins> all;
     for (const auto& [k, flags] : cov) {

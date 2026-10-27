@@ -162,6 +162,9 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
         copy_template(common_dir.parent_path() / "consoles" / "pc" / "pc_input.h", src / "pc_input.h");
         /* the idle loops' count (nes_gen.h) */
         copy_template(common_dir / "runtime" / "m0_idle.h", src / "m0_idle.h");
+        /* the harness's --explore player */
+        copy_template(common_dir / "host" / "m0_explore.h", src / "m0_explore.h");
+        copy_template(common_dir / "host" / "m0_explore_host.h", src / "m0_explore_host.h");
 
         /* the recompiled 6502 code: the vectors, the profile, what they
          * reach; on a console, as much as the flash budget holds, played
@@ -171,6 +174,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             EmitOptions emit;
             emit.prg_size = prg_size;
             emit.precise = o.precise;
+            emit.sweep = o.sweep;
             const unsigned bpi = o.bytes_per_instruction ? o.bytes_per_instruction : 24u;
             /* the META's 256 KiB less the bootloader's 16, the Pokitto's
              * 228 below its loader: the runtime and the drivers (66, the

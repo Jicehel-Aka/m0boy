@@ -25,6 +25,7 @@
  * exactly where the interpreter does; the fast mode checks it only at
  * labels and at most every `check_cycles` cycles. */
 #include "m0boy/pce_emitter.h"
+#include "m0boy/sweep.h"
 #include <algorithm>
 #include <cstdio>
 #include <deque>
@@ -406,47 +407,80 @@ void Emitter::select(const std::vector<CoverageEntry>& coverage, EmitStats& stat
     std::stable_sort(hot.begin(), hot.end(), [](const auto& a, const auto& b) { return a.hits > b.hits; });
     std::deque<Seed> work;
     std::vector<Key> order;
-    auto visit = [&](uint16_t at, uint64_t ctx, bool a_known, uint8_t a_val) {
+    auto visit = [&](uint16_t at, uint64_t ctx, bool a_known, uint8_t a_val,
+                     std::deque<Seed>& sink, m0::Sweep* budget) {
         const Key key{at, ctx};
         if (ins_.count(key)) return;
         Ins in;
         if (!decode(at, ctx, in)) return;
+        if (budget && !budget->take()) return;
         ins_[key] = in;
         order.push_back(key);
-        work.push_back({at, ctx, a_known, a_val});
+        sink.push_back({at, ctx, a_known, a_val});
     };
     for (const auto& e : hot)
-        for (uint64_t ctx : e.contexts) visit(e.pc, ctx, false, 0);
+        for (uint64_t ctx : e.contexts) visit(e.pc, ctx, false, 0, work, nullptr);
     const uint64_t reset_ctx = 0; /* every MPR at $00: the cartridge's page 0 */
     for (uint16_t v : { uint16_t(0xFFFE), uint16_t(0xFFFC), uint16_t(0xFFFA), uint16_t(0xFFF8), uint16_t(0xFFF6) }) {
         const auto lo = ctx_byte(reset_ctx, v);
         const auto hi = ctx_byte(reset_ctx, uint16_t(v + 1));
-        if (lo && hi) visit(uint16_t(*lo | *hi << 8), reset_ctx, false, 0);
+        if (lo && hi) visit(uint16_t(*lo | *hi << 8), reset_ctx, false, 0, work, nullptr);
     }
     const size_t covered = order.size();
-    while (!work.empty()) {
-        const Seed s = work.front();
-        work.pop_front();
-        Ins& in = ins_[Key{s.pc, s.ctx}];
-        in.tracked_a = s.a_known;
-        uint64_t nctx = s.ctx;
-        if (in.info.op == Op::tam && s.a_known) {
-            for (unsigned i = 0; i < 8; i++)
-                if (in.o[0] & (1u << i)) nctx |= uint64_t(s.a_val) << (8 * i);
+    /* the sweep's own budget: a code budget's leftovers, else its modest
+     * cap — a byte $20/$4C is mostly data, an unbounded sweep compiles
+     * the whole card under every context */
+    m0::Sweep swept_budget(m0::sweep_room(covered, opt_.max_instructions));
+    std::deque<Seed> swept;
+    if (opt_.sweep)
+        /* the sweep: every window's mapping of every page, a JSR or a JMP
+         * abs whose target decodes seeds the walk — code the reachability
+         * walk cannot prove (jump-table handlers, callers behind a bank
+         * table) compiled the same way.  Nothing lands there until the
+         * game does: an entry is entered only under its own MPR bytes,
+         * and the compiled semantics stay the interpreter's.  Swept
+         * entries rank after the played ones (order is visit order) and
+         * take what the code budget has left, the walk itself never
+         * being capped (m0/sweep.h). */
+        for (unsigned w = 0; w < 8; w++)
+            for (unsigned page = 0; page < pages(); page++) {
+                const uint64_t ctx = uint64_t(page) << (8 * w);
+                for (unsigned at = w << 13; at < (w << 13) + 0x2000u; at++) {
+                    const auto op_b = ctx_byte(ctx, uint16_t(at));
+                    if (!op_b || (*op_b != 0x20 && *op_b != 0x4C)) continue;
+                    if (at + 2 > 0xFFFFu) break;
+                    const auto lo = ctx_byte(ctx, uint16_t(at + 1));
+                    const auto hi = ctx_byte(ctx, uint16_t(at + 2));
+                    if (lo && hi) visit(uint16_t(*lo | *hi << 8), ctx, false, 0, swept, &swept_budget);
+                }
+            }
+    auto expand = [&](std::deque<Seed>& queue, m0::Sweep* budget) {
+        while (!queue.empty()) {
+            const Seed s = queue.front();
+            queue.pop_front();
+            Ins& in = ins_[Key{s.pc, s.ctx}];
+            in.tracked_a = s.a_known;
+            uint64_t nctx = s.ctx;
+            if (in.info.op == Op::tam && s.a_known) {
+                for (unsigned i = 0; i < 8; i++)
+                    if (in.o[0] & (1u << i)) nctx |= uint64_t(s.a_val) << (8 * i);
+            }
+            bool nak;
+            uint8_t nav = s.a_val;
+            if (in.info.op == Op::lda && in.info.mode == Mode::imm) {
+                nak = true;
+                nav = in.o[0];
+            } else {
+                nak = in.info.preserves_a && s.a_known;
+            }
+            if (in.falls) visit(in.next, nctx, nak, nav, queue, budget);
+            if (in.has_target) visit(in.target, nctx, nak, nav, queue, budget);
         }
-        bool nak;
-        uint8_t nav = s.a_val;
-        if (in.info.op == Op::lda && in.info.mode == Mode::imm) {
-            nak = true;
-            nav = in.o[0];
-        } else {
-            nak = in.info.preserves_a && s.a_known;
-        }
-        if (in.falls) visit(in.next, nctx, nak, nav);
-        if (in.has_target) visit(in.target, nctx, nak, nav);
-    }
+    };
+    expand(work, nullptr);
+    expand(swept, &swept_budget);
     const size_t keep = opt_.max_instructions ? std::min(order.size(), opt_.max_instructions) : order.size();
-    for (size_t i = 0; i < keep; i++) ins_.at(order[i]).label = false;
+    for (size_t i = keep; i < order.size(); i++) ins_.erase(order[i]);
     /* the profile: exact contexts attach to their instance, context-less
      * addresses rank and label every instance found there */
     std::map<Key, const CoverageEntry*> exact;

@@ -1,5 +1,6 @@
 #include "md_full.h"
 #include "pc_frontend.h"
+#include "m0_explore_host.h"
 #include <SDL.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -89,6 +90,46 @@ static int save_coverage(const char *path, const MdFull *m) {
         if (m->coverage[pc >> 3] & (1u << (pc & 7u))) fprintf(f, "%06x\n", pc);
     return fclose(f) == 0;
 }
+/* --explore frames (m0_explore.h through m0_explore_host.h): the
+ * coverage-guided player, from the start or from snapshots that reached
+ * code never seen; needs --coverage, whose run is the interpreter's (it
+ * holds the profile's counter), with no --input and no sound.  The
+ * machine is one flat struct around a fixed allocation: a snapshot is
+ * the struct itself, the harness's pointers (coverage, YM log, screen)
+ * travelling with it. */
+static m0xh_t xh;
+static MdFull *g_machine;
+static void snapshot_save(void *ctx, void *state) {
+    (void)ctx;
+    memcpy(state, g_machine, sizeof *g_machine);
+}
+static void snapshot_load(void *ctx, const void *state) {
+    (void)ctx;
+    memcpy(g_machine, state, sizeof *g_machine);
+}
+static unsigned explore_keys(unsigned k) {
+    unsigned keys = 0;
+    if (k & M0X_UP) keys |= 1;
+    if (k & M0X_DOWN) keys |= 2;
+    if (k & M0X_LEFT) keys |= 4;
+    if (k & M0X_RIGHT) keys |= 8;
+    if (k & M0X_B1) keys |= 16;    /* A */
+    if (k & M0X_B2) keys |= 32;    /* B */
+    if (k & M0X_START) keys |= 128;
+    return keys;
+}
+static uint32_t explore_locations(void) { return g_machine->coverage_locations; }
+static void explore_play(unsigned count) {
+    for (unsigned f = 0; !xh.stop && (xh.on || f < count); f++) {
+        g_machine->pad = (uint8_t)explore_keys(m0xh_keys(&xh, explore_keys));
+        g_machine->screen = NULL; /* the picture is not the explorer's business */
+        md_full_frame(g_machine, 0);
+        /* a discovery stops the frame run at this boundary: the machine
+         * is checkpointed with the observation, the segment goes on */
+        m0xh_seen(&xh, g_machine->coverage_locations);
+    }
+}
+static int explore_again(void) { return !g_machine->fault; }
 int main(int argc, char **argv) {
     unsigned limit = 0;
     int interp = 0;
@@ -104,7 +145,12 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--record-input") && i + 1 < argc) record_path = argv[++i];
         else if (!strcmp(argv[i], "--save") && i + 1 < argc) save_arg = argv[++i];
         else if (!strcmp(argv[i], "--interp")) interp = 1;
-        else { fprintf(stderr, "usage: md_pc [--frames N] [--input SCRIPT] [--ppm FILE] [--wav FILE] [--ym-log FILE] [--coverage FILE] [--record-input FILE] [--save FILE] [--interp]\n"); return 2; }
+        else if (m0xh_arg(&xh, argc, argv, &i)) { /* --explore, --random */ }
+        else { fprintf(stderr, "usage: md_pc [--frames N] [--input SCRIPT] [--ppm FILE] [--wav FILE] [--ym-log FILE] [--coverage FILE] [--explore FRAMES --random SEED] [--record-input FILE] [--save FILE] [--interp]\n"); return 2; }
+    }
+    if (xh.total && !coverage) {
+        fprintf(stderr, "--explore needs --coverage: the explorer's novelty is the trace (the run is the interpreter's)\n");
+        return 2;
     }
     Event *events = NULL;
     size_t event_count = 0, event_at = 0;
@@ -114,6 +160,7 @@ int main(int argc, char **argv) {
     MdFull *m = calloc(1, sizeof *m);
     uint32_t *pixels = calloc(W * H, sizeof *pixels);
     if (!m || !pixels) { free(m); free(pixels); free(events); return 1; }
+    g_machine = m;
     md_full_reset(m);
     char save_name[64];
     if (save_arg) snprintf(save_name, sizeof save_name, "%s", save_arg);
@@ -140,7 +187,7 @@ int main(int argc, char **argv) {
         if (!wav_file) { perror(wav); return 1; }
         wav_header(wav_file, 0);
     }
-    if (!limit) {
+    if (!limit && !xh.total) {
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK | SDL_INIT_AUDIO)) {
             fprintf(stderr, "SDL_Init: %s\n", SDL_GetError()); return 1;
         }
@@ -168,7 +215,22 @@ int main(int argc, char **argv) {
     uint64_t deadline = SDL_GetTicks64();
     unsigned frame_fraction = 0;
     unsigned sram_flushed = 0;
-    while (running && !m->fault && (!limit || m->frames < limit)) {
+    int okay = 1;
+    if (xh.total) {
+        /* the segments play outside the presentation loop: the
+         * interpreter runs (the coverage's counter), no sound, no SRAM
+         * flush until the end */
+        const m0x_machine_t mm = {0, sizeof *m, snapshot_save, snapshot_load, 0};
+        if (!m0xh_run(&xh, &mm, explore_locations, explore_play, explore_again))
+            fprintf(stderr, "explore: out of memory for the first snapshot\n");
+        if (m->sram_dirty) {
+            if (save_sram(save_name, m)) m->sram_dirty = 0;
+            else okay = 0;
+            sram_flushed = m->frames;
+        }
+        running = 0; /* the presentation loop does not follow the explorer */
+    }
+    while (running && !m->fault && !xh.stop && (!limit || m->frames < limit)) {
         if (!limit) {
             pc_frontend_poll(&pc, 1);
             if (pc.quit) break;
@@ -184,7 +246,9 @@ int main(int argc, char **argv) {
         /* The VDP draws into pixels line by line; without a window only
          * the last frame is needed. */
         m->screen = !limit || m->frames + 1u >= limit ? pixels : NULL;
-        md_full_frame(m, !interp);
+        /* --coverage runs the interpreter: it holds the profile's
+         * counter (native and interpreter agree on every hash) */
+        md_full_frame(m, !interp && !coverage);
         /* the battery back every two seconds of play, and once at the end */
         if (m->sram_dirty && m->frames - sram_flushed >= 120u) {
             if (save_sram(save_name, m)) m->sram_dirty = 0;
@@ -206,7 +270,7 @@ int main(int argc, char **argv) {
             else if (now - deadline > 100u) { deadline = now; frame_fraction = 0; }
         }
     }
-    int okay = (!ppm || write_ppm(ppm, pixels)) && (!coverage || save_coverage(coverage, m));
+    okay = (!ppm || write_ppm(ppm, pixels)) && (!coverage || save_coverage(coverage, m));
     if (m->sram_dirty) { /* the battery once more: everything the game wrote */
         if (save_sram(save_name, m)) m->sram_dirty = 0;
         else okay = 0;

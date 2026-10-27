@@ -298,6 +298,29 @@ def line(host, bios, frames, *extra):
     return re.sub(r" cc=[0-9a-f]+", "", text)
 
 
+def sweep_cart():
+    """The entry jumps through a RAM pointer (JMP [$C002]): the walk stops
+    there; the dead bytes' JSR extended ($BD) and JMP extended ($7E) point
+    at the handler only --vectrex-sweep reaches (the handler spins on its
+    BRA self, both sides identically)."""
+    cart = bytearray(header())
+    handler = 0x400
+
+    def put(*ws):
+        for w in ws:
+            cart.extend(w.to_bytes(2, "big"))
+
+    put(0xcc, handler)          # LDD #handler
+    put(0xf7, 0xc002)           # STD $C002
+    put(0x6e, 0x9f, 0xc002)     # JMP [$C002]: the walk cannot follow
+    put(0xbd, handler)          # JSR extended handler (dead bytes)
+    put(0x7e, handler)          # JMP extended handler (dead bytes)
+    while len(cart) < handler:
+        cart.append(0xff)
+    cart.extend(bytes((0x20, 0xfe)))  # the handler: BRA self
+    return bytes(cart)
+
+
 def main():
     if not shutil.which("cmake") or not shutil.which("ninja"):
         print("cmake/ninja missing: skipped")
@@ -352,6 +375,37 @@ def main():
                   + re.search(r"illegal=\d+", stats).group())
         assert native >= 6, native
         print(f"random code: 8 seeds, precise = interpreter ({native} of them native throughout)")
+
+        # 2b. the sweep and the explorer: the JSR/JMP extended target the
+        # walk cannot prove compiles too (more instructions, the run does
+        # not move) and two seeded explorations discover the same
+        # addresses
+        cart0 = root / "sweep.vec"
+        cart0.write_bytes(sweep_cart())
+        plain_text = run(M0RECOMP, cart0, "--target", "pc", "--bios", bios,
+                         "-o", root / "sweep_plain", "--meta-precise")
+        swept_text = run(M0RECOMP, cart0, "--target", "pc", "--bios", bios,
+                         "-o", root / "sweep_swept", "--meta-precise", "--vectrex-sweep")
+        run("cmake", "-G", "Ninja", "-S", root / "sweep_plain", "-B", root / "sweep_plain" / "build")
+        run("ninja", "-C", root / "sweep_plain" / "build")
+        run("cmake", "-G", "Ninja", "-S", root / "sweep_swept", "-B", root / "sweep_swept" / "build")
+        run("ninja", "-C", root / "sweep_swept" / "build")
+        swept_host = root / "sweep_swept" / "build" / "vectrex_pc"
+        plain_host = root / "sweep_plain" / "build" / "vectrex_pc"
+        assert line(swept_host, bios, 30) == line(plain_host, bios, 30), "the sweep moved the run"
+        compiled = lambda t: int(re.search(r"(\d+) compiled", t).group(1))
+        assert compiled(swept_text) > compiled(plain_text), \
+            f"the sweep compiled nothing more ({compiled(swept_text)} vs {compiled(plain_text)})"
+        explore_locations = None
+        for _ in range(2):
+            ecov = root / "explore.cov"
+            run(interp, "--bios", bios, "--explore", "900", "--random", "3", "--coverage", ecov)
+            found = [l for l in ecov.read_text().splitlines() if not l.startswith("#")]
+            assert len(found) > 5, f"the explorer discovered almost nothing ({len(found)})"
+            assert explore_locations in (None, len(found)), "unstable explore coverage"
+            explore_locations = len(found)
+        print(f"sweep + explorer: {compiled(swept_text) - compiled(plain_text)} swept instructions, "
+              f"{explore_locations} explored locations")
 
         # 3. the META project
         meta = root / "draw_meta"

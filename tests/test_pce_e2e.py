@@ -16,7 +16,10 @@
    entries compile what the walk could not prove); the fast mode must run.
 """
 
+import json
+import re
 import subprocess
+import sys
 import tempfile
 import wave
 from pathlib import Path
@@ -510,12 +513,18 @@ def run_hash(text):
     return [t for t in text.split() if t.startswith("run_hash=")][0]
 
 
+def generate(rom, out, *options):
+    out = Path(out)
+    text = run(GBRECOMP, "--system", "pce", rom, "--target", "desktop",
+               "--output-prefix", "synth", "-o", out, *options)
+    run("cmake", "-G", "Ninja", "-S", out / "host", "-B", out / "host" / "build",
+        "-DCMAKE_BUILD_TYPE=Release")
+    run("ninja", "-C", out / "host" / "build")
+    return out / "host" / "build" / "synth_host", text
+
+
 def project(rom, out, *options):
-    run(GBRECOMP, "--system", "pce", rom, "--target", "desktop", "--output-prefix", "synth", "-o", out, *options)
-    build = out / "host" / "build"
-    run("cmake", "-G", "Ninja", "-S", out / "host", "-B", build, "-DCMAKE_BUILD_TYPE=Release")
-    run("ninja", "-C", build)
-    return build / "synth_host"
+    return generate(rom, out, *options)[0]
 
 
 def picture(work):
@@ -576,15 +585,46 @@ def recompiler(work):
     assert " d" in text, "no dynamic entry in the coverage file"
     assert any(len(t) == 16 for line in text.splitlines() if not line.startswith("#")
                for t in line.split()[1:] if t != "d"), "no MPR context in the coverage file"
-    host = project(rom, work / "profiled", "--meta-precise", "--coverage", coverage)
+    host, budget_text = generate(rom, work / "profiled", "--meta-precise",
+                                 "--coverage", coverage, "--meta-code-budget", "98304")
+    assert int(re.search(r"(\d+) compiled", budget_text).group(1)) <= 4096
     native = run_hash(run(host, *frames))
     assert native == reference, f"precise with coverage {native} != interpreter {reference}"
 
     # the fast mode runs (its slices may overrun; only the game must hold)
-    host = project(rom, work / "fast", "--coverage", coverage)
+    host = project(rom, work / "fast", "--coverage", coverage,
+                   "--meta-code-budget", "98304")
     out = run(host, *frames)
     assert run_hash(out) != "run_hash=00000000", out
     assert run_hash(run(host, *frames)) == run_hash(out), "unstable fast hash"
+
+    # the sweep: the card's JSR/JMP targets outside the walk compile too
+    # (more instructions than the walk alone) and the run does not move
+    _, plain_text = generate(rom, work / "precise", "--meta-precise")
+    swept_host, swept_text = generate(rom, work / "sweep", "--meta-precise", "--pce-sweep")
+    swept = run_hash(run(swept_host, *frames))
+    assert swept == reference, f"precise with sweep {swept} != interpreter {reference}"
+    compiled = lambda t: int(re.search(r"(\d+) compiled", t).group(1))
+    assert compiled(swept_text) > compiled(plain_text), \
+        f"the sweep compiled nothing more ({compiled(swept_text)} vs {compiled(plain_text)})"
+
+    # the explorer: two seeded runs discover the same addresses, and the
+    # m0search plan (explore, then the idle session with no touch) merges
+    explore_locations = None
+    for _ in range(2):
+        cov = work / "explore.cov"
+        run(reference_host, "--explore", "900", "--random", "3", "--coverage", cov)
+        found = [l for l in cov.read_text().splitlines() if not l.startswith("#")]
+        assert len(found) > 10, f"the explorer discovered almost nothing ({len(found)})"
+        assert explore_locations in (None, len(found)), "unstable explore coverage"
+        explore_locations = len(found)
+    search = work / "search"
+    run(sys.executable, str(ROOT / "tools" / "profile" / "m0search.py"), "run",
+        "--system", "pce", "--harness", reference_host, "-o", search,
+        "--sessions", "1", "--frames", "300", "--idle-frames", "300", "--seed", "5")
+    sessions = json.loads((search / "search.json").read_text())["sessions"]
+    assert [s["name"] for s in sessions] == ["explore", "idle"], sessions
+    assert (search / "coverage.merged").exists(), "the m0search plan merged nothing"
     return reference
 
 

@@ -7,7 +7,11 @@
  * executions per address, the MPR contexts they ran under (the bank
  * windows are part of an address's identity for the recompiler), and the
  * addresses a dynamic transfer (RTS, RTI, a jump through a pointer, an
- * interrupt) landed on. */
+ * interrupt) landed on.  --explore FRAMES --random SEED (needs
+ * --coverage) plays the card like the other harnesses' explorer
+ * (m0_explore.h): segments from the start or from a snapshot of the
+ * machine that reached code never seen; no --input is read on that path,
+ * and no sound is rendered. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +19,7 @@
 
 #include "../runtime/pce.h"
 #include "../../consoles/pc/pc_input.h"
+#include "m0_explore_host.h"
 #ifdef PCE_EMBEDDED
 #include "../src/pce_config.h"
 extern const uint8_t pce_rom[];
@@ -46,6 +51,7 @@ static uint32_t fnv(const void *data, size_t n, uint32_t h) {
  * instances by both. */
 static uint32_t pc_hits[65536];
 static uint8_t pc_dyn[65536];
+static uint32_t pc_locations; /* distinct addresses played: the explorer's novelty */
 #define PCE_CTX_MAX 4
 static uint64_t pc_ctx[65536][PCE_CTX_MAX];
 static uint8_t pc_ctx_n[65536];
@@ -59,6 +65,7 @@ static int pce_trace_on; /* --coverage turns the counters on: the hooks
     run on every instruction, the games that only play skip the writes */
 void pce_trace_step(uint16_t pc) {
     if (!pce_trace_on) return;
+    if (!pc_hits[pc]) pc_locations++;
     pc_hits[pc]++;
     const uint64_t m = mpr_now();
     const uint8_t n = pc_ctx_n[pc];
@@ -71,6 +78,76 @@ void pce_trace_step(uint16_t pc) {
 }
 void pce_trace_dyn(uint16_t pc) { if (pce_trace_on) pc_dyn[pc] = 1; }
 
+/* --explore frames: the coverage-guided player of m0_explore.h (the glue
+ * in m0_explore_host.h), from the start or from snapshots that reached
+ * code never seen.  The machine is one flat struct around stable pointers
+ * (the bus's windows land in its own wram and the ROM's bytes), so a
+ * snapshot is the struct itself. */
+static m0xh_t xh;
+static void snapshot_save(void *ctx, void *state) {
+    (void)ctx;
+    memcpy(state, &machine, sizeof machine);
+}
+static void snapshot_load(void *ctx, const void *state) {
+    (void)ctx;
+    memcpy(&machine, state, sizeof machine);
+}
+static unsigned explore_keys(unsigned k) {
+    unsigned keys = 0;
+    if (k & M0X_RIGHT) keys |= PCE_BTN_RIGHT;
+    if (k & M0X_LEFT) keys |= PCE_BTN_LEFT;
+    if (k & M0X_UP) keys |= PCE_BTN_UP;
+    if (k & M0X_DOWN) keys |= PCE_BTN_DOWN;
+    if (k & M0X_B1) keys |= PCE_BTN_I;
+    if (k & M0X_B2) keys |= PCE_BTN_II;
+    if (k & M0X_START) keys |= PCE_BTN_RUN;
+    return keys;
+}
+static uint32_t explore_locations(void) { return pc_locations; }
+static void host_frame(unsigned f);
+static void explore_play(unsigned count) {
+    for (unsigned f = 0; !xh.stop && (xh.on || f < count); f++) host_frame(f);
+}
+static void explore(void) {
+    const m0x_machine_t m = {0, sizeof(pce_t), snapshot_save, snapshot_load, 0};
+    if (!m0xh_run(&xh, &m, explore_locations, explore_play, 0)) return;
+    machine.frames = xh.x.frames; /* the snapshots rewound it */
+}
+
+static FILE *audio;
+static uint32_t audio_bytes;
+static pc_input_t script = {0};
+
+static void host_frame(unsigned f) {
+    if (xh.on) {
+        machine.input = (uint8_t)m0xh_keys(&xh, explore_keys);
+        pce_frame();
+        /* a discovery stops the frame run at this boundary: the machine
+         * is checkpointed with the observation, the segment goes on */
+        m0xh_seen(&xh, pc_locations);
+        return;
+    }
+    machine.input = (uint8_t)pc_input_keys(&script, f);
+    pce_frame();
+    if (audio) {
+        uint8_t samples[512];
+        /* 119210 CPU cycles per frame: the samples that covers */
+        static unsigned carry;
+        carry += AUDIO_RATE * 119210u;
+        unsigned count = carry / 7159090u;
+        carry %= 7159090u;
+        if (count > sizeof samples / 2) count = sizeof samples / 2;
+        psg_render_stereo(&machine.psg, samples, count, AUDIO_RATE);
+        fwrite(samples, 2, count, audio);
+        audio_bytes += count * 2;
+    }
+}
+
+/* `count` frames off the explore path */
+static void play(unsigned count) {
+    for (unsigned f = 0; f < count; f++) host_frame(f);
+}
+
 int main(int argc, char **argv) {
     const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0, *coverage = 0;
     unsigned frames = 60;
@@ -82,6 +159,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_path = argv[++i];
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) coverage = argv[++i];
         else if (!strcmp(argv[i], "--interp")) interp = 1;
+        else if (m0xh_arg(&xh, argc, argv, &i)) { /* --explore, --random */ }
         else rom_path = argv[i];
     }
 #ifdef PCE_NATIVE
@@ -97,7 +175,8 @@ int main(int argc, char **argv) {
         rom = pce_rom;
         rom_bytes = PCE_ROM_SIZE;
 #else
-        fprintf(stderr, "usage: pce_host rom.pce [--frames n] [--ppm f] [--wav f] [--input f] [--coverage f]\n");
+        fprintf(stderr, "usage: pce_host rom.pce [--frames n] [--ppm f] [--wav f] [--input f] "
+                        "[--coverage f] [--explore frames --random seed]\n");
         return 2;
 #endif
     } else {
@@ -123,30 +202,18 @@ int main(int argc, char **argv) {
      * as "i"), '#' lines are comments */
     static const char *const pce_names[8] = {
         "i", "ii", "select", "run", "up", "right", "down", "left"};
-    pc_input_t script = {0};
     if (input_path && !pc_input_load(&script, input_path, pce_names, 8)) return 2;
-    FILE *audio = wav ? fopen(wav, "wb") : 0;
+    if (xh.total && !coverage) {
+        fprintf(stderr, "--explore needs --coverage: the explorer's novelty is the trace's addresses\n");
+        return 2;
+    }
+    audio = wav ? fopen(wav, "wb") : 0;
     if (audio) { /* the header is patched once the length is known */
         const char silence[44] = {0};
         fwrite(silence, 1, 44, audio);
     }
-    uint32_t audio_bytes = 0;
-    for (unsigned f = 0; f < frames; f++) {
-        machine.input = (uint8_t)pc_input_keys(&script, f);
-        pce_frame();
-        if (audio) {
-            uint8_t samples[512];
-            /* 119210 CPU cycles per frame: the samples that covers */
-            static unsigned carry;
-            carry += AUDIO_RATE * 119210u;
-            unsigned count = carry / 7159090u;
-            carry %= 7159090u;
-            if (count > sizeof samples / 2) count = sizeof samples / 2;
-            psg_render_stereo(&machine.psg, samples, count, AUDIO_RATE);
-            fwrite(samples, 2, count, audio);
-            audio_bytes += count * 2;
-        }
-    }
+    if (xh.total && coverage) explore();
+    else play(frames);
     if (audio) {
         fseek(audio, 0, SEEK_SET);
         fprintf(audio, "RIFF");
@@ -218,6 +285,6 @@ int main(int argc, char **argv) {
         fclose(out);
     }
     printf("frames=%u cycles=%u pc=%04x run_hash=%08x\n",
-           frames, (unsigned)machine.cpu.cycles, machine.cpu.pc, h);
+           machine.frames, (unsigned)machine.cpu.cycles, machine.cpu.pc, h);
     return 0;
 }

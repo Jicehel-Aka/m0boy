@@ -1,5 +1,6 @@
 #include "m0boy/megadrive_generator.h"
 #include "m0boy/console_project.h"
+#include "m0boy/sweep.h"
 #include "emitter.h"
 #include <cstdint>
 #include <cstdio>
@@ -65,6 +66,9 @@ void generate_full_native(const std::vector<uint8_t> &rom, const GenerateOptions
         copy_template(o.targets_dir / "sg1000/runtime" / n, src / n);
     if (pc) {
         copy_template(tpl / "platform/md_full_pc.c", src / "md_full_pc.c");
+        /* the harness's --explore player */
+        copy_template(o.targets_dir / "common/host" / "m0_explore.h", src / "m0_explore.h");
+        copy_template(o.targets_dir / "common/host" / "m0_explore_host.h", src / "m0_explore_host.h");
         for (const char *n : {"pc_frontend.c", "pc_frontend.h"})
             copy_template(o.targets_dir / "consoles/pc" / n, src / n);
     } else {
@@ -91,11 +95,28 @@ void generate_full_native(const std::vector<uint8_t> &rom, const GenerateOptions
         const uint32_t to = be32(rom, v * 4);
         if (to < rom.size() && !(to & 1u)) covered.insert(to);
     }
+    /* --megadrive-sweep: the ROM's JSR/JMP absolute long ($4EB9/$4EF9)
+     * whose target lies in the ROM seeds the walk too — the jump-table
+     * handlers reachability cannot prove, compiled the same way.  Nothing
+     * lands there until the game jumps (the ROM is flat: the dispatcher
+     * enters by PC), but the generated file grows: the speculative seeds
+     * are bounded (m0boy/sweep.h's default cap).  The absolute-short
+     * forms target low memory and stay the interpreter's. */
+    size_t swept = 0;
+    if (o.sweep)
+        for (uint32_t at = 0; at + 6 <= rom.size() && swept < m0::kSweepDefault; at += 2) {
+            const uint16_t op = be16(rom, at);
+            if (op != 0x4eb9 && op != 0x4ef9) continue;
+            const uint32_t to = be32(rom, at + 2);
+            if (to < rom.size() && !(to & 1u) && covered.insert(to).second)
+                ++swept;
+        }
     EmitStats stats;
     const std::string code = emit_m68k(rom, covered, stats);
     write(src / "md_full_code.c", code);
-    std::printf("megadrive: %zu instructions in %zu regions, %zu idle loops\n",
-                stats.compiled, stats.regions, stats.idle_loops);
+    std::printf("megadrive: %zu instructions in %zu regions, %zu idle loops%s\n",
+                stats.compiled, stats.regions, stats.idle_loops,
+                o.sweep ? ", the ROM's JSR/JMP targets swept" : "");
     std::ostringstream data;
     data << "#include <stdint.h>\nconst uint32_t md_rom_size = " << rom.size() << "u;\n"
             "const uint8_t md_rom[] = {\n";

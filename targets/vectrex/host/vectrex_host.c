@@ -6,8 +6,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "m0_explore_host.h"
 static uint8_t pixels[VX_W * VX_H];
 static uint8_t bios_image[8192];
+static m0xh_t xh;      /* --explore: the coverage-guided player (needs --coverage) */
+static Vectrex *explore_v;
 /* every stroke the core draws, hashed: the run's fingerprint */
 static uint32_t run_hash = 2166136261u;
 static void state_read(void *data, uint32_t bytes, void *ctx) {
@@ -45,6 +48,8 @@ void vx_draw(Vectrex *v, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
   y0 >>= 8;
   x1 >>= 8;
   y1 >>= 8;
+  if (xh.on)
+    return; /* the explorer hashes the strokes, it does not draw them */
   if (!vx_clip(&x0, &y0, &x1, &y1, VX_W, VX_H))
     return;
   int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1, dy = -abs(y1 - y0),
@@ -176,6 +181,7 @@ extern uint32_t vx_gen_calls, vx_gen_steps;
 #endif
 #ifdef VX_COVERAGE
 extern uint32_t vx_coverage_hits[65536];
+extern uint32_t vx_coverage_locations; /* distinct addresses played */
 static int save_coverage(const char *path) {
   FILE *f = fopen(path, "w");
   if (!f)
@@ -185,6 +191,65 @@ static int save_coverage(const char *path) {
     if (vx_coverage_hits[pc])
       fprintf(f, "%04x %u\n", pc, vx_coverage_hits[pc]);
   return fclose(f) == 0;
+}
+/* --explore frames (m0_explore.h through m0_explore_host.h): the
+ * coverage-guided player, from the start or from snapshots that reached
+ * code never seen; needs --coverage, plays with no --input, no sound and
+ * no picture (the strokes' hash stays).  A snapshot is the machine's own
+ * state stream (vx_machine_state_io) through the snapshot's bytes; the
+ * bus maps and the BIOS pointer go untouched across a load. */
+static uint8_t *snap_buf;
+static uint32_t snap_pos;
+static int snap_load;
+static void snap_io(void *data, uint32_t bytes, void *ctx) {
+  (void)ctx;
+  if (snap_load)
+    memcpy(data, snap_buf + snap_pos, bytes);
+  else
+    memcpy(snap_buf + snap_pos, data, bytes);
+  snap_pos += bytes;
+}
+static void snapshot_save(void *ctx, void *state) {
+  (void)ctx;
+  snap_buf = (uint8_t *)state;
+  snap_pos = 0;
+  snap_load = 0;
+  vx_machine_state_io(explore_v, snap_io, 0, 0);
+}
+static void snapshot_load(void *ctx, const void *state) {
+  (void)ctx;
+  snap_buf = (void *)state;
+  snap_pos = 0;
+  snap_load = 1;
+  vx_machine_state_io(explore_v, snap_io, 0, 1);
+}
+static unsigned explore_keys(unsigned k) {
+  unsigned keys = 0;
+  if (k & M0X_RIGHT) keys |= PC_RIGHT;
+  if (k & M0X_LEFT) keys |= PC_LEFT;
+  if (k & M0X_UP) keys |= PC_UP;
+  if (k & M0X_DOWN) keys |= PC_DOWN;
+  if (k & M0X_B1) keys |= PC_A;
+  if (k & M0X_B2) keys |= PC_B;
+  return keys;
+}
+static uint32_t explore_locations(void) { return vx_coverage_locations; }
+static void explore_play(unsigned count) {
+  (void)count; /* the segments bound themselves: m0x_keys ends them */
+  while (!xh.stop) {
+    input(explore_v, explore_keys(m0xh_keys(&xh, explore_keys)));
+    for (unsigned i = 0; i < VX_W * VX_H; i++)
+      pixels[i] = (uint8_t)(pixels[i] * 3u / 4u);
+    vx_frame(explore_v);
+    /* a discovery stops the frame run at this boundary: the machine is
+     * checkpointed with the observation, the segment goes on */
+    m0xh_seen(&xh, vx_coverage_locations);
+  }
+}
+static int explore_again(void) { return 1; }
+static void explore(void) {
+  const m0x_machine_t m = {0, vx_machine_state_bytes(), snapshot_save, snapshot_load, 0};
+  m0xh_run(&xh, &m, explore_locations, explore_play, explore_again);
 }
 #endif
 int main(int argc, char **argv) {
@@ -210,6 +275,7 @@ int main(int argc, char **argv) {
       interp = 1;
     else if (!strcmp(argv[i], "--coverage") && i + 1 < argc)
       coverage = argv[++i];
+    else if (m0xh_arg(&xh, argc, argv, &i)) { /* --explore, --random */ }
     else if (!strcmp(argv[i], "--save-state") && i + 1 < argc)
       save_state = argv[++i];
     else if (!strcmp(argv[i], "--load-state") && i + 1 < argc)
@@ -220,6 +286,7 @@ int main(int argc, char **argv) {
               "sound.wav] "
               "[--input buttons.input] [--record-input play.input] "
               "[--full-boot] [--interp] [--coverage profile.cov] "
+              "[--explore frames --random seed] "
               "[--save-state file] [--load-state file]\n",
               argv[0]);
       return 2;
@@ -229,9 +296,20 @@ int main(int argc, char **argv) {
     fprintf(stderr, "--bios is required\n");
     return 2;
   }
+  if (xh.total && !coverage) {
+    fprintf(stderr, "--explore needs --coverage: the explorer's novelty is the trace\n");
+    return 2;
+  }
+#ifndef VX_COVERAGE
+  if (xh.total) {
+    fprintf(stderr, "--explore: this build does not record coverage\n");
+    return 2;
+  }
+#endif
   Vectrex *v = calloc(1, sizeof *v);
   if (!v)
     return 1;
+  explore_v = v;
   if (!load_bios(v, bios)) {
     free(v);
     return 1;
@@ -311,7 +389,7 @@ int main(int argc, char **argv) {
     state_read(&audio_fraction, (uint32_t)sizeof audio_fraction, in);
     fclose(in);
   }
-  int headless = frames > 0;
+  int headless = frames > 0 || xh.total != 0;
   if (SDL_Init(headless ? SDL_INIT_TIMER
                         : SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_AUDIO)) {
     fprintf(stderr, "SDL: %s\n", SDL_GetError());
@@ -348,6 +426,10 @@ int main(int argc, char **argv) {
     }
   }
   const int stop_frame = frames > 0 ? frame + frames : 0;
+  if (xh.total) {
+    explore();
+    frame = (int)xh.x.frames; /* the snapshots rewound it */
+  } else
   while (frames <= 0 || frame < stop_frame) {
     Uint32 begin = SDL_GetTicks();
     if (!headless) {

@@ -18,20 +18,21 @@ import m0search  # noqa: E402
 SEARCH = str(Path(__file__).resolve().parents[1] / "tools" / "profile" / "m0search.py")
 
 FAKE_HARNESS = r"""#!/usr/bin/env python3
-# harnais factice : lit le dialecte du coeur, découvre des adresses
-# déterministes tirées du contenu des entrées, les compte en v2.
+# harnais factice : découvre des adresses déterministes tirées du contenu
+# des entrées (ou de la graine de l'explorateur), les compte en v2.
 import hashlib, sys
 from pathlib import Path
 args = sys.argv[1:]
-rom, cov, inp, frames, state_out, state_in = None, None, None, 600, None, None
+rom, cov, inp, frames, explore, seed = None, None, None, 600, 0, 1
 for i, a in enumerate(args):
     if a == "--coverage": cov = args[i + 1]
     elif a == "--input": inp = args[i + 1]
     elif a == "--frames": frames = int(args[i + 1])
-    elif a == "--save-state": state_out = args[i + 1]
-    elif a == "--load-state": state_in = args[i + 1]
+    elif a == "--explore": explore = int(args[i + 1])
+    elif a == "--random": seed = int(args[i + 1])
 text = Path(inp).read_text() if inp else "boot"
-if state_in: text += Path(state_in).read_text()
+if explore:
+    text = "explore %d %d" % (explore, seed)
 digest = hashlib.sha1(((rom or "") + text).encode()).digest()
 pool = [int.from_bytes(digest[i:i + 2], "big") % 0x10000 for i in range(0, 12, 2)]
 hits = {("%04x" % a): 1 + (a % 7) for a in pool[:max(1, len(pool) - len(pool) // 3)]}
@@ -39,7 +40,6 @@ if cov:
     with open(cov, "w") as f:
         for a, n in sorted(hits.items()):
             f.write("%s %d\n" % (a, n))
-if state_out: Path(state_out).write_text(str(frames))
 print("frames=%d run_hash=%08x" % (frames, int(hashlib.sha1(text.encode()).hexdigest()[:8], 16)))
 """
 
@@ -140,41 +140,39 @@ def test_run_and_merge():
              "--frames", "400", "--seed", "9", "--input", manual],
             check=True, capture_output=True, text=True)
 
-        covs = sorted(Path(out).glob("session-*.cov"))
-        check(len(covs) == 3, "trois sessions random")
+        check((Path(out) / "explore.cov").exists(), "l'explorateur a sa couverture")
         check((Path(out) / "manual-01.cov").exists(), "le rejeu manuel a sa couverture")
-        for i in (1, 2, 3):
-            check((Path(out) / ("session-%02d.input" % i)).exists(), "session %d écrite" % i)
+        check((Path(out) / "idle.cov").exists(), "la session idle a sa couverture")
+        check(not list(Path(out).glob("session-*.input")),
+              "pas de sessions scriptées sur un coeur à explorateur")
 
         report = json.loads((Path(out) / "search.json").read_text())
         sessions = report["sessions"]
-        check(len(sessions) == 4, "quatre sessions dans le rapport")
+        check([s["name"] for s in sessions] == ["explore", "idle", "manual-01"],
+              "le plan : l'explorateur, l'idle sans touches, le rejeu manuel")
+        check(sessions[1]["frames"] == 6000, "idle : le budget par défaut")
+        check("--explore" in sessions[0]["argv"] and "--random" in sessions[0]["argv"],
+              "l'explorateur part de la graine")
         check(sessions[0]["new"] == sessions[0]["locations"], "première session : tout est nouveau")
-        covered = set(m0search.parse_coverage(str(covs[0]))[0])
-        check(sessions[1]["new"] <= len(covered | set()), "le compteur de nouveautés est borné")
         check(report["union"] > 0 and report["merged"].endswith("coverage.merged"), "fusion annoncée")
 
         merged = m0search.parse_coverage(str(Path(out) / "coverage.merged"))[0]
         all_keys = set()
-        for cov in list(covs) + [Path(out) / "manual-01.cov"]:
+        for cov in [Path(out) / "explore.cov", Path(out) / "idle.cov", Path(out) / "manual-01.cov"]:
             all_keys |= set(m0search.parse_coverage(str(cov))[0])
         check(set(merged) == all_keys, "la fusion garde toutes les adresses découvertes")
 
-        # NES : dialecte momentary-named et sessions à instantanés
+        # NES : le même plan à l'explorateur ; le dialecte momentary-named
+        # ne sert plus qu'aux rejeux manuels (test_random_and_dialects)
         out_nes = str(Path(tmp) / "search-nes")
         subprocess.run(
             [sys.executable, SEARCH, "run", "--system", "nes", "--harness", harness,
              "-o", out_nes, "--sessions", "2", "--frames", "200"],
             check=True, capture_output=True, text=True)
-        text = (Path(out_nes) / "session-01.input").read_text()
-        check(all("+" in l or l.split()[1].isalpha() for l in text.splitlines()),
-              "NES : boutons par nom")
-        check(all(int(l.split()[0]) == int(l.split()[0]) for l in text.splitlines()),
-              "NES : trames numériques")
         report = json.loads((Path(out_nes) / "search.json").read_text())
-        check((Path(out_nes) / "session-01.state").is_file(), "NES : état de fin conservé")
-        check(report["sessions"][1]["start_frame"] == 200, "NES : seconde session reprise à l'image 200")
-        check("--load-state" in report["sessions"][1]["argv"], "NES : le harnais recharge l'état")
+        check([s["name"] for s in report["sessions"]] == ["explore", "idle"],
+              "NES : l'explorateur puis l'idle sans touches")
+        check("--explore" in report["sessions"][0]["argv"], "NES : le harnais reçoit --explore")
 
 
 def main():

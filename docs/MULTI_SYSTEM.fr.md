@@ -132,7 +132,10 @@ la table des faits, et un refus dit lequel des deux manque et pourquoi
 | vectrex | meta, pc (6809 recompilé, interpréteur de repli ; voir `docs/VECTREX.fr.md`) | (pokitto, espboy et ESP32 non câblés) |
 | megadrive | desktop, pc, aka (68000 recompilé, interpréteur de repli ; voir `docs/MEGADRIVE.fr.md`) | (meta : le vieux profil « 4 Kio » seulement) |
 
-Les cibles pc (fenêtre SDL2, la carte en fichier `sd.img`), odroid
+Les cibles pc (fenêtre SDL2, la carte en fichier `sd.img` ; les save states
+sans carte — les emplacements d'un même fichier à plat dans le répertoire
+courant, `m0_state.cpp` — et les sauvegardes de cartouche Game Boy via
+l'image), odroid
 (ODROID-GO : ESP32, ILI9341 320×240, carte SD, DAC) et aka (Gamebuino
 AKA CORE v1.4 : ESP32-S3, 8 Mio flash, écran i80 320×240, SDMMC,
 expandeurs I²C, codec TAS2505 — voir `docs/AKA.fr.md`) partagent le noyau ESP32 de
@@ -450,6 +453,43 @@ bouton 1 et bouton 2 (bits 0 à 5) ; `--start-frame` tient le bouton 1 pendant
 dix images. Le `run_hash` couvre registres, cycles, RAM, VRAM, état VDP/PSG,
 RAM de cartouche et image ; chaque ligne du rendu des consoles est comparée
 au rendu de référence (`out_mismatch`).
+
+Chaque cœur à couverture jouée (gameboy, sg1000, msx, gamegear, nes,
+vectrex, megadrive, pce) propose aussi `--explore FRAMES --random SEED` :
+des segments d'entrées aléatoires, un instantané de la machine entre
+segments, et des segments qui s'arrêtent dès qu'ils découvrent une adresse
+interprétée nouvelle — l'explorateur privilégie les reprises qui ouvrent du
+code jamais vu. L'explorateur est partagé
+(`targets/common/host/m0_explore.h`, branché par
+`targets/common/host/m0_explore_host.h` : analyse des arguments, traduction
+des touches, boucle à segments) ; un cœur nouveau le raccorde en quelques
+lignes. Le Game Boy garde son propre câblage : ses instantanés ne se posent
+qu'aux points sûrs du runtime (longjmp). Le SG-1000 joue chaque segment
+entier sans reprise — `sg1000_t` doit rester identique à l'octet pour la
+chaîne firmware/référence — et compte la nouveauté en scannant les adresses
+touchées à la fin des segments. `tools/profile/m0search.py` enchaîne une
+session explore, une partie sans touche (`m0_idle.h` : logos, titres,
+démos) et les parties scriptées, puis fusionne la couverture pour le
+générateur ; seul le PICO-8 reste entièrement scripté (pas de couverture à
+consommer).
+
+Cinq drapeaux étendent la marche statique aux cibles d'appel et de saut
+que l'atteignabilité ne prouve pas (gestionnaires derrière une table de
+sauts, appelants derrière une table de bancs) : `--pce-sweep` (HuC6280),
+`--nes-sweep` (6502), `--vectrex-sweep` (6809), `--megadrive-sweep`
+(68000) et `--meta-sweep` (SM83, cible console). Chacun balaye la ROM
+pour les encodages d'appel/saut absolu de son processeur et sème les
+cibles comme entrées de région. La discipline est partagée
+(`recompiler/include/m0boy/sweep.h`) : la marche de la couverture n'a
+jamais de plafond ; le balayage et son expansion partagent un budget —
+sur le PCE, le NES et le Vectrex, ce qui reste du budget code
+(`--meta-code-budget`), 16384 instructions sinon ; sur le Mega Drive et
+le Game Boy, 16384 instructions. Rien ne s'exécute tant que le jeu n'y
+va pas : une entrée n'est prise que sous son propre contexte (octets MPR
+du PCE, banque vérifiée du Game Boy, PC ailleurs) et la sémantique
+compilée est celle de l'interpréteur. Le code généré grossit, le
+`run_hash` ne doit pas bouger — chaque e2e (PCE, NES, Vectrex, Mega
+Drive, cible META) vérifie les deux.
 
 `--meta-precise` synchronise avant chaque instruction et calcule tous les
 drapeaux : le code recompilé doit alors donner exactement le `run_hash` de

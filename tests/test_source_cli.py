@@ -21,15 +21,15 @@ assert "nes cpu=6502 inspect=yes disasm=yes codegen=desktop,meta,pokitto,pc" in 
 assert "pce cpu=huc6280 inspect=yes disasm=yes codegen=desktop" in listing
 assert "vectrex cpu=6809 inspect=yes disasm=no codegen=meta,pc" in listing
 assert "megadrive cpu=m68k inspect=yes disasm=no codegen=desktop,meta,pc" in listing
-assert "meta cpu=m0plus inspect=yes disasm=yes codegen=unavailable" in listing
-assert "pokitto cpu=m0plus inspect=yes disasm=yes codegen=unavailable" in listing
+assert "meta cpu=m0plus inspect=yes disasm=yes codegen=pc" in listing
+assert "pokitto cpu=m0plus inspect=yes disasm=yes codegen=pc" in listing
 targets = run("--list-targets", contains='meta host=no ram=32K')
 assert 'desktop host=yes' in targets and 'pc host=yes' in targets
 assert 'odroid host=no ram=320K psram=4096K' in targets and 'aka host=no ram=320K psram=8192K' in targets
 assert 'espboy host=no ram=80K psram=0K flash=1024K screen=128x128 sd=no' in targets
 run("--system", ok=False, contains="requires a value")
 run("--cpu", "68000", ok=False, contains="unknown --cpu")
-run("--system", "snes", ok=False, contains="unknown --system")
+run("--system", "unknown", ok=False, contains="unknown --system")
 assert "sms cpu=z80" in listing and "gg cpu=z80" in listing
 with tempfile.TemporaryDirectory() as temporary:
     root = Path(temporary)
@@ -50,7 +50,11 @@ with tempfile.TemporaryDirectory() as temporary:
         firmware.write_bytes(image)
         assert f"BL ${base + 12:08X}" in run(
             firmware, "--system", system, "--disasm", "--limit", "1")
-        run(firmware, "--system", system, "--target", "pc", ok=False,
+        project = root / (system + "_pc")
+        run(firmware, "--system", system, "--target", "pc", "-o", project,
+            contains="PC firmware project")
+        assert (project / "run.py").is_file() and (project / "src/m0_native.c").is_file()
+        run(firmware, "--system", system, "--target", "aka", ok=False,
             contains="code generation is not available")
         image[4:8] = (base + 8).to_bytes(4, "little")
         firmware.write_bytes(image)

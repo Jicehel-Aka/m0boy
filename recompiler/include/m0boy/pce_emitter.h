@@ -27,6 +27,7 @@ struct EmitOptions {
     bool precise = false;        /* the slice ends after the same instruction as the interpreter's */
     size_t max_instructions = 0; /* 0: every reachable instruction */
     unsigned check_cycles = 48;  /* fast mode: the most cycles between two budget checks */
+    bool sweep = false;          /* the card swept for JSR/JMP abs targets the walk cannot reach */
 };
 
 struct EmitStats {

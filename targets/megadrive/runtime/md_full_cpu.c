@@ -416,8 +416,13 @@ void md_full_step_interp(MdFull *m) {
     ++m->fallback_hits;
     const uint32_t pc = m->pc;
     m->fault_pc = pc;
-    if (m->coverage && pc < m->coverage_bytes * 8u)
-        m->coverage[pc >> 3] |= (uint8_t)(1u << (pc & 7u));
+    if (m->coverage && pc < m->coverage_bytes * 8u) {
+        const uint8_t bit = (uint8_t)(1u << (pc & 7u));
+        if (!(m->coverage[pc >> 3] & bit)) {
+            m->coverage[pc >> 3] |= bit;
+            m->coverage_locations++; /* the explorer's novelty */
+        }
+    }
     const uint16_t op = md_rd16(m, pc);   /* timed by md_full_execute */
     m->pc = pc + 2u;
     if (m->fault) return;

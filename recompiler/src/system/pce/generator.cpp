@@ -181,6 +181,9 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
         /* the input scripts' reader (the harness's --input, the window's
          * --input / --record-input) */
         copy_template(o.meta_templates.parent_path() / "consoles" / "pc" / "pc_input.h", src / "pc_input.h");
+        /* the harness's --explore player */
+        copy_template(o.meta_templates.parent_path() / "common" / "host" / "m0_explore.h", src / "m0_explore.h");
+        copy_template(o.meta_templates.parent_path() / "common" / "host" / "m0_explore_host.h", src / "m0_explore_host.h");
 
         /* the recompiled HuC6280 code: the vectors, the profile, what they
          * reach under the MPR contexts the walk can prove */
@@ -189,6 +192,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             EmitOptions emit;
             emit.rom_bytes = uint32_t(rom_bytes);
             emit.precise = o.precise;
+            emit.sweep = o.sweep;
             const unsigned bpi = o.bytes_per_instruction ? o.bytes_per_instruction : 24u;
             emit.max_instructions = o.code_budget_bytes ? o.code_budget_bytes / bpi : 0;
             EmitStats es;
