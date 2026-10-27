@@ -29,9 +29,9 @@ constexpr std::array console_targets = {
 };
 // The Sega consoles' frontends run on every destination, the ESPboy included.
 constexpr std::array sega_targets = console_targets;
-// PICO-8: compiled to C for the META, the Pokitto and the ESPboy (the PC
-// follows once its generator grows a branch).
-constexpr std::array pico8_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::espboy, TargetId::pc};
+// PICO-8: compiled to C for the META, the Pokitto, the ESPboy and the
+// Gamebuino AKA (the ESP32 family's shared core), plus the PC.
+constexpr std::array pico8_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::espboy, TargetId::pc, TargetId::aka};
 // MSX: the SG-1000 frontends (TMS9918A, Z80); the ESPboy and PC builds are
 // not wired up.
 constexpr std::array msx_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::pc};
@@ -43,9 +43,9 @@ constexpr std::array msx_targets = {TargetId::desktop, TargetId::meta, TargetId:
 // does not fit a 256 KiB flash either).
 constexpr std::array nes_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::pc};
 constexpr std::array pce_targets = {TargetId::desktop, TargetId::pc, TargetId::aka};
-// Vectrex: the 6809 recompiled in front of the interpreter on the META,
-// and the SDL host (pc).
-constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc};
+// Vectrex: the 6809 recompiled in front of the interpreter on the META and
+// the Gamebuino AKA (the ESP32 family's shared core), and the SDL host (pc).
+constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc, TargetId::aka};
 constexpr std::array megadrive_targets = {TargetId::desktop, TargetId::meta, TargetId::pc, TargetId::aka};
 // SNES, phase 1: the 65C816's interpreter and recompiler on the desktop
 // harness — the picture (PPU, APU) comes later.

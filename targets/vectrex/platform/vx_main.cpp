@@ -1,12 +1,13 @@
-/* Vectrex frontend for the Gamebuino META: the cartridge and the system ROM
- * (vx_cart.c) on the core in ../runtime, the console's LCD, audio, clock and
- * button drivers.
+/* Vectrex frontend for the Gamebuino META and the ESP32 family (Gamebuino
+ * AKA): the cartridge and the system ROM (vx_cart.c) on the core in
+ * ../runtime, the console's LCD, audio, clock and button drivers.
  *
  * The 512x512 beam square is drawn at 128x128 in a 4-bit phosphor (8 KiB),
  * centred on the panel.  The frame's 30000 cycles run in 128 slices; after
  * each one the next panel row is sent and fades, so the LCD's DMA overlaps
- * the emulation instead of following it.  A stroke stays lit for two frames
- * (VX_FADE): the games that draw at 25 Hz do not blink.
+ * the emulation instead of following it (the META; on the ESP32 panels the
+ * send is synchronous and the fade still spans two frames).  A stroke stays
+ * lit for two frames (VX_FADE): the games that draw at 25 Hz do not blink.
  *
  * Buttons: the d-pad is the stick, A, B, MENU and HOME the four buttons;
  * HOME held half a second opens the option menu (sg_menu.h). */
@@ -16,7 +17,11 @@
 #include "m0_clock.h"
 #include "m0_audio.h"
 #include "m0_lcd.h"
+#if M0_TARGET_ESP32
+#include "aka_hw.h"
+#else
 #include "meta_hw.h"
+#endif
 #include "m0_pad.h"
 #include "sg_frontend.h"
 #include "m0_state.h"
@@ -259,11 +264,13 @@ static void restart(void) {
         deadline = m0_micros(); \
         skipped_run = 0; \
     } while (0)
-#if META_USB_SERIAL
+#if M0_TARGET_META && META_USB_SERIAL
 #define VX_MENU_USB_STOP() meta_usb_stop()
 #else
 #define VX_MENU_USB_STOP() do { } while (0)
 #endif
+#if M0_TARGET_META
+/* The USB bootloader (sam-ba) directly, as the Game Boy frontend does. */
 #define SG_MENU_BOOTLOADER() do { \
         m0_audio_stop(); \
         NVIC_DisableIRQ(DMAC_IRQn); \
@@ -272,6 +279,20 @@ static void restart(void) {
         *(volatile uint32_t *)0x20007FFC = 0x3aecfd88u; \
         NVIC_SystemReset(); \
     } while (0)
+#if META_USB_SERIAL
+#include "meta_usb_msc.h"
+#define SG_MENU_USB_SD() do { \
+        m0_lcd_end_frame(); \
+        m0_audio_stop(); \
+        NVIC_DisableIRQ(DMAC_IRQn); \
+        m0_watchdog_stop(); \
+        unsigned rows; \
+        uint8_t *sector = (uint8_t *)m0_menu_scratch(&rows); \
+        meta_usb_msc_enter(sector); \
+    } while (0)
+#endif
+/* Hand the console back to the Gamebuino loader (the Game Boy frontend's
+ * enter_loader); the ESP32 consoles restart into their own firmware. */
 #define VX_MENU_QUIT() do { \
         m0_lcd_end_frame(); \
         m0_clock_set_lcd_spi(24); \
@@ -282,6 +303,9 @@ static void restart(void) {
         VX_MENU_USB_STOP(); \
         ((void (*)(void))(*((uint32_t *)0x3FF4)))(); \
     } while (0)
+#else
+#define VX_MENU_QUIT() do { esp32_restart(); } while (0)
+#endif
 #define VX_MENU_RESUME() do { \
         m0_lcd_fill(0); \
         deadline = m0_micros(); \
@@ -301,21 +325,11 @@ static void restart(void) {
     } while (0)
 static int vx_card_open(void) {
     if (!m0_sd_init()) return 0;
+#if M0_TARGET_META /* the META loader's app start identifies the game's folder */
     m0_fat_dir = m0_fat_game_dir(m0_card_sector, SG_MENU_STATE_BUF(), VX_BIN_NAME83, META_APP_START);
+#endif
     return 1;
 }
-#if META_USB_SERIAL
-#include "meta_usb_msc.h"
-#define SG_MENU_USB_SD() do { \
-        m0_lcd_end_frame(); \
-        m0_audio_stop(); \
-        NVIC_DisableIRQ(DMAC_IRQn); \
-        m0_watchdog_stop(); \
-        unsigned rows; \
-        uint8_t *sector = (uint8_t *)m0_menu_scratch(&rows); \
-        meta_usb_msc_enter(sector); \
-    } while (0)
-#endif
 #ifndef SG_MENU_TAP
 #define SG_MENU_TAP() do { } while (0)
 #endif
@@ -338,7 +352,12 @@ static void frame(void) {
     SG_PACE_FRAME(deadline, skip_video, skipped_run, VX_MAX_SKIP);
 }
 
+#if M0_TARGET_ESP32
+extern "C" int m0boy_console_main(void); /* the console file's setup() */
+int m0boy_console_main() {
+#else
 int main() {
+#endif
     SG_PLATFORM_INIT();
     video_init();
     restart();

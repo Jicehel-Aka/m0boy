@@ -126,10 +126,10 @@ la table des faits, et un refus dit lequel des deux manque et pourquoi
 |---|---|---|
 | gameboy, sg1000, gg, sms | desktop, meta, pokitto, espboy, pc, odroid, aka | — |
 | msx | desktop, meta, pokitto, pc | (espboy non câblé) |
-| pico8 | desktop, meta, pokitto, espboy, pc | — |
+| pico8 | desktop, meta, pokitto, espboy, pc, aka | — |
 | nes | desktop, meta, pokitto, pc (6502 recompilé, interpréteur de repli) | — |
 | pce | desktop, pc (interpréteur HuC6280 ; voir `docs/PCE.fr.md`) | consoles > 32 Kio RAM, VRAM 64 Kio |
-| vectrex | meta, pc (6809 recompilé, interpréteur de repli ; voir `docs/VECTREX.fr.md`) | (pokitto, espboy et ESP32 non câblés) |
+| vectrex | meta, pc, aka (6809 recompilé, interpréteur de repli ; voir `docs/VECTREX.fr.md`) | (pokitto et espboy non câblés) |
 | megadrive | desktop, pc, aka (68000 recompilé, interpréteur de repli ; voir `docs/MEGADRIVE.fr.md`) | (meta : le vieux profil « 4 Kio » seulement) |
 
 Les cibles pc (fenêtre SDL2, la carte en fichier `sd.img` ; les save states

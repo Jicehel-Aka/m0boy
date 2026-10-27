@@ -16,10 +16,10 @@ def run(*args, ok=True, contains=""):
 
 listing = run("--list-systems", contains="sg1000 cpu=z80 inspect=yes disasm=yes codegen=desktop,meta,pokitto")
 assert "gameboy cpu=sm83 inspect=yes disasm=yes codegen=desktop,meta,pokitto" in listing
-assert "pico8 cpu=lua inspect=yes disasm=no codegen=desktop,meta,pokitto,espboy,pc" in listing
+assert "pico8 cpu=lua inspect=yes disasm=no codegen=desktop,meta,pokitto,espboy,pc,aka" in listing
 assert "nes cpu=6502 inspect=yes disasm=yes codegen=desktop,meta,pokitto,pc" in listing
 assert "pce cpu=huc6280 inspect=yes disasm=yes codegen=desktop" in listing
-assert "vectrex cpu=6809 inspect=yes disasm=no codegen=meta,pc" in listing
+assert "vectrex cpu=6809 inspect=yes disasm=no codegen=meta,pc,aka" in listing
 assert "megadrive cpu=m68k inspect=yes disasm=no codegen=desktop,meta,pc" in listing
 assert "meta cpu=m0plus inspect=yes disasm=yes codegen=pc" in listing
 assert "pokitto cpu=m0plus inspect=yes disasm=yes codegen=pc" in listing
