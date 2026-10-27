@@ -85,6 +85,87 @@ std::set<uint32_t> walk(const std::vector<uint8_t>& bytes, uint32_t base,
 }
 }
 
+/* Straight-line blocks of the translated instructions.  A block starts at a
+ * leader (branch target, return site, entry without a sequential
+ * predecessor) and runs up to a branch or the next leader.  Each instruction
+ * keeps the interpreter's timing: its own fetch through the NVM cache model,
+ * the body of its entry, then the time is applied and the machine's events
+ * are looked at, exactly where step() looks at them; only the dispatch
+ * (page switch, op check, per-step bookkeeping) is paid once per block. */
+bool write_blocks(const fs::path& path,
+                  const std::map<uint32_t, std::pair<uint16_t, std::string>>& bodies) {
+    auto next_of = [](uint32_t pc, uint16_t op) { return pc + ((op & 0xf800u) >= 0xe800u ? 4u : 2u); };
+    auto terminator = [](const std::string& body) { return body.find("BRANCH(") != std::string::npos; };
+    std::set<uint32_t> leaders, sequential;
+    for (const auto& [pc, entry] : bodies) {
+        const uint32_t next = next_of(pc, entry.first);
+        if (!terminator(entry.second)) { sequential.insert(next); continue; }
+        leaders.insert(next);
+        for (size_t at = entry.second.find("BRANCH(0x"); at != std::string::npos;
+             at = entry.second.find("BRANCH(0x", at + 1))
+            leaders.insert(uint32_t(std::stoul(entry.second.substr(at + 9), nullptr, 16)));
+    }
+    for (const auto& [pc, entry] : bodies)
+        if (!sequential.count(pc)) leaders.insert(pc);
+    std::ofstream out(path);
+    std::ostringstream dispatch;
+    out << "/* Generated ARMv6-M blocks (META). */\n";
+    size_t blocks = 0;
+    for (uint32_t leader : leaders) {
+        if (!bodies.count(leader)) continue;
+        std::ostringstream code;
+        code << std::hex;
+        unsigned count = 0, bound = 0;
+        uint32_t pc = leader;
+        for (; count < 24; ++count) {
+            const auto found = bodies.find(pc);
+            if (found == bodies.end() || (count && leaders.count(pc))) break;
+            const uint16_t op = found->second.first;
+            const std::string& body = found->second.second;
+            const bool branch = terminator(body);
+            /* what can reach the machine: memory, the interrupt mask, a spin */
+            const bool hardware = branch || body.find("LD") != std::string::npos ||
+                                  body.find("ST") != std::string::npos || body.find("ldm_t") != std::string::npos ||
+                                  body.find("stm_t") != std::string::npos || body.find("irq_work") != std::string::npos ||
+                                  body.find("primask") != std::string::npos || body.find("stepTicks") != std::string::npos ||
+                                  body.find("flash[") != std::string::npos;
+            code << "{ const uint32_t pc = 0x" << pc << "u, op = 0x" << op << "u; (void)op;\n";
+            if (hardware) {
+                bound += 24;
+                code << "w = nvm_miss(pc); fw0 = flashWaits; lastExecPc = pc; regs[15] = pc + 4u; cyc = 1;\n"
+                     << "switch (0) { default: " << body << " goto ok" << count
+                     << "; }\nregs[15] = pc + 2u; return 1;\nok" << count << ":\n"
+                     << "w += flashWaits - fw0; step_flush(T, cyc + w); }\n";
+            } else {
+                /* nothing here can raise an event and the entry check left room
+                 * for the whole block: the time is added without looking */
+                bound += 2;
+                code << "w = nvm_miss(pc); regs[15] = pc + 4u; cyc = 1;\n"
+                     << "switch (0) { default: " << body << " goto ok" << count
+                     << "; }\nregs[15] = pc + 2u; return 1;\nok" << count << ":\n"
+                     << "tickCount += cyc + w; }\n";
+            }
+            pc = next_of(pc, op);
+            if (branch) { ++count; break; }
+            if (hardware && bodies.count(pc) && !leaders.count(pc))
+                code << "if (__builtin_expect(((int32_t)(tickCount - evtAt) >= 0) | "
+                        "((int32_t)(tickCount - emu_nextFrameTick) >= 0), 0)) return 1;\n";
+        }
+        if (!count) continue;
+        out << std::dec << "static __attribute__((noinline)) int gm0_blk_" << leader << "(void) {\n"
+               "const int T = TGT_META; uint32_t w, cyc, fw0 = 0;\n"
+               "int32_t room = (int32_t)(timerDeadline - tickCount), r = (int32_t)(evtAt - tickCount);\n"
+               "if (r < room) room = r;\n"
+               "r = (int32_t)(emu_nextFrameTick - tickCount); if (r < room) room = r;\n"
+               "if (room < " << bound << ") return 0;\n" << code.str() << "return 1;\n}\n";
+        dispatch << "case 0x" << std::hex << leader << std::dec << "u: return gm0_blk_" << leader << "();\n";
+        ++blocks;
+    }
+    out << "static int gm0_block_run(uint32_t pc) {\nswitch (pc) {\n" << dispatch.str()
+        << "default: return 0; }\n}\n";
+    return bool(out);
+}
+
 bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
               std::string& error, const fs::path& runtime_dir,
               const std::vector<fs::path>& coverage) {
@@ -150,6 +231,7 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
             std::ofstream code(source / "gm0_native.inc");
             std::ofstream dispatch(source / "gm0_native_dispatch.inc");
             std::map<uint32_t, std::string> pages;
+            std::map<uint32_t, std::pair<uint16_t, std::string>> bodies;
             for (uint32_t pc : compiled) {
                 const uint16_t op = half(bytes, pc - base);
                 std::ostringstream body;
@@ -307,8 +389,25 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                 } else if ((op & 0xf000u) == 0xd000u && ((op >> 8) & 15u) < 14u) {
                     static const char* conditions[] = {"fZ", "!fZ", "fC", "!fC", "fN", "!fN", "fV", "!fV",
                         "fC && !fZ", "!fC || fZ", "fN == fV", "fN != fV", "!fZ && fN == fV", "fZ || fN != fV"};
-                    body << "if (" << conditions[(op >> 8) & 15u] << ") BRANCH(0x"
-                         << pc + 4u + uint32_t(int32_t(int8_t(op)) * 2) << "u);";
+                    const uint32_t to = pc + 4u + uint32_t(int32_t(int8_t(op)) * 2);
+                    /* ldr/ldrb/ldrh rt,[rn,#i]; cmp rt,#n; bcond back: a poll on
+                     * a RAM word that only an event can change.  The runtime
+                     * spends the wait up to the next event (gm0 idle_spin). */
+                    std::string spin;
+                    if (to + 4u == pc && pc - base >= 4u && to >= base) {
+                        const uint16_t ld = half(bytes, to - base), cmp = half(bytes, to + 2u - base);
+                        const unsigned kind = ld & 0xf800u;
+                        if ((kind == 0x6800u || kind == 0x7800u || kind == 0x8800u) &&
+                            (cmp & 0xf800u) == 0x2800u && ((cmp >> 8) & 7u) == (ld & 7u) &&
+                            (ld & 7u) != ((ld >> 3) & 7u)) {
+                            const unsigned imm5 = (ld >> 6) & 31u, scale = kind == 0x6800u ? 4u : kind == 0x8800u ? 2u : 1u;
+                            std::ostringstream address;
+                            address << "idle_spin(0x" << std::hex << pc << "u, regs[" << std::dec << ((ld >> 3) & 7u)
+                                    << "] + " << imm5 * scale << "u); ";
+                            spin = address.str();
+                        }
+                    }
+                    body << "if (" << conditions[(op >> 8) & 15u] << ") { " << spin << "BRANCH(0x" << to << "u); }";
                 }
                 else if ((op & 0xf800u) == 0xe000u) {
                     const int32_t off = int32_t((op & 0x7ffu) << 21) >> 20;
@@ -349,6 +448,7 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                 else if ((op & 0xff00u) == 0xbf00u || (op & 0xff00u) == 0xbe00u ||
                          (op & 0xfe00u) == 0xde00u || (op & 0xf000u) == 0xb000u) body << ";";
                 else continue;
+                bodies[pc] = {op, body.str()};
                 std::ostringstream entry;
                 entry << "case 0x" << std::hex << pc << "u: if (op == 0x" << op
                       << "u) { " << body.str() << " goto gm0_native_done; } break;\n";
@@ -365,6 +465,12 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                          << "(T, pc, op, waits, cycles);\n";
             }
             if (!code || !dispatch) { error = "Cannot write gm0 native entries"; return false; }
+            if (system == SystemId::meta && !write_blocks(source / "gm0_blocks.inc", bodies)) {
+                error = "Cannot write gm0 block entries";
+                return false;
+            }
+            if (system != SystemId::meta) std::ofstream(source / "gm0_blocks.inc") << "/* META only */\n"
+                "static int gm0_block_run(uint32_t pc) { (void)pc; return 0; }\n";
         }
         {
             std::ofstream rom(source / "m0_rom.c");

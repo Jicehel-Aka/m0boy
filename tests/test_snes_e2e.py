@@ -14,7 +14,7 @@ def run(*args):
 # mode: the long forms and an open-bus read inside a region (the precise
 # mode leaves before both).  A wrong long read or a stale open-bus value
 # repaints the backdrop blue.
-tail = bytes([
+_tail = bytes([
     0xc2, 0x20,                    # REP #$20: 16-bit accumulator
     0xa2, 0x00, 0x00,              # LDX #$0000
     0xbf, 0x00, 0x80, 0x00,        # LDA $008000,X: $105C (the bank's first bytes)
@@ -34,35 +34,44 @@ tail = bytes([
     0x80, 0xfe,                    # ok: the idle loop
 ])
 
-with tempfile.TemporaryDirectory() as tmp:
-    root = pathlib.Path(tmp)
+_program = bytes([
+    0x18, 0xfb, 0xc2, 0x20,       # native mode, 16-bit accumulator
+    0xa9, 0x04, 0x01, 0x8d, 0x20, 0x01,  # store $0104
+    0x4e, 0x20, 0x01,             # shift memory
+    0xc2, 0x10, 0xa9, 0x00, 0x00, # 16-bit indexes, move one byte
+    0xa2, 0x00, 0x80, 0xa0, 0x26, 0x01, 0x54, 0x7e, 0x00,
+    0x4b, 0xab, 0xe2, 0x20,       # DBR = mirrored I/O bank; A is 8-bit
+    0xa9, 0x00, 0x8d, 0x21, 0x21,  # CGADD = 0
+    0xa9, 0x1f, 0x8d, 0x22, 0x21,  # red, low byte
+    0xa9, 0x00, 0x8d, 0x22, 0x21,  # high byte
+    0xa9, 0x0f, 0x8d, 0x00, 0x21,  # display enabled, full brightness
+    0xa9, 0x53, 0x8d, 0x23, 0x01,  # WRAM mirror
+    0xa9, 0x01, 0x8d, 0x16, 0x40,  # strobe controller
+    0xa9, 0x00, 0x8d, 0x16, 0x40,
+    0xad, 0x16, 0x40, 0x29, 0x01, 0x8d, 0x24, 0x01,  # save B
+])
+
+
+def build_rom():
+    """The synthetic LoROM: backdrop red, the long forms and an open-bus
+    read in the tail, the mirrored bank's JML."""
     rom = bytearray([0xea] * 0x8000)
     # Jump to the mirrored bank, set the backdrop red, update WRAM, then run
     # the tail.
     rom[0:4] = bytes([0x5c, 0x10, 0x80, 0x80])
-    program = bytes([
-        0x18, 0xfb, 0xc2, 0x20,       # native mode, 16-bit accumulator
-        0xa9, 0x04, 0x01, 0x8d, 0x20, 0x01,  # store $0104
-        0x4e, 0x20, 0x01,             # shift memory
-        0xc2, 0x10, 0xa9, 0x00, 0x00, # 16-bit indexes, move one byte
-        0xa2, 0x00, 0x80, 0xa0, 0x26, 0x01, 0x54, 0x7e, 0x00,
-        0x4b, 0xab, 0xe2, 0x20,       # DBR = mirrored I/O bank; A is 8-bit
-        0xa9, 0x00, 0x8d, 0x21, 0x21,  # CGADD = 0
-        0xa9, 0x1f, 0x8d, 0x22, 0x21,  # red, low byte
-        0xa9, 0x00, 0x8d, 0x22, 0x21,  # high byte
-        0xa9, 0x0f, 0x8d, 0x00, 0x21,  # display enabled, full brightness
-        0xa9, 0x53, 0x8d, 0x23, 0x01,  # WRAM mirror
-        0xa9, 0x01, 0x8d, 0x16, 0x40,  # strobe controller
-        0xa9, 0x00, 0x8d, 0x16, 0x40,
-        0xad, 0x16, 0x40, 0x29, 0x01, 0x8d, 0x24, 0x01,  # save B
-    ])
-    rom[0x10:0x10 + len(program)] = program
-    rom[0x10 + len(program):0x10 + len(program) + len(tail)] = tail
-    assert rom[0x7f] == tail[0x7f - 0x5a] == 0xa9  # the fail block sits at $807F
+    rom[0x10:0x10 + len(_program)] = _program
+    rom[0x10 + len(_program):0x10 + len(_program) + len(_tail)] = _tail
+    assert rom[0x7f] == _tail[0x7f - 0x5a] == 0xa9  # the fail block sits at $807F
     rom[0x7fd5] = 0x20
     rom[0x7ffc:0x7ffe] = bytes([0x00, 0x80])
+    return bytes(rom)
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    root = pathlib.Path(tmp)
     image = root / 'fixture.sfc'
-    image.write_bytes(rom)
+    image.write_bytes(build_rom())
+    program_bytes = len(_program)
     project = root / 'project'
     report = run(sys.argv[1], '--system', 'snes', image, '--target', 'desktop',
                  '--output-prefix', 'synth', '-o', project, '--meta-precise')
@@ -109,9 +118,10 @@ with tempfile.TemporaryDirectory() as tmp:
         raise AssertionError('unexpected fast-mode backdrop capture')
 
     # The generated STP must leave the same bus and sleep state as the interpreter.
-    rom[0x10 + len(program) + len(tail) - 2] = 0xdb
+    stop_rom = bytearray(build_rom())
+    stop_rom[0x10 + program_bytes + len(_tail) - 2] = 0xdb
     image_path = root / 'stop.sfc'
-    image_path.write_bytes(rom)
+    image_path.write_bytes(stop_rom)
     stop_project = root / 'stop-project'
     run(sys.argv[1], '--system', 'snes', image_path, '--target', 'desktop',
         '--output-prefix', 'stop', '-o', stop_project, '--meta-precise')

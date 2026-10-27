@@ -586,6 +586,16 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
         if (o.code_budget_bytes) budget = o.target == TargetId::desktop ? o.code_budget_bytes : std::min(budget, o.code_budget_bytes);
         const bool streamed = !page_index.empty();
         if (budget) eo.max_instructions = budget / per_instruction;
+        /* No flash to share (the PC and the ESP32 consoles embed the whole ROM): the
+         * emitter's default of 6000, sized for the META's flash, must not cut code.
+         * The AKA's app partition (0x370000, aka_size.py) holds the ROM, a runtime of
+         * ~0x70000 and the code at ~21 bytes per instruction measured on Xtensa
+         * (Ristar: 155101 instructions = 4.07 MB), 24 here for margin. */
+        else if (o.target == TargetId::aka) {
+            const size_t app = 0x370000, runtime = 0x70000;
+            eo.max_instructions = app > rom_size + runtime ? (app - rom_size - runtime) / 24 : 0;
+        } else if (o.target == TargetId::desktop || o.target == TargetId::pc || o.target == TargetId::odroid)
+            eo.max_instructions = SIZE_MAX;
         EmitStats es;
         std::vector<HotLoc> hot_counts;
         hot_counts.reserve(hot.size());

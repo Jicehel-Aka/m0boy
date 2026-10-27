@@ -48,9 +48,11 @@ constexpr std::array pce_targets = {TargetId::desktop, TargetId::pc, TargetId::a
 constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc, TargetId::aka};
 constexpr std::array megadrive_targets = {TargetId::desktop, TargetId::meta, TargetId::pc, TargetId::aka};
 constexpr std::array m0plus_targets = {TargetId::pc};
-// SNES, phase 1: the 65C816's interpreter and recompiler on the desktop
-// harness — the picture (PPU, APU) comes later.
-constexpr std::array snes_targets = {TargetId::desktop};
+// SNES: the 65C816/PPU/APU runtime on the desktop harness and the PC's
+// SDL2 window (the cartridge embedded); the consoles wait on the RAM
+// budget — the runtime holds ~434 KiB between WRAM, VRAM, A-RAM, the
+// SRAM window and the displayed frame.
+constexpr std::array snes_targets = {TargetId::desktop, TargetId::pc};
 constexpr std::array<TargetId, 0> no_targets {};
 
 constexpr std::array system_table = {
@@ -83,12 +85,11 @@ constexpr std::array system_table = {
      * and rejects ROMs outside this deliberately small profile. */
     SystemDescriptor{SystemId::megadrive, "megadrive", CpuId::m68k, 0x0004,
                      65536, 8192, megadrive::inspect, megadrive_targets},
-    /* SNES: the CPU, 128 KiB of WRAM, the cartridge's 32 KiB SRAM window
-     * and the runtime's own buffers; the ROM banks live through the
-     * LoROM/HiROM windows.  The PPU's 64 KiB VRAM and the APU's 64 KiB
-     * A-RAM join with the picture. */
+    /* SNES: the CPU, 128 KiB of WRAM, the cartridge's 32 KiB SRAM window,
+     * the PPU's 64 KiB VRAM, the APU's 64 KiB A-RAM and the displayed
+     * frame; the ROM banks live through the LoROM/HiROM windows. */
     SystemDescriptor{SystemId::snes, "snes", CpuId::w65c816, 0x00fffc,
-                     131072, 172032, snes::inspect, snes_targets},
+                     131072, 446464, snes::inspect, snes_targets},
     /* Firmware images, not cartridges.  The reset vector is at the image
      * start; META is linked at 0x4000, Pokitto at zero.  Execution/codegen
      * PC projects include the board emulator. */

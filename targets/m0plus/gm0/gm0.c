@@ -303,6 +303,9 @@ static inline uint32_t nvm_miss(uint32_t a) {
  * monotone — l'interpréteur compte les siens dans un local et y ajoute ce
  * que ce compteur a pris pendant l'instruction */
 static uint32_t flashWaits;
+/* generated blocks assume the flash is never rewritten: a row erase ends them */
+static int gm0_blocks_off;
+static inline void gm0_flash_changed(void) { gm0_blocks_off = 1; }
 static inline void nvm_access(uint32_t a) { flashWaits += nvm_miss(a); }
 
 
@@ -3317,7 +3320,9 @@ static void dma_beat(uint32_t ch) {
                                   : (b == 0xffu && (sd_outLen != 0 || sd_cmdIdx != 0)));
         dmaBeatSkipSd = !sdClock;
         spiDmaWrite = 1;
-        writeByte(dst, b);
+        /* the display's beats go straight to the SERCOM4 data register: the
+         * bus path (timers_sync, register decode) has nothing to add */
+        if (!sdClock) sercom4_write(b); else writeByte(dst, b);
         spiDmaWrite = 0;
         dmaBeatSkipSd = 0;
         if (sdClock) dma_sercom4_rx_beat(); /* plein-duplex SD */
@@ -3781,7 +3786,7 @@ static void nvmctrl_write(uint32_t r, uint32_t v, uint32_t m) {
         if ((v & 0x7fu) == 0x02u) {                            /* ER */
             uint32_t row = (nvmAddr << 1) & ~255u;
 #ifndef __EMSCRIPTEN__
-            if (row + 256 <= FLASH_SIZE) memset(flash + row, 0xff, 256);
+            if (row + 256 <= FLASH_SIZE) { memset(flash + row, 0xff, 256); gm0_flash_changed(); }
 #endif
             (void)row;
         }
@@ -4487,7 +4492,36 @@ static void step_debug(uint32_t pc, uint32_t op) {
 #define ST32(a, v) st_t(T, (a), (v), 4)
 #define ST16(a, v) st_t(T, (a), (v), 2)
 #define ST8(a, v) st_t(T, (a), (v), 1)
+/* A tight poll on a RAM word (generated: ldr; cmp #n; bcond back) cannot
+ * change before the next machine event (timer, SysTick, SPI beat): once two
+ * consecutive iterations took the same time, whole iterations are skipped up
+ * to that event (see below), keeping the loop's phase.  The embedded AKA's emulation
+ * spent two thirds of Lapinou's guest cycles there. */
+static uint32_t idleLoopPc, idleLoopAt, idleLoopPeriod;
+static inline void idle_spin(uint32_t pc, uint32_t addr) {
+    if (emuTarget != TGT_META || addr - 0x20000000u >= SRAM_SIZE) { idleLoopPc = 0; return; }
+    const uint32_t period = tickCount - idleLoopAt;
+    if (idleLoopPc == pc && period && period == idleLoopPeriod && !irqWork &&
+        (int32_t)(tickCount - evtAt) < 0) {
+        /* SPI beats alone change nothing the loop reads: bounded by the next
+         * TC/SysTick event and by the end of the running DMA block (its
+         * completion interrupt), not by every beat */
+        int32_t room = (int32_t)((spiOnly ? tcDeadline : timerDeadline) - tickCount);
+        if (spiDmaCh >= 0) {
+            const uint32_t left = dmaIdx[spiDmaCh] < dmaCnt[spiDmaCh] ? dmaCnt[spiDmaCh] - dmaIdx[spiDmaCh] : 0u;
+            const int32_t block = left > 2u ? (int32_t)((left - 2u) * spiBeatTicks / 3u) : 0;
+            if (block < room) room = block;
+        }
+        const int32_t frame = (int32_t)(emu_nextFrameTick - tickCount);
+        if (frame < room) room = frame;
+        if (room > (int32_t)(2u * period)) tickCount += (uint32_t)(room / (int32_t)period - 1) * period;
+    }
+    idleLoopPc = pc; idleLoopPeriod = period; idleLoopAt = tickCount;
+}
 #include "gm0_native.inc"
+#ifdef GM0_BLOCKS
+#include "gm0_blocks.inc"
+#endif
 #undef LD32
 #undef LD16
 #undef LD8
@@ -7176,7 +7210,17 @@ void gm0_embedded_frame(void) {
     if (emuTarget == TGT_POKITTO)
         while ((int32_t)(tickCount - target) < 0) step_t(TGT_POKITTO, 0);
     else
-        while ((int32_t)(tickCount - target) < 0) step_t(TGT_META, 0);
+        while ((int32_t)(tickCount - target) < 0) {
+#if defined(GM0_BLOCKS) && defined(GM0_NATIVE_TRANSLATION)
+            /* blocks of translated instructions; events, the frame's end and
+             * anything not translated go through step_t */
+            static int blocks_on = -1;
+            if (blocks_on < 0) blocks_on = getenv("M0_INTERP") == NULL && getenv("M0_NO_BLOCKS") == NULL;
+            if (blocks_on && !gm0_blocks_off && !stepTicks && (int32_t)(tickCount - evtAt) < 0 &&
+                regs[15] < 0x20000000u && gm0_block_run(regs[15] - 2u)) continue;
+#endif
+            step_t(TGT_META, 0);
+        }
     emu_nextFrameTick = tickCount + frame_ticks();
     if (emuTarget == TGT_POKITTO) pk_adc_frame();
     audio_frame();

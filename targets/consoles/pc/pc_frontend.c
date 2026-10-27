@@ -67,6 +67,7 @@ uint16_t pc_frontend_buttons(const PcFrontend *pc) {
         (k[SDL_SCANCODE_RIGHT] ? PC_RIGHT : 0) |
         (k[SDL_SCANCODE_X] ? PC_A : 0) | (k[SDL_SCANCODE_Z] ? PC_B : 0) |
         (k[SDL_SCANCODE_C] || k[SDL_SCANCODE_A] ? PC_C : 0) | (k[SDL_SCANCODE_S] ? PC_D : 0) |
+        (k[SDL_SCANCODE_Q] ? PC_L : 0) | (k[SDL_SCANCODE_E] ? PC_R : 0) |
         (k[SDL_SCANCODE_RETURN] ? PC_START : 0) |
         (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT] || k[SDL_SCANCODE_BACKSPACE] ||
          k[SDL_SCANCODE_ESCAPE] ? PC_SELECT : 0);
@@ -81,6 +82,8 @@ uint16_t pc_frontend_buttons(const PcFrontend *pc) {
         if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_A)) b |= PC_B;
         if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_X)) b |= PC_C;
         if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_Y)) b |= PC_D;
+        if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) b |= PC_L;
+        if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) b |= PC_R;
         if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_START)) b |= PC_START;
         if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_BACK) ||
             SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_GUIDE)) b |= PC_SELECT;

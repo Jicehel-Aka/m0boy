@@ -36,8 +36,9 @@ extern "C" int m0boy_console_main(void) {
             for (unsigned y = 0; y < 8; ++y) {
                 for (unsigned x = 0; x < 160; ++x) {
                     uint16_t c = screen[(y0 + y) * 160u + x];
-                    c = uint16_t(((c & 0xf800u) >> 11) | (c & 0x07e0u) | ((c & 31u) << 11));
-                    rows[y][x] = uint16_t((c << 8) | (c >> 8));
+                    /* gm0 keeps the META's BGR565; the panel wants native RGB565 (its i80
+                     * bus swaps the bytes, aka_hw.cpp) */
+                    rows[y][x] = uint16_t(((c & 0xf800u) >> 11) | (c & 0x07e0u) | ((c & 31u) << 11));
                 }
             }
             m0_lcd_send_rows(rows, (uint8_t)y0, 8);

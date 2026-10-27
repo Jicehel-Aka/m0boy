@@ -8,7 +8,7 @@ enum {
     PC_UP = 1u << 0, PC_DOWN = 1u << 1, PC_LEFT = 1u << 2,
     PC_RIGHT = 1u << 3, PC_A = 1u << 4, PC_B = 1u << 5,
     PC_C = 1u << 6, PC_START = 1u << 7, PC_SELECT = 1u << 8,
-    PC_D = 1u << 9
+    PC_D = 1u << 9, PC_L = 1u << 10, PC_R = 1u << 11
 };
 
 typedef struct {

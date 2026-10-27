@@ -279,6 +279,11 @@ SNES_INTERP_FN(snes_cpu_t *cpu, uint32_t until) {
             continue;
         }
         SNES_TRACE_HOOK((uint32_t)k_ << 16 | pc_);
+#ifdef SNES_TRACE
+        /* the trace's per-instruction cycles: the hot cycles commit only
+         * at the loop's exit, the hook reads them stale without this */
+        machine.cpu.cycles = (uint32_t)(until - budget);
+#endif
         left = 2;
         switch (OP8(0)) {
         /* ---- ORA/AND/EOR/ADC/SBC/LDA/CMP, the A operand ---- */
