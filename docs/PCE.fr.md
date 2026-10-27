@@ -242,6 +242,14 @@ longue ?) n'est pas tranchée ; le code est revenu à l'ordre du map et
 l'outillage (diff d'écritures WRAM horodatées, flux de dispatch, états
 par dispatch) est en place pour la reprise.
 
+La vivacité des drapeaux N/Z/C/V traverse les régions en mode rapide (le
+modèle NES) : une marche arrière par région, tous les drapeaux vivants
+aux étiquettes et aux sorties, et les mises à jour émises sous masque
+immédiat — `PCE_ZN` tué quand N/Z sont morts, ADC/SBC/CMP/BIT/TST et les
+shifts ne calculent plus que leurs drapeaux vivants.  Le T/I/D restent
+hors du modèle.  Le mode rapide garde le `run_hash` de l'interpréteur
+sur Raiden avec cette élagage.
+
 La couverture du harness (`--coverage`) porte les contextes : le tracer
 enregistre, par adresse, les octets MPR sous lesquels elle a tourné
 (quatre au plus) et les atterrissages dynamiques (RTS, RTI, sauts par
