@@ -224,6 +224,50 @@ const std::vector<OpInfo>& table() {
 
 bool is_branch(Op op) { return op >= Op::bra && op <= Op::beq; }
 
+/* flag bits of the liveness sets: N|Z|C|V — the T/I/D bits stay out of
+ * the model (their updates always run) */
+enum : uint8_t { FNZ_N = 1, FNZ_Z = 2, FNZ_C = 4, FNZ_V = 8, FNZ_ALL = 0xF };
+
+/* the flags an instruction writes */
+uint8_t flag_writes(Op op) {
+    switch (op) {
+    case Op::lda: case Op::ldx: case Op::ldy: case Op::ora: case Op::and_: case Op::eor:
+    case Op::ina: case Op::dea: case Op::inx: case Op::iny: case Op::dex: case Op::dey:
+    case Op::tax: case Op::tay: case Op::txa: case Op::tya: case Op::tsx: case Op::pla:
+    case Op::plx: case Op::ply:
+        return FNZ_N | FNZ_Z;
+    case Op::adc: case Op::sbc:
+        return FNZ_ALL;
+    case Op::cmp: case Op::cpx: case Op::cpy:
+    case Op::asl: case Op::lsr: case Op::rol: case Op::ror:
+        return FNZ_N | FNZ_Z | FNZ_C;
+    case Op::bit: case Op::tst: case Op::tsb: case Op::trb:
+        return FNZ_N | FNZ_Z | FNZ_V;
+    case Op::clc: case Op::sec:
+        return FNZ_C;
+    case Op::clv:
+        return FNZ_V;
+    case Op::plp: case Op::rti:
+        return FNZ_ALL;
+    default:
+        return 0;
+    }
+}
+
+/* the flags an instruction reads */
+uint8_t flag_reads(Op op) {
+    switch (op) {
+    case Op::bpl: case Op::bmi: return FNZ_N;
+    case Op::bvc: case Op::bvs: return FNZ_V;
+    case Op::bcc: case Op::bcs: return FNZ_C;
+    case Op::bne: case Op::beq: return FNZ_Z;
+    case Op::adc: case Op::sbc: case Op::rol: case Op::ror: return FNZ_C;
+    case Op::php: return FNZ_ALL;   /* PCE_PUSH joins P together */
+    default:
+        return 0;
+    }
+}
+
 std::string hex(unsigned v, int digits = 4) {
     char b[16];
     snprintf(b, sizeof b, "0x%0*X", digits, v);
@@ -257,6 +301,7 @@ struct Ins {
     uint32_t hits = 0;
     bool dynamic = false;
     bool tracked_a = false; /* the walk knew A here: a TAM's bank is provable */
+    uint8_t live_out = 0xF; /* flags read after this instruction: N|Z|C|V */
     bool label = false;    /* an entry: switch case, lookup key, budget check (fast) */
     int region = -1;
     unsigned local = 0;
@@ -455,7 +500,12 @@ void Emitter::plan() {
     }
     /* regions: runs of neighbouring instructions under one context — a
      * TAM whose bank the walk could not prove ends its run (its exit
-     * hands the new mapping back to the dispatcher's check) */
+     * hands the new mapping back to the dispatcher's check).  The runs
+     * stay in the map's (pc, ctx) order: grouping per context first
+     * (longer regions, a fifth of the dispatch round-trips) broke the
+     * profiled precise run_hash on Raiden for reasons the tooling has
+     * not pinned yet — the experiment and its numbers are in
+     * docs/PCE.fr.md. */
     const size_t cap = 256;
     for (auto& [key, in] : ins_) {
         const bool joins = !regions_.empty() && regions_.back().size() < cap &&
@@ -491,6 +541,21 @@ void Emitter::plan() {
     unsigned global = 0;
     for (auto& [key, in] : ins_)
         if (in.label) in.global = global++;
+    /* the fast mode can prune a dead flag write: walk every region
+     * backwards, keeping all flags live at labels (the budget check may
+     * leave) and at every exit; precise mode keeps the default 0xF */
+    if (!opt_.precise)
+        for (const auto& r : regions_) {
+            uint8_t live = FNZ_ALL;
+            for (size_t i = r.size(); i-- > 0;) {
+                Ins& in = ins_.at(r[i]);
+                const bool all_out = in.has_target || !in.falls || i + 1 == r.size() ||
+                                     ins_.at(r[i + 1]).label;
+                in.live_out = all_out ? FNZ_ALL : live;
+                live = (uint8_t)((in.live_out & ~flag_writes(in.info.op)) | flag_reads(in.info.op));
+                if (in.label) live = FNZ_ALL;
+            }
+        }
 }
 
 /* where control goes to reach `to` in the from-instance's context.  Every
@@ -725,6 +790,11 @@ bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
     /* the region's last instruction: its fallthrough continues with the
      * transfer emit_region appends — dead check when that transfer leaves */
     const bool fall_exits = tail && next.compare(0, 6, "goto L") != 0;
+    /* the flags still read after this instruction (the liveness pass
+     * keeps 0xF in precise mode and at every exit) */
+    const uint8_t lv = in.live_out;
+    const std::string lvm = hex(lv, 2);
+    const bool nzl = (lv & (FNZ_N | FNZ_Z)) != 0;
     auto store = [&](const std::string& value) {
         std::string pre2;
         const std::string at = ea(in, pre2);
@@ -734,7 +804,8 @@ bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
     switch (in.info.shape) {
     case Shape::load: {
         const char* reg = op == Op::lda ? "a_" : op == Op::ldx ? "x_" : "y_";
-        body = std::string(reg) + " = " + operand(in, pre) + "; PCE_ZN(" + reg + ");";
+        body = std::string(reg) + " = " + operand(in, pre) + ";" +
+               (nzl ? " PCE_ZN(" + std::string(reg) + ");" : "");
         break;
     }
     case Shape::store:
@@ -742,35 +813,37 @@ bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
         break;
     case Shape::logic: {
         const char* tok = op == Op::and_ ? "&" : op == Op::ora ? "|" : "^";
-        body = std::string("PCE_LOGIC(") + tok + ", " + operand(in, pre) + ");";
+        body = std::string("PCE_LOGIC(") + tok + ", " + operand(in, pre) + ", " + lvm + ");";
         break;
     }
     case Shape::arith:
         body = std::string(op == Op::adc ? "PCE_ARITH(PCE_ADC_CORE, " : "PCE_ARITH(PCE_SBC_CORE, ") +
-                operand(in, pre) + ");";
+                operand(in, pre) + ", " + lvm + ");";
         break;
     case Shape::cmp: {
         const char* reg = op == Op::cmp ? "a_" : op == Op::cpx ? "x_" : "y_";
-        body = std::string("PCE_CMP(") + reg + ", " + operand(in, pre) + ");";
+        body = std::string("PCE_CMP(") + reg + ", " + operand(in, pre) + ", " + lvm + ");";
         break;
     }
     case Shape::bit:
-        body = "PCE_BIT(" + operand(in, pre) + ");";
+        body = "PCE_BIT(" + operand(in, pre) + ", " + lvm + ");";
         break;
     case Shape::shift: {
         const char* f = op == Op::asl ? "PCE_ASL" : op == Op::lsr ? "PCE_LSR" : op == Op::rol ? "PCE_ROL" : "PCE_ROR";
         if (m == Mode::acc) {
-            body = std::string("a_ = ") + f + "(a_); PCE_ZN(a_);";
+            body = std::string("a_ = ") + f + "(a_, " + lvm + ");";
             break;
         }
         const std::string at = ea(in, pre);
-        body = "{ const uint16_t at_ = " + at + "; const uint8_t r_ = " + f + "(PCE_RD(at_)); PCE_WR(at_, r_); PCE_ZN(r_); }";
+        body = "{ const uint16_t at_ = " + at + "; const uint8_t r_ = " + f + "(PCE_RD(at_), " + lvm +
+               "); PCE_WR(at_, r_); }";
         break;
     }
     case Shape::incdec: {
         const std::string at = ea(in, pre);
         body = "{ const uint16_t at_ = " + at + "; const uint8_t r_ = (uint8_t)(PCE_RD(at_) " +
-               (op == Op::inc ? "+" : "-") + " 1u); PCE_WR(at_, r_); PCE_ZN(r_); }";
+               (op == Op::inc ? "+" : "-") + " 1u); PCE_WR(at_, r_);" +
+               (nzl ? " PCE_ZN(r_);" : "") + " }";
         break;
     }
     case Shape::tsbtrb: {
@@ -786,7 +859,7 @@ bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
         break;
     }
     case Shape::tst:
-        body = "{ const uint8_t m_ = " + operand(in, pre) + "; PCE_TST(" + hex(in.o[0], 2) + ", m_); }";
+        body = "{ const uint8_t m_ = " + operand(in, pre) + "; PCE_TST(" + hex(in.o[0], 2) + ", m_, " + lvm + "); }";
         break;
     case Shape::rmbsmb: {
         const unsigned bit = (in.code >> 4) & 7;
@@ -908,17 +981,17 @@ bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
         return false;
     case Shape::imp:
         switch (op) {
-        case Op::ina: body = "a_ = (uint8_t)(a_ + 1); PCE_ZN(a_);"; break;
-        case Op::dea: body = "a_ = (uint8_t)(a_ - 1); PCE_ZN(a_);"; break;
-        case Op::inx: body = "x_ = (uint8_t)(x_ + 1); PCE_ZN(x_);"; break;
-        case Op::dex: body = "x_ = (uint8_t)(x_ - 1); PCE_ZN(x_);"; break;
-        case Op::iny: body = "y_ = (uint8_t)(y_ + 1); PCE_ZN(y_);"; break;
-        case Op::dey: body = "y_ = (uint8_t)(y_ - 1); PCE_ZN(y_);"; break;
-        case Op::tax: body = "x_ = a_; PCE_ZN(x_);"; break;
-        case Op::tay: body = "y_ = a_; PCE_ZN(y_);"; break;
-        case Op::txa: body = "a_ = x_; PCE_ZN(a_);"; break;
-        case Op::tya: body = "a_ = y_; PCE_ZN(a_);"; break;
-        case Op::tsx: body = "x_ = s_; PCE_ZN(x_);"; break;
+        case Op::ina: body = nzl ? "a_ = (uint8_t)(a_ + 1); PCE_ZN(a_);" : "a_ = (uint8_t)(a_ + 1);"; break;
+        case Op::dea: body = nzl ? "a_ = (uint8_t)(a_ - 1); PCE_ZN(a_);" : "a_ = (uint8_t)(a_ - 1);"; break;
+        case Op::inx: body = nzl ? "x_ = (uint8_t)(x_ + 1); PCE_ZN(x_);" : "x_ = (uint8_t)(x_ + 1);"; break;
+        case Op::dex: body = nzl ? "x_ = (uint8_t)(x_ - 1); PCE_ZN(x_);" : "x_ = (uint8_t)(x_ - 1);"; break;
+        case Op::iny: body = nzl ? "y_ = (uint8_t)(y_ + 1); PCE_ZN(y_);" : "y_ = (uint8_t)(y_ + 1);"; break;
+        case Op::dey: body = nzl ? "y_ = (uint8_t)(y_ - 1); PCE_ZN(y_);" : "y_ = (uint8_t)(y_ - 1);"; break;
+        case Op::tax: body = nzl ? "x_ = a_; PCE_ZN(x_);" : "x_ = a_;"; break;
+        case Op::tay: body = nzl ? "y_ = a_; PCE_ZN(y_);" : "y_ = a_;"; break;
+        case Op::txa: body = nzl ? "a_ = x_; PCE_ZN(a_);" : "a_ = x_;"; break;
+        case Op::tya: body = nzl ? "a_ = y_; PCE_ZN(a_);" : "a_ = y_;"; break;
+        case Op::tsx: body = nzl ? "x_ = s_; PCE_ZN(x_);" : "x_ = s_;"; break;
         case Op::txs: body = "s_ = x_;"; break;
         case Op::cla: body = "a_ = 0;"; break;
         case Op::clx: body = "x_ = 0;"; break;
@@ -929,11 +1002,11 @@ bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
         case Op::csl: body = "machine.cpu.speed = 0;"; break;
         case Op::csh: body = "machine.cpu.speed = 1;"; break;
         case Op::nop: body = ""; break;
-        case Op::clc: body = "p_ &= (uint8_t)~PCE_P_C;"; break;
-        case Op::sec: body = "p_ |= PCE_P_C;"; break;
+        case Op::clc: body = (lv & FNZ_C) ? "p_ &= (uint8_t)~PCE_P_C;" : ""; break;
+        case Op::sec: body = (lv & FNZ_C) ? "p_ |= PCE_P_C;" : ""; break;
         case Op::cli: body = "p_ &= (uint8_t)~PCE_P_I;"; break;
         case Op::sei: body = "p_ |= PCE_P_I;"; break;
-        case Op::clv: body = "p_ &= (uint8_t)~PCE_P_V;"; break;
+        case Op::clv: body = (lv & FNZ_V) ? "p_ &= (uint8_t)~PCE_P_V;" : ""; break;
         case Op::cld: body = "p_ &= (uint8_t)~PCE_P_D;"; break;
         case Op::sed: body = "p_ |= PCE_P_D;"; break;
         case Op::set: body = "p_ |= PCE_P_T;"; break;
@@ -941,9 +1014,9 @@ bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
         case Op::phx: body = "PCE_PUSH(x_);"; break;
         case Op::phy: body = "PCE_PUSH(y_);"; break;
         case Op::php: body = "p_ &= (uint8_t)~PCE_P_T; PCE_PUSH((uint8_t)(p_ | PCE_P_B));"; break;
-        case Op::pla: body = "a_ = PCE_POP(); PCE_ZN(a_);"; break;
-        case Op::plx: body = "x_ = PCE_POP(); PCE_ZN(x_);"; break;
-        case Op::ply: body = "y_ = PCE_POP(); PCE_ZN(y_);"; break;
+        case Op::pla: body = nzl ? "a_ = PCE_POP(); PCE_ZN(a_);" : "a_ = PCE_POP();"; break;
+        case Op::plx: body = nzl ? "x_ = PCE_POP(); PCE_ZN(x_);" : "x_ = PCE_POP();"; break;
+        case Op::ply: body = nzl ? "y_ = PCE_POP(); PCE_ZN(y_);" : "y_ = PCE_POP();"; break;
         case Op::plp:
             body = "p_ = PCE_POP();";
             /* the mask may have opened: the interpreter samples at once */
@@ -960,13 +1033,12 @@ bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
     o << "    { " << pre << body << t_clear;
     if (cycles) o << " budget -= " << cycles << ";";
     o << " }";
-    if (opt_.precise) {
-        if (may_bus(in))
-            /* the region leaves after this instruction whatever the
-             * budget: one exit, with the hint the dispatcher validates */
-            o << " { pc_ = " << hex(in.next) << "; ni = " << std::to_string(next_hint) << "; goto out; }";
-        else if (!fall_exits) o << budget_exit();
-    }
+    if (opt_.precise)
+        /* precise: the dispatcher regains control after every
+         * instruction — the budget and the IRQ line are sampled exactly
+         * where the interpreter samples them, whatever the region's
+         * length (the fast mode keeps its regions whole) */
+        o << " { pc_ = " << hex(in.next) << "; ni = " << std::to_string(next_hint) << "; goto out; }";
     if (op == Op::cli)
         after = "if (machine.cpu.irq_low & machine.cpu.irq_mask) { pc_ = " + hex(in.next) +
                 "; ni = " + std::to_string(next_hint) + "; goto out; }";

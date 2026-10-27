@@ -163,6 +163,24 @@ vx_derive_asm:
 .Ld_store:
 	str	r3, [r4, #SIG]
 	strb	r2, [r4, #RAMP]
+	/* the velocity follows the ramp (vx_velocity_asm folded in: every
+	 * caller of derive needed it when the ramp moved) */
+	cmp	r2, #0
+	bne	.Ld_vel
+	movs	r0, #0
+	str	r0, [r4, #VEL_X]
+	str	r0, [r4, #VEL_Y]
+	bx	lr
+.Ld_vel:
+	ldrb	r1, [r4, #RSH]
+	ldrb	r0, [r4, #XSH]
+	subs	r0, r0, r1
+	lsls	r0, r0, #2
+	str	r0, [r4, #VEL_X]
+	ldrb	r0, [r4, #YSH]
+	subs	r0, r1, r0
+	lsls	r0, r0, #2
+	str	r0, [r4, #VEL_Y]
 	bx	lr
 	.size	vx_derive_asm, .-vx_derive_asm
 
@@ -208,29 +226,6 @@ vx_sync_asm:
 	bx	r2			@ returns to the caller
 	.size	vx_sync_asm, .-vx_sync_asm
 
-/* settle_velocity(p = r4) (r0-r1 clobbered) */
-	.thumb_func
-	.type	vx_velocity_asm, %function
-vx_velocity_asm:
-	ldrb	r0, [r4, #RAMP]
-	cmp	r0, #0
-	beq	.Lv_still
-	ldrb	r1, [r4, #RSH]
-	ldrb	r0, [r4, #XSH]
-	subs	r0, r0, r1
-	lsls	r0, r0, #2
-	str	r0, [r4, #VEL_X]
-	ldrb	r0, [r4, #YSH]
-	subs	r0, r1, r0
-	lsls	r0, r0, #2
-	str	r0, [r4, #VEL_Y]
-	bx	lr
-.Lv_still:
-	str	r0, [r4, #VEL_X]
-	str	r0, [r4, #VEL_Y]
-	bx	lr
-	.size	vx_velocity_asm, .-vx_velocity_asm
-
 /* settle_calm(p = r4): the quiet time, T1's and T2's time-outs and the
  * shift register's next bit (r0-r2 clobbered) */
 	.thumb_func
@@ -273,7 +268,8 @@ vx_calm_asm:
 /* void via_tick(Vectrex *v, unsigned n)
  * r4 = &v->via, r5 = cycles left, r6 = v, r7 = the step; r3 within a
  * step: bit 0 T1 times out, bit 1 the shift register runs, bits 8-11 the
- * shift register's event (its bit count) */
+ * shift register's event (its bit count), bit 15 that every bit left
+ * equals CB2 (the blanking holds through the event) */
 	.global	via_tick
 	.thumb_func
 	.type	via_tick, %function
@@ -362,6 +358,9 @@ via_tick:
 	cmp	r0, r1
 	bls	.Le
 	movs	r0, r1
+	movs	r2, #1
+	lsls	r2, r2, #15
+	orrs	r3, r2		@ clamped: every bit left equals CB2
 .Le:
 	subs	r1, r0, #1		@ its time: sr_wait + 2 (e - 1)
 	lsls	r1, r1, #1
@@ -384,7 +383,8 @@ via_tick:
 	beq	.Lt1_event
 	/* the shift register's bits within the step: all of them up to the
 	 * event, or those before the step's end */
-	lsrs	r0, r3, #8
+	lsls	r0, r3, #20	@ the event's bits (8-11), the clamp flag out
+	lsrs	r0, r0, #28
 	bne	.Ldone
 	ldrb	r1, [r4, #SR_WAIT]
 	cmp	r7, r1
@@ -416,7 +416,8 @@ via_tick:
 	orrs	r1, r2
 	strb	r1, [r4, #IFR]
 .Lsr_wait:
-	lsrs	r1, r3, #8
+	lsls	r1, r3, #20	@ an event? (the clamp flag out)
+	lsrs	r1, r1, #28
 	beq	.Lsr_wait_left
 	movs	r1, #2
 	b	.Lsr_wait_set
@@ -445,11 +446,70 @@ via_tick:
 	movs	r0, #0
 	strb	r0, [r4, #T1_ARMED]
 .Ltouch:
-	/* an event: the stroke ends where the analog state changed */
-	movs	r0, #2
+	/* an event: the stroke ends only where the analog state changed.
+	 * Each part patches the signature in place (the write paths keep
+	 * the full derive): an SR event moves the lit field (bits 0-7), a
+	 * one-shot T1 time-out under the ramp stops it (bit 8 and the
+	 * deltas 10-27) with the velocity. */
+	movs	r0, #1
+	tst	r3, r0
+	beq	.Lt_sr0		@ no T1 time-out: the shift register only
+	ldrb	r0, [r4, #ACR]
+	lsls	r0, r0, #24	@ bit 7 -> N: the ramp under T1?
+	bpl	.Lt_t1dead
+	lsls	r0, r0, #1	@ bit 6 -> N: free-running?
+	bpl	.Lt_sr0		@ one-shot: the T1 part patches the signature
+	movs	r0, #1		@ free-running: T1 stays armed, no effect
 	bics	r3, r0
-	beq	.Lnext			@ (.Lloop is out of a conditional branch's reach)
-	bl	vx_derive_asm
+.Lt_t1dead:
+.Lt_sr0:
+	lsls	r0, r3, #20	@ the shift register's event, 0 when none
+	lsrs	r0, r0, #28
+	beq	.Lt_t1chk
+	lsls	r0, r3, #16	@ the clamp flag (bit 15) -> N
+	bmi	.Lt_t1chk	@ every bit left equals CB2: the blanking held
+	ldrb	r0, [r4, #ACR]
+	lsls	r0, r0, #27	@ bit 4 -> N: CB2 is the blanking?
+	bpl	.Lt_t1chk
+	ldrb	r0, [r4, #CB2]
+	cmp	r0, #0
+	beq	.Lt_sr_off
+	ldrb	r0, [r4, #PCR]
+	lsrs	r0, r0, #1
+	movs	r2, #7
+	ands	r0, r2
+	cmp	r0, #6
+	beq	.Lt_sr_off	@ zeroing: dark whatever CB2
+	ldrb	r0, [r4, #INTENSITY]
+	cmp	r0, #0
+	beq	.Lt_sr_off
+	lsls	r0, r0, #1
+	adds	r0, r0, #1
+	b	.Lt_sr_set
+.Lt_sr_off:
+	movs	r0, #0
+.Lt_sr_set:
+	ldr	r1, [r4, #SIG]
+	movs	r2, #0xff
+	bics	r1, r2
+	orrs	r1, r0
+	str	r1, [r4, #SIG]
+.Lt_t1chk:
+	movs	r0, #1
+	tst	r3, r0
+	beq	.Lt_cmp
+	ldr	r1, [r4, #SIG]
+	movs	r2, #0xff
+	movs	r0, #1
+	lsls	r0, r0, #9	@ the lit field and the zeroing bit stay
+	orrs	r2, r0
+	ands	r1, r2
+	str	r1, [r4, #SIG]
+	movs	r0, #0
+	strb	r0, [r4, #RAMP]
+	str	r0, [r4, #VEL_X]
+	str	r0, [r4, #VEL_Y]
+.Lt_cmp:
 	ldr	r0, [r4, #SIG]
 	ldr	r1, [r4, #PEN_SIG]
 	cmp	r0, r1
@@ -460,7 +520,6 @@ via_tick:
 	b	.Lloop
 
 .Lsettle:
-	bl	vx_velocity_asm
 	bl	vx_calm_asm
 	pop	{r4, r5, r6, r7, pc}
 	.ltorg
@@ -609,17 +668,13 @@ via_write:
 .Lw_zero:
 	ldr	r0, [r4, #SIG]
 	lsrs	r0, r0, #10		@ bit 9: zeroing, the beam at the centre
-	bcc	.Lw_velocity
+	bcc	.Lw_calm
 	movs	r0, #1
 	lsls	r0, r0, #16		@ VX_CENTER
 	str	r0, [r4, #BEAM_X]
 	str	r0, [r4, #BEAM_Y]
 	str	r0, [r4, #PEN_X]
 	str	r0, [r4, #PEN_Y]
-.Lw_velocity:
-	cmp	r7, #0
-	beq	.Lw_calm
-	bl	vx_velocity_asm
 .Lw_calm:
 	cmp	r5, #5
 	bne	.Lw_done

@@ -10,6 +10,7 @@
 #include "m0boy/pico8_generator.h"
 #include "m0boy/nes_generator.h"
 #include "m0boy/pce_generator.h"
+#include "m0boy/snes_generator.h"
 #include "m0boy/megadrive_generator.h"
 #include "m0boy/vectrex_generator.h"
 #include "m0boy/cpu/huc6280/decoder.h"
@@ -169,7 +170,7 @@ void print_usage(const char* program) {
     std::cout << "  --trace               Trace execution analysis (very verbose)\n";
     std::cout << "  --limit <n>           Limit analysis to n instructions\n";
     std::cout << "  -j, --jobs <n>        Parallel workers for codegen and batch generation (0=auto)\n";
-    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8|msx|nes|pce|vectrex|megadrive|meta|pokitto  Source console (default auto; raw firmware needs explicit system)\n";
+    std::cout << "  --system auto|gameboy|sg1000|gg|sms|pico8|msx|nes|pce|vectrex|megadrive|snes|meta|pokitto  Source console (default auto; raw firmware needs explicit system)\n";
     std::cout << "  --cpu sm83|z80|6502|huc6280|6809|m68k|m0plus  Check the CPU required by the source console\n";
     std::cout << "  --list-systems       List source consoles, CPUs and available pipelines\n";
     std::cout << "  --list-targets       List destination consoles and their hardware facts\n";
@@ -2510,7 +2511,7 @@ int main(int argc, char* argv[]) {
     if (source.id == m0boy::SystemId::megadrive) {
         if (!source.supports(*m0boy::parse_target(target)))
             return refuse_target(source, *m0boy::parse_target(target), target);
-        if (disasm_only || analyze_only || (target != "pc" && !coverage_paths.empty()) ||
+        if (disasm_only || analyze_only || (target != "pc" && target != "aka" && !coverage_paths.empty()) ||
             meta_thumb || g_meta_pack || g_meta_stream != -1 ||
             !g_rom_profiles.empty() || g_meta_resident || emit_android_project ||
             !native_patch_manifest_path.empty() || specific_bank > 0) {
@@ -2761,6 +2762,52 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         std::cout << "Generated PC Engine project for " << target << ": " << options.output << "\n";
+        if (nes_interp)
+            std::cout << "  mode:               interpreter only (--nes-interp)\n";
+        else
+            std::cout << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played)\n"
+                      << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
+                      << (meta_precise ? "  mode:               precise (budget checked after every instruction)\n" : "");
+        return 0;
+    }
+    /* SNES, phase 1: the 65C816's interpreter and recompiler on the
+     * desktop harness, after the PCE's plan; the consoles wait on the
+     * picture's budget (the PPU's 64 KiB VRAM, the APU's 64 KiB A-RAM). */
+    if (source.id == m0boy::SystemId::snes) {
+        if (!source.supports(*m0boy::parse_target(target))) {
+            return refuse_target(source, *m0boy::parse_target(target), target);
+        }
+        if (analyze_only || meta_thumb || g_meta_pack ||
+            g_meta_stream != -1 || !g_rom_profiles.empty() || g_meta_resident ||
+            emit_android_project || !native_patch_manifest_path.empty() ||
+            !symbol_file_path.empty() || !annotation_file_path.empty() ||
+            specific_bank > 0 || !manual_entry_points.empty() || !trace_file_path.empty()) {
+            std::cerr << "Error: unsupported SNES option; use --target, --coverage, --meta-precise, "
+                         "--nes-interp, --meta-code-budget and --meta-bytes-per-instruction\n";
+            return 1;
+        }
+        m0boy::snes::GenerateOptions options;
+        options.target = *m0boy::parse_target(target);
+        options.name = output_prefix.empty() ? sanitize_prefix(fs::path(rom_path).stem().string()) : output_prefix;
+        if (options.name.empty() || sanitize_prefix(options.name) != options.name) {
+            std::cerr << "Error: invalid SNES output prefix\n";
+            return 1;
+        }
+        options.output = output_dir.empty() ? fs::path(options.name + "_snes_" + target) : fs::path(output_dir);
+        options.meta_templates = resolve_meta_dir(argv[0], meta_dir);
+        options.compiler = meta_compiler;
+        options.coverage = coverage_paths;
+        options.precise = meta_precise;
+        options.interpret = nes_interp;
+        options.code_budget_bytes = g_meta_code_budget;
+        if (meta_bpi_set) options.bytes_per_instruction = meta_bpi;
+        std::string error;
+        m0boy::snes::GenerateStats stats;
+        if (!m0boy::snes::generate(rom_path, options, stats, error)) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        std::cout << "Generated SNES project for " << target << ": " << options.output << "\n";
         if (nes_interp)
             std::cout << "  mode:               interpreter only (--nes-interp)\n";
         else

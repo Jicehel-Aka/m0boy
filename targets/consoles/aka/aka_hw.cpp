@@ -3,6 +3,7 @@
  * The LCD is i80, the buttons are I2C expanders, the audio codec is TAS2505. */
 #include <Arduino.h>
 #include <Wire.h>
+#include <string.h>
 #include <driver/i2s.h>
 #include <esp_lcd_panel_io.h>
 #include <freertos/semphr.h>
@@ -10,11 +11,24 @@
 #include "aka_hw.h"
 #include "esp32_config.h"
 #include "m0_target.h"
+
+/* 1: the glass is BGR-wired (testé sur la carte : les canaux sortaient
+ * inversés avec le seul RGB) ; 0 remettrait la rotation officielle. */
+#ifndef AKA_LCD_BGR
+#define AKA_LCD_BGR 1
+#endif
 #include "m0_scale.h"
 extern "C" {
 #include "m0_lcd.h"
 #include "m0_menu.h"
 }
+
+/* The rows the frontend sends span this many screen rows (the Sega
+ * frontends' 120 visible rows zoom x2 onto the panel; the default is the
+ * whole M0_SCREEN_ROWS picture). */
+#ifndef M0_PANEL_SRC_ROWS
+#define M0_PANEL_SRC_ROWS M0_SCREEN_ROWS
+#endif
 
 static uint8_t outputs = 0xf7; /* inputs high; 3V3, LCD reset/RD high; amp reset low */
 static void expander(uint8_t value) {
@@ -117,12 +131,16 @@ extern "C" void m0_lcd_init(void) {
     delay(150);
     command(0x11);
     delay(120);
-    const uint8_t format = 0x55, te = 0;
-    const uint8_t rotation = 0x60 | (AKA_LCD_BGR ? 0x08 : 0); /* MX | MV, + bit BGR de MADCTL */
+    /* The glass's rotation is the official library's (MX | MV).  The RGB/BGR
+     * wiring question stays in MADCTL — no software byte swap anywhere: the
+     * Sega frontends and the Mega Drive both send native RGB565.  If the
+     * panel ever shows the channels swapped, flip AKA_LCD_BGR in the
+     * project's esp32_config.h; no code change. */
+    const uint8_t format = 0x55, rotation = 0x60u | (AKA_LCD_BGR ? 0x08u : 0u), te = 0;
     command(0x3a, &format, 1);
     command(0x21);
     command(0x13);
-    command(0x36, &rotation, 1); /* rotation officielle 3 (MX | MV) ; ordre RGB/BGR selon AKA_LCD_BGR */
+    command(0x36, &rotation, 1);
     command(0x29);
     command(0x35, &te, 1);
 }
@@ -130,13 +148,25 @@ extern "C" uint32_t m0_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows
     const uint16_t *p = (const uint16_t *)buf;
     for (unsigned y = 0; y < rows && row0 + y < M0_SCREEN_ROWS; y++, p += 160) {
         for (unsigned x = 0; x < 320; x++) line[x] = p[m0_nearest(x, 160, 320)];
-        unsigned py = (row0 + y) * 240 / M0_SCREEN_ROWS;
-        unsigned end = (row0 + y + 1) * 240 / M0_SCREEN_ROWS;
+        unsigned py = (row0 + y) * 240 / M0_PANEL_SRC_ROWS;
+        unsigned end = (row0 + y + 1) * 240 / M0_PANEL_SRC_ROWS;
         while (py < end) draw_line(py++);
     }
     return ++lcd_seq;
 }
 extern "C" uint32_t m0_lcd_done_seq(void) { return lcd_seq; }
+#if __has_include("md_config.h")
+/* The Mega Drive's 320-column rows go out 1:1 (no 160-column rescale);
+ * the rows already sit in the panel's RGB565 wire order. */
+extern "C" uint32_t m0_lcd_send_wide(const void *buf, uint8_t row0, uint8_t rows) {
+    const uint16_t *p = (const uint16_t *)buf;
+    for (unsigned y = 0; y < rows; y++) {
+        memcpy(line, p + 320u * y, sizeof line);
+        draw_line(row0 + y);
+    }
+    return ++lcd_seq;
+}
+#endif
 extern "C" int m0_lcd_busy(void) { return 0; }
 extern "C" int m0_lcd_release(void) { return 1; }
 extern "C" void m0_lcd_wait(void) {}

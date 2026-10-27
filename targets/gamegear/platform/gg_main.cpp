@@ -157,6 +157,16 @@ static const char version[] __attribute__((used)) = "m0boy-gg-" M0_TARGET_NAME "
 static unsigned display_row(unsigned y) { return y; }
 #define GG_PAIRS 0
 #define GG_PANEL_ROW0(row) (row)
+#elif M0_TARGET_ESP32
+/* ODROID-GO and AKA: the 120 visible rows zoom x2 exactly onto the 240-row
+ * panel (M0_PANEL_SRC_ROWS=120, esp32_config.h), so each source gets its own
+ * 120-row plan and the picture starts at panel row 0.  Game Gear: 144 -> 120
+ * (6/5), the line nearest each row's centre, as the SMS plan does. */
+static unsigned display_row(unsigned y) {
+    return GG_SMS ? gg_sms_display_row(y) : m0_row_of(y - GG_TOP, 6, 5);
+}
+#define GG_PAIRS 0
+#define GG_PANEL_ROW0(row) (row)
 #elif GG_SMS
 /* One source line per row (the 256 -> 160 filter is already the costly
  * part): the line nearest the row's centre. */
@@ -182,6 +192,8 @@ static int draw_line(void *, unsigned y) {
     if (skip_video) return 0;
 #if GG_SMS
     return gg_sms_line_shown(y);
+#elif M0_TARGET_ESP32
+    return (0x3eu >> ((y - GG_TOP) % 6)) & 1; /* the line nearest each 6/5 row's centre */
 #elif !GG_PAIRS
     (void)y;
     return 1;

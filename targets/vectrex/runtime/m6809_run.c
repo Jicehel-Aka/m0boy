@@ -849,13 +849,22 @@ void m6809_run(Vectrex *v, uint32_t stop) {
     m6809_loop(v, stop);
     return;
   }
+  /* where the recompiled code last could not follow a transfer (RTS, PULS
+   * PC, an indirect jump): the same sites come back, one entry of a small
+   * direct-mapped cache spares the search */
+  typedef struct { uint16_t pc; int16_t r; } GenBack;
+  static GenBack back[8];
   int hint = -1;
   while ((int32_t)(c->cycles - stop) < 0) {
     if (!v->attention) {
       const uint32_t pc = c->pc;
       int r = hint;
-      if (r < 0 || pc < vx_gen_first[r] || pc > vx_gen_last[r])
-        r = vx_gen_find(pc);
+      if (r < 0 || pc < vx_gen_first[r] || pc > vx_gen_last[r]) {
+        GenBack *const e = &back[(pc >> 2) & 7u];
+        r = e->pc == pc ? e->r : vx_gen_find(pc);
+        e->pc = (uint16_t)pc;
+        e->r = (int16_t)r;
+      }
       if (r >= 0) {
         GEN_STAT(vx_gen_calls);
         hint = vx_gen_fn[r](v, stop, pc - vx_gen_first[r]);

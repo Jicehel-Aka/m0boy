@@ -34,7 +34,9 @@ add_library(m0boy_frontends STATIC
     src/system/pce/cartridge.cpp
     src/system/megadrive/cartridge.cpp
     src/system/vectrex/cartridge.cpp
+    src/system/snes/cartridge.cpp
     src/system/m0plus/firmware.cpp
+    src/system/m0plus/generator.cpp
 )
 target_link_libraries(m0boy_frontends PUBLIC m0boy_common)
 set_target_properties(m0boy_frontends PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -53,6 +55,8 @@ add_library(gbrecomp_core STATIC
     src/system/nes/generator.cpp
     src/system/pce/generator.cpp
     src/system/pce/emitter.cpp
+    src/system/snes/generator.cpp
+    src/system/snes/emitter.cpp
     src/system/megadrive/generator.cpp
     src/system/megadrive/emitter.cpp
     src/system/vectrex/emitter.cpp

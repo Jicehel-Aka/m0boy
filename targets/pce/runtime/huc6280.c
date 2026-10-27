@@ -162,6 +162,9 @@ static uint8_t rd_out(huc6280_t *cpu, uint16_t at) {
 
 void huc6280_map(huc6280_t *cpu) {
     const uint32_t pages = (cpu->rom_bytes + 0x1FFFu) / 0x2000u;
+    uint64_t key = 0;
+    for (unsigned i = 0; i < 8; i++) key |= (uint64_t)cpu->mpr[i] << (8 * i);
+    cpu->mpr_key = key;
     for (unsigned i = 0; i < 8; i++) {
         const uint8_t v = cpu->mpr[i];
         if (v < pages) {
@@ -646,10 +649,15 @@ void huc6280_run(huc6280_t *cpu, uint32_t until) {
             budget -= 8;
             continue;
         }
+        const int entry = pce_gen_lookup(cpu->pc, cpu->mpr_key);
+        if (entry >= 0) {
+            budget = pce_gen_enter(entry, budget);
+            continue;
+        }
         /* BRA/JMP to themselves in a ROM window, a game waiting for its
          * interrupt: the rest of the slice in laps of 4 cycles, as the
-         * recompiled loop spends it (emitter.cpp), without entering it
-         * each line */
+         * recompiled loop spends it (emitter.cpp).  Checked on the
+         * fallback path only: a compiled dispatch pays no read here. */
         {
             const uint8_t *b = cpu->rbase[cpu->pc >> 13];
             if (b && b >= cpu->rom && b < cpu->rom + cpu->rom_bytes) {
@@ -663,17 +671,15 @@ void huc6280_run(huc6280_t *cpu, uint32_t until) {
                 }
             }
         }
-        uint64_t mpr = 0;
-        for (unsigned i = 0; i < 8; i++) mpr |= (uint64_t)cpu->mpr[i] << (8 * i);
-        const int entry = pce_gen_lookup(cpu->pc, mpr);
-        if (entry >= 0) {
-            budget = pce_gen_enter(entry, budget);
-            continue;
-        }
-        /* one instruction: a budget of one cycle is spent by any of them */
+        /* no entry here: the interpreter runs the rest of the slice — its
+         * own loop, its own IRQ sampling — and the dispatcher comes back
+         * at the next slice boundary (compiled code re-entered there) */
         cpu->cycles = until - (uint32_t)budget;
-        huc6280_interp(cpu, cpu->cycles + 1u);
-        budget = (int32_t)(until - cpu->cycles);
+        huc6280_interp(cpu, until);
+        budget = (int32_t)(until - cpu->cycles); /* the overshoot the
+            interpreter left in cpu->cycles: the loop's exit assignment
+            must not flatten it back to `until` */
+        break;
     }
     cpu->cycles = until - (uint32_t)budget;
 }

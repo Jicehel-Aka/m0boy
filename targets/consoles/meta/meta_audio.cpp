@@ -276,7 +276,8 @@ void m0_audio_frame(void) {
             drop_samples(n - (room - prefix));
             n = room - prefix;
         }
-#else
+    } else
+#endif
     {
         uint16_t tail = ring_tail;
         unsigned used = head >= tail ? head - tail : head + RING - tail;
@@ -286,7 +287,6 @@ void m0_audio_frame(void) {
             n = room;
         }
     }
-#endif
     unsigned total = prefix + n;
 
     unsigned start = head;

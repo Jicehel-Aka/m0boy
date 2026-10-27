@@ -220,8 +220,10 @@ static unsigned display_row(unsigned y) {
 #endif
 }
 /* Where the drawn rows start on the panel: the 120-row consoles crop the
- * TMS9918A's border (rows 4..123), the PC shows all 192 rows from 0. */
-#if M0_TARGET_PC
+ * TMS9918A's border (rows 4..123), the PC shows all 192 rows from 0, and
+ * the ESP32 panel zooms the 120 visible rows x2 from row 0
+ * (M0_PANEL_SRC_ROWS=120). */
+#if M0_TARGET_PC || M0_TARGET_ESP32
 #define SG_PANEL_ROW0(row) (row)
 #else
 #define SG_PANEL_ROW0(row) ((row) + 4)

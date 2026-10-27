@@ -98,13 +98,18 @@ extern "C" uint32_t vx_state_identity(void) {
 }
 
 static inline void plot(int x, int y, unsigned z) {
-    row_level[y] = (uint8_t)(row_level[y] > z ? row_level[y] : z);
     uint8_t *p = &phosphor[(unsigned)y * (VX_SIZE / 2) + ((unsigned)x >> 1)];
     if (x & 1) {
         if ((unsigned)(*p >> 4) < z) *p = (uint8_t)((*p & 0x0f) | z << 4);
     } else if ((unsigned)(*p & 15) < z) {
         *p = (uint8_t)((*p & 0xf0) | z);
     }
+}
+
+/* a stroke's level is constant: the row's ceiling moves once per row it
+ * touches, the pixels go to the phosphor alone */
+static inline void row_touch(int y, unsigned z) {
+    if ((unsigned)row_level[y] < z) row_level[y] = (uint8_t)z;
 }
 
 #ifdef VX_DRAW_HASH
@@ -141,7 +146,28 @@ extern "C" void vx_draw(Vectrex *, int32_t x0, int32_t y0, int32_t x1, int32_t y
     if (level > 15) level = 15;
     if (!level) return;
     int err = dx - dy;
+    /* the walls are mostly axis-aligned: the same pixels as the loop
+     * below, without its arithmetic */
+    if (!dy) {
+        row_touch(y0, level);
+        for (int x = x0; x != x1; x += sx) plot(x, y0, level);
+        plot(x1, y0, level);
+        return;
+    }
+    if (!dx) {
+        int last = y0 - sy;
+        for (int y = y0; ; y += sy) {
+            if (y != last) row_touch(y, level);
+            last = y;
+            plot(x0, y, level);
+            if (y == y1) break;
+        }
+        return;
+    }
+    int last = y0 - 0x4000;
     for (;;) {
+        if (y0 != last) row_touch(y0, level);
+        last = y0;
         plot(x0, y0, level);
         if (x0 == x1 && y0 == y1) break;
         int e = err * 2;

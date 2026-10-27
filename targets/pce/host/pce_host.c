@@ -55,7 +55,10 @@ static uint64_t mpr_now(void) {
     for (unsigned i = 0; i < 8; i++) m |= (uint64_t)machine.cpu.mpr[i] << (8 * i);
     return m;
 }
+static int pce_trace_on; /* --coverage turns the counters on: the hooks
+    run on every instruction, the games that only play skip the writes */
 void pce_trace_step(uint16_t pc) {
+    if (!pce_trace_on) return;
     pc_hits[pc]++;
     const uint64_t m = mpr_now();
     const uint8_t n = pc_ctx_n[pc];
@@ -66,7 +69,7 @@ void pce_trace_step(uint16_t pc) {
         pc_ctx_n[pc] = (uint8_t)(n + 1);
     }
 }
-void pce_trace_dyn(uint16_t pc) { pc_dyn[pc] = 1; }
+void pce_trace_dyn(uint16_t pc) { if (pce_trace_on) pc_dyn[pc] = 1; }
 
 int main(int argc, char **argv) {
     const char *rom_path = 0, *ppm = 0, *wav = 0, *input_path = 0, *coverage = 0;
@@ -85,6 +88,7 @@ int main(int argc, char **argv) {
     /* the profile counts the interpreter's steps: every instruction then */
     pce_native = !(interp || coverage);
 #endif
+    pce_trace_on = coverage != 0;
     (void)interp;
     const uint8_t *rom;
     uint32_t rom_bytes;
