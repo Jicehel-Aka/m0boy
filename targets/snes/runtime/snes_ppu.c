@@ -2,7 +2,13 @@
  * The renderer samples the registers per line — the frame's rows keep the
  * registers as the code left them, so a write during a line's HBlank
  * reaches the next line (writes inside the visible part too: the exact
- * mid-scanline change points are not modelled). */
+ * mid-scanline change points are not modelled).
+ *
+ * The tile modes 0-4 render with their real depths: the offset-per-tile
+ * maps of modes 2 and 4, and the direct color of modes 3/4.  Mode 7
+ * renders its affine matrix (no EXBG).  Not modelled: modes 5/6, windows,
+ * mosaic, color math, the sub screen, interlace, and the mode 7 line-count
+ * quirk of the Y coordinate. */
 #include "snes.h"
 
 static unsigned vram_word(void) {
@@ -46,8 +52,18 @@ void snes_ppu_write(uint16_t at, uint8_t v) {
     }
     case 0x0d: case 0x0e: case 0x0f: case 0x10:
     case 0x11: case 0x12: case 0x13: case 0x14:
-        machine.scroll[r - 0x0d] = ((unsigned)v << 8 | machine.scroll_latch) & 0x3ff;
+        machine.scroll[r - 0x0d] = ((unsigned)v << 8 | machine.scroll_latch) & 0x1fff;
         machine.scroll_latch = v;
+        break;
+    case 0x1b: case 0x1c: case 0x1d: case 0x1e:
+    case 0x1f: case 0x20: /* the mode 7 parameters, two writes each */
+        if (!machine.m7_phase) {
+            machine.m7[(r - 0x1b) * 2] = v;
+            machine.m7_phase = 1;
+        } else {
+            machine.m7[(r - 0x1b) * 2 + 1] = v;
+            machine.m7_phase = 0;
+        }
         break;
     case 0x16: machine.vmaddr = (machine.vmaddr & 0xff00) | v; break;
     case 0x17: machine.vmaddr = (machine.vmaddr & 0x00ff) | (unsigned)v << 8; break;
@@ -256,51 +272,149 @@ static unsigned bg_priority(unsigned mode, unsigned bg, unsigned high, unsigned 
     return mode1[bg][high];
 }
 
+/* the tile-based modes' bits per pixel, BG1 to BG4 */
+static const uint8_t mode_bpp[5][4] = {
+    {2,2,2,2}, /* 0 */
+    {4,4,2,0}, /* 1 */
+    {4,4,0,0}, /* 2: offset-per-tile */
+    {8,4,0,0}, /* 3: BG1 direct color capable */
+    {8,2,0,0}, /* 4: offset-per-tile */
+};
+
+/* One tile-mode background's pixel: the BGR555 color (0 = transparent)
+ * and its priority.  Modes 2 and 4 add the offset-per-tile map one block
+ * past the screen base: its entry's low byte shifts the horizontal
+ * scroll, mode 2's high byte the vertical, mode 4's bit 15 flips the
+ * tile.  Mode 3/4's BG1 honors the direct color bit of $2105. */
+static void tile_pixel(const uint8_t *r, unsigned mode, unsigned bg, unsigned x, unsigned y,
+                       unsigned *out_color, unsigned *out_prio) {
+    const unsigned bpp = mode_bpp[mode][bg];
+    if (!bpp) return;
+    const unsigned size = (r[5] & (0x10 << bg)) ? 16 : 8;
+    unsigned hscroll = machine.scroll[bg * 2], vscroll = machine.scroll[bg * 2 + 1];
+    unsigned opt_h = 0, opt_v = 0, opt_flip = 0;
+    if (mode == 2 || mode == 4) {
+        const unsigned opt = (r[7 + bg] & 0xfc) * 0x200u + 0x400u;
+        const unsigned tx = ((x + hscroll) & 0x3ff) / size, ty = ((y + vscroll) & 0x3ff) / size;
+        const uint16_t e = vword(opt + ((ty & 31) * 32 + (tx & 31)) * 2);
+        opt_h = e & 0xff;
+        if (mode == 2) opt_v = e >> 8;
+        else opt_flip = e >> 15;
+    }
+    const unsigned sx = (x + hscroll + opt_h) & 0x3ff;
+    const unsigned sy = (y + vscroll + opt_v) & 0x3ff;
+    unsigned tx = sx / size, ty = sy / size;
+    unsigned screen = r[7 + bg] & 3;
+    unsigned page_x = (tx >> 5) & (screen & 1);
+    unsigned page_y = (ty >> 5) & ((screen >> 1) & 1);
+    unsigned page = page_x + page_y * ((screen & 1) ? 2 : 1);
+    unsigned map = (r[7 + bg] & 0xfc) * 0x200u + page * 0x800u;
+    uint16_t entry = vword(map + ((ty & 31) * 32 + (tx & 31)) * 2);
+    unsigned px = sx % size, py = sy % size;
+    if (entry & 0x4000) px = size - 1 - px;
+    if (entry & 0x8000) py = size - 1 - py;
+    if (opt_flip) py = size - 1 - py;
+    unsigned tile = (entry & 0x3ff) + (px >> 3) + (py >> 3) * 16;
+    unsigned base = ((r[0x0b + bg / 2] >> ((bg & 1) * 4)) & 15) * 0x2000u;
+    unsigned row = base + tile * (bpp * 8) + (py & 7) * 2;
+    unsigned bit = 7 - (px & 7), index = 0;
+    for (unsigned p = 0; p < bpp; p++)
+        index |= ((machine.vram[(row + (p / 2) * 16 + (p & 1)) & 0xffff] >> bit) & 1) << p;
+    if (!index) return;
+    *out_prio = bg_priority(mode, bg, (entry >> 13) & 1, r[5] & 8);
+    if (bpp == 8) {
+        if ((r[0x30] & 1) && (mode == 3 || mode == 4)) { /* CGWSEL direct color: RRRGGGBB */
+            *out_color = ((index >> 5) << 10) | (((index >> 2) & 7) << 5) | (index & 3);
+            return;
+        }
+        *out_color = machine.cgram[(index * 2) & 511] | machine.cgram[(index * 2 + 1) & 511] << 8;
+        return;
+    }
+    const unsigned pal = mode == 0 ? bg * 32 : 0;
+    const unsigned shift = bpp == 2 ? 2 : 4;
+    const unsigned c = pal + ((entry >> 10) & 7) * (1u << bpp) + index;
+    *out_color = machine.cgram[(c * 2) & 511] | machine.cgram[(c * 2 + 1) & 511] << 8;
+    (void)shift;
+}
+
+/* Mode 7's BG1: the map's entries sit in the low bytes of the first 32 KiB,
+ * the 8bpp tiles in the high bytes of the second (tile t, row r, pixel p at
+ * $4000 + t*128 + r*16 + p*2 + 1).  The matrix is signed 8.8, the screen
+ * coordinates flip per M7SEL bits 0-1, and bits 6-7 choose between the
+ * 128x128 wrap, transparency and tile 0 outside.  BG2's EXBG is not
+ * modelled, and the hardware's line-count quirk of the Y coordinate is
+ * not reproduced. */
+static void mode7_pixel(const uint8_t *r, unsigned x, unsigned y, unsigned *out_color, unsigned *out_prio) {
+    const unsigned sel = r[0x1a];
+    int cx = machine.m7[8] | (machine.m7[9] & 1) << 8;
+    int cy = machine.m7[10] | (machine.m7[11] & 1) << 8;
+    if (cx & 0x100) cx -= 0x200;
+    if (cy & 0x100) cy -= 0x200;
+    int px = (int)x, py = (int)y;
+    if (sel & 1) px = 255 - px;
+    if (sel & 2) py = 223 - py;
+    const int dx = px + (int)machine.scroll[0] - cx;
+    const int dy = py + (int)machine.scroll[1] - cy;
+    const int a = (int16_t)(machine.m7[0] | machine.m7[1] << 8);
+    const int b = (int16_t)(machine.m7[2] | machine.m7[3] << 8);
+    const int c = (int16_t)(machine.m7[4] | machine.m7[5] << 8);
+    const int d = (int16_t)(machine.m7[6] | machine.m7[7] << 8);
+    int u = ((a * dx + b * dy) >> 8) + cx;
+    int v = ((c * dx + d * dy) >> 8) + cy;
+    const unsigned over = (sel >> 6) & 3;
+    unsigned tile = 0;
+    if (over >= 2 && ((u | v) & ~0x3ff)) { /* outside the 128x128 map */
+        if (over == 2) return; /* transparent: the layers below show */
+        u &= 0x3ff; v &= 0x3ff; /* tile 0 fills the outside */
+    } else {
+        u &= 0x3ff; v &= 0x3ff;
+        tile = machine.vram[(v >> 3) * 256 + (u >> 3) * 2];
+    }
+    const unsigned col = machine.vram[0x4000u + tile * 128u + (v & 7) * 16u + (u & 7) * 2u + 1];
+    if (!col) return;
+    *out_color = machine.cgram[(col * 2) & 511] | machine.cgram[(col * 2 + 1) & 511] << 8;
+    *out_prio = 7;
+}
+
 void snes_render_line(unsigned y, uint8_t *row) {
     const uint8_t *r = machine.ppu_regs;
     unsigned mode = r[5] & 7, bright = r[0] & 15;
     uint8_t obj_color[256] = {0}, obj_prio[256] = {0};
-    if (!(r[0] & 0x80) && (r[0x2c] & 0x10) && (mode == 0 || mode == 1))
+    if (!(r[0] & 0x80) && (r[0x2c] & 0x10) && (mode <= 4 || mode == 7))
         object_line(y, obj_color, obj_prio);
     for (unsigned x = 0; x < 256; x++) {
-        unsigned color = 0, best = 0;
-        if (!(r[0] & 0x80) && (mode == 0 || mode == 1)) {
+        unsigned color = 0, best = 0, painted = 0;
+        if (!(r[0] & 0x80) && (mode <= 4 || mode == 7)) {
             if (obj_color[x]) {
                 static const uint8_t sprite_priority[2][4] = {{3,6,9,12}, {3,5,8,11}};
-                best = sprite_priority[mode][obj_prio[x]];
-                color = obj_color[x];
+                best = sprite_priority[mode == 0 ? 0 : 1][obj_prio[x]];
+                const unsigned oc = obj_color[x];
+                color = machine.cgram[(oc * 2) & 511] | machine.cgram[(oc * 2 + 1) & 511] << 8;
+                painted = 1;
             }
-            for (int bg = 3; bg >= 0; bg--) {
-                if (!(r[0x2c] & (1 << bg))) continue;
-                unsigned bpp = mode == 0 ? 2 : (bg < 2 ? 4 : bg == 2 ? 2 : 0);
-                if (!bpp) continue;
-                unsigned sx = (x + machine.scroll[bg * 2]) & 0x3ff;
-                unsigned sy = (y + machine.scroll[bg * 2 + 1]) & 0x3ff;
-                unsigned size = (r[5] & (0x10 << bg)) ? 16 : 8;
-                unsigned tx = sx / size, ty = sy / size;
-                unsigned screen = r[7 + bg] & 3;
-                unsigned page_x = (tx >> 5) & (screen & 1);
-                unsigned page_y = (ty >> 5) & ((screen >> 1) & 1);
-                unsigned page = page_x + page_y * ((screen & 1) ? 2 : 1);
-                unsigned map = (r[7 + bg] & 0xfc) * 0x200u + page * 0x800u;
-                uint16_t entry = vword(map + ((ty & 31) * 32 + (tx & 31)) * 2);
-                unsigned px = sx % size, py = sy % size;
-                if (entry & 0x4000) px = size - 1 - px;
-                if (entry & 0x8000) py = size - 1 - py;
-                unsigned tile = (entry & 0x3ff) + (px >> 3) + (py >> 3) * 16;
-                unsigned base = ((r[0x0b + bg / 2] >> ((bg & 1) * 4)) & 15) * 0x2000u;
-                unsigned row_ = base + tile * (bpp * 8) + (py & 7) * 2;
-                unsigned bit = 7 - (px & 7), index = 0;
-                for (unsigned p = 0; p < bpp; p++)
-                    index |= ((machine.vram[(row_ + (p / 2) * 16 + (p & 1)) & 0xffff] >> bit) & 1) << p;
-                unsigned priority = bg_priority(mode, bg, (entry >> 13) & 1, r[5] & 8);
-                if (index && priority > best) {
-                    best = priority;
-                    color = (mode == 0 ? bg * 32 : 0) + ((entry >> 10) & 7) * (1u << bpp) + index;
+            if (mode == 7) {
+                unsigned c7 = 0, p7 = 0;
+                mode7_pixel(r, x, y, &c7, &p7);
+                if (c7 && p7 > best) {
+                    best = p7;
+                    color = c7;
+                    painted = 1;
+                }
+            } else if (mode <= 4) {
+                for (int bg = 3; bg >= 0; bg--) {
+                    if (!(r[0x2c] & (1 << bg))) continue;
+                    unsigned c = 0, p = 0;
+                    tile_pixel(r, mode, (unsigned)bg, x, y, &c, &p);
+                    if (c && p > best) {
+                        best = p;
+                        color = c;
+                        painted = 1;
+                    }
                 }
             }
         }
-        unsigned c = machine.cgram[(color * 2) & 511] | machine.cgram[(color * 2 + 1) & 511] << 8;
+        /* nothing painted: the backdrop, CGRAM's color 0 */
+        unsigned c = painted ? color : machine.cgram[0] | machine.cgram[1] << 8;
         if (r[0] & 0x80) c = 0;
         for (unsigned k = 0; k < 3; k++) {
             unsigned v = (c >> (k * 5)) & 31;

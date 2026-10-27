@@ -168,6 +168,49 @@ static void object_limits_test(void) {
     CHECK((snes_bus_read(0x213f) & 0x60) == 0x40); /* time over */
 }
 
+/* Modes 3 (direct color), 2 (offset-per-tile) and 7 (the identity
+ * matrix fetches the map and tileset bytes). */
+static void modes_test(void) {
+    snes_init(rom, sizeof rom, 0, 0);
+    /* Mode 3, BG1 8bpp: direct color turns the $FF index into RRRGGGBB.
+     * The tileset sits at NBA 1 so the map at 0 stays empty; every plane's
+     * bit 7 set gives the index $FF. */
+    memset(machine.vram + 0x2000, 0x80, 64);
+    machine.cgram[0xff * 2] = 0x1f; /* the CGRAM path shows red */
+    snes_bus_write(0x2105, 3); snes_bus_write(0x210b, 1); snes_bus_write(0x212c, 1); snes_bus_write(0x2100, 15);
+    snes_render_line(0, image);
+    CHECK(image[0] == 255 && image[1] == 0 && image[2] == 0); /* CGRAM path: red */
+    snes_bus_write(0x2130, 1); /* CGWSEL direct color */
+    snes_render_line(0, image);
+    CHECK(image[0] == 25 && image[1] == 58 && image[2] == 58);
+
+    /* Mode 2: the offset-per-tile entry of tile (0,0) shifts the source
+     * right by one tile, so tile 1's pixel moves from x=8 to x=0. */
+    snes_init(rom, sizeof rom, 0, 0);
+    machine.vram[32] = 0x80;      /* tile 1: one pixel at (0,0) */
+    machine.vram[2] = 0x01; machine.vram[3] = 0x00; /* map word 1 = tile 1 */
+    machine.cgram[2] = 0x1f;
+    snes_bus_write(0x2105, 2); snes_bus_write(0x212c, 1); snes_bus_write(0x2100, 15);
+    snes_render_line(0, image);
+    CHECK(image[8 * 3] == 255 && image[0] == 0); /* unshifted: x=8 shows it */
+    machine.vram[0x400] = 0x08; machine.vram[0x401] = 0; /* the opt map sits one map past the base: +8 */
+    snes_render_line(0, image);
+    CHECK(image[0] == 255 && image[16 * 3] == 0); /* tile (0,0) shifted, (1,0) not */
+
+    /* Mode 7 with the identity matrix: the map's low byte at (0,0) picks
+     * tile 1, whose (0,0) pixel sits in the high byte at $4081. */
+    snes_init(rom, sizeof rom, 0, 0);
+    machine.vram[0] = 1;                 /* map (0,0) = tile 1 */
+    machine.vram[0x4081] = 5;            /* tile 1's (0,0) = index 5 */
+    machine.cgram[10] = 0x00; machine.cgram[11] = 0x7c; /* blue */
+    snes_bus_write(0x2105, 7); snes_bus_write(0x212c, 1); snes_bus_write(0x2100, 15);
+    snes_bus_write(0x211b, 0x00); snes_bus_write(0x211b, 0x01); /* M7A = 1.0 */
+    snes_bus_write(0x211e, 0x00); snes_bus_write(0x211e, 0x01); /* M7D = 1.0 */
+    snes_render_line(0, image);
+    CHECK(image[0] == 0 && image[1] == 0 && image[2] == 255);
+    CHECK(image[8 * 3] == 0 && image[8 * 3 + 2] == 0); /* map (1,0) is empty */
+}
+
 static void interrupt_test(int emulation, int interpreter) {
     snes_init(rom, sizeof rom, 0, 0);
     machine.cpu.e = emulation;
@@ -387,6 +430,7 @@ int main(void) {
     hdma_test();
     irq_test();
     object_limits_test();
+    modes_test();
     /* the SRAM window: mirrored through the $6000-$7FFF offsets of the
      * LoROM banks, open bus when nothing is declared */
     snes_init(rom, sizeof rom, 0, 8192);
