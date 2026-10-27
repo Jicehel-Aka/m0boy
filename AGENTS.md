@@ -186,6 +186,19 @@ built firmware in it (`ESPBOY_PIO` for the build).
   `output/deps/ymfm` as a test oracle only) must stay exact.
   The AKA CORE v1.4 wiring follows the official Gamebuino_AKA_lib
   (`targets/consoles/aka/`, `docs/AKA.fr.md`).
+  SNES (`--system snes`, `--target desktop|pc`, `docs/SNES.fr.md`):
+  `recompiler/src/system/snes/` (the 65816 emitter with the context walk,
+  the dispatcher in `targets/snes/runtime/snes_cpu.c` under
+  `SNES_NATIVE`), the per-line PPU/HDMA/IRQ in `snes_ppu.c`, the SPC700
+  interpreter and the C-simulated IPL boot in `snes_smp.c`, the BRR DSP
+  in `snes_dsp.c`; the fingerprint recipe is `targets/snes/host/snes_hash.h`,
+  shared by the harness and the SDL2 window.  Rule: a `--meta-precise`
+  project prints the `--interp` run_hash/image_hash/audio_hash (the fast
+  mode's regions stop at their labels: the boundary state is not a
+  contract there); the SRAM, the A-RAM and the APU state are hashed.  A
+  change to the PPU, the DMA or the APU keeps Bucket's recorded hashes
+  (in docs/SNES.fr.md; the ROM stays in `output/snes/`) and the e2e's
+  backdrop.
 
 ## Commits
 
