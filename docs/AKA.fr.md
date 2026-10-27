@@ -26,7 +26,16 @@ Le pilote remplace les anciennes broches supposées. Les lignes m0boy de
 qu'après la fin du transfert. Les boutons passent par les expandeurs,
 RUN étant actif haut, les autres actifs bas. Le joystick complète la croix.
 A/B : jeu ; RUN ou D : Start ; MENU ou C : options. L1/R1, NeoPixels,
-batterie et vibreur ne sont pas exploités par m0boy.
+batterie et vibreur ne sont pas exploités par m0boy. La question RGB/BGR du
+verre reste dans le MADCTL (`AKA_LCD_BGR` de l'esp32_config.h, 0 par défaut,
+la rotation officielle) : aucun échange d'octets logiciel, les frontends
+envoient du RGB565 natif — les Mega Drive comme les Sega. Les frontends Sega
+montrent 120 lignes visibles (GG 144→120, SMS et SG 192→120) que le panneau
+zoome ×2 depuis la rangée 0 (`M0_PANEL_SRC_ROWS`) ; avant, le plan META de
+128 rangées s'étalait en pas de 1,875, d'où un mauvais cadrage et des sauts
+de ligne. Le frontend Mega Drive retient une trame sur quatre quand le cœur
+rame, pour que l'image ne disparaisse pas, et construit en -O2 (la RAM n'est
+pas serrée).
 
 Le TAS2505 utilise la séquence de registres de référence. Le runtime produit
 11025 échantillons/s ; chaque échantillon est répété quatre fois pour le

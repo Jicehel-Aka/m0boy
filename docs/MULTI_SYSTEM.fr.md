@@ -16,12 +16,38 @@ build/bin/m0recomp firmware.bin --system meta --cpu m0plus --info
 build/bin/m0recomp firmware.bin --system pokitto --disasm --limit 40
 ```
 
-Il n'y a pas encore de générateur ni de runtime de machine source pour ces
-firmwares : `--list-systems` annonce `codegen=unavailable` et une demande de
-`--target` échoue explicitement. Un binaire natif exige l'émulation des
-périphériques SAMD21 ou LPC11U68 et de l'écran, du stockage et des entrées
-avant de pouvoir être exécuté ou transposé. Cette entrée du registre ne
-signifie donc pas qu'un firmware META tourne sur Pokitto, ou inversement.
+`--target pc` prépare désormais un projet contenant le firmware validé et un
+`run.py` qui le lance dans une copie intégrée du modèle de
+[gm0](https://github.com/r043v/gm0), remise sous MIT par son auteur pour
+m0boy (`targets/m0plus/gm0/LICENSE` conserve les notices tierces MIT).
+Ce modèle fournit le CPU M0+, les périphériques SAMD21 ou LPC11U68, l'écran,
+le stockage et les entrées. Le binaire `.bin`
+ne contient pas les fichiers de la carte : les passer au lanceur si le jeu en
+a besoin. Exemple :
+
+```bash
+build/bin/m0recomp firmware.bin --system meta --target pc -o output/firmware-pc
+cmake -G Ninja -S output/firmware-pc -B output/firmware-pc/build
+ninja -C output/firmware-pc/build
+python3 output/firmware-pc/run.py carte/ --frames 300
+```
+
+Le même projet contient une première traduction C des adresses flash atteintes
+depuis les vecteurs, augmentée par les adresses de `--coverage` (le format
+`EMU_PROF` de gm0, « adresse cycles », convient). Les instructions courantes
+MOV, calcul immédiat, accès mémoire et branches ont un corps C direct ; les
+autres passent par le cœur Thumb portable. Si le PC est en RAM ou si un mot de
+flash a changé, le repli interprète l'instruction. Le harnais CPU se construit
+avec `cmake -G Ninja -S output/firmware-pc -B output/firmware-pc/build`, puis
+compare `build/m0_native_pc --steps N` avec `--interp --steps N` sur
+`run_hash`. Il ne modélise encore que flash, SRAM, SysTick et NVIC : un
+firmware réel qui accède aux périphériques de la console doit utiliser
+`run.py` pour le moment.
+
+La cible AKA reste hors de la matrice : le modèle SAMD21/LPC11U68 de gm0 est
+une application SDL2 de bureau et n'est pas encore un runtime autonome
+compilable sur ESP32-S3. Un firmware META ne tourne pas sur Pokitto, ni
+l'inverse.
 
 | Axe | Game Boy | SG-1000 | Game Gear | Master System | PICO-8 |
 | --- | --- | --- | --- | --- | --- |
@@ -104,6 +130,7 @@ la table des faits, et un refus dit lequel des deux manque et pourquoi
 | nes | desktop, meta, pokitto, pc (6502 recompilé, interpréteur de repli) | — |
 | pce | desktop, pc (interpréteur HuC6280 ; voir `docs/PCE.fr.md`) | consoles > 32 Kio RAM, VRAM 64 Kio |
 | vectrex | meta, pc (6809 recompilé, interpréteur de repli ; voir `docs/VECTREX.fr.md`) | (pokitto, espboy et ESP32 non câblés) |
+| megadrive | desktop, pc, aka (68000 recompilé, interpréteur de repli ; voir `docs/MEGADRIVE.fr.md`) | (meta : le vieux profil « 4 Kio » seulement) |
 
 Les cibles pc (fenêtre SDL2, la carte en fichier `sd.img`), odroid
 (ODROID-GO : ESP32, ILI9341 320×240, carte SD, DAC) et aka (Gamebuino

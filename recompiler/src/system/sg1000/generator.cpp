@@ -956,6 +956,13 @@ bool generate(const fs::path& path, const GenerateOptions& o, GenerateStats& sta
                 for (const char* name : { "esp32_hw.cpp", "esp32_hw.h", "esp32_sd.cpp" })
                     copy_template(core / name, src / name);
                 copy_template(platform / "esp32_config.h", src / "esp32_config.h");
+                {   /* the Sega frontends show 120 visible rows (SG 192->120,
+                     * GG 144->120, SMS 192->120): the 240-row panel zooms
+                     * them x2, from row 0 (gg_main.cpp / sg_main.cpp). */
+                    std::ofstream cfg(src / "esp32_config.h", std::ios::app);
+                    cfg << "\n/* The Sega frontends' 120 visible rows zoom x2 onto the panel. */\n"
+                           "#ifndef M0_PANEL_SRC_ROWS\n#define M0_PANEL_SRC_ROWS 120\n#endif\n";
+                }
                 const char *hw = o.target == TargetId::odroid ? "odroid_hw" : "aka_hw";
                 copy_template(platform / (std::string(hw) + ".cpp"), src / (std::string(hw) + ".cpp"));
                 copy_template(platform / (std::string(hw) + ".h"), src / (std::string(hw) + ".h"));

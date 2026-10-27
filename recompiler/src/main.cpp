@@ -2511,7 +2511,7 @@ int main(int argc, char* argv[]) {
     if (source.id == m0boy::SystemId::megadrive) {
         if (!source.supports(*m0boy::parse_target(target)))
             return refuse_target(source, *m0boy::parse_target(target), target);
-        if (disasm_only || analyze_only || (target != "pc" && !coverage_paths.empty()) ||
+        if (disasm_only || analyze_only || (target != "pc" && target != "aka" && !coverage_paths.empty()) ||
             meta_thumb || g_meta_pack || g_meta_stream != -1 ||
             !g_rom_profiles.empty() || g_meta_resident || emit_android_project ||
             !native_patch_manifest_path.empty() || specific_bank > 0) {

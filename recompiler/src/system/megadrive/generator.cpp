@@ -1,4 +1,5 @@
 #include "m0boy/megadrive_generator.h"
+#include "m0boy/console_project.h"
 #include "emitter.h"
 #include <cstdint>
 #include <cstdio>
@@ -43,11 +44,13 @@ uint16_t be16(const std::vector<uint8_t> &rom, uint32_t at) {
 uint32_t be32(const std::vector<uint8_t> &rom, uint32_t at) {
     return (uint32_t)be16(rom, at) << 16 | be16(rom, at + 2);
 }
-void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &o) {
+void generate_full_native(const std::vector<uint8_t> &rom, const GenerateOptions &o) {
+    const bool pc = o.target == TargetId::pc;
+    const std::string marker_name = pc ? "pc\n" : "aka\n";
     const fs::path marker = o.output / "megadrive-project.txt";
     if (fs::exists(o.output) && !fs::exists(marker) && !fs::is_empty(o.output))
         throw std::runtime_error("Output directory is not a Mega Drive project");
-    if (fs::exists(marker) && read(marker) != "pc\n")
+    if (fs::exists(marker) && read(marker) != marker_name)
         throw std::runtime_error("Use a separate output directory for each destination");
     fs::create_directories(o.output / "src");
     const fs::path src = o.output / "src", tpl = o.targets_dir / "megadrive";
@@ -58,9 +61,14 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
         copy_template(tpl / "runtime" / n, src / n);
     for (const char *n : {"z80.h", "z80.c", "z80_ops.h"})
         copy_template(o.targets_dir / "sg1000/runtime" / n, src / n);
-    copy_template(tpl / "platform/md_full_pc.c", src / "md_full_pc.c");
-    for (const char *n : {"pc_frontend.c", "pc_frontend.h"})
-        copy_template(o.targets_dir / "consoles/pc" / n, src / n);
+    if (pc) {
+        copy_template(tpl / "platform/md_full_pc.c", src / "md_full_pc.c");
+        for (const char *n : {"pc_frontend.c", "pc_frontend.h"})
+            copy_template(o.targets_dir / "consoles/pc" / n, src / n);
+    } else {
+        copy_template(tpl / "platform/md_esp32.cpp", src / "md_esp32.cpp");
+        copy_template(tpl / "platform/md_audio.h", src / "md_audio.h");
+    }
     std::set<uint32_t> covered;
     covered.insert(be32(rom, 4));
     for (const auto &path : o.coverage) {
@@ -95,15 +103,48 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
     }
     data << "\n};\n";
     write(src / "md_rom.c", data.str());
-    write(o.output / "CMakeLists.txt",
-        "cmake_minimum_required(VERSION 3.20)\nproject(md_native C)\n"
-        "set(CMAKE_C_STANDARD 11)\nfind_package(PkgConfig REQUIRED)\n"
-        "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)\n"
-        "add_executable(md_pc src/md_full_pc.c src/pc_frontend.c src/md_full_code.c src/md_full_cpu.c "
-        "src/md_full_bus.c src/md_full_video.c src/md_full_audio.c src/md_ym2612.c src/z80.c src/md_rom.c)\n"
-        "target_compile_options(md_pc PRIVATE -O2)\n"
-        "target_link_libraries(md_pc PRIVATE PkgConfig::SDL2 m)\n");
-    write(o.output / "README.md", "# Mega Drive native PC project: " + o.name + "\n\n"
+    if (pc) {
+        write(o.output / "CMakeLists.txt",
+            "cmake_minimum_required(VERSION 3.20)\nproject(md_native C)\n"
+            "set(CMAKE_C_STANDARD 11)\nfind_package(PkgConfig REQUIRED)\n"
+            "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)\n"
+            "add_executable(md_pc src/md_full_pc.c src/pc_frontend.c src/md_full_code.c src/md_full_cpu.c "
+            "src/md_full_bus.c src/md_full_video.c src/md_full_audio.c src/md_ym2612.c src/z80.c src/md_rom.c)\n"
+            "target_compile_options(md_pc PRIVATE -O2)\n"
+            "target_link_libraries(md_pc PRIVATE PkgConfig::SDL2 m)\n");
+    } else {
+        /* The ESP32 console project: the family's shared core, the console's
+         * own drivers, the frontend and PlatformIO's files (every *.in of
+         * the console's directory rendered to the root). */
+        const fs::path platform = o.targets_dir / "consoles/aka";
+        const fs::path core = o.targets_dir / "common/consoles/esp32";
+        const fs::path common = o.targets_dir / "common/platform";
+        for (const char *n : {"esp32_hw.cpp", "esp32_hw.h"})
+            copy_template(core / n, src / n);
+        copy_template(platform / "esp32_config.h", src / "esp32_config.h");
+        for (const char *n : {"aka_hw.cpp", "aka_hw.h"})
+            copy_template(platform / n, src / n);
+        for (const char *n : {"m0_target.h", "m0_clock.h", "m0_lcd.h", "m0_menu.h", "m0_audio.h"})
+            copy_template(common / n, src / n);
+        copy_template(o.targets_dir / "common/runtime/m0_scale.h", src / "m0_scale.h");
+        copy_template(o.targets_dir / "meta/runtime/gbl_board.h", src / "gbl_board.h");
+        project::write_config(o.target, src);
+        project::write_profile(o.target, src, {false, false, false}, false);
+        write(src / "md_config.h",
+              "#pragma once\n#define MD_ROM_SIZE " + std::to_string(rom.size()) + "u\n"
+              "#define MD_ROWS 224u\n#define MD_PANEL_ROW0 8u\n");
+        fs::create_directories(o.output / "boards");
+        copy_template(platform / "boards" / "gamebuino_aka.json", o.output / "boards" / "gamebuino_aka.json");
+        std::error_code list_error;
+        for (const auto &entry : fs::directory_iterator(platform, list_error)) {
+            if (entry.is_directory() || entry.path().extension() != ".in") continue;
+            /* the 68000 core has RAM to spare (77% of 320 KiB): -O2, not -Os */
+            write(o.output / entry.path().stem(),
+                  replace(replace(read(entry.path()), "@NAME@", o.name), "-Os", "-O2"));
+        }
+    }
+    write(o.output / "README.md", pc ?
+        "# Mega Drive native PC project: " + o.name + "\n\n"
         "The ROM's 68000 code reached from the vectors and the coverage profile is "
         "recompiled to C in `src/md_full_code.c` (regions behind a dispatcher); code "
         "it does not reach runs on the in-tree 68000 interpreter. The VDP (line by line), "
@@ -115,8 +156,15 @@ void generate_pc_native(const std::vector<uint8_t> &rom, const GenerateOptions &
         "F10 changes scale; F11 toggles fullscreen. "
         "`--wav FILE` saves 44.1 kHz stereo audio.\n"
         "Profile: `build/md_pc --interp --frames 1200 --input start.input --coverage run.cov`, "
-        "then regenerate with `m0recomp --coverage run.cov`.\n");
-    write(marker, "pc\n");
+        "then regenerate with `m0recomp --coverage run.cov`.\n"
+        : "# Mega Drive AKA project: " + o.name + "\n\n"
+        "The full Mega Drive machine (68000 recompiled to C with interpreter fallback, "
+        "VDP line by line, Z80, PSG, YM2612) on the Gamebuino AKA. The 320x224 picture "
+        "sits centred on the 320x240 panel; audio is the console's 11025 Hz mono ring. "
+        "A = B, B = C, MENU/C = C, RUN/D = Start; the joystick completes the D-pad. "
+        "No options menu, no save states; the cartridge SRAM is volatile.\n\n"
+        "Build: `pio run` (firmware in `.pio/build/aka/firmware.bin`).\n");
+    write(marker, marker_name);
     write(o.output / "native-status.txt", "native-c\n");
 }
 Instruction decode(const std::vector<uint8_t> &rom, uint32_t pc) {
@@ -173,13 +221,14 @@ Instruction decode(const std::vector<uint8_t> &rom, uint32_t pc) {
 
 bool generate(const fs::path &rom_path, const GenerateOptions &o, std::string &error) {
     try {
-        if (o.target != TargetId::desktop && o.target != TargetId::meta && o.target != TargetId::pc)
-            throw std::runtime_error("Mega Drive profile supports --target desktop, meta or pc");
+        if (o.target != TargetId::desktop && o.target != TargetId::meta &&
+            o.target != TargetId::pc && o.target != TargetId::aka)
+            throw std::runtime_error("Mega Drive profile supports --target desktop, meta, pc or aka");
         std::string inspect_error;
         if (!inspect(rom_path, inspect_error)) throw std::runtime_error(inspect_error);
         std::ifstream f(rom_path, std::ios::binary);
         const std::vector<uint8_t> rom{std::istreambuf_iterator<char>(f), {}};
-        if (o.target == TargetId::pc) { generate_pc_native(rom, o); return true; }
+        if (o.target == TargetId::pc || o.target == TargetId::aka) { generate_full_native(rom, o); return true; }
         if (o.target == TargetId::meta && be32(rom, 0) < 0xfff000u)
             throw std::runtime_error("Mega Drive META profile needs a stack in the upper 4 KiB of work RAM");
         std::map<uint32_t, Instruction> code;

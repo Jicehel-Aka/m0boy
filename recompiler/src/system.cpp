@@ -37,16 +37,15 @@ constexpr std::array pico8_targets = {TargetId::desktop, TargetId::meta, TargetI
 constexpr std::array msx_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::pc};
 // NES: the recompiled pipeline on the META, the Pokitto and the desktop
 // harness.
-// PC Engine: the interpreter on the desktop harness, the PC's SDL2
-// window and the Gamebuino AKA (the HuCard whole in the app partition;
-// the other consoles wait on the picture's budget — a 768 KiB HuCard
+// PC Engine: the interpreter on the desktop harness and the PC's SDL2
+// window (the consoles wait on the picture's budget; a 768 KiB HuCard
 // does not fit a 256 KiB flash either).
 constexpr std::array nes_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::pc};
-constexpr std::array pce_targets = {TargetId::desktop, TargetId::pc, TargetId::aka};
+constexpr std::array pce_targets = {TargetId::desktop, TargetId::pc};
 // Vectrex: the 6809 recompiled in front of the interpreter on the META,
 // and the SDL host (pc).
 constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc};
-constexpr std::array megadrive_targets = {TargetId::desktop, TargetId::meta, TargetId::pc};
+constexpr std::array megadrive_targets = {TargetId::desktop, TargetId::meta, TargetId::pc, TargetId::aka};
 // SNES, phase 1: the 65C816's interpreter and recompiler on the desktop
 // harness — the picture (PPU, APU) comes later.
 constexpr std::array snes_targets = {TargetId::desktop};
