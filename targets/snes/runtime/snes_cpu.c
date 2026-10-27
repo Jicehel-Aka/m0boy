@@ -50,21 +50,21 @@ extern void snes_trace_dyn(uint32_t pc24);
 /* the second byte of a 16-bit access wraps inside the bank; a long
  * access's carries into the next one */
 #define WRAP16(e_) ((uint32_t)(((e_) & 0xFF0000u) | (uint16_t)((e_) + 1)))
-#define RDW(ea) (__extension__({ const uint32_t e_ = (ea); \
-    (unsigned)(rd(e_) | rd(WRAP16(e_)) << 8); }))
-#define RD24(ea) (__extension__({ const uint32_t e_ = (ea); \
-    (unsigned)(rd(e_) | rd(e_ + 1) << 8); }))
-#define WRW(ea, v) do { const uint32_t e_ = (ea); wr(e_, (uint8_t)(v)); \
-    wr(WRAP16(e_), (uint8_t)((v) >> 8)); } while (0)
-#define WR24(ea, v) do { const uint32_t e_ = (ea); wr(e_, (uint8_t)(v)); \
-    wr(e_ + 1, (uint8_t)((v) >> 8)); } while (0)
+#define RDW(ea) (__extension__({ const uint32_t rdw_addr_ = (ea); \
+    (unsigned)(rd(rdw_addr_) | rd(WRAP16(rdw_addr_)) << 8); }))
+#define RD24(ea) (__extension__({ const uint32_t rd24_addr_ = (ea); \
+    (unsigned)(rd(rd24_addr_) | rd(rd24_addr_ + 1) << 8); }))
+#define WRW(ea, v) do { const uint32_t wrw_addr_ = (ea); wr(wrw_addr_, (uint8_t)(v)); \
+    wr(WRAP16(wrw_addr_), (uint8_t)((v) >> 8)); } while (0)
+#define WR24(ea, v) do { const uint32_t wr24_addr_ = (ea); wr(wr24_addr_, (uint8_t)(v)); \
+    wr(wr24_addr_ + 1, (uint8_t)((v) >> 8)); } while (0)
 
 /* addressing: the direct page lives in bank $00, its index wraps at 8
  * bits while the X flag is set; the absolute forms stay inside the data
  * bank, the long ones carry into the next */
 #define A_DP(i) ((uint32_t)(uint16_t)(d_ + OP8(i)))
-#define A_DPX(i) ((uint32_t)(uint16_t)(d_ + (uint8_t)(OP8(i) + (XF ? (x_ & 0xFF) : x_))))
-#define A_DPY(i) ((uint32_t)(uint16_t)(d_ + (uint8_t)(OP8(i) + (XF ? (y_ & 0xFF) : y_))))
+#define A_DPX(i) ((uint32_t)(uint16_t)(d_ + ((e_ && !(d_ & 0xFF)) ? (uint8_t)(OP8(i) + x_) : (OP8(i) + x_))))
+#define A_DPY(i) ((uint32_t)(uint16_t)(d_ + ((e_ && !(d_ & 0xFF)) ? (uint8_t)(OP8(i) + y_) : (OP8(i) + y_))))
 #define A_INDP(i) (__extension__({ const uint32_t q_ = A_DP(i); \
     (uint32_t)dbr_ << 16 | (rd(q_) | rd(WRAP16(q_)) << 8); }))
 #define A_INDPX(i) (__extension__({ const uint32_t q_ = A_DPX(i); \
@@ -221,18 +221,22 @@ extern void snes_trace_dyn(uint32_t pc24);
 /* the interrupt sequence, in the interpreter's locals (the dispatcher has
  * its own, on the machine's fields) */
 #define INTERRUPT(vector) do { \
+    if (!e_) PUSH(k_); \
     PUSH((uint8_t)(pc_ >> 8)); PUSH((uint8_t)pc_); \
-    PUSH((uint8_t)(e_ ? ((p_ | 0x20u) & ~SNES_P_X) : (p_ & ~SNES_P_X))); \
+    PUSH((uint8_t)(e_ ? ((p_ | 0x20u) & ~SNES_P_X) : p_)); \
     p_ |= SNES_P_I; p_ &= (uint8_t)~SNES_P_D; \
+    k_ = 0; \
     if (e_) s_ = (uint16_t)(0x0100u | (s_ & 0xFF)); \
     pc_ = (uint16_t)(rd((uint32_t)(vector)) | rd((uint32_t)(vector) + 1) << 8); \
 } while (0)
 
 /* BRK and COP push the past-signature address and the B bit set */
 #define SOFTWARE(vector) do { \
+    if (!e_) PUSH(k_); \
     PUSH((uint8_t)(pc_ >> 8)); PUSH((uint8_t)pc_); \
-    PUSH((uint8_t)(e_ ? (p_ | 0x30u) : (p_ | 0x10u))); \
+    PUSH((uint8_t)(e_ ? (p_ | 0x30u) : p_)); \
     p_ |= SNES_P_I; p_ &= (uint8_t)~SNES_P_D; \
+    k_ = 0; \
     if (e_) s_ = (uint16_t)(0x0100u | (s_ & 0xFF)); \
     pc_ = (uint16_t)(rd((uint32_t)(vector)) | rd((uint32_t)(vector) + 1) << 8); \
 } while (0)
@@ -254,6 +258,11 @@ SNES_INTERP_FN(snes_cpu_t *cpu, uint32_t until) {
     int pc_set; /* the case put an address in pc_ by itself: the step below
         must not move it */
     while (budget > 0) {
+        if (machine.cpu.halted) { budget = 0; break; }
+        if (machine.cpu.waiting) {
+            if (!machine.cpu.nmi_pending && !machine.cpu.irq_line) { budget = 0; break; }
+            machine.cpu.waiting = 0;
+        }
         pc_set = 0;
         const uint16_t pc0 = pc_;
         if (machine.cpu.nmi_pending) {
@@ -460,7 +469,8 @@ SNES_INTERP_FN(snes_cpu_t *cpu, uint32_t until) {
         case 0x9C: left = 4 + (MF ? 0 : 1); if (MF) wr(A_ABS(1), 0); else WRW(A_ABS(1), 0); pc_ += 3; break;
         case 0x9E: left = 5 + (MF ? 0 : 1); if (MF) wr(A_ABSX(1), 0); else WRW(A_ABSX(1), 0); pc_ += 3; break;
         /* ---- BIT ---- */
-        case 0x89: left = 2 + (MF ? 0 : 1); BITW(MF ? OP8(1) : OP16(1), !MF); pc_ += MF ? 2 : 3; break;
+        case 0x89: { const unsigned m_ = MF ? OP8(1) : OP16(1); left = 2 + (MF ? 0 : 1);
+            p_ = (uint8_t)((p_ & ~SNES_P_Z) | ((a_ & m_) ? 0 : SNES_P_Z)); pc_ += MF ? 2 : 3; break; }
         case 0x24: left = 4 + (MF ? 0 : 1) + DPPEN; BITW(MF ? rd(A_DP(1)) : RDW(A_DP(1)), !MF); pc_ += 2; break;
         case 0x34: left = 4 + (MF ? 0 : 1) + DPPEN; BITW(MF ? rd(A_DPX(1)) : RDW(A_DPX(1)), !MF); pc_ += 2; break;
         case 0x2C: left = 4 + (MF ? 0 : 1); BITW(MF ? rd(A_ABS(1)) : RDW(A_ABS(1)), !MF); pc_ += 3; break;
@@ -541,24 +551,24 @@ SNES_INTERP_FN(snes_cpu_t *cpu, uint32_t until) {
             else { const uint16_t r_ = (uint16_t)(RDW(e_) - 1); WRW(e_, r_); set_zn16(r_); } pc_ += 3; break; }
         /* TSB/TRB */
         case 0x04: { const uint32_t e_ = A_DP(1); left = 5 + (MF ? 0 : 1) + DPPEN;
-            if (MF) { const uint8_t m_ = rd(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ | a_) ? 0 : SNES_P_Z));
+            if (MF) { const uint8_t m_ = rd(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & a_) ? 0 : SNES_P_Z));
                 wr(e_, (uint8_t)(m_ | (uint8_t)a_)); }
-            else { const uint16_t m_ = RDW(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ | a_) ? 0 : SNES_P_Z));
+            else { const uint16_t m_ = RDW(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & a_) ? 0 : SNES_P_Z));
                 WRW(e_, (uint16_t)(m_ | a_)); } pc_ += 2; break; }
         case 0x0C: { const uint32_t e_ = A_ABS(1); left = 6 + (MF ? 0 : 1);
-            if (MF) { const uint8_t m_ = rd(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ | a_) ? 0 : SNES_P_Z));
+            if (MF) { const uint8_t m_ = rd(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & a_) ? 0 : SNES_P_Z));
                 wr(e_, (uint8_t)(m_ | (uint8_t)a_)); }
-            else { const uint16_t m_ = RDW(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ | a_) ? 0 : SNES_P_Z));
+            else { const uint16_t m_ = RDW(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & a_) ? 0 : SNES_P_Z));
                 WRW(e_, (uint16_t)(m_ | a_)); } pc_ += 3; break; }
         case 0x14: { const uint32_t e_ = A_DP(1); left = 5 + (MF ? 0 : 1) + DPPEN;
-            if (MF) { const uint8_t m_ = rd(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & (uint8_t)~a_) ? 0 : SNES_P_Z));
+            if (MF) { const uint8_t m_ = rd(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & a_) ? 0 : SNES_P_Z));
                 wr(e_, (uint8_t)(m_ & (uint8_t)~a_)); }
-            else { const uint16_t m_ = RDW(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & (uint16_t)~a_) ? 0 : SNES_P_Z));
+            else { const uint16_t m_ = RDW(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & a_) ? 0 : SNES_P_Z));
                 WRW(e_, (uint16_t)(m_ & (uint16_t)~a_)); } pc_ += 2; break; }
         case 0x1C: { const uint32_t e_ = A_ABS(1); left = 6 + (MF ? 0 : 1);
-            if (MF) { const uint8_t m_ = rd(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & (uint8_t)~a_) ? 0 : SNES_P_Z));
+            if (MF) { const uint8_t m_ = rd(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & a_) ? 0 : SNES_P_Z));
                 wr(e_, (uint8_t)(m_ & (uint8_t)~a_)); }
-            else { const uint16_t m_ = RDW(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & (uint16_t)~a_) ? 0 : SNES_P_Z));
+            else { const uint16_t m_ = RDW(e_); p_ = (uint8_t)((p_ & ~(SNES_P_Z)) | ((m_ & a_) ? 0 : SNES_P_Z));
                 WRW(e_, (uint16_t)(m_ & (uint16_t)~a_)); } pc_ += 3; break; }
         /* ---- the accumulator's own shifts, INC/DEC A ---- */
         case 0x0A: left = 2 + (MF ? 0 : 1); if (MF) { const uint8_t r_ = ASL8(a_); a_ = (a_ & 0xFF00u) | r_; set_zn8(r_); }
@@ -591,10 +601,8 @@ SNES_INTERP_FN(snes_cpu_t *cpu, uint32_t until) {
         case 0x7B: left = 2; a_ = d_; set_zn16(a_); break;                       /* TDC */
         case 0x1B: left = 2; s_ = a_; if (e_) s_ = (uint16_t)(0x0100u | (s_ & 0xFF)); break; /* TCS */
         case 0x3B: left = 2; a_ = s_; set_zn16(a_); break;                       /* TSC */
-        case 0x9B: left = 2; if (XF) { const uint8_t t_ = (uint8_t)x_; x_ = y_ & 0xFF; y_ = t_; }
-            else { const uint16_t t_ = x_; x_ = y_; y_ = t_; } break;            /* TXY */
-        case 0xBB: left = 2; if (XF) { const uint8_t t_ = (uint8_t)y_; y_ = x_ & 0xFF; x_ = t_; }
-            else { const uint16_t t_ = y_; y_ = x_; x_ = t_; } break;            /* TYX */
+        case 0x9B: left = 2; WR_Y(x_); break; /* TXY */
+        case 0xBB: left = 2; WR_X(y_); break; /* TYX */
         case 0xEB: left = 3; a_ = (uint16_t)((a_ >> 8) | (a_ << 8)); set_zn8((uint8_t)a_); break; /* XBA */
         /* ---- flags ---- */
         case 0x18: left = 2; p_ &= (uint8_t)~SNES_P_C; break;
@@ -647,9 +655,11 @@ SNES_INTERP_FN(snes_cpu_t *cpu, uint32_t until) {
             pc_ = (uint16_t)(rd((uint32_t)dbr_ << 16 | ptr_) |
                              rd((uint32_t)dbr_ << 16 | (uint16_t)(ptr_ + 1)) << 8);
             left = 6; pc_set = 1; SNES_DYN_HOOK((uint32_t)k_ << 16 | pc_); break; }
-        case 0xDC: { k_ = OP8(3); pc_ = (uint16_t)OP16(1); /* JMP [abs] */
+        case 0xDC: { const uint16_t ptr_ = (uint16_t)OP16(1);
+            const unsigned lo_ = rd(ptr_), hi_ = rd((uint16_t)(ptr_ + 1));
+            k_ = rd((uint16_t)(ptr_ + 2)); pc_ = (uint16_t)(lo_ | hi_ << 8); /* JMP [abs] */
             left = 6; pc_set = 1; SNES_DYN_HOOK((uint32_t)k_ << 16 | pc_); break; }
-        case 0x5C: { k_ = OP8(3); pc_ = (uint16_t)OP16(1); /* JML */
+        case 0x5C: { const uint32_t dest_ = OP24(1); k_ = (uint8_t)(dest_ >> 16); pc_ = (uint16_t)dest_; /* JML */
             left = 4; pc_set = 1; SNES_DYN_HOOK((uint32_t)k_ << 16 | pc_); break; }
         case 0x20: { const unsigned lo_ = OP8(1); PUSH16(pc_ + 2);
             pc_ = (uint16_t)(lo_ | OP8(2) << 8); left = 6; pc_set = 1; break; }
@@ -658,11 +668,11 @@ SNES_INTERP_FN(snes_cpu_t *cpu, uint32_t until) {
             PUSH16(pc_ + 3);
             pc_ = (uint16_t)(lo_ | rd((uint32_t)dbr_ << 16 | (uint16_t)(ptr_ + 1)) << 8);
             left = 8; pc_set = 1; SNES_DYN_HOOK((uint32_t)k_ << 16 | pc_); break; }
-        case 0x22: { const uint8_t kb_ = k_; k_ = OP8(3); PUSH16(pc_ + 3); PUSH(kb_); /* JSL */
-            pc_ = (uint16_t)OP16(1); left = 8; pc_set = 1; break; }
+        case 0x22: { const uint32_t dest_ = OP24(1); PUSH(k_); PUSH16(pc_ + 3); /* JSL */
+            k_ = (uint8_t)(dest_ >> 16); pc_ = (uint16_t)dest_; left = 8; pc_set = 1; break; }
         case 0x60: { const unsigned w_ = POP16(); pc_ = (uint16_t)(w_ + 1); left = 6; pc_set = 1;
             SNES_DYN_HOOK((uint32_t)k_ << 16 | pc_); break; } /* RTS */
-        case 0x6B: { k_ = POP(); const unsigned w_ = POP16(); pc_ = (uint16_t)(w_ + 1);
+        case 0x6B: { const unsigned w_ = POP16(); k_ = POP(); pc_ = (uint16_t)(w_ + 1);
             left = 6; pc_set = 1; SNES_DYN_HOOK((uint32_t)k_ << 16 | pc_); break; } /* RTL */
         case 0x40: { const uint8_t v_ = POP(); left = e_ ? 6 : 7; p_ = e_ ? (uint8_t)(v_ | 0x30u) : v_; /* RTI */
             if (XF) { x_ &= 0xFF; y_ &= 0xFF; }
@@ -697,14 +707,14 @@ SNES_INTERP_FN(snes_cpu_t *cpu, uint32_t until) {
             left = 3; pc_set = 1; break; } /* BRL */
         /* ---- the block moves: X to Y, A bytes plus one ---- */
         case 0x54: case 0x44: { /* MVN, MVP */
-            const uint8_t sb_ = OP8(1), db_ = OP8(2);
+            const uint8_t db_ = OP8(1), sb_ = OP8(2);
             const uint16_t cnt_ = a_; const uint32_t bytes_ = (uint32_t)cnt_ + 1;
             const int back = OP8(0) == 0x44;
             for (uint32_t i_ = 0; i_ < bytes_; i_++) {
                 const uint32_t s_at = (uint32_t)sb_ << 16 |
-                    (back ? (uint16_t)(x_ - (uint16_t)i_) : (uint16_t)(x_ + (uint16_t)i_));
+                    (XF ? (uint8_t)(back ? x_ - i_ : x_ + i_) : (uint16_t)(back ? x_ - i_ : x_ + i_));
                 const uint32_t d_at = (uint32_t)db_ << 16 |
-                    (back ? (uint16_t)(y_ - (uint16_t)i_) : (uint16_t)(y_ + (uint16_t)i_));
+                    (XF ? (uint8_t)(back ? y_ - i_ : y_ + i_) : (uint16_t)(back ? y_ - i_ : y_ + i_));
                 wr(d_at, rd(s_at));
             }
             const uint16_t step_ = (uint16_t)(bytes_ & 0xFFFF);
@@ -713,19 +723,17 @@ SNES_INTERP_FN(snes_cpu_t *cpu, uint32_t until) {
             else { x_ = back ? (uint16_t)(x_ - step_) : (uint16_t)(x_ + step_);
                    y_ = back ? (uint16_t)(y_ - step_) : (uint16_t)(y_ + step_); }
             a_ = 0xFFFF; /* the accumulator's done mark */
-            left = (uint32_t)(7u * bytes_ + 1u);
+            dbr_ = db_;
+            left = (uint32_t)(7u * bytes_);
             pc_ += 3; break; }
         /* ---- sleeps ---- */
         case 0xCB: /* WAI: wakes on the next interrupt; nothing pending, the
             rest of the slice is spent here (the frame's NMI lands at its
             end, the boundary check takes it next slice) */
-            pc_ += 2; pc_set = 1; left = 3;
-            if (!(machine.cpu.nmi_pending || (machine.cpu.irq_line && !(p_ & SNES_P_I))))
-                left = (uint32_t)budget;
+            pc_ += 1; pc_set = 1; left = 3; machine.cpu.waiting = 1;
             break;
         case 0xDB: /* STP: stopped until the next reset */
-            pc_ += 2; pc_set = 1; left = 3; machine.cpu.halted = 1;
-            left = (uint32_t)budget;
+            pc_ += 1; pc_set = 1; left = 3; machine.cpu.halted = 1;
             break;
         default: break;
         }
@@ -764,7 +772,7 @@ int snes_native = 1;
  * pc on the loop as the interpreter would */
 static int rom_at(const snes_cpu_t *c, uint32_t at, uint8_t *out) {
     const unsigned bank = at >> 16, off = at & 0xFFFF;
-    if (bank >= 0x7E) return 0;
+    if (bank == 0x7E || bank == 0x7F) return 0;
     if (off < 0x2000 || (off >= 0x2000 && off < 0x8000)) return 0;
     if ((bank >= 0x40 && bank <= 0x7D) || bank >= 0xC0) {
         if (!c->hirom) return 0;
@@ -782,8 +790,12 @@ void snes_run(snes_cpu_t *cpu, uint32_t until) {
     int32_t budget = (int32_t)(until - cpu->cycles);
     while (budget > 0) {
         if (machine.cpu.halted) { /* STP: nothing but a reset wakes it */
-            budget = SNES_SPIN3(budget);
+            budget = 0;
             break;
+        }
+        if (machine.cpu.waiting) {
+            if (!machine.cpu.nmi_pending && !machine.cpu.irq_line) { budget = 0; break; }
+            machine.cpu.waiting = 0;
         }
         if (machine.cpu.nmi_pending) {
             machine.cpu.nmi_pending = 0;
@@ -804,6 +816,7 @@ void snes_run(snes_cpu_t *cpu, uint32_t until) {
             rom_at(cpu, at + 2, &o2);
             if ((op == 0x80 && o1 == 0xFEu) ||
                 (op == 0x4C && (uint16_t)(o1 | o2 << 8) == cpu->pc)) {
+                cpu->mdr = op == 0x80 ? o1 : o2;
                 budget = SNES_SPIN3(budget);
                 break;
             }

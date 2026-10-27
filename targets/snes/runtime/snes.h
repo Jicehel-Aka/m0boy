@@ -3,8 +3,8 @@
  * emulation flag.  The interpreter runs the documented opcode set — every
  * byte is a defined opcode, $42 WDM is a two-byte NOP.  The bus lands on
  * snes_bus_read/snes_bus_write: the LoROM or HiROM windows of the
- * cartridge, 128 KiB of WRAM with its mirrors, and a phase-1 I/O page (the
- * NMI register, the WRAM port, everything else open bus).  The zero page
+ * cartridge, 128 KiB of WRAM with its mirrors, and a partial I/O page
+ * (PPU ports, DMA, NMI and WRAM port). The zero page
  * is D's window in bank $00 and the stack is bank $00, S — never banked.
  *
  * Phase 1 facts, to be cross-checked like the PCE's mednafen pass:
@@ -57,28 +57,42 @@ typedef struct {
     int nmi_pending; /* the frame's edge, latched */
     int irq_line;    /* no source in phase 1: never set */
     int halted;      /* STP: the CPU stopped until the next reset */
+    int waiting;     /* WAI: waits for an interrupt request */
     uint32_t wram_addr; /* the $2181-$2183 port */
 } snes_cpu_t;
 
-/* The machine: the CPU, 128 KiB of WRAM and the cartridge.  One machine
- * per firmware (as the other runtimes' own machine).  Phase 1 has no
- * picture: the PPU's VRAM, the APU's A-RAM and the DMA channels join
- * when the picture does. */
+/* One machine: CPU, WRAM, the cartridge's SRAM, PPU memories and general
+ * DMA state. */
 typedef struct {
     snes_cpu_t cpu;
     uint8_t wram[131072];
+    uint8_t sram[32768]; /* the cartridge's battery window $6000-$7FFF */
+    uint32_t sram_bytes; /* what the header declared, a power of two or 0 */
+    uint8_t sram_dirty;
+    uint8_t vram[65536], cgram[512], oam[544];
+    uint8_t ppu_regs[0x40], dma[8][16];
+    uint16_t vmaddr, cgaddr, oamaddr, scroll[8];
+    uint8_t cg_latch, oam_latch, scroll_latch;
+    uint8_t vblank, hblank;
+    uint16_t joypad, joy_auto, joy_shift;
+    uint8_t joy_strobe, joy_count, joy_auto_enable, joy_busy;
     uint32_t frames;
 } snes_t;
 
-/* rom must live as long as the machine */
+/* rom must live as long as the machine; sram_bytes is the cartridge's
+ * declared battery size (0: the SRAM window stays open bus) */
 extern snes_t machine;
-void snes_init(const uint8_t *rom, uint32_t rom_bytes, int hirom);
+void snes_init(const uint8_t *rom, uint32_t rom_bytes, int hirom, uint32_t sram_bytes);
 void snes_reset(void);
 /* run until the cycle count reaches `until` (past the last instruction
  * that spends it, as the budget goes negative) */
 void snes_run(snes_cpu_t *cpu, uint32_t until);
 /* one frame of emulation (the harness calls it once per frame) */
 void snes_frame(void);
+/* Standard controller report: BYsS UDLR AXLR 0000, pressed bits set. */
+void snes_set_joypad(uint16_t buttons);
+/* Render the current low-resolution background state as 256x224 RGB888. */
+void snes_render(uint8_t *rgb);
 
 /* the bus: everything but the ROM/WRAM windows */
 uint8_t snes_bus_read(uint32_t at);

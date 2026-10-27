@@ -63,7 +63,11 @@ std::optional<CartridgeInfo> inspect(const std::filesystem::path& path, std::str
     while (!cartridge.title.empty() && cartridge.title.back() == ' ') cartridge.title.pop_back();
     if (cartridge.title.empty()) cartridge.title = path.stem().string();
     cartridge.rom_bytes = rom_bytes;
-    cartridge.cartridge_ram_bytes = 0; /* phase 1: no SRAM */
+    /* the header's RAM byte: $01-$03 are 2/8/32 KiB; the runtime's SRAM
+     * window mirrors 32 KiB at most, larger declarations stay unused */
+    static const uint32_t ram_table[4] = {0, 2048, 8192, 32768};
+    const uint8_t ram_byte = read_header(lorom ? 0x7FC0 : 0xFFC0, head) ? head[0x18] : 0;
+    cartridge.cartridge_ram_bytes = ram_byte < 4 ? ram_table[ram_byte] : 0;
     cartridge.mapper = hirom ? "HiROM" : "LoROM";
     return cartridge;
 }

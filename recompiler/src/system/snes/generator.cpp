@@ -153,6 +153,12 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
         if (size_t(file.gcount()) != image_bytes)
             throw std::runtime_error("Truncated image: " + cartridge.string());
         const bool hirom = detect_hirom(rom);
+        /* the header's RAM byte: $01-$03 are 2/8/32 KiB, the runtime's
+         * window mirrors 32 KiB at most */
+        static const uint32_t ram_table[4] = {0, 2048, 8192, 32768};
+        const size_t head_at = hirom ? 0xFFC0 : 0x7FC0;
+        const uint8_t ram_byte = head_at + 0x18 < image_bytes ? rom[head_at + 0x18] : 0;
+        const uint32_t sram_bytes = ram_byte < 4 ? ram_table[ram_byte] : 0;
 
         const auto marker = o.output / "snes-project.txt";
         if (fs::exists(o.output) && !fs::exists(marker) && !fs::is_empty(o.output)) {
@@ -174,12 +180,13 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
               "const uint8_t snes_rom[] = {\n" + rom_data(rom.data(), image_bytes) + "};\n");
         std::string config = "#pragma once\n"
               "#define SNES_ROM_SIZE " + std::to_string(image_bytes) + "u\n"
-              "#define SNES_HIROM " + std::to_string(hirom ? 1 : 0) + "\n";
+              "#define SNES_HIROM " + std::to_string(hirom ? 1 : 0) + "\n"
+              "#define SNES_SRAM_BYTES " + std::to_string(sram_bytes) + "u\n";
         /* the recompiled code's dispatcher (snes_cpu.c) */
         if (!o.interpret) config += "#ifndef SNES_NATIVE\n#define SNES_NATIVE 1\n#endif\n";
         write(src / "snes_config.h", config);
 
-        for (const char* name : { "snes_cpu.c", "snes.c", "snes.h", "snes_gen.h" })
+        for (const char* name : { "snes_cpu.c", "snes.c", "snes_ppu.c", "snes.h", "snes_gen.h" })
             copy_template(tpl / "runtime" / name, src / name);
         /* the idle loops' count (snes_gen.h, the dispatcher) */
         copy_template(o.meta_templates.parent_path() / "common" / "runtime" / "m0_idle.h", src / "m0_idle.h");
@@ -208,7 +215,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
               replace(replace(read(tpl / "host" / "snes_host.c"),
                               "#include \"../runtime/snes.h\"", "#include \"../src/snes.h\""),
                       "#ifdef SNES_EMBEDDED", "#include \"../src/snes_config.h\"\n#ifdef SNES_EMBEDDED"));
-        const std::string sources = "${SRC}/snes.c ${SRC}/snes_cpu.c ${SRC}/snes_cart.c" +
+        copy_template(o.meta_templates.parent_path() / "consoles" / "pc" / "pc_input.h", o.output / "host" / "pc_input.h");
+        const std::string sources = "${SRC}/snes.c ${SRC}/snes_cpu.c ${SRC}/snes_ppu.c ${SRC}/snes_cart.c" +
                                     std::string(native ? " ${SRC}/snes_gen.c" : "");
         write(o.output / "host" / "CMakeLists.txt",
               "cmake_minimum_required(VERSION 3.20)\nproject(" + o.name + "_snes_host C)\nset(CMAKE_C_STANDARD 11)\n"
@@ -228,7 +236,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
                                     "(then gbrecomp --system snes ... --coverage cov.txt).\n\n")
                       : std::string("The cartridge interpreted on the 5A22 runtime.\n\n")) +
               "Build: cmake -G Ninja -S host -B host/build && ninja -C host/build\n"
-              "Run: host/build/" + o.name + "_host --frames N [--input script.txt] [--interp] [--coverage f]\n");
+              "Run: host/build/" + o.name + "_host --frames N [--interp] [--coverage f] [--input script.txt] [--capture screen.ppm]\n"
+              "The PPU currently renders tiled backgrounds and objects in modes 0 and 1; audio is not implemented.\n");
         return true;
     } catch (const std::exception& e) {
         error = e.what();

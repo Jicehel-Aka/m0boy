@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "pc_input.h"
 
 #include "../runtime/snes.h"
 #ifdef SNES_EMBEDDED
@@ -84,15 +85,24 @@ static int detect_hirom(const uint8_t *rom, uint32_t bytes) {
     if (lo == 0 || lo == 2 || lo == 3) return 0;
     return hi >= 0 && lo < 0;
 }
+/* the header's RAM byte, as the generator reads it: $01-$03 are 2/8/32 KiB,
+ * the runtime's window mirrors 32 KiB at most */
+static uint32_t header_sram(const uint8_t *rom, uint32_t bytes, int hirom) {
+    static const uint32_t table[4] = {0, 2048, 8192, 32768};
+    const size_t at = (hirom ? 0xFFC0u : 0x7FC0u) + 0x18;
+    if (at >= bytes) return 0;
+    return rom[at] < 4 ? table[rom[at]] : 0;
+}
 
 int main(int argc, char **argv) {
-    const char *rom_path = 0, *input_path = 0, *coverage = 0;
+    const char *rom_path = 0, *input_path = 0, *coverage = 0, *capture = 0;
     unsigned frames = 60;
     int interp = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_path = argv[++i];
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) coverage = argv[++i];
+        else if (!strcmp(argv[i], "--capture") && i + 1 < argc) capture = argv[++i];
         else if (!strcmp(argv[i], "--interp")) interp = 1;
         else rom_path = argv[i];
     }
@@ -101,15 +111,16 @@ int main(int argc, char **argv) {
     snes_native = !(interp || coverage);
 #endif
     (void)interp;
-    (void)input_path; /* the pad's registers read released in phase 1 */
     const uint8_t *rom;
     uint32_t rom_bytes;
     int hirom = 0;
+    uint32_t sram_bytes = 0;
     if (!rom_path) {
 #ifdef SNES_EMBEDDED
         rom = snes_rom;
         rom_bytes = SNES_ROM_SIZE;
         hirom = SNES_HIROM;
+        sram_bytes = SNES_SRAM_BYTES;
 #else
         fprintf(stderr, "usage: snes_host rom.sfc [--frames n] [--input f] [--coverage f] [--interp]\n");
         return 2;
@@ -129,10 +140,36 @@ int main(int argc, char **argv) {
         fclose(file);
         rom = bytes;
         hirom = detect_hirom(rom, rom_bytes);
+        sram_bytes = header_sram(rom, rom_bytes, hirom);
     }
 
-    snes_init(rom, rom_bytes, hirom);
-    for (unsigned f = 0; f < frames; f++) snes_frame();
+    snes_init(rom, rom_bytes, hirom, sram_bytes);
+    static const char *const names[12] = {
+        "b", "y", "select", "start", "up", "down", "left", "right", "a", "x", "l", "r"
+    };
+    pc_input_t script = {0};
+    if (input_path && !pc_input_load(&script, input_path, names, 12)) return 2;
+    for (unsigned f = 0; f < frames; f++) {
+        unsigned keys = pc_input_keys(&script, f);
+        uint16_t report = 0;
+        for (unsigned i = 0; i < 12; i++) if (keys & (1u << i)) report |= (uint16_t)(0x8000u >> i);
+        snes_set_joypad(report);
+        snes_frame();
+    }
+    pc_input_free(&script);
+    uint8_t *image = malloc(256u * 224u * 3u);
+    if (!image) { fprintf(stderr, "cannot allocate image\n"); return 2; }
+    snes_render(image);
+    uint32_t image_hash = fnv(image, 256u * 224u * 3u, 2166136261u);
+    if (capture) {
+        FILE *out = fopen(capture, "wb");
+        if (!out) { fprintf(stderr, "cannot write %s\n", capture); free(image); return 2; }
+        fprintf(out, "P6\n256 224\n255\n");
+        if (fwrite(image, 1, 256u * 224u * 3u, out) != 256u * 224u * 3u || fclose(out)) {
+            fprintf(stderr, "cannot write capture\n"); free(image); return 2;
+        }
+    }
+    free(image);
 
     uint32_t h = 2166136261u;
     /* registers field by field, as the other runtimes' explicit order */
@@ -148,6 +185,29 @@ int main(int argc, char **argv) {
     h = fnv(regs, sizeof regs, h);
     h = fnv(&machine.cpu.cycles, 4, h);
     h = fnv(machine.wram, sizeof machine.wram, h);
+    h = fnv(machine.vram, sizeof machine.vram, h);
+    h = fnv(machine.cgram, sizeof machine.cgram, h);
+    h = fnv(machine.oam, sizeof machine.oam, h);
+    h = fnv(machine.ppu_regs, sizeof machine.ppu_regs, h);
+    h = fnv(machine.dma, sizeof machine.dma, h);
+    h = fnv(machine.scroll, sizeof machine.scroll, h);
+    h = fnv(machine.sram, machine.sram_bytes, h);
+    const uint8_t state[] = {
+        machine.cpu.mdr, (uint8_t)machine.cpu.nmi_enable,
+        (uint8_t)machine.cpu.vblank_flag, (uint8_t)machine.cpu.nmi_pending,
+        (uint8_t)machine.cpu.irq_line, (uint8_t)machine.cpu.halted,
+        (uint8_t)machine.cpu.waiting, (uint8_t)machine.cpu.wram_addr,
+        (uint8_t)(machine.cpu.wram_addr >> 8), (uint8_t)(machine.cpu.wram_addr >> 16),
+        (uint8_t)machine.vmaddr, (uint8_t)(machine.vmaddr >> 8),
+        (uint8_t)machine.cgaddr, (uint8_t)(machine.cgaddr >> 8),
+        (uint8_t)machine.oamaddr, (uint8_t)(machine.oamaddr >> 8),
+        machine.cg_latch, machine.oam_latch, machine.scroll_latch, machine.vblank, machine.hblank,
+        (uint8_t)machine.joypad, (uint8_t)(machine.joypad >> 8),
+        (uint8_t)machine.joy_auto, (uint8_t)(machine.joy_auto >> 8),
+        (uint8_t)machine.joy_shift, (uint8_t)(machine.joy_shift >> 8),
+        machine.joy_strobe, machine.joy_count, machine.joy_auto_enable, machine.joy_busy,
+    };
+    h = fnv(state, sizeof state, h);
     h = fnv(&machine.frames, 4, h);
     if (coverage) {
         FILE *out = fopen(coverage, "w");
@@ -165,7 +225,8 @@ int main(int argc, char **argv) {
         }
         fclose(out);
     }
-    printf("frames=%u cycles=%u k=%02x pc=%04x run_hash=%08x\n",
-           machine.frames, (unsigned)machine.cpu.cycles, machine.cpu.k, machine.cpu.pc, h);
+    printf("frames=%u cycles=%u k=%02x pc=%04x run_hash=%08x image_hash=%08x sram_dirty=%u\n",
+           machine.frames, (unsigned)machine.cpu.cycles, machine.cpu.k, machine.cpu.pc, h, image_hash,
+           machine.sram_dirty);
     return 0;
 }

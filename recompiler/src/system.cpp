@@ -47,6 +47,7 @@ constexpr std::array pce_targets = {TargetId::desktop, TargetId::pc, TargetId::a
 // the Gamebuino AKA (the ESP32 family's shared core), and the SDL host (pc).
 constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc, TargetId::aka};
 constexpr std::array megadrive_targets = {TargetId::desktop, TargetId::meta, TargetId::pc, TargetId::aka};
+constexpr std::array m0plus_targets = {TargetId::pc};
 // SNES, phase 1: the 65C816's interpreter and recompiler on the desktop
 // harness — the picture (PPU, APU) comes later.
 constexpr std::array snes_targets = {TargetId::desktop};
@@ -82,18 +83,19 @@ constexpr std::array system_table = {
      * and rejects ROMs outside this deliberately small profile. */
     SystemDescriptor{SystemId::megadrive, "megadrive", CpuId::m68k, 0x0004,
                      65536, 8192, megadrive::inspect, megadrive_targets},
-    /* SNES phase 1: the CPU only.  128 KiB of WRAM and the runtime's own
-     * buffers; the ROM banks live through the LoROM/HiROM windows.  The
-     * PPU's 64 KiB VRAM and the APU's 64 KiB A-RAM join with the picture. */
+    /* SNES: the CPU, 128 KiB of WRAM, the cartridge's 32 KiB SRAM window
+     * and the runtime's own buffers; the ROM banks live through the
+     * LoROM/HiROM windows.  The PPU's 64 KiB VRAM and the APU's 64 KiB
+     * A-RAM join with the picture. */
     SystemDescriptor{SystemId::snes, "snes", CpuId::w65c816, 0x00fffc,
-                     131072, 139264, snes::inspect, snes_targets},
+                     131072, 172032, snes::inspect, snes_targets},
     /* Firmware images, not cartridges.  The reset vector is at the image
      * start; META is linked at 0x4000, Pokitto at zero.  Execution/codegen
-     * requires an emulated board and is not wired yet. */
+     * PC projects include the board emulator. */
     SystemDescriptor{SystemId::meta, "meta", CpuId::m0plus, 0x4004,
-                     32768, 32768, m0plus::inspect_meta, no_targets},
+                     32768, 32768, m0plus::inspect_meta, m0plus_targets},
     SystemDescriptor{SystemId::pokitto, "pokitto", CpuId::m0plus, 0x0004,
-                     32768, 32768, m0plus::inspect_pokitto, no_targets},
+                     32768, 32768, m0plus::inspect_pokitto, m0plus_targets},
 };
 
 /* Facts of each destination.  meta/pokitto: the whole contiguous SRAM is

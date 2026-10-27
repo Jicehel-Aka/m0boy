@@ -2,6 +2,10 @@
 
 #include <string.h>
 
+void snes_ppu_write(uint16_t at, uint8_t v);
+uint8_t snes_ppu_read(uint16_t at);
+void snes_dma_start(uint8_t mask);
+
 snes_t machine; /* one machine per firmware, as the other runtimes' own */
 
 /* Read by gm0 --record-input, which finds it by its tag in the firmware:
@@ -28,20 +32,32 @@ static uint32_t rom_offset(const snes_cpu_t *c, uint32_t at) {
     return (uint32_t)(bank & 0x3F) * 0x8000u + (off & 0x7FFFu);
 }
 
-/* the I/O page $2000-$5FFF of banks $00-$3F and $80-$BF.  Phase 1: the
- * NMI register, the WRAM port; the PPU and APU ports write nowhere and
- * read open bus. */
+/* I/O page: PPU ports, general DMA, NMI and WRAM port. Unimplemented
+ * devices return open bus. */
 static uint8_t io_read(uint16_t at) {
     snes_cpu_t *c = &machine.cpu;
+    if (at >= 0x2100 && at <= 0x213f) return snes_ppu_read(at);
+    if (at >= 0x4300 && at <= 0x437f) return machine.dma[(at >> 4) & 7][at & 15];
     switch (at) {
-    case 0x4016: case 0x4017: /* the controller ports: nothing pressed */
-        return 0xFF;
+    case 0x4016: {
+        unsigned bit;
+        if (machine.joy_strobe) bit = (machine.joypad >> 15) & 1;
+        else if (machine.joy_count >= 16) bit = 1;
+        else {
+            bit = (machine.joy_shift >> 15) & 1;
+            machine.joy_shift <<= 1;
+            machine.joy_count++;
+        }
+        return (c->mdr & 0xfc) | bit;
+    }
+    case 0x4017: return c->mdr & 0xfc; /* second port disconnected */
     case 0x4210: { /* RDNMI: the VBlank flag (cleared by the read), CPU 2 */
         const uint8_t v = (uint8_t)((c->vblank_flag ? 0x80 : 0) | 0x02);
         c->vblank_flag = 0;
         return v;
     }
-    case 0x4211: case 0x4212: return 0; /* the IRQ/time flags: no source */
+    case 0x4211: return 0;
+    case 0x4212: return (machine.vblank ? 0x80 : 0) | (machine.hblank ? 0x40 : 0) | machine.joy_busy;
     case 0x2180: { /* the WRAM port */
         const uint8_t v = machine.wram[c->wram_addr & 0x1FFFF];
         c->wram_addr = (c->wram_addr + 1) & 0x1FFFF;
@@ -50,38 +66,66 @@ static uint8_t io_read(uint16_t at) {
     case 0x2181: return (uint8_t)c->wram_addr;
     case 0x2182: return (uint8_t)(c->wram_addr >> 8);
     case 0x2183: return (uint8_t)(c->wram_addr >> 16);
-    case 0x4218: case 0x4219: case 0x421A: case 0x421B:
-    case 0x421C: case 0x421D: case 0x421E: case 0x421F:
-        return 0xFF; /* the joypad registers: all buttons released */
+    case 0x4218: return (uint8_t)machine.joy_auto;
+    case 0x4219: return (uint8_t)(machine.joy_auto >> 8);
+    case 0x421A: case 0x421B: case 0x421C: case 0x421D: case 0x421E: case 0x421F:
+        return 0; /* disconnected ports */
     default: return c->mdr; /* open bus */
     }
 }
 
 static void io_write(uint16_t at, uint8_t v) {
     snes_cpu_t *c = &machine.cpu;
+    if (at >= 0x2100 && at <= 0x213f) { snes_ppu_write(at, v); return; }
+    if (at >= 0x4300 && at <= 0x437f) { machine.dma[(at >> 4) & 7][at & 15] = v; return; }
     switch (at) {
+    case 0x4016:
+        if ((v & 1) || machine.joy_strobe) {
+            machine.joy_shift = machine.joypad;
+            machine.joy_count = 0;
+        }
+        machine.joy_strobe = v & 1;
+        break;
+    case 0x420b: snes_dma_start(v); break;
     case 0x4200: /* NMI and the IRQ enables: only the NMI has a source */
+        if ((v & 0x80) && !c->nmi_enable && c->vblank_flag) c->nmi_pending = 1;
         c->nmi_enable = (v & 0x80) != 0;
-        if (!c->nmi_enable) c->nmi_pending = 0;
+        machine.joy_auto_enable = v & 1;
+        break;
+    case 0x2180:
+        machine.wram[c->wram_addr & 0x1FFFF] = v;
+        c->wram_addr = (c->wram_addr + 1) & 0x1FFFF;
         break;
     case 0x2181: c->wram_addr = (c->wram_addr & 0x1FF00) | v; break;
     case 0x2182: c->wram_addr = (c->wram_addr & 0x100FF) | (uint32_t)v << 8; break;
     case 0x2183: c->wram_addr = (c->wram_addr & 0x0FFFF) | (uint32_t)(v & 1) << 16; break;
-    default: break; /* the PPU, the APU, the DMA: written nowhere in phase 1 */
+    default: break; /* unimplemented device */
     }
+}
+
+/* the SRAM window $6000-$7FFF: LoROM banks $00-$3F/$80-$BF, HiROM banks
+ * $20-$3F/$A0-$BF ($20-$3F of the masked bank); the window mirrors the
+ * cartridge's declared size */
+static int sram_window(snes_cpu_t *c, uint32_t at) {
+    const unsigned bank = at >> 16, off = at & 0xFFFF;
+    if (off < 0x6000 || off >= 0x8000) return 0;
+    if (bank <= 0x3F) return !c->hirom || (bank & 0x3F) >= 0x20;
+    return bank >= 0x80 && bank <= 0xBF && !c->hirom;
 }
 
 uint8_t snes_bus_read(uint32_t at) {
     snes_cpu_t *c = &machine.cpu;
     const unsigned bank = at >> 16, off = at & 0xFFFF;
     uint8_t v;
-    if (bank >= 0x7E) { /* $7E0000-$7FFFFF, the whole 128 KiB */
+    if (bank == 0x7E || bank == 0x7F) { /* the whole 128 KiB */
         v = machine.wram[at & 0x1FFFF];
     } else if (off < 0x2000 && (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF))) {
         v = machine.wram[at & 0x1FFF]; /* the WRAM mirror */
-    } else if (off >= 0x2000 && off < 0x8000 &&
+    } else if (off >= 0x2000 && off < 0x6000 &&
                (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF))) {
-        v = off < 0x6000 ? io_read(off) : c->mdr; /* $6000-$7FFF: SRAM, phase 1 open bus */
+        v = io_read(off);
+    } else if (machine.sram_bytes && sram_window(c, at)) {
+        v = machine.sram[(off - 0x6000u) & (machine.sram_bytes - 1)];
     } else if ((bank >= 0x40 && bank <= 0x7D) || bank >= 0xC0) {
         v = c->hirom ? c->rom[rom_offset(c, at) % (c->rom_bytes ? c->rom_bytes : 1)] : c->mdr;
     } else { /* banks $00-$3F and $80-$BF from $8000: the cartridge */
@@ -96,26 +140,32 @@ void snes_bus_write(uint32_t at, uint8_t v) {
     snes_cpu_t *c = &machine.cpu;
     c->mdr = v;
     const unsigned bank = at >> 16, off = at & 0xFFFF;
-    if (bank >= 0x7E) {
+    if (bank == 0x7E || bank == 0x7F) {
         machine.wram[at & 0x1FFFF] = v;
     } else if (off < 0x2000 && (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF))) {
         machine.wram[at & 0x1FFF] = v;
-    } else if (off >= 0x2000 && off < 0x8000 &&
+    } else if (off >= 0x2000 && off < 0x6000 &&
                (bank <= 0x3F || (bank >= 0x80 && bank <= 0xBF))) {
-        if (off < 0x6000) io_write(off, v);
+        io_write(off, v);
+    } else if (machine.sram_bytes && sram_window(c, at)) {
+        machine.sram[(off - 0x6000u) & (machine.sram_bytes - 1)] = v;
+        machine.sram_dirty = 1;
     }
-    /* cartridge writes: nothing in phase 1 */
+    /* cartridge writes: nothing (the games' registers live in the I/O page) */
 }
 
-void snes_init(const uint8_t *rom, uint32_t rom_bytes, int hirom) {
+void snes_init(const uint8_t *rom, uint32_t rom_bytes, int hirom, uint32_t sram_bytes) {
     snes_cpu_t *c = &machine.cpu;
     memset(&machine, 0, sizeof machine);
     c->wram = machine.wram;
     c->rom = rom;
     c->rom_bytes = rom_bytes;
     c->hirom = hirom;
+    machine.sram_bytes = sram_bytes;
     snes_reset();
 }
+
+void snes_set_joypad(uint16_t buttons) { machine.joypad = buttons & 0xfff0u; }
 
 void snes_reset(void) {
     snes_cpu_t *c = &machine.cpu;
@@ -135,7 +185,10 @@ void snes_reset(void) {
     c->nmi_pending = 0;
     c->irq_line = 0;
     c->halted = 0;
+    c->waiting = 0;
     c->wram_addr = 0;
+    machine.joypad = machine.joy_auto = machine.joy_shift = 0;
+    machine.joy_strobe = machine.joy_count = machine.joy_auto_enable = machine.joy_busy = 0;
     /* the reset vector, always of bank $00 in emulation mode */
     c->pc = (uint16_t)(snes_bus_read(0x00FFFC) | snes_bus_read(0x00FFFD) << 8);
 }
@@ -144,25 +197,44 @@ void snes_reset(void) {
  * the B bit on the stack is clear (BRK/COP/PHP push it set), D is
  * cleared, S stays in page $01 in the emulation mode */
 void snes_take_interrupt(snes_cpu_t *c, uint16_t vector) {
+    if (!c->e) {
+        snes_bus_write(c->s, c->k);
+        c->s--;
+    }
     snes_bus_write(0x000000u | c->s, (uint8_t)(c->pc >> 8));
     c->s = c->e ? (uint16_t)(0x0100u | ((c->s - 1) & 0xFF)) : (uint16_t)(c->s - 1);
     snes_bus_write(0x000000u | c->s, (uint8_t)c->pc);
     c->s = c->e ? (uint16_t)(0x0100u | ((c->s - 1) & 0xFF)) : (uint16_t)(c->s - 1);
-    snes_bus_write(0x000000u | c->s, (uint8_t)(c->e ? (c->p | 0x30) & ~SNES_P_X : (c->p & ~SNES_P_X)));
+    snes_bus_write(0x000000u | c->s, (uint8_t)(c->e ? (c->p | 0x20) & ~SNES_P_X : c->p));
     c->s = c->e ? (uint16_t)(0x0100u | ((c->s - 1) & 0xFF)) : (uint16_t)(c->s - 1);
     c->p |= SNES_P_I;
     c->p &= (uint8_t)~SNES_P_D;
+    c->k = 0;
     if (c->e) c->s = (uint16_t)(0x0100u | (c->s & 0xFF));
     c->pc = (uint16_t)(snes_bus_read(0x000000u | vector) |
                        snes_bus_read(0x000000u | (uint32_t)(vector + 1)) << 8);
 }
 
-/* the NMI's edge, the frame's only interrupt source in phase 1: the flag
- * and the NMI land at the frame's end, the CPU takes them at its next
- * instruction boundary */
+/* Frame-level approximation: enter VBlank at line 225 and sample the NMI
+ * at the next instruction boundary. */
 void snes_frame(void) {
+    const uint32_t start = machine.cpu.cycles;
     machine.frames++;
-    snes_run(&machine.cpu, machine.cpu.cycles + SNES_FRAME_CYCLES);
-    machine.cpu.vblank_flag = 1;
-    if (machine.cpu.nmi_enable) machine.cpu.nmi_pending = 1;
+    machine.vblank = 0;
+    machine.cpu.vblank_flag = 0;
+    for (unsigned line = 0; line < 262; line++) {
+        if (line == 225) {
+            machine.vblank = 1;
+            machine.cpu.vblank_flag = 1;
+            if (machine.cpu.nmi_enable) machine.cpu.nmi_pending = 1;
+            if (machine.joy_auto_enable && !machine.joy_strobe) {
+                machine.joy_auto = machine.joypad;
+                machine.joy_shift = 0;
+                machine.joy_count = 16;
+                machine.joy_busy = 1;
+            }
+        }
+        if (line == 228) machine.joy_busy = 0;
+        snes_run(&machine.cpu, start + (uint32_t)(((uint64_t)(line + 1) * SNES_FRAME_CYCLES) / 262));
+    }
 }

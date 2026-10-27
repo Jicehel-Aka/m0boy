@@ -65,14 +65,14 @@ extern int snes_native;
 #define SNES_OP16(i) (unsigned)(SNES_OP8(i) | SNES_OP8((uint16_t)((pc_ + (i)) + 1)) << 8)
 
 #define SNES_WRAP16(e_) ((uint32_t)(((e_) & 0xFF0000u) | (uint16_t)((e_) + 1)))
-#define SNES_RDW(ea) (__extension__({ const uint32_t e_ = (ea); \
-    (unsigned)(SNES_RD(e_) | SNES_RD(SNES_WRAP16(e_)) << 8); }))
-#define SNES_RD24(ea) (__extension__({ const uint32_t e_ = (ea); \
-    (unsigned)(SNES_RD(e_) | SNES_RD(e_ + 1) << 8); }))
-#define SNES_WRW(ea, v) do { const uint32_t e_ = (ea); SNES_WR(e_, (uint8_t)(v)); \
-    SNES_WR(SNES_WRAP16(e_), (uint8_t)((v) >> 8)); } while (0)
-#define SNES_WR24(ea, v) do { const uint32_t e_ = (ea); SNES_WR(e_, (uint8_t)(v)); \
-    SNES_WR(e_ + 1, (uint8_t)((v) >> 8)); } while (0)
+#define SNES_RDW(ea) (__extension__({ const uint32_t rdw_addr_ = (ea); \
+    (unsigned)(SNES_RD(rdw_addr_) | SNES_RD(SNES_WRAP16(rdw_addr_)) << 8); }))
+#define SNES_RD24(ea) (__extension__({ const uint32_t rd24_addr_ = (ea); \
+    (unsigned)(SNES_RD(rd24_addr_) | SNES_RD(rd24_addr_ + 1) << 8); }))
+#define SNES_WRW(ea, v) do { const uint32_t wrw_addr_ = (ea); SNES_WR(wrw_addr_, (uint8_t)(v)); \
+    SNES_WR(SNES_WRAP16(wrw_addr_), (uint8_t)((v) >> 8)); } while (0)
+#define SNES_WR24(ea, v) do { const uint32_t wr24_addr_ = (ea); SNES_WR(wr24_addr_, (uint8_t)(v)); \
+    SNES_WR(wr24_addr_ + 1, (uint8_t)((v) >> 8)); } while (0)
 
 #define SNES_PUSH(v_) do { SNES_WR((uint32_t)s_, (v_)); \
     s_ = e_ ? (uint16_t)(0x0100u | ((s_ - 1) & 0xFF)) : (uint16_t)(s_ - 1); } while (0)
