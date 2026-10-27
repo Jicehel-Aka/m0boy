@@ -1,0 +1,80 @@
+name: Convertisseur AKA (Windows)
+# Fabrique un paquet Windows autonome : AKA-Convertisseur.exe (interface : glisser-deposer ou
+# parcourir une ROM) + MSYS2 + recompilateur + PlatformIO avec la chaine ESP32-S3 deja telechargee.
+# Lancer a la main (Actions > Convertisseur AKA > Run workflow) ; le zip est dans les artefacts.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['aka-convertisseur-v*']
+
+jobs:
+  paquet:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: msys2/setup-msys2@v2
+        id: msys
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            zip unzip
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-zlib mingw-w64-x86_64-python mingw-w64-x86_64-python-pip
+
+      - name: Recompilateur m0boy
+        shell: msys2 {0}
+        run: |
+          cmake -G Ninja -B build .
+          ninja -C build
+
+      - name: PlatformIO + chaine ESP32-S3 (pre-chargement)
+        shell: msys2 {0}
+        run: |
+          pip install --break-system-packages platformio
+          export PLATFORMIO_CORE_DIR="$(cygpath -w "$PWD/pio-core")"
+          rm -rf /tmp/pre && mkdir -p /tmp/pre/src
+          cp -r targets/consoles/aka/boards /tmp/pre/boards
+          cp targets/consoles/aka/aka.csv.in /tmp/pre/aka.csv
+          sed -e '/^extra_scripts/d' -e '/^    post:aka_size/d' targets/consoles/aka/platformio.ini.in > /tmp/pre/platformio.ini
+          printf '#include <Arduino.h>\nvoid setup(){}\nvoid loop(){}\n' > /tmp/pre/src/main.cpp
+          pio run -d "$(cygpath -w /tmp/pre)"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Interface (exe)
+        shell: pwsh
+        run: |
+          pip install pyinstaller tkinterdnd2
+          pyinstaller --onefile --windowed --name AKA-Convertisseur --collect-all tkinterdnd2 tools/aka/convert_gui.pyw
+
+      - name: Assemblage du paquet
+        shell: pwsh
+        run: |
+          $d = "AKA-Convertisseur"
+          New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item dist/AKA-Convertisseur.exe $d/
+          # m0boy sans .git, sorties ni ROMs
+          robocopy . "$d/m0boy" /E /XD .git out roms /XF *.sms *.gg *.gb *.gbc *.sg | Out-Null
+          # MSYS2 allege (pas de doc, pages man, langues, cache pacman)
+          $m = "${{ steps.msys.outputs.msys2-location }}"
+          robocopy $m "$d/msys64" /E /XD "$m\var\cache" "$m\mingw64\share\doc" "$m\mingw64\share\man" "$m\mingw64\share\info" "$m\mingw64\share\locale" "$m\usr\share\doc" "$m\usr\share\man" "$m\usr\share\info" "$m\usr\share\locale" | Out-Null
+          Move-Item pio-core "$d/pio-core" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "$d/m0boy/pio-core" -ErrorAction SilentlyContinue
+          @"
+          AKA-Convertisseur : double-clic sur AKA-Convertisseur.exe, glisser une ROM (.gb .gbc .sg .gg .sms)
+          dans la fenetre (ou « Ajouter des ROMs »), « Convertir ». Les .zip sortent dans le dossier choisi :
+          les decompresser a la racine de la carte SD de l'AKA.
+          Premiere conversion : quelques minutes. Ne rien deplacer : l'exe cherche msys64, m0boy et pio-core a cote de lui.
+          "@ | Set-Content "$d/LISEZ-MOI.txt"
+          7z a -tzip -mx=5 AKA-Convertisseur-win64.zip $d | Out-Null
+          (Get-Item AKA-Convertisseur-win64.zip).Length / 1MB
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AKA-Convertisseur-win64
+          path: AKA-Convertisseur-win64.zip
+          compression-level: 0

@@ -14,8 +14,11 @@ import subprocess
 import sys
 import threading
 
-ICI = os.path.dirname(os.path.abspath(__file__))
-SCRIPT = os.path.join(ICI, "convert.sh")
+FROZEN = getattr(sys, "frozen", False)
+ICI = os.path.dirname(os.path.abspath(sys.executable if FROZEN else __file__))
+# Paquet autonome : AKA-Convertisseur.exe + m0boy\\ + msys64\\ + pio-core\\ dans le meme dossier.
+PAQUET = FROZEN and os.path.isdir(os.path.join(ICI, "msys64")) and os.path.isdir(os.path.join(ICI, "m0boy"))
+SCRIPT = os.path.join(ICI, "m0boy", "tools", "aka", "convert.sh") if PAQUET else os.path.join(ICI, "convert.sh")
 EXT = (".gb", ".gbc", ".sg", ".gg", ".sms", ".zip")
 
 
@@ -53,9 +56,13 @@ def build_command(roms, out_dir, rapide, windows=None):
         args.append("-r")
     if not windows:
         return ["bash", SCRIPT, "-o", out_dir] + args + list(roms), None
-    msys = find_msys2()
+    msys = os.path.join(ICI, "msys64") if PAQUET else find_msys2()
     if msys:
-        env = dict(os.environ, MSYSTEM="MINGW64", MSYS2_PATH_TYPE="inherit", CHERE_INVOKING="1")
+        env = dict(os.environ, MSYSTEM="MINGW64", CHERE_INVOKING="1")
+        if PAQUET:   # tout est dans le dossier : ni PATH Windows ni PlatformIO externe
+            env["PLATFORMIO_CORE_DIR"] = os.path.join(ICI, "pio-core")
+        else:
+            env["MSYS2_PATH_TYPE"] = "inherit"
         conv = [msys_path(p) for p in roms]
         cmd = [os.path.join(msys, "usr", "bin", "bash.exe"), "-lc", 'exec bash "$@"', "bash",
                msys_path(SCRIPT), "-o", msys_path(out_dir)] + args + conv
@@ -74,7 +81,12 @@ def run_gui():
     import tkinter as tk
     from tkinter import filedialog, messagebox, scrolledtext
 
-    root = tk.Tk()
+    try:
+        from tkinterdnd2 import TkinterDnD, DND_FILES
+        root = TkinterDnD.Tk()
+    except Exception:
+        DND_FILES = None
+        root = tk.Tk()
     root.title("Convertir une ROM pour la Gamebuino AKA")
     root.geometry("720x520")
     roms = []
@@ -83,7 +95,8 @@ def run_gui():
 
     frame = tk.Frame(root, padx=10, pady=10)
     frame.pack(fill="both", expand=True)
-    tk.Label(frame, text="ROMs (Game Boy, SG-1000, Game Gear, Master System) :", anchor="w").pack(fill="x")
+    tk.Label(frame, text="ROMs (Game Boy, SG-1000, Game Gear, Master System) — glisse-les ici ou utilise les boutons :",
+             anchor="w").pack(fill="x")
     lst = tk.Listbox(frame, height=6)
     lst.pack(fill="x")
 
@@ -114,6 +127,15 @@ def run_gui():
         d = filedialog.askdirectory(title="Dossier de sortie")
         if d:
             out_var.set(d)
+
+    if DND_FILES:
+        def on_drop(event):
+            for f in root.tk.splitlist(event.data):
+                if f not in roms:
+                    roms.append(f)
+            refresh()
+        lst.drop_target_register(DND_FILES)
+        lst.dnd_bind("<<Drop>>", on_drop)
 
     bar = tk.Frame(frame)
     bar.pack(fill="x", pady=4)
