@@ -1,5 +1,4 @@
 #include "md_full.h"
-#include <math.h>
 #include <string.h>
 
 /* One clock for every sound part: the NTSC master clock. The 68000 and the
@@ -45,8 +44,10 @@ static void psg_tick(MdPsg *p) {
 }
 
 static int psg_output(const MdPsg *p) {
-    static int amp[16];
-    if (!amp[0]) for (unsigned i = 0; i < 15; ++i) amp[i] = (int)lround(PSG_AMP * pow(10.0, -0.1 * i));
+    /* lround(1800 * 10^(-i/10)); fixed constants, no floating point. */
+    static const int amp[16] = {
+        1800, 1430, 1136, 902, 717, 569, 452, 359, 285, 227, 180, 143, 114, 90, 72, 57,
+    };
     int mix = 0;
     for (unsigned ch = 0; ch < 3; ++ch) mix += p->high[ch] ? amp[p->volume[ch]] : -amp[p->volume[ch]];
     return mix + ((p->lfsr & 1u) ? amp[p->volume[3]] : -amp[p->volume[3]]);
