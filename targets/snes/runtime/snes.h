@@ -76,6 +76,7 @@ typedef struct {
     uint8_t hdma_count[8], hdma_len[8], hdma_rep[8]; /* the current table entry */
     uint16_t vmaddr, cgaddr, oamaddr, scroll[8];
     uint8_t cg_latch, oam_latch, scroll_latch;
+    uint8_t obj_range_over, obj_time_over; /* the $213F flags of the last evaluated line */
     uint8_t timer_latch;
     uint16_t htime, vtime; /* $4207-$420A, the H/V compare values */
     uint8_t timeup;        /* $4211 bit 7, cleared by the read */

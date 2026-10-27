@@ -131,6 +131,43 @@ static void object_test(void) {
     CHECK(image[pixel] == 255 && image[pixel + 1] == 0 && image[pixel + 2] == 0);
 }
 
+/* The per-line object limits: 32 sprites, 34 tile slots, and the $213F
+ * flags of the last evaluated line. */
+static void object_limits_test(void) {
+    snes_init(rom, sizeof rom, 0, 0);
+    machine.vram[32] = 0x80;       /* the one-pixel 4bpp tile */
+    machine.cgram[129 * 2] = 0x1f; /* red, palette 1 */
+    snes_bus_write(0x2100, 15); snes_bus_write(0x2105, 1); snes_bus_write(0x212c, 0x10);
+    for (unsigned i = 0; i < 33; i++) {
+        machine.oam[i * 4 + 0] = (uint8_t)i; /* X = 0..32 */
+        machine.oam[i * 4 + 1] = 8;          /* Y: the line 8 */
+        machine.oam[i * 4 + 2] = 1;
+        machine.oam[i * 4 + 3] = 0x00;
+    }
+    snes_render_line(8, image); /* one row: the pixels sit at image[x * 3] */
+    unsigned pixel = 32 * 3; /* the 33rd stays invisible */
+    CHECK(image[pixel] == 0 && image[pixel + 1] == 0 && image[pixel + 2] == 0);
+    pixel = 31 * 3; /* the 32nd is in */
+    CHECK(image[pixel] == 255 && image[pixel + 1] == 0 && image[pixel + 2] == 0);
+    CHECK((snes_bus_read(0x213f) & 0x60) == 0x20); /* range over */
+
+    /* 16-pixel objects spend two tile slots: 17 fit the 34, the 18th
+     * hits the time over */
+    snes_bus_write(0x2101, 0x60); /* 16x16 objects, name base 0 */
+    for (unsigned i = 0; i < 18; i++) {
+        machine.oam[i * 4 + 0] = (uint8_t)(i * 8);
+        machine.oam[i * 4 + 1] = 8;
+        machine.oam[i * 4 + 2] = 1;
+        machine.oam[i * 4 + 3] = 0x00;
+    }
+    snes_render_line(8, image);
+    pixel = 8 * 17 * 3; /* the 18th is out */
+    CHECK(image[pixel] == 0 && image[pixel + 1] == 0 && image[pixel + 2] == 0);
+    pixel = 8 * 16 * 3; /* the 17th is in */
+    CHECK(image[pixel] == 255 && image[pixel + 1] == 0 && image[pixel + 2] == 0);
+    CHECK((snes_bus_read(0x213f) & 0x60) == 0x40); /* time over */
+}
+
 static void interrupt_test(int emulation, int interpreter) {
     snes_init(rom, sizeof rom, 0, 0);
     machine.cpu.e = emulation;
@@ -349,6 +386,7 @@ int main(void) {
     CHECK(snes_bus_read(0x808000) == 0x42);
     hdma_test();
     irq_test();
+    object_limits_test();
     /* the SRAM window: mirrored through the $6000-$7FFF offsets of the
      * LoROM banks, open bus when nothing is declared */
     snes_init(rom, sizeof rom, 0, 8192);

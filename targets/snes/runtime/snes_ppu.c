@@ -85,6 +85,9 @@ uint8_t snes_ppu_read(uint16_t at) {
         machine.cgaddr = (machine.cgaddr + 1) & 511;
         return v;
     }
+    if (r == 0x3f) /* STAT77: the last evaluated line's sprite flags */
+        return (uint8_t)((machine.obj_time_over ? 0x40 : 0) | (machine.obj_range_over ? 0x20 : 0)) |
+               (machine.cpu.mdr & 0x1f);
     return machine.cpu.mdr;
 }
 
@@ -180,8 +183,11 @@ static uint16_t vword(unsigned a) {
     return machine.vram[a] | (unsigned)machine.vram[(a + 1) & 0xffff] << 8;
 }
 
-/* Object pixels are selected in OAM order before their priority is compared
- * to backgrounds.  This deliberately does not model the per-line limits. */
+/* Object pixels are selected in OAM order before their priority is
+ * compared to backgrounds: 32 sprites at most per line, 34 8-pixel tile
+ * slots (a wide sprite spends several), the extras setting the flags of
+ * $213F and staying invisible.  The vertical range counts even for a
+ * sprite whose X sits off screen, as the hardware's evaluation does. */
 static void object_line(unsigned y, uint8_t color[256], uint8_t prio[256]) {
     static const uint8_t width[8][2] = {
         {8,16},{8,32},{8,64},{16,32},{16,64},{32,64},{16,32},{16,32}
@@ -192,23 +198,45 @@ static void object_line(unsigned y, uint8_t color[256], uint8_t prio[256]) {
     const uint8_t obsel = machine.ppu_regs[1];
     const unsigned size_mode = obsel >> 5;
     const unsigned first = (machine.ppu_regs[3] & 0x80) ? (machine.ppu_regs[2] >> 1) : 0;
-    for (int n = 127; n >= 0; n--) {
-        unsigned i = (first + (unsigned)n) & 127;
+    unsigned selected[32], ns = 0, tiles = 0;
+    machine.obj_range_over = 0;
+    machine.obj_time_over = 0;
+    for (unsigned n = 0; n < 128; n++) {
+        const unsigned i = (first + n) & 127;
         const uint8_t *o = machine.oam + i * 4;
-        unsigned high = (machine.oam[512 + i / 4] >> ((i & 3) * 2)) & 3;
-        int x0 = (int)o[0] - ((high & 1) ? 256 : 0);
-        unsigned w = width[size_mode][high >> 1], h = height[size_mode][high >> 1];
+        const unsigned high = (machine.oam[512 + i / 4] >> ((i & 3) * 2)) & 3;
+        const unsigned h = height[size_mode][high >> 1];
+        const unsigned py = (y - o[1]) & 255;
+        if (py >= h) continue;
+        if (ns == 32) {
+            machine.obj_range_over = 1;
+            break;
+        }
+        tiles += width[size_mode][high >> 1] / 8;
+        if (tiles > 34) {
+            machine.obj_time_over = 1;
+            break;
+        }
+        selected[ns++] = i;
+    }
+    /* the lowest OAM order paints last, as the hardware's priority */
+    for (int n = (int)ns - 1; n >= 0; n--) {
+        const unsigned i = selected[n];
+        const uint8_t *o = machine.oam + i * 4;
+        const unsigned high = (machine.oam[512 + i / 4] >> ((i & 3) * 2)) & 3;
+        const unsigned w = width[size_mode][high >> 1], h = height[size_mode][high >> 1];
+        const int x0 = (int)o[0] - ((high & 1) ? 256 : 0);
         unsigned py = (y - o[1]) & 255;
         if (py >= h || x0 >= 256 || x0 + (int)w <= 0) continue;
         if (o[3] & 0x80) py = h - 1 - py;
         unsigned base = (obsel & 3) * 0x4000u;
         if (o[3] & 1) base += (((obsel >> 3) & 3) + 1) * 0x2000u;
         for (unsigned dx = 0; dx < w; dx++) {
-            int x = x0 + (int)dx;
+            const int x = x0 + (int)dx;
             if (x < 0 || x >= 256) continue;
-            unsigned px = (o[3] & 0x40) ? w - 1 - dx : dx;
-            unsigned tile = ((o[2] + (py >> 3) * 16) & 0xf0) | ((o[2] + (px >> 3)) & 15);
-            unsigned row = base + tile * 32 + (py & 7) * 2, bit = 7 - (px & 7);
+            const unsigned px = (o[3] & 0x40) ? w - 1 - dx : dx;
+            const unsigned tile = ((o[2] + (py >> 3) * 16) & 0xf0) | ((o[2] + (px >> 3)) & 15);
+            const unsigned row = base + tile * 32 + (py & 7) * 2, bit = 7 - (px & 7);
             unsigned c = 0;
             for (unsigned p = 0; p < 4; p++)
                 c |= ((machine.vram[(row + (p / 2) * 16 + (p & 1)) & 0xffff] >> bit) & 1) << p;

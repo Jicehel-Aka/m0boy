@@ -202,6 +202,7 @@ int main(int argc, char **argv) {
         (uint8_t)machine.cgaddr, (uint8_t)(machine.cgaddr >> 8),
         (uint8_t)machine.oamaddr, (uint8_t)(machine.oamaddr >> 8),
         machine.cg_latch, machine.oam_latch, machine.scroll_latch, machine.vblank, machine.hblank,
+        machine.obj_range_over, machine.obj_time_over,
         machine.timer_latch,
         (uint8_t)machine.htime, (uint8_t)(machine.htime >> 8),
         (uint8_t)machine.vtime, (uint8_t)(machine.vtime >> 8),
