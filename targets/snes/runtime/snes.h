@@ -61,8 +61,49 @@ typedef struct {
     uint32_t wram_addr; /* the $2181-$2183 port */
 } snes_cpu_t;
 
-/* One machine: CPU, WRAM, the cartridge's SRAM, PPU memories and general
- * DMA state. */
+/* the S-SMP (SPC700): the interpreter's state, the 64 KiB A-RAM and the
+ * four comm ports the CPU sees at $2140-$217F.  The boot's IPL ROM is
+ * simulated by a state machine (no ROM bytes), the timers tick at 8 kHz
+ * (T0/T1) and 64 kHz (T2), their outputs at source/(target+1). */
+typedef struct {
+    uint16_t pc;
+    uint8_t a, x, y, sp, psw;
+    uint8_t ram[65536];
+    uint8_t ports_in[4], ports_out[4];
+    uint8_t control;    /* $F1: the timer run bits */
+    uint8_t dsp_addr;   /* $F2 */
+    uint8_t halted;     /* SLEEP/STOP */
+    uint8_t timer_phase[3], timer_out[3];
+    uint8_t ipl_state;  /* 0: the boot wait, 1: the upload, 2: the game */
+    uint8_t ipl_fresh;  /* $2142/3 written since the last upload byte */
+    uint16_t ipl_addr;
+    uint8_t tick8k, tick64k;
+    uint64_t acc, dsp_acc;
+} snes_smp_t;
+
+/* the S-DSP: the register file the SMP sees at $F2/$F3, the eight BRR
+ * voices and the sample ring the host drains (32000 Hz stereo). */
+typedef struct {
+    uint8_t regs[0x80];
+    uint8_t key_on, key_off, end_flags;
+    int16_t ring[8192];
+    uint16_t ring_r, ring_w;
+    struct {
+        int16_t prev1, prev2;  /* the BRR filter's history */
+        int16_t out;           /* the voice's latest decoded sample */
+        uint16_t start, loop;  /* block addresses from the directory */
+        uint16_t src;          /* the current block's byte address */
+        uint16_t pos;          /* the fixed-point read position (1/4096 samples) */
+        uint8_t hdr;           /* the current block's header */
+        uint8_t nib;           /* the next sample nibble in the block */
+        uint8_t adsr_state;    /* 0 gain, 1 attack, 2 decay, 3 sustain, 4 release */
+        uint8_t rate_count;
+        int16_t env;
+    } voice[8];
+} snes_dsp_t;
+
+/* One machine: CPU, WRAM, the cartridge's SRAM, PPU memories, the APU and
+ * general DMA state. */
 typedef struct {
     snes_cpu_t cpu;
     uint8_t wram[131072];
@@ -87,6 +128,8 @@ typedef struct {
     uint8_t screen[224 * 256 * 3]; /* the frame as the lines displayed it */
     uint16_t joypad, joy_auto, joy_shift;
     uint8_t joy_strobe, joy_count, joy_auto_enable, joy_busy;
+    snes_smp_t smp;
+    snes_dsp_t dsp;
     uint32_t frames;
 } snes_t;
 
@@ -118,6 +161,16 @@ void snes_take_interrupt(snes_cpu_t *c, uint16_t vector);
 /* the entry key the dispatcher and the recompiler share: K, DBR, the
  * direct page and the M/X/E flags packed, K lowest */
 uint64_t snes_ctx_key(const snes_cpu_t *cpu);
+
+/* the S-SMP: advance by `cpu_cycles` of the 65816's clock (the fixed
+ * master ratio), interpret the SPC700 and tick the timers; the DSP
+ * renders into the ring at 32000 Hz.  The IPL boot runs on the CPU's
+ * writes through snes_smp_port_write. */
+void snes_apu_run(uint32_t cpu_cycles);
+void snes_smp_port_write(unsigned n, uint8_t v);
+/* drain n stereo samples the host (16-bit interleaved), for --wav and
+ * audio_hash */
+unsigned snes_apu_read(int16_t *dst, unsigned n);
 
 #ifdef __cplusplus
 }

@@ -95,7 +95,7 @@ static uint32_t header_sram(const uint8_t *rom, uint32_t bytes, int hirom) {
 }
 
 int main(int argc, char **argv) {
-    const char *rom_path = 0, *input_path = 0, *coverage = 0, *capture = 0;
+    const char *rom_path = 0, *input_path = 0, *coverage = 0, *capture = 0, *wav_path = 0;
     unsigned frames = 60;
     int interp = 0;
     for (int i = 1; i < argc; i++) {
@@ -103,6 +103,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_path = argv[++i];
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) coverage = argv[++i];
         else if (!strcmp(argv[i], "--capture") && i + 1 < argc) capture = argv[++i];
+        else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav_path = argv[++i];
         else if (!strcmp(argv[i], "--interp")) interp = 1;
         else rom_path = argv[i];
     }
@@ -149,12 +150,25 @@ int main(int argc, char **argv) {
     };
     pc_input_t script = {0};
     if (input_path && !pc_input_load(&script, input_path, names, 12)) return 2;
+    /* the DSP's ring drained once per frame: the samples the S-DSP
+     * rendered, 32000 Hz stereo, for --wav and the audio_hash */
+    int16_t *audio = 0;
+    size_t audio_n = 0, audio_cap = 0;
     for (unsigned f = 0; f < frames; f++) {
         unsigned keys = pc_input_keys(&script, f);
         uint16_t report = 0;
         for (unsigned i = 0; i < 12; i++) if (keys & (1u << i)) report |= (uint16_t)(0x8000u >> i);
         snes_set_joypad(report);
         snes_frame();
+        const unsigned fill = (unsigned)((machine.dsp.ring_w - machine.dsp.ring_r) & 8191);
+        if (audio_n + fill > audio_cap) {
+            audio_cap = (audio_n + fill + 8192u) & ~(size_t)8191u;
+            audio = realloc(audio, audio_cap * sizeof *audio);
+        }
+        for (unsigned i = 0; i < fill; i++) {
+            audio[audio_n++] = machine.dsp.ring[machine.dsp.ring_r];
+            machine.dsp.ring_r = (machine.dsp.ring_r + 1) & 8191;
+        }
     }
     pc_input_free(&script);
     uint8_t *image = malloc(256u * 224u * 3u);
@@ -225,6 +239,57 @@ int main(int argc, char **argv) {
     };
     h = fnv(state, sizeof state, h);
     h = fnv(&machine.frames, 4, h);
+    /* the APU: the SPC700's registers and A-RAM, the DSP's register file */
+    const uint8_t smp_state[] = {
+        (uint8_t)machine.smp.pc, (uint8_t)(machine.smp.pc >> 8),
+        machine.smp.a, machine.smp.x, machine.smp.y, machine.smp.sp, machine.smp.psw,
+        machine.smp.control, machine.smp.dsp_addr, machine.smp.halted,
+        machine.smp.timer_phase[0], machine.smp.timer_phase[1], machine.smp.timer_phase[2],
+        machine.smp.timer_out[0], machine.smp.timer_out[1], machine.smp.timer_out[2],
+        machine.smp.ipl_state, machine.smp.ipl_fresh,
+        (uint8_t)machine.smp.ipl_addr, (uint8_t)(machine.smp.ipl_addr >> 8),
+        machine.smp.ports_in[0], machine.smp.ports_in[1], machine.smp.ports_in[2], machine.smp.ports_in[3],
+        machine.smp.ports_out[0], machine.smp.ports_out[1], machine.smp.ports_out[2], machine.smp.ports_out[3],
+    };
+    h = fnv(smp_state, sizeof smp_state, h);
+    h = fnv(machine.smp.ram, sizeof machine.smp.ram, h);
+    h = fnv(machine.dsp.regs, sizeof machine.dsp.regs, h);
+    h = fnv(&machine.dsp.key_on, 3, h);
+    for (unsigned v = 0; v < 8; v++) {
+        const uint8_t vs[] = {
+            (uint8_t)machine.dsp.voice[v].env, (uint8_t)(machine.dsp.voice[v].env >> 8),
+            (uint8_t)machine.dsp.voice[v].pos, (uint8_t)(machine.dsp.voice[v].pos >> 8),
+            machine.dsp.voice[v].adsr_state, machine.dsp.voice[v].rate_count,
+            machine.dsp.voice[v].hdr, machine.dsp.voice[v].nib,
+            (uint8_t)machine.dsp.voice[v].src, (uint8_t)(machine.dsp.voice[v].src >> 8),
+            (uint8_t)machine.dsp.voice[v].start, (uint8_t)(machine.dsp.voice[v].start >> 8),
+            (uint8_t)machine.dsp.voice[v].loop, (uint8_t)(machine.dsp.voice[v].loop >> 8),
+        };
+        h = fnv(vs, sizeof vs, h);
+    }
+    const uint32_t audio_hash = fnv(audio, audio_n * sizeof *audio, 2166136261u);
+    if (wav_path && audio_n) { /* 32000 Hz, 16-bit stereo */
+        FILE *out = fopen(wav_path, "wb");
+        if (!out) { fprintf(stderr, "cannot write %s\n", wav_path); return 2; }
+        const uint32_t data_bytes = (uint32_t)(audio_n * sizeof *audio);
+        const uint8_t header[] = {
+            'R','I','F','F', 0,0,0,0, 'W','A','V','E', 'f','m','t',' ',
+            16,0,0,0, 1,0, 2,0, 0x80,0x7d,0,0, 0,0x25,3,0, 4,0, 16,0,
+            'd','a','t','a', (uint8_t)data_bytes, (uint8_t)(data_bytes >> 8),
+            (uint8_t)(data_bytes >> 16), (uint8_t)(data_bytes >> 24),
+        };
+        uint8_t hdr[44];
+        memcpy(hdr, header, sizeof header);
+        const uint32_t riff = data_bytes + 36;
+        hdr[4] = (uint8_t)riff; hdr[5] = (uint8_t)(riff >> 8);
+        hdr[6] = (uint8_t)(riff >> 16); hdr[7] = (uint8_t)(riff >> 24);
+        if (fwrite(hdr, 1, 44, out) != 44 ||
+            fwrite(audio, sizeof *audio, audio_n, out) != audio_n || fclose(out)) {
+            fprintf(stderr, "cannot write the wav\n");
+            return 2;
+        }
+    }
+    free(audio);
     if (coverage) {
         FILE *out = fopen(coverage, "w");
         if (!out) { fprintf(stderr, "cannot write %s\n", coverage); return 2; }
@@ -241,8 +306,8 @@ int main(int argc, char **argv) {
         }
         fclose(out);
     }
-    printf("frames=%u cycles=%u k=%02x pc=%04x run_hash=%08x image_hash=%08x sram_dirty=%u\n",
+    printf("frames=%u cycles=%u k=%02x pc=%04x run_hash=%08x image_hash=%08x audio_hash=%08x sram_dirty=%u\n",
            machine.frames, (unsigned)machine.cpu.cycles, machine.cpu.k, machine.cpu.pc, h, image_hash,
-           machine.sram_dirty);
+           audio_hash, machine.sram_dirty);
     return 0;
 }

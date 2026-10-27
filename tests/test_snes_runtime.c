@@ -211,6 +211,63 @@ static void modes_test(void) {
     CHECK(image[8 * 3] == 0 && image[8 * 3 + 2] == 0); /* map (1,0) is empty */
 }
 
+/* The APU: the boot handshake uploads a program and starts it, the
+ * program keys a voice whose BRR block reaches the ring, the timers tick
+ * at their documented rates. */
+static void apu_test(void) {
+    snes_init(rom, sizeof rom, 0, 0);
+    /* the boot: $2141 = $BB, $2140 = $AA, the block at $0200, the go */
+    snes_bus_write(0x2141, 0xbb);
+    snes_bus_write(0x2140, 0xaa);
+    CHECK(machine.smp.ipl_state == 1 && machine.smp.ports_out[0] == 0xbb);
+    snes_bus_write(0x2142, 0x00); snes_bus_write(0x2143, 0x02);
+    static const uint8_t prog[] = {
+        0xe8, 0x4c,             /* MOV A,#$4C */
+        0xc4, 0xf2,             /* MOV $F2,A */
+        0xe8, 0x01,             /* MOV A,#$01 */
+        0xc4, 0xf3,             /* MOV $F3,A: KON = voice 0 */
+        0x80, 0xfe,             /* BRA $FE */
+    };
+    for (unsigned i = 0; i < sizeof prog; i++) snes_bus_write(0x2140, prog[i]);
+    snes_bus_write(0x2142, 0x00); snes_bus_write(0x2143, 0x02);
+    snes_bus_write(0x2140, 0x00); /* the go: the game starts at $0200 */
+    CHECK(machine.smp.ipl_state == 2 && machine.smp.pc == 0x0200);
+
+    /* the voice's sample source: the directory at $0300, the BRR block at
+     * $0400 (block addresses in 8-byte units), one block of two $7
+     * samples at shift 12, then an end-and-loop block */
+    machine.smp.ram[0x300] = 0x80; machine.smp.ram[0x301] = 0x00; /* start $0400 */
+    machine.smp.ram[0x302] = 0x80; machine.smp.ram[0x303] = 0x00; /* loop $0400 */
+    machine.smp.ram[0x400] = 0xc0; /* shift 12, filter 0 */
+    for (unsigned i = 1; i < 9; i++) machine.smp.ram[0x400 + i] = 0x77;
+    machine.smp.ram[0x409] = 0x03; /* the next block: end + loop */
+    machine.dsp.regs[0x5d] = 0x03; /* DIR */
+    machine.dsp.regs[0x02] = 0x00; machine.dsp.regs[0x03] = 0x10; /* pitch 1.0 */
+    machine.dsp.regs[0x00] = machine.dsp.regs[0x01] = 0x7f;       /* volumes */
+    machine.dsp.regs[0x04] = 0x00;                                /* SRCN 0 */
+    machine.dsp.regs[0x07] = 0x7f;                                /* GAIN direct */
+    machine.dsp.regs[0x0c] = machine.dsp.regs[0x1c] = 0x7f;       /* main volume */
+    snes_frame();
+    CHECK(machine.dsp.regs[0x4c] == 0x01); /* the program keyed the voice */
+    CHECK(machine.dsp.voice[0].adsr_state == 0); /* the direct gain */
+
+    /* two samples of $7 << 12 through env $7F0 and the volumes */
+    const int s0 = machine.dsp.ring[0];
+    const int expected = (7 * 4096) * 0x7f0 / 2048 * 0x7f / 128 * 0x7f / 128;
+    CHECK(s0 > expected - 500 && s0 < expected + 500);
+
+    /* the timers: T0 at 8000/(7+1) = 1000 Hz, T2 at 64000/(7+1) */
+    machine.smp.control = 0x07;
+    machine.smp.ram[0xfa] = 7; machine.smp.ram[0xfc] = 7;
+    const uint8_t t0 = machine.smp.timer_out[0], t2 = machine.smp.timer_out[2];
+    snes_frame();
+    const uint8_t d0 = (uint8_t)(machine.smp.timer_out[0] - t0);
+    const uint8_t d2 = (uint8_t)(machine.smp.timer_out[2] - t2);
+    CHECK(d0 >= 14 && d0 <= 19);   /* ~1000 Hz over one frame */
+    CHECK(d2 >= 128 && d2 <= 138); /* ~8000 Hz over one frame */
+    machine.smp.control = 0;
+}
+
 static void interrupt_test(int emulation, int interpreter) {
     snes_init(rom, sizeof rom, 0, 0);
     machine.cpu.e = emulation;
@@ -431,6 +488,7 @@ int main(void) {
     irq_test();
     object_limits_test();
     modes_test();
+    apu_test();
     /* the SRAM window: mirrored through the $6000-$7FFF offsets of the
      * LoROM banks, open bus when nothing is declared */
     snes_init(rom, sizeof rom, 0, 8192);

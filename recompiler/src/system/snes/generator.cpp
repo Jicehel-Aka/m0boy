@@ -186,7 +186,8 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
         if (!o.interpret) config += "#ifndef SNES_NATIVE\n#define SNES_NATIVE 1\n#endif\n";
         write(src / "snes_config.h", config);
 
-        for (const char* name : { "snes_cpu.c", "snes.c", "snes_ppu.c", "snes.h", "snes_gen.h" })
+        for (const char* name :
+             { "snes_cpu.c", "snes.c", "snes_ppu.c", "snes_smp.c", "snes_dsp.c", "snes.h", "snes_gen.h" })
             copy_template(tpl / "runtime" / name, src / name);
         /* the idle loops' count (snes_gen.h, the dispatcher) */
         copy_template(o.meta_templates.parent_path() / "common" / "runtime" / "m0_idle.h", src / "m0_idle.h");
@@ -216,8 +217,9 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
                               "#include \"../runtime/snes.h\"", "#include \"../src/snes.h\""),
                       "#ifdef SNES_EMBEDDED", "#include \"../src/snes_config.h\"\n#ifdef SNES_EMBEDDED"));
         copy_template(o.meta_templates.parent_path() / "consoles" / "pc" / "pc_input.h", o.output / "host" / "pc_input.h");
-        const std::string sources = "${SRC}/snes.c ${SRC}/snes_cpu.c ${SRC}/snes_ppu.c ${SRC}/snes_cart.c" +
-                                    std::string(native ? " ${SRC}/snes_gen.c" : "");
+        const std::string sources =
+            "${SRC}/snes.c ${SRC}/snes_cpu.c ${SRC}/snes_ppu.c ${SRC}/snes_smp.c ${SRC}/snes_dsp.c"
+            " ${SRC}/snes_cart.c" + std::string(native ? " ${SRC}/snes_gen.c" : "");
         write(o.output / "host" / "CMakeLists.txt",
               "cmake_minimum_required(VERSION 3.20)\nproject(" + o.name + "_snes_host C)\nset(CMAKE_C_STANDARD 11)\n"
               "if(NOT CMAKE_BUILD_TYPE)\n    set(CMAKE_BUILD_TYPE Release)\nendif()\n"

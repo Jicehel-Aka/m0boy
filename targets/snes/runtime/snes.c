@@ -1,11 +1,13 @@
 #include "snes.h"
 
 #include <string.h>
+#include <stddef.h>
 
 void snes_ppu_write(uint16_t at, uint8_t v);
 uint8_t snes_ppu_read(uint16_t at);
 void snes_dma_start(uint8_t mask);
 void snes_hdma_line(void);
+void snes_smp_port_write(unsigned n, uint8_t v);
 
 snes_t machine; /* one machine per firmware, as the other runtimes' own */
 
@@ -33,12 +35,13 @@ static uint32_t rom_offset(const snes_cpu_t *c, uint32_t at) {
     return (uint32_t)(bank & 0x3F) * 0x8000u + (off & 0x7FFFu);
 }
 
-/* I/O page: PPU ports, general DMA, NMI and WRAM port. Unimplemented
- * devices return open bus. */
+/* I/O page: PPU ports, DMA, the APU's comm ports, NMI and WRAM port.
+ * Unimplemented devices return open bus. */
 static uint8_t io_read(uint16_t at) {
     snes_cpu_t *c = &machine.cpu;
     if (at >= 0x2100 && at <= 0x213f) return snes_ppu_read(at);
     if (at >= 0x4300 && at <= 0x437f) return machine.dma[(at >> 4) & 7][at & 15];
+    if (at >= 0x2140 && at <= 0x217f) return machine.smp.ports_out[at & 3];
     switch (at) {
     case 0x4016: {
         unsigned bit;
@@ -84,6 +87,7 @@ static void io_write(uint16_t at, uint8_t v) {
     snes_cpu_t *c = &machine.cpu;
     if (at >= 0x2100 && at <= 0x213f) { snes_ppu_write(at, v); return; }
     if (at >= 0x4300 && at <= 0x437f) { machine.dma[(at >> 4) & 7][at & 15] = v; return; }
+    if (at >= 0x2140 && at <= 0x217f) { snes_smp_port_write(at & 3, v); return; }
     switch (at) {
     case 0x4016:
         if ((v & 1) || machine.joy_strobe) {
@@ -206,6 +210,10 @@ void snes_reset(void) {
     c->wram_addr = 0;
     machine.joypad = machine.joy_auto = machine.joy_shift = 0;
     machine.joy_strobe = machine.joy_count = machine.joy_auto_enable = machine.joy_busy = 0;
+    /* the S-SMP waits for the boot handshake, the DSP silent */
+    memset(&machine.smp, 0, offsetof(snes_smp_t, ram) + sizeof machine.smp.ram);
+    machine.smp.sp = 0xEF;
+    machine.smp.psw = 0x02;
     /* the reset vector, always of bank $00 in emulation mode */
     c->pc = (uint16_t)(snes_bus_read(0x00FFFC) | snes_bus_read(0x00FFFD) << 8);
 }
@@ -249,6 +257,7 @@ static void irq_fire(void) {
  * visible part is 3/4 of the line, HTIME's exact dot is not modelled. */
 void snes_frame(void) {
     const uint32_t start = machine.cpu.cycles;
+    uint32_t at_line = start;
     machine.frames++;
     machine.vblank = 0;
     machine.hblank = 0;
@@ -281,10 +290,16 @@ void snes_frame(void) {
                        ((((uint64_t)(line + 1) * SNES_FRAME_CYCLES) / 262 -
                          ((uint64_t)line * SNES_FRAME_CYCLES) / 262) * 3) / 4);
         snes_run(&machine.cpu, visible);
+        const uint32_t at_visible = machine.cpu.cycles;
         machine.hblank = 1;
         snes_hdma_line();
         if (machine.h_irq_en && (!machine.v_irq_en || v_match) && machine.htime >= 256) irq_fire();
         snes_run(&machine.cpu, until);
+        /* the S-SMP and the S-DSP follow the CPU's clock through both
+         * slices of the line */
+        snes_apu_run(at_visible - at_line);
+        snes_apu_run(machine.cpu.cycles - at_visible);
+        at_line = machine.cpu.cycles;
     }
     machine.hblank = 0;
 }
