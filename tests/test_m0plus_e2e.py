@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pathlib
+import os
 import re
 import struct
 import subprocess
@@ -19,11 +20,14 @@ def main(recompiler: pathlib.Path) -> None:
         for board, flash, ram in (("meta", 0x4000, 0x20000000),
                                   ("pokitto", 0, 0x10000000)):
             firmware = root / f"{board}.bin"
-            data = bytearray(40)
+            data = bytearray(80)
             struct.pack_into("<II", data, 0, ram + 0x8000, flash + 9)
             ops = (0x2005, 0x2103, 0x1842, 0x3A01, 0xAC00, 0x6022,
-                   0x6825, 0x2D07, 0xD001, 0x2063, 0xE7FE, 0xBF00,
-                   0xE7FE, 0xBF00, 0xE7FE)
+                   0x6825, 0x2D07, 0xD100, 0xBF00,
+                   0x0040, 0x0849, 0x108A, 0x4008, 0x4048, 0x4308,
+                   0x4680, 0x4646, 0xB403, 0xBC0C, 0xB084, 0xA800,
+                   0x2100, 0x5041, 0x5842, 0xB004, 0xF3EF, 0x8110,
+                   0xF381, 0x8810, 0xF000, 0xF800, 0xE7FE)
             struct.pack_into("<" + "H" * len(ops), data, 8, *ops)
             firmware.write_bytes(data)
             coverage = root / f"{board}.cov"
@@ -44,6 +48,36 @@ def main(recompiler: pathlib.Path) -> None:
             assert re.search(r"run_hash=([0-9a-f]+)", native).group(1) == re.search(
                 r"run_hash=([0-9a-f]+)", interp).group(1), (native, interp)
             assert "native=0" in interp, interp
+            assert int(re.search(r"board_native_entries=(\d+)", status).group(1)) > 0
+            # Exercise the translated instructions in the actual board model,
+            # including its scheduler and peripheral state, against its own
+            # interpreter. The headless build prints CPU and screen hashes.
+            run("ninja", "-C", project / "build", "m0_board_test")
+            board_test = project / "build" / "m0_board_test"
+            card = root / f"{board}_card"
+            card.mkdir()
+            def board_run(interpreted: bool) -> tuple[str, str]:
+                env = os.environ.copy()
+                if interpreted:
+                    env["M0_INTERP"] = "1"
+                else:
+                    env.pop("M0_INTERP", None)
+                result = subprocess.run([str(board_test), str(firmware), str(card), "2"],
+                                        env=env, text=True, capture_output=True, check=True)
+                final = re.search(r"FINAL (\d+ [0-9a-f]+)", result.stderr)
+                screen = re.search(r"ECRAN ([0-9a-f]+ nz=\d+)", result.stderr)
+                assert final and screen, result.stderr
+                return final.group(1), screen.group(1)
+            assert board_run(False) == board_run(True)
+            # The graphical executable contains the original firmware and can
+            # boot without the separate .bin, including with an explicit card.
+            (project / "firmware.bin").unlink()
+            env = os.environ.copy()
+            env.update(SDL_VIDEODRIVER="dummy", SDL_AUDIODRIVER="dummy")
+            result = subprocess.run([str(project / "build" / "m0_firmware_pc"),
+                                     "--target", board, str(card), "--frames", "2"],
+                                    env=env, text=True, capture_output=True, check=True)
+            assert "firmware.bin" in result.stdout + result.stderr, result.stdout + result.stderr
 
 
 if __name__ == "__main__":

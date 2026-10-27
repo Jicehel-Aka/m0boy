@@ -362,9 +362,14 @@ plans multicolores, la priorité, la collision, la limite de 16 sprites,
 le scroll et une écriture VRAM entre deux lignes. Les cas de sprites sont
 recoupés avec le décodage bit à bit du motif. La correction de collision
 peut changer le statut VDC et les hashes des jeux qui lisent ce bit.
+La sélection verticale des sprites utilise le compteur de ligne précédent :
+le compteur RCR a déjà avancé quand le modèle effectue le fetch. Au titre
+de Raiden, cela corrige le placement du texte sprite d'une ligne ; un test
+reproduit ce cas.
 
-Profil synthétique hôte (`-O3`, 1 million de lignes par scène, même
-checksum) : ligne vide 79–83 ms, fond dense 635–643 ms, fond et douze
+Profil synthétique hôte avant la correction du fetch vertical (`-O3`,
+1 million de lignes par scène, même checksum) : ligne vide 79–83 ms,
+fond dense 635–643 ms, fond et douze
 sprites 1 505 ms avant le décodage groupé contre 1 420 ms après. Ce sont
 des temps sur le PC de développement, pas des mesures AKA. Le coût VCE,
 la copie des lignes et le DMA restent à mesurer séparément sur AKA ;
@@ -375,15 +380,15 @@ lignes et 20 ms pour 100 000 DMA de 256 mots (ports compris). Ces boucles
 isolées indiquent le coût relatif des postes sur ce CPU, pas celui d'une
 trame Raiden ni d'un ESP32-S3.
 Le projet Raiden précis pour AKA construit avec PlatformIO : 102 656 octets
-de RAM utilisés sur 327 680 et 1 377 385 octets de flash sur 3 604 480
+de RAM utilisés sur 327 680 et 1 377 389 octets de flash sur 3 604 480
 (rapport de compilation, aucune mesure sur console).
 Dans gm0 AKA (`4b4e145`), ce firmware Raiden s'arrête dès l'initialisation
 sur `AKA memset 00000000 + 1070170304 pc=400011e8` ; le compteur
 `--frames 24` et son débit affiché ne mesurent donc aucun rendu VDP.
 Raiden depuis le même projet précis : au titre (300 trames), interpréteur,
-natif et fenêtre PC impriment `run_hash=14af7372` et les trois PPM sont
+natif et fenêtre PC impriment `run_hash=66b29e2e` et les trois PPM sont
 identiques ; avec `output/raiden-pc/seed.input` (1 100 trames), ils
-impriment `run_hash=3a78f8f3` et les PPM sont encore identiques. Ces
+impriment `run_hash=6c7927fa` et les PPM sont encore identiques. Ces
 captures restent dans `logs/`, hors suivi Git.
 Le balayage optionnel `--pce-sweep` marche depuis une seconde file,
 plafonnée (ce qui reste du budget code, 16384 instructions sinon) : la
@@ -395,25 +400,21 @@ un fichier C géant ; le repli interprété couvre les entrées écartées.
 `pce_end_to_end` passe à nouveau (104 s sur cet hôte) après ce bornage.
 
 La [référence mednafen](https://github.com/libretro/beetle-pce-libretro/blob/master/mednafen/hw_video/huc6270/vdc.cpp)
-place le latch BXR dans la phase horizontale HDS,
-après le latch BYR et avant HDW. Le modèle ici rend une ligne après son
-budget CPU entier : il faut un traçage comparé des écritures BXR et de
-leur position horizontale avant de déplacer le rendu ou les IRQ. Le
-décalage de scroll et les artefacts du texte sprite aux bords de ligne
-restent donc ouverts ; les scènes synthétiques valident les limites du
-modèle actuel, sans prouver que le minutage de Raiden est identique à la
-référence.
+produit au titre, à la trame 300, exactement les mêmes 61 440 pixels : sa
+capture de 256 × 243 est recadrée de trois lignes en haut pour comparer
+la zone 256 × 240. En partie à la trame 1 100, avec RUN sur les trames
+450 à 480 dans les deux pilotes, 65,52 % des pixels concordent ; décaler
+RUN d'une trame dans le pilote libretro porte cette proportion à 98,35 %.
+La convention d'entrée influe donc sur la comparaison ; les différences
+restantes ne démontrent pas à elles seules une erreur de scroll.
 
-- Le décalage de scroll : la référence défile de quelques pixels de plus
-  que le cœur m0boy, sur le titre comme en niveau (même section au même
-  moment, même ennemi, décalage stable) — un temporisateur ou un compte
-  de lignes reste à trancher, le diff de trajectoire WRAM trame à trame
-  des deux parties réelles est l'outil (les sondes de la chasse au TST
-  sont dans /tmp, à repositer au besoin).
-- La couche sprite : les gros glyphs du titre tombent juste, le texte
-  sprite des bords de lignes montre des artefacts de découpe (limite des
-  16 sprites de ligne ou fetch des demi-motifs 32 px — à trancher contre
-  la même référence).
+Mednafen place le latch BXR dans la phase horizontale HDS, après le latch
+BYR et avant HDW. Le modèle ici rend une ligne après son budget CPU entier :
+un traçage comparé des écritures et de leur position horizontale reste
+nécessaire pour les changements de scroll pendant l'affichage. Les cas de
+bord synthétiques et le titre ne prouvent pas la fidélité de toutes les
+scènes de sprites ni de tous les jeux.
+
 - La cible META du recompilateur — la VRAM de 64 Kio ne tient pas dans
   les 32 Kio de SRAM : il faudra la fenêtrer en flash comme la ROM Sega.
 - Les contextes que la marche ne prouve pas (les jeux qui changent de

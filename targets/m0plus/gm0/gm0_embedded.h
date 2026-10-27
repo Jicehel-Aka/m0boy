@@ -15,6 +15,9 @@ int gm0_embedded_init(const uint8_t *firmware, size_t bytes, int system,
 void gm0_embedded_frame(void);
 void gm0_embedded_buttons(uint8_t pressed);
 void gm0_embedded_sd_image(uint8_t *image, size_t bytes);
+void gm0_embedded_sd_callbacks(int (*read_sector)(uint32_t, uint8_t *),
+                               int (*write_sector)(uint32_t, const uint8_t *));
+void gm0_embedded_audio(uint8_t *out, unsigned count, unsigned rate);
 const uint16_t *gm0_embedded_pixels(void);
 unsigned gm0_embedded_width(void);
 unsigned gm0_embedded_height(void);

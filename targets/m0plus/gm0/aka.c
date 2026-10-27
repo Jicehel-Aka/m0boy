@@ -675,6 +675,12 @@ static int xt_rom_call(uint32_t pc) {
    * la MMU sont logiquement transparents ici (flash déjà plate en
    * 0x42000000), ils sont donc des no-ops. */
   int handled = 0;
+  /* ROM routines are called with the windowed ABI too. Rotate before
+   * reading their arguments, as already done for the symbol services. */
+  unsigned rom_inc = (xt.ps >> 16) & 3;
+  int rom_window = pc == 0x400011e8 || pc == 0x40001260 ||
+                   pc == 0x400011f4 || pc == 0x40001200;
+  if (rom_window && rom_inc) xt_entry(1, 0);
   switch (pc) {
   case 0x4000057c: /* rtc_get_reset_reason : power-on reset */
     a[2] = 1;
@@ -787,7 +793,7 @@ static int xt_rom_call(uint32_t pc) {
   }
   unsigned inc = (xt.ps >> 16) & 3;
   uint32_t ret = a[0];
-  if (inc)
+  if (inc && !rom_window)
     xt_entry(1, 0);
   xt.pc = inc ? xt_retw(pc) : ret;
   xt.cycles += 12;

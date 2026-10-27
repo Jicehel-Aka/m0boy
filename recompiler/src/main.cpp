@@ -4,6 +4,7 @@
  */
 
 #include "m0boy/system.h"
+#include "m0boy/m0plus_generator.h"
 #include "m0boy/sg1000.h"
 #include "m0_msx_layout.h"
 #include "m0boy/sg1000_generator.h"
@@ -2423,7 +2424,17 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: M0+ firmware analysis is not available\n";
             return 1;
         }
-        return refuse_target(source, *m0boy::parse_target(target), target);
+        if (target != "pc") return refuse_target(source, *m0boy::parse_target(target), target);
+        const fs::path output = output_dir.empty()
+            ? fs::path(fs::path(rom_path).stem().string() + "_" + std::string(source.name) + "_pc")
+            : fs::path(output_dir);
+        const fs::path runtime = resolve_meta_dir(argv[0], meta_dir).parent_path() / "m0plus/runtime";
+        if (!m0boy::m0plus::generate(rom_path, source.id, output, error, runtime, coverage_paths)) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        std::cout << "PC firmware project written to " << output.string() << "\n";
+        return 0;
     }
     if (disasm_only && source.id == m0boy::SystemId::sg1000 && !analyze_only) {
         if (specific_bank > 0) {

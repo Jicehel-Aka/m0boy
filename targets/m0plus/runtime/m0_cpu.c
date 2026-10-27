@@ -215,7 +215,7 @@ void m0_cpu_execute(M0Cpu *m, uint32_t pc, uint16_t op, uint16_t op2) {
         cycles = 2;
     } else if (op < 0xb000u) {
         m->r[(op >> 8) & 7u] = (op & 0x0800u ? m->r[13] : ((pc + 4u) & ~3u)) + ((op & 255u) << 2);
-    } else if ((op & 0xff80u) == 0xb000u) {
+    } else if ((op & 0xff00u) == 0xb000u) {
         unsigned amount = (op & 127u) << 2;
         m->r[13] += op & 0x80u ? -amount : amount;
     } else if ((op & 0xfe00u) == 0xb400u) {

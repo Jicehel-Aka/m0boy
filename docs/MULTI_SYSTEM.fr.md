@@ -32,6 +32,18 @@ ninja -C output/firmware-pc/build
 python3 output/firmware-pc/run.py carte/ --frames 300
 ```
 
+L'exécutable `build/m0_firmware_pc` embarque le `.bin` ; il peut aussi être
+utilisé directement, par exemple `build/m0_firmware_pc --target meta carte/`.
+Une carte explicite reste nécessaire si le programme attend ses fichiers.
+
+Le modèle de carte exécute directement en C les instructions atteintes par le
+parcours : calculs et décalages, transferts, pile, branches et registres système.
+Les adresses non découvertes, le code en RAM et les mots de flash modifiés
+restent interprétés. Le décodage,
+les interruptions, les temps d'accès et les périphériques sont partagés avec
+l'interpréteur. `M0_INTERP=1 python3 .../run.py` force l'interprétation seule.
+Ce n'est donc pas encore une recompilation complète des firmwares.
+
 Le même projet contient une première traduction C des adresses flash atteintes
 depuis les vecteurs, augmentée par les adresses de `--coverage` (le format
 `EMU_PROF` de gm0, « adresse cycles », convient). Les instructions courantes

@@ -100,9 +100,11 @@ has not been compared with a console (see the Mega Drive notes).
 | Mega Drive (bounded M68k colour-loop profile; experimental) | yes | — | — |
 
 META and Pokitto firmware `.bin` images are also explicit M0+ source systems:
-`--system meta|pokitto --target pc` packages both a C translation with Thumb
-fallback and an integrated PC board emulator derived from gm0 (MIT with its
-third-party notices retained). AKA firmware execution is not available yet.
+`--system meta|pokitto --target pc` packages an integrated PC board emulator
+derived from gm0 (MIT with its third-party notices retained). Reachable Thumb
+instructions are translated to C; dynamically reached code, RAM execution and
+modified flash fall back to the interpreter. The board model inherits gm0's
+hardware coverage and limitations. AKA firmware execution is not available yet.
 See [multi-system notes](docs/MULTI_SYSTEM.fr.md).
 
 The `--target pc` SDL2 backend is available for Game Boy, SG-1000, Game Gear,

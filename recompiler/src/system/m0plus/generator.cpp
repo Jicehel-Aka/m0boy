@@ -145,6 +145,227 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
         const uint32_t base = system == SystemId::meta ? 0x4000u : 0u;
         const auto compiled = walk(bytes, base, coverage, error);
         if (!error.empty()) return false;
+        size_t board_native = 0;
+        {
+            std::ofstream code(source / "gm0_native.inc");
+            std::ofstream dispatch(source / "gm0_native_dispatch.inc");
+            std::map<uint32_t, std::string> pages;
+            for (uint32_t pc : compiled) {
+                const uint16_t op = half(bytes, pc - base);
+                std::ostringstream body;
+                body << std::hex;
+                const unsigned rd = (op >> 8) & 7u, imm = op & 255u;
+                if ((op & 0xe000u) == 0 && (op & 0xf800u) < 0x1800u) {
+                    const unsigned dst = op & 7u, src = (op >> 3) & 7u;
+                    const unsigned kind = op >> 11, shift = (op >> 6) & 31u;
+                    if (kind == 0) {
+                        body << "{ uint32_t v = regs[" << src << "]; ";
+                        if (shift) body << "fC = (v >> " << std::dec << 32u - shift << std::hex
+                                        << ") & 1u; v <<= 0x" << shift << "u; ";
+                        body << "regs[" << dst << "] = v; setNZ(v); }";
+                    } else if (kind == 1) {
+                        const unsigned n = shift ? shift : 32u;
+                        body << "{ uint32_t v = regs[" << src << "]; fC = (v >> " << std::dec
+                             << n - 1u << ") & 1u; " << std::hex;
+                        if (n == 32) body << "v = 0; "; else body << "v >>= 0x" << n << "u; ";
+                        body << "regs[" << dst << "] = v; setNZ(v); }";
+                    } else {
+                        const unsigned n = shift ? shift : 32u;
+                        body << "{ int32_t v = (int32_t)regs[" << src << "]; fC = ((uint32_t)(v >> "
+                             << std::dec << n - 1u << ")) & 1u; " << std::hex
+                             << "regs[" << dst << "] = (uint32_t)(v >> " << std::dec
+                             << (n == 32 ? 31 : n) << "); setNZ(regs[" << dst << "]); }" << std::hex;
+                    }
+                } else if ((op & 0xf800u) == 0x1800u) {
+                    const unsigned dst = op & 7u, lhs = (op >> 3) & 7u, rhs = (op >> 6) & 7u;
+                    const bool sub = op & 0x200u;
+                    body << "regs[" << dst << "] = addSetCond(regs[" << lhs << "], "
+                         << (sub ? "~" : "") << (op & 0x400u ? "0x" : "regs[") << rhs
+                         << (op & 0x400u ? "u" : "]") << ", " << sub << ");";
+                } else if ((op & 0xf800u) == 0x2000u)
+                    body << "regs[" << rd << "] = 0x" << imm << "u; fN = 0; fZ = " << (imm == 0) << ";";
+                else if ((op & 0xf800u) == 0x2800u)
+                    body << "addSetCond(regs[" << rd << "], ~0x" << imm << "u, 1);";
+                else if ((op & 0xf800u) == 0x3000u)
+                    body << "regs[" << rd << "] = addSetCond(regs[" << rd << "], 0x" << imm << "u, 0);";
+                else if ((op & 0xf800u) == 0x3800u)
+                    body << "regs[" << rd << "] = addSetCond(regs[" << rd << "], ~0x" << imm << "u, 1);";
+                else if ((op & 0xfc00u) == 0x4000u) {
+                    const unsigned dst = op & 7u, src = (op >> 3) & 7u, fn = (op >> 6) & 15u;
+                    const char* operators[] = {"&", "^", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                               nullptr, nullptr, nullptr, nullptr, "|", "*", "& ~", nullptr};
+                    if (operators[fn]) body << "regs[" << dst << "] = regs[" << dst << "] " << operators[fn]
+                                             << " regs[" << src << "]; setNZ(regs[" << dst << "]);";
+                    else if (fn == 15) body << "regs[" << dst << "] = ~regs[" << src << "]; setNZ(regs[" << dst << "]);";
+                    else if (fn == 8) body << "setNZ(regs[" << dst << "] & regs[" << src << "]);";
+                    else if (fn == 9) body << "regs[" << dst << "] = addSetCond(0, ~regs[" << src << "], 1);";
+                    else if (fn == 10 || fn == 11) body << "addSetCond(regs[" << dst << "], " << (fn == 10 ? "~" : "")
+                                                           << "regs[" << src << "], " << (fn == 10) << ");";
+                    else if (fn == 5 || fn == 6) body << "regs[" << dst << "] = addSetCond(regs[" << dst << "], "
+                                                          << (fn == 6 ? "~" : "") << "regs[" << src << "], fC);";
+                    else if (fn >= 2 && fn <= 4) {
+                        body << "{ uint32_t a = regs[" << dst << "], sh = regs[" << src << "] & 255u, r = a; ";
+                        if (fn == 2) body << "if (sh) { if (sh < 32) { fC = (a >> (32 - sh)) & 1; r = a << sh; } else { fC = sh == 32 ? a & 1 : 0; r = 0; } } ";
+                        if (fn == 3) body << "if (sh) { if (sh < 32) { fC = (a >> (sh - 1)) & 1; r = a >> sh; } else { fC = sh == 32 ? a >> 31 : 0; r = 0; } } ";
+                        if (fn == 4) body << "if (sh) { if (sh < 32) { fC = ((uint32_t)((int32_t)a >> (sh - 1))) & 1; r = (uint32_t)((int32_t)a >> sh); } else { fC = a >> 31; r = (uint32_t)((int32_t)a >> 31); } } ";
+                        body << "regs[" << dst << "] = r; setNZ(r); }";
+                    } else if (fn == 7) {
+                        body << "{ uint32_t a = regs[" << dst << "], sh = regs[" << src
+                             << "] & 255u, r = a; if (sh) { sh &= 31; if (sh) r = (a >> sh) | (a << (32 - sh)); fC = r >> 31; } regs["
+                             << dst << "] = r; setNZ(r); }";
+                    }
+                } else if ((op & 0xff00u) >= 0x4400u && (op & 0xff00u) <= 0x4600u) {
+                    const unsigned dst = (op & 7u) | ((op >> 4) & 8u), src = (op >> 3) & 15u;
+                    const unsigned kind = (op >> 8) & 3u;
+                    body << std::dec;
+                    if (kind == 1) body << "addSetCond(regs[" << dst << "], ~regs[" << src << "], 1);";
+                    else {
+                        body << "{ uint32_t v = " << (kind == 0 ? "regs[" + std::to_string(dst) + "] + " : "")
+                             << "regs[" << src << "]; ";
+                        if (dst == 15) body << "BRANCH(v);"; else body << "regs[" << dst << "] = v;";
+                        body << " }";
+                    }
+                    body << std::hex;
+                } else if ((op & 0xff00u) == 0x4700u) {
+                    const unsigned src = (op >> 3) & 15u;
+                    body << std::dec << "{ uint32_t to = regs[" << src << "]; " << std::hex;
+                    if (op & 0x80u) body << "if (T == TGT_POKITTO) { pk_blx(op); stepTicks = 0; cyc = 2; } else { regs[14] = 0x"
+                                             << ((pc + 2u) | 1u) << "u; BRANCH(to); }";
+                    else body << "BRANCH(to);";
+                    body << " }";
+                }
+                else if ((op & 0xf800u) == 0x4800u)
+                    body << "regs[" << rd << "] = LD32(0x" << (((pc + 4u) & ~3u) + imm * 4u) << "u); cyc = 2;";
+                else if ((op & 0xf000u) == 0x5000u) {
+                    const unsigned dst = op & 7u, src = (op >> 3) & 7u, index = (op >> 6) & 7u;
+                    const unsigned kind = (op >> 9) & 7u;
+                    static const unsigned bits[] = {32,16,8,8,32,16,8,16};
+                    if (kind < 3) body << "ST" << std::dec << bits[kind] << std::hex << "(regs[" << src << "] + regs[" << index << "], regs[" << dst << "]);";
+                    else {
+                        body << "regs[" << dst << "] = ";
+                        if (kind == 3 || kind == 7) body << "(uint32_t)(int32_t)(int" << std::dec << bits[kind] << "_t)" << std::hex;
+                        body << "LD" << std::dec << bits[kind] << std::hex << "(regs[" << src << "] + regs[" << index << "]);";
+                    }
+                    body << " cyc = 2;";
+                }
+                else if ((op & 0xe000u) == 0x6000u || (op & 0xf000u) == 0x8000u) {
+                    const unsigned dst = op & 7u, src = (op >> 3) & 7u;
+                    const unsigned width = (op & 0xf000u) == 0x8000u ? 2u : (op & 0x1000u ? 1u : 4u);
+                    const unsigned offset = ((op >> 6) & 31u) * width;
+                    if (op & 0x800u) body << "regs[" << dst << "] = LD" << std::dec << width * 8u << std::hex
+                                          << "(regs[" << src << "] + 0x" << offset << "u);";
+                    else body << "ST" << std::dec << width * 8u << std::hex << "(regs[" << src
+                              << "] + 0x" << offset << "u, regs[" << dst << "]);";
+                    body << " cyc = 2;";
+                } else if ((op & 0xf000u) == 0x9000u) {
+                    if (op & 0x800u) body << "regs[" << rd << "] = LD32(regs[13] + 0x" << imm * 4u << "u);";
+                    else body << "ST32(regs[13] + 0x" << imm * 4u << "u, regs[" << rd << "]);";
+                    body << " cyc = 2;";
+                } else if ((op & 0xf800u) == 0xa000u)
+                    body << "regs[" << rd << "] = 0x" << (((pc + 4u) & ~3u) + imm * 4u) << "u;";
+                else if ((op & 0xf800u) == 0xa800u)
+                    body << "regs[" << rd << "] = regs[13] + 0x" << imm * 4u << "u;";
+                else if ((op & 0xff00u) == 0xb000u)
+                    body << "regs[13] " << (op & 0x80u ? "-= " : "+= ") << "0x" << ((op & 0x7fu) * 4u) << "u;";
+                else if ((op & 0xff00u) == 0xb200u) {
+                    const unsigned dst = op & 7u, src = (op >> 3) & 7u, kind = (op >> 6) & 3u;
+                    static const char* cast[] = {"(uint32_t)(int32_t)(int16_t)", "(uint32_t)(int32_t)(int8_t)", "(uint16_t)", "(uint8_t)"};
+                    body << "regs[" << dst << "] = " << cast[kind] << "regs[" << src << "];";
+                } else if ((op & 0xff00u) == 0xba00u) {
+                    const unsigned dst = op & 7u, src = (op >> 3) & 7u, kind = (op >> 6) & 3u;
+                    if (kind == 0) body << "regs[" << dst << "] = __builtin_bswap32(regs[" << src << "]);";
+                    else if (kind == 1) body << "{ uint32_t v = regs[" << src << "]; regs[" << dst << "] = ((v & 0xff00ff00u) >> 8) | ((v & 0x00ff00ffu) << 8); }";
+                    else if (kind == 3) body << "{ uint32_t v = regs[" << src << "]; regs[" << dst << "] = (uint32_t)(int32_t)(int16_t)(uint16_t)(((v & 255u) << 8) | ((v >> 8) & 255u)); }";
+                    else body << "regs[" << dst << "] = regs[" << src << "];";
+                } else if ((op & 0xff00u) == 0xb600u) {
+                    if ((op & 0xffefu) == 0xb662u) {
+                        body << "primask = " << !!(op & 0x10u) << "; ";
+                        if (!(op & 0x10u)) body << "irq_work();";
+                    } else body << ";";
+                }
+                else if ((op & 0xfe00u) == 0xb400u) {
+                    const unsigned list = (op & 0xffu) | ((op & 0x100u) << 6);
+                    const unsigned n = __builtin_popcount(list);
+                    body << "{ uint32_t a = regs[13] - 0x" << n * 4u << "u; regs[13] = a; stm_t(T, a, 0x"
+                         << list << "u, 0x" << n << "u); cyc = 0x" << n + 1u << "u; }";
+                } else if ((op & 0xfe00u) == 0xbc00u) {
+                    const unsigned list = (op & 0xffu) | ((op & 0x100u) << 7);
+                    const unsigned n = __builtin_popcount(list);
+                    body << "{ uint32_t a = regs[13]; ldm_t(T, a, 0x" << list << "u, 0x" << n
+                         << "u, &w); regs[13] = a + 0x" << n * 4u << "u; ";
+                    if (op & 0x100u) body << "BRANCH(regs[15]); cyc = 0x" << n + 3u << "u;";
+                    else body << "cyc = 0x" << n + 1u << "u;";
+                    body << " }";
+                } else if ((op & 0xf000u) == 0xc000u) {
+                    const unsigned list = op & 255u, n = __builtin_popcount(list);
+                    body << "{ uint32_t a = regs[" << rd << "]; ";
+                    if (op & 0x800u) {
+                        body << "ldm_t(T, a, 0x" << list << "u, 0x" << n << "u, &w); ";
+                        if (!(list & (1u << rd))) body << "regs[" << rd << "] = a + 0x" << n * 4u << "u; ";
+                    } else body << "stm_t(T, a, 0x" << list << "u, 0x" << n << "u); regs[" << rd << "] = a + 0x" << n * 4u << "u; ";
+                    body << "cyc = 0x" << n + 1u << "u; }";
+                } else if ((op & 0xf000u) == 0xd000u && ((op >> 8) & 15u) < 14u) {
+                    static const char* conditions[] = {"fZ", "!fZ", "fC", "!fC", "fN", "!fN", "fV", "!fV",
+                        "fC && !fZ", "!fC || fZ", "fN == fV", "fN != fV", "!fZ && fN == fV", "fZ || fN != fV"};
+                    body << "if (" << conditions[(op >> 8) & 15u] << ") BRANCH(0x"
+                         << pc + 4u + uint32_t(int32_t(int8_t(op)) * 2) << "u);";
+                }
+                else if ((op & 0xf800u) == 0xe000u) {
+                    const int32_t off = int32_t((op & 0x7ffu) << 21) >> 20;
+                    body << "BRANCH(0x" << pc + 4u + uint32_t(off) << "u);";
+                } else if ((op & 0xf800u) == 0xf000u && pc - base + 3u < bytes.size() &&
+                           (half(bytes, pc - base + 2u) & 0xd000u) == 0xd000u) {
+                    const uint16_t op2 = half(bytes, pc - base + 2u);
+                    const uint32_t s = (op >> 10) & 1u;
+                    const uint32_t i1 = !(((op2 >> 13) & 1u) ^ s), i2 = !(((op2 >> 11) & 1u) ^ s);
+                    const uint32_t bits = (s << 24) | (i1 << 23) | (i2 << 22) |
+                                          ((op & 0x3ffu) << 12) | ((op2 & 0x7ffu) << 1);
+                    const uint32_t to = pc + 4u + uint32_t(int32_t(bits << 7) >> 7);
+                    body << "if ((uint32_t)flash[pc + 2u] + ((uint32_t)flash[pc + 3u] << 8) != 0x"
+                         << op2 << "u) break; regs[14] = 0x" << ((pc + 4u) | 1u)
+                         << "u; BRANCH(0x" << to << "u); cyc = 3;";
+                } else if ((op & 0xf800u) == 0xf000u && pc - base + 3u < bytes.size()) {
+                    const uint16_t op2 = half(bytes, pc - base + 2u);
+                    const unsigned sysm = op2 & 255u, reg = (op2 >> 8) & 15u;
+                    body << "if ((uint32_t)flash[pc + 2u] + ((uint32_t)flash[pc + 3u] << 8) != 0x"
+                         << op2 << "u) break; cyc = 4; regs[15] = 0x" << pc + 6u << "u; ";
+                    if (op == 0xf3efu && (op2 & 0xf000u) == 0x8000u) {
+                        body << "{ uint32_t v = 0, apsr = (uint32_t)fN << 31 | (uint32_t)fZ << 30 | (uint32_t)fC << 29 | (uint32_t)fV << 28; "
+                                "uint32_t ipsr = T == TGT_META ? (uint32_t)exc_active() : 0; ";
+                        if (sysm <= 3) body << "v = apsr " << (sysm & 1u ? "| ipsr" : "") << "; ";
+                        else if (sysm >= 5 && sysm <= 7 && (sysm & 1u)) body << "v = ipsr " << (sysm == 7 ? "| apsr" : "") << "; ";
+                        else if (sysm == 8 || sysm == 9) body << "v = regs[13]; ";
+                        else if (sysm == 16) body << "v = (uint32_t)primask; ";
+                        body << "regs[" << std::dec << reg << std::hex << "] = v; }";
+                    } else if ((op & 0xfff0u) == 0xf380u && (op2 & 0xff00u) == 0x8800u) {
+                        body << "{ uint32_t v = regs[" << std::dec << (op & 15u) << std::hex << "]; ";
+                        if (sysm <= 3) body << "fN = v >> 31; fZ = (v >> 30) & 1u; fC = (v >> 29) & 1u; fV = (v >> 28) & 1u; ";
+                        else if (sysm == 8 || sysm == 9) body << "regs[13] = v & ~3u; ";
+                        else if (sysm == 16) body << "primask = v & 1u; irq_work(); ";
+                        body << "}";
+                    }
+                } else if ((op & 0xf800u) == 0xe800u || (op & 0xf800u) == 0xf800u)
+                    body << "regs[15] = 0x" << pc + 6u << "u;";
+                else if ((op & 0xff00u) == 0xbf00u || (op & 0xff00u) == 0xbe00u ||
+                         (op & 0xfe00u) == 0xde00u || (op & 0xf000u) == 0xb000u) body << ";";
+                else continue;
+                std::ostringstream entry;
+                entry << "case 0x" << std::hex << pc << "u: if (op == 0x" << op
+                      << "u) { " << body.str() << " goto gm0_native_done; } break;\n";
+                pages[pc & ~0xfffu] += entry.str();
+                ++board_native;
+            }
+            code << "/* Generated ARMv6-M entries, partitioned by flash page. */\n";
+            for (const auto& [page, entries] : pages) {
+                code << "static __attribute__((noinline)) int gm0_page_" << std::hex << page
+                     << "(int T, uint32_t pc, uint32_t op, uint32_t *waits, uint32_t *cycles) {\n"
+                        "uint32_t w = *waits, cyc = *cycles; switch (pc) {\n" << entries
+                     << "default: break; } return 0;\ngm0_native_done: *waits = w; *cycles = cyc; return 1;\n}\n";
+                dispatch << "case 0x" << std::hex << page << "u: return gm0_page_" << page
+                         << "(T, pc, op, waits, cycles);\n";
+            }
+            if (!code || !dispatch) { error = "Cannot write gm0 native entries"; return false; }
+        }
         {
             std::ofstream rom(source / "m0_rom.c");
             rom << "#include <stdint.h>\nconst uint32_t m0_rom_size = " << bytes.size()
@@ -155,6 +376,12 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
             }
             rom << "\n};\n";
             if (!rom) { error = "Cannot write embedded M0+ firmware"; return false; }
+        }
+        {
+            std::ofstream bundle(source / "gm0_bundle.h");
+            bundle << "#include <stdint.h>\nextern const uint8_t m0_rom[" << bytes.size()
+                   << "];\n#define gm0_bundle_data m0_rom\n#define gm0_bundle_name \"firmware.bin\"\n";
+            if (!bundle) { error = "Cannot write embedded firmware declaration"; return false; }
         }
         {
             std::ofstream code(source / "m0_native.c");
@@ -286,6 +513,7 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
         {
             std::ofstream status(output / "native-status.txt");
             status << "compiled_flash_entries=" << compiled.size() << "\n"
+                   << "board_native_entries=" << board_native << "\n"
                    << "dynamic_or_ram_entries=interpreter\n";
         }
         {
@@ -303,9 +531,17 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                   << (system == SystemId::meta ? "0x20000000u" : "0x10000000u") << ")\n"
                      "find_package(SDL2 QUIET)\nfind_package(ZLIB QUIET)\n"
                      "if(SDL2_FOUND AND ZLIB_FOUND)\n"
-                     "  add_executable(m0_firmware_pc src/gm0.c src/aka.c)\n"
+                     "  add_executable(m0_firmware_pc src/gm0.c src/aka.c src/m0_rom.c)\n"
                      "  target_compile_options(m0_firmware_pc PRIVATE -O2)\n"
+                     "  target_compile_definitions(m0_firmware_pc PRIVATE GM0_NATIVE_TRANSLATION GM0_EMBEDDED_GAME)\n"
+                     "  if(WIN32)\n"
+                     "    target_link_libraries(m0_firmware_pc PRIVATE SDL2::SDL2main)\n"
+                     "  endif()\n"
                      "  target_link_libraries(m0_firmware_pc PRIVATE SDL2::SDL2 ZLIB::ZLIB m)\n"
+                     "  add_executable(m0_board_test EXCLUDE_FROM_ALL src/gm0.c src/aka.c)\n"
+                     "  target_compile_options(m0_board_test PRIVATE -O2)\n"
+                     "  target_compile_definitions(m0_board_test PRIVATE GM0_NATIVE_TRANSLATION EMU_NODE_HEADLESS)\n"
+                     "  target_link_libraries(m0_board_test PRIVATE SDL2::SDL2 ZLIB::ZLIB m)\n"
                      "endif()\n";
             if (!cmake) { error = "Cannot write M0+ native build"; return false; }
         }
@@ -326,7 +562,10 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                     "gm0 = os.environ.get('GM0') or (str(local) if local.is_file() else shutil.which('gm0'))\n"
                     "if not gm0:\n"
                     "    sys.exit('build this project with CMake/Ninja (SDL2 and zlib required), or set GM0=/path/to/gm0')\n"
-                    "sys.exit(subprocess.call([gm0, str(root / 'firmware.bin'), "
+                    "args = [gm0]\n"
+                    "if Path(gm0).resolve() != local.resolve():\n"
+                    "    args.append(str(root / 'firmware.bin'))\n"
+                    "sys.exit(subprocess.call([*args, "
                  << "'--target', '" << board << "', *sys.argv[1:]], cwd=root))\n";
         if (!launcher) { error = "Cannot write PC launcher"; return false; }
     }
@@ -339,14 +578,18 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                   "```sh\ncmake -G Ninja -S . -B build && ninja -C build\n"
                   "python3 run.py [card.img or card/] "
                   "[gm0 options]\n```\n\n"
-                  "gm0 supplies the Cortex-M0+ machine, " << board
+                  "The PC executable embeds the firmware, and can run independently of "
+                  "`firmware.bin` or `run.py`; pass `--target " << board << "` when "
+                  "running it directly. gm0 supplies the Cortex-M0+ machine, " << board
                << " peripherals, display, input and SD card. The raw `.bin` has no "
                   "card contents; pass an image or folder when the application needs one. "
                   "For Pokitto loader `.pop` files, extract the firmware `.bin` first.\n\n"
+                  "The board emulator executes generated C for selected Thumb instructions "
+                  "and interprets the rest. Set `M0_INTERP=1` to use the interpreter only. "
                   "The separate `m0_native_pc` program builds with CMake/Ninja and "
                   "compares fixed-address C dispatch with the Thumb fallback "
                   "(`--interp --steps N`). It models the CPU, SRAM and NVIC only; "
-                  "a real firmware requiring board peripherals must run through `run.py`.\n";
+                  "a real firmware requiring board peripherals runs through `run.py`.\n";
         if (!readme) { error = "Cannot write PC README"; return false; }
     }
     error.clear();

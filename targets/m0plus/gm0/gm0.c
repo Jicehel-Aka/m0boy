@@ -39,7 +39,7 @@ typedef struct SDL_Joystick SDL_Joystick;
 #include <time.h>
 #include <math.h>
 #include <stdarg.h>
-#if !defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#if !defined(_WIN32) && !defined(__EMSCRIPTEN__) && !defined(GM0_EMBEDDED)
 #include <limits.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -420,7 +420,11 @@ static uint32_t tc_period(struct tc *t) {
  * AQ_MAXLAG (stall hôte, device rouvert).
  *  Le WAV (--wav) est rendu côté émulation, à 48 kHz fixe : déterministe,
  * indépendant de l'hôte, identique pour les deux cibles. */
+#ifdef GM0_EMBEDDED
+#define AQ_SIZE   (1u << 12)
+#else
 #define AQ_SIZE   (1u << 15)
+#endif
 #define AQ_MASK   (AQ_SIZE - 1)
 #define AQ_TARGET 0.060    /* avance visée du producteur sur la lecture (s) */
 #define AQ_MAXLAG 0.250    /* au-delà : reprise franche */
@@ -673,6 +677,10 @@ static uint8_t *sd_card_data(void) {
 static size_t sd_card_size(void) {
     return sd_image ? sd_size : (fatImage ? fatImageSize : 0);
 }
+#ifdef GM0_EMBEDDED
+static int (*embedded_sd_read)(uint32_t, uint8_t *);
+static int (*embedded_sd_write)(uint32_t, const uint8_t *);
+#endif
 
 static int sdDirty; /* card writes, including direct SDMMC sectors */
 static void sd_write_persist(uint32_t lba, const uint8_t *data);
@@ -695,6 +703,15 @@ int aka_sd_write(uint32_t lba, const uint8_t *src) {
 static void sd_multi_feed(void) {
     uint8_t *card = sd_card_data();
     size_t base = (size_t)sd_multiLba * 512;
+#ifdef GM0_EMBEDDED
+    uint8_t sector[512];
+    if (embedded_sd_read) {
+        if (!embedded_sd_read(sd_multiLba, sector)) { sd_out_push(0x0d); sd_multi = 0; return; }
+        if (sd_outPos >= sd_outLen) sd_outPos = sd_outLen = 0;
+        sd_out_push(0xff); sd_out_push(0xfe); sd_out_append(sector, 512);
+        sd_out_push(0xff); sd_out_push(0xff); ++sd_multiLba; return;
+    }
+#endif
     if (!card || base + 512 > sd_card_size()) { /* hors carte : erreur d'adresse */
         sd_out_push(0x0d); /* data error token : out of range */
         sd_multi = 0;
@@ -731,6 +748,16 @@ static void sd_command(uint8_t cmd, uint32_t arg) {
         case 17: { /* lecture d'un secteur */
             size_t base = (size_t)arg * 512;
             uint8_t *card = sd_card_data();
+#ifdef GM0_EMBEDDED
+            uint8_t sector[512];
+            if (embedded_sd_read) {
+                if (embedded_sd_read(arg, sector)) {
+                    sd_out_push(0x00); sd_out_push(0xfe); sd_out_append(sector, 512);
+                    sd_out_push(0xff); sd_out_push(0xff);
+                } else sd_out_push(0x04);
+                break;
+            }
+#endif
             if (card && base + 512 <= sd_card_size()) {
                 sd_out_push(0x00);
                 sd_out_push(0xfe);
@@ -785,6 +812,10 @@ static void sd_process(uint8_t v) {
                 memcpy(card + (size_t)sd_writeLba * 512, sd_writeBuf + 1, 512);
                 sd_write_persist(sd_writeLba, card + (size_t)sd_writeLba * 512);
             }
+#ifdef GM0_EMBEDDED
+            else if (embedded_sd_write && sd_writeBuf[0] == 0xfe)
+                embedded_sd_write(sd_writeLba, sd_writeBuf + 1);
+#endif
             /* accepté, puis busy (comme sdcard.ts).  Le token de réponse est
              * déposé dans sd_pending — donc conduit DO dès l'échange suivant —
              * car la lib officielle (SdFat, SdSpiCard::writeData) lit la
@@ -4447,6 +4478,31 @@ static void step_debug(uint32_t pc, uint32_t op) {
 
 #define BRANCH(t) do { regs[15] = ((t) & ~1u) + 2u; cyc = 2; } while (0)
 
+#ifdef GM0_NATIVE_TRANSLATION
+/* Keep the generated dispatcher out of the target-specialised interpreter:
+ * inlining thousands of entries into every batch loop explodes compile time. */
+#define LD32(a) ld_t(T, (a), 4, &w)
+#define LD16(a) ld_t(T, (a), 2, &w)
+#define LD8(a) ld_t(T, (a), 1, &w)
+#define ST32(a, v) st_t(T, (a), (v), 4)
+#define ST16(a, v) st_t(T, (a), (v), 2)
+#define ST8(a, v) st_t(T, (a), (v), 1)
+#include "gm0_native.inc"
+#undef LD32
+#undef LD16
+#undef LD8
+#undef ST32
+#undef ST16
+#undef ST8
+static __attribute__((noinline)) int gm0_native_step(int T, uint32_t pc, uint32_t op,
+                                                     uint32_t *waits, uint32_t *cycles) {
+    switch (pc & ~0xfffu) {
+#include "gm0_native_dispatch.inc"
+    default: return 0;
+    }
+}
+#endif
+
 /* EMU_PROF=<fichier> : cycles cumulés par instruction (flash et SRAM, les
  * deux cibles), écrits en fin de run (« adresse cycles » en hexa/décimal),
  * un fichier « adresse cycles » agrégeable à la main ou par script. */
@@ -4504,6 +4560,13 @@ static ALWAYS_INLINE void step_t(const int T, const int D) {
     regs[15] = pc + 4u;
     uint32_t cyc = 1;
 
+#ifdef GM0_NATIVE_TRANSLATION
+    /* Generated flash entries share the board's fetch, timing, exceptions
+     * and peripherals with the interpreter; modified flash falls through. */
+    static int native_enabled = -1;
+    if (native_enabled < 0) native_enabled = getenv("M0_INTERP") == NULL;
+    if (native_enabled && gm0_native_step(T, pc, op, &w, &cyc)) goto gm0_native_done;
+#endif
     switch (op >> 8) {
     /* ---- décalages immédiats, add/sub 3 opérandes */
     case 0x00 ... 0x07: { /* LSLS imm */
@@ -4727,6 +4790,9 @@ static ALWAYS_INLINE void step_t(const int T, const int D) {
         regs[15] = pc + 6u; break; /* 32 bits non ARMv6-M : paire consommée */
     default: break; /* 0xb1, 0xb3, 0xb7-0xb9, 0xbb : non alloués */
     }
+#ifdef GM0_NATIVE_TRANSLATION
+gm0_native_done:
+#endif
     w += flashWaits - fw0;
     if (D && profOn) prof_add(pc, cyc + w);
     step_flush(T, cyc + w);
@@ -6382,6 +6448,9 @@ static void snapshot_take(uint32_t f) {
 }
 /* ne revient qu'en cas d'échec */
 static void snapshot_rewind(void) {
+#ifdef _WIN32
+    osd_push("%s", TR("RETOUR INDISPONIBLE SUR WINDOWS", "REWIND UNAVAILABLE ON WINDOWS"));
+#else
     if (snapFrame == ~0u) { osd_push("%s", TR("PAS D'INSTANTANE (F2)", "NO SNAPSHOT (F2)")); return; }
     char journal[600];
     snprintf(journal, sizeof journal, "%s.snapshot", recPathStr[0] ? recPathStr : "/tmp/gm0-input");
@@ -6413,6 +6482,7 @@ static void snapshot_rewind(void) {
     execv("/proc/self/exe", argv);
     perror("execv");
     free(argv);
+#endif
 }
 /* l'image gm0 f est atteinte : fin de l'avance rapide d'une reprise */
 static void fast_forward_check(uint32_t f) {
@@ -6690,7 +6760,7 @@ int main(int argc, char **argv) {
         }
     }
 #ifdef GM0_EMBEDDED_GAME
-    if (!fwLoaded && !sd_explicit) {
+    if (!fwLoaded) {
         if (sizeof(gm0_bundle_data) > 3 && gm0_bundle_data[0] == 'P' && gm0_bundle_data[1] == 'K')
             zip_load_card(gm0_bundle_data, sizeof(gm0_bundle_data));
         else
@@ -7120,6 +7190,37 @@ void gm0_embedded_buttons(uint8_t pressed) {
     } else buttonData = (uint8_t)~pressed;
 }
 void gm0_embedded_sd_image(uint8_t *image, size_t bytes) { sd_image = image; sd_size = bytes; }
+void gm0_embedded_sd_callbacks(int (*read_sector)(uint32_t, uint8_t *),
+                               int (*write_sector)(uint32_t, const uint8_t *)) {
+    embedded_sd_read = read_sector; embedded_sd_write = write_sector;
+}
+void gm0_embedded_audio(uint8_t *out, unsigned count, unsigned rate) {
+    if (!out || !rate) return;
+    if (emuTarget == TGT_POKITTO && pk_hleBuffer && pk_hlePlayhead) {
+        const uint8_t *src = pk_hleBuffer + 512 * ((pk_hlePlayhead[0] >> 9) & 1);
+        for (unsigned i = 0; i < count; ++i) out[i] = src[i < 512 ? i : 511];
+        return;
+    }
+    double now, play = aqC.play;
+    __atomic_load(&aqP.now, &now, __ATOMIC_ACQUIRE);
+    double lag = now - play;
+    if (lag > AQ_MAXLAG) { play = now - AQ_TARGET; lag = AQ_TARGET; }
+    if (aqC.refill && lag >= AQ_TARGET) aqC.refill = 0;
+    double err = (lag - AQ_TARGET) / AQ_TARGET;
+    if (err > 1.0) err = 1.0; else if (err < -1.0) err = -1.0;
+    double step = (1.0 + 0.005 * err) / (double)rate;
+    uint32_t st = aqC.start, end = __atomic_load_n(&aqP.end, __ATOMIC_ACQUIRE);
+    for (unsigned i = 0; i < count; ++i) {
+        if (!aqC.refill) { play += step; if (play > now) { play = now; aqC.refill = 1; } }
+        while (st != end && aqTime[st] <= play) {
+            aqC.cur = aqVal[st]; aqC.curT = aqTime[st]; st = (st + 1) & AQ_MASK;
+        }
+        int value = dc_block(&aqC.dc, st != end ? level_at(aqC.curT, aqC.cur, aqTime[st], aqVal[st], play) : aqC.cur);
+        out[i] = (uint8_t)((value >> 8) + 128);
+    }
+    aqC.play = play;
+    __atomic_store_n(&aqC.start, st, __ATOMIC_RELEASE);
+}
 const uint16_t *gm0_embedded_pixels(void) { return pix; }
 unsigned gm0_embedded_width(void) { return SCR_W; }
 unsigned gm0_embedded_height(void) { return SCR_H; }
