@@ -422,6 +422,11 @@ static void run_menu(void) {
 #if M0_TARGET_POKITTO
 extern "C" char __bss_end__;
 #define DATA_END __bss_end__
+#elif defined(__MINGW32__)
+/* the PE linker script provides `end` from a discarded section; any stable
+ * address does here — the PC bounds its own process stack with it */
+static char mingw_data_end;
+#define DATA_END mingw_data_end
 #else
 extern "C" char end; /* after .bss and .noinit (gamebuino_meta.ld) */
 #define DATA_END end
