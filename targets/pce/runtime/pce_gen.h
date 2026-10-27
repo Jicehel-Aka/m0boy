@@ -38,24 +38,19 @@ extern int pce_native;
 #define PCE_SPIN4(b_) ((b_) - 4 * (int32_t)m0_idle_loops((uint32_t)(b_), 4u))
 
 #ifdef PCE_GEN_IMPL
-/* The generated code's state — the registers and the bus's two window
- * tables as locals — and the interpreter's own macros (huc6280.c) over
- * them: the same expressions, so a recompiled instruction is its
- * interpreted self, cycle for cycle. */
+/* The generated code's state — the registers as locals, the bus's two
+ * window tables read in place through pointers to the CPU's own arrays —
+ * and the interpreter's own macros (huc6280.c) over them: the same
+ * expressions, so a recompiled instruction is its interpreted self, cycle
+ * for cycle.  A region copies nothing of the windows: a TAM's
+ * huc6280_map rewrites the arrays the pointers reach, the next access
+ * sees the new mapping, there is no rebase to run. */
 
 #define PCE_LOAD() \
     uint8_t a_ = machine.cpu.a, x_ = machine.cpu.x, y_ = machine.cpu.y, s_ = machine.cpu.s, \
             p_ = machine.cpu.p; \
-    const uint8_t *rb_[8]; \
-    uint8_t *wb_[8]; \
-    PCE_REBASE()
-/* after a TAM: the window tables in step with the MPR's new bytes */
-#define PCE_REBASE() do { \
-    for (unsigned pce_i_ = 0; pce_i_ < 8; pce_i_++) { \
-        rb_[pce_i_] = machine.cpu.rbase[pce_i_]; \
-        wb_[pce_i_] = machine.cpu.wbase[pce_i_]; \
-    } \
-} while (0)
+    const uint8_t *const *rb_ = machine.cpu.rbase; \
+    uint8_t *const *wb_ = machine.cpu.wbase
 #define PCE_SAVE() do { \
     machine.cpu.a = a_; machine.cpu.x = x_; machine.cpu.y = y_; \
     machine.cpu.s = s_; machine.cpu.p = p_; \

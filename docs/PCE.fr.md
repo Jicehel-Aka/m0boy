@@ -216,6 +216,32 @@ la région après toute instruction pouvant toucher le bus d'E/S ou le
 contrôleur d'interruption, pour échantillonner la ligne IRQ exactement où
 l'interpréteur le fait.
 
+Le coût de dispatch a été cherché au profil (Raiden, profil complet) :
+le VDC prend ~43 % du temps (le coût fixe du runtime), et la mécanique de
+dispatch pesait 24 % contre ~10 % au code compilé lui-même.  Trois
+réductions sont passées : les octets MPR empaquetés vivent dans
+`huc6280_t` (`mpr_key`, tenu par `huc6280_map` — le dispatcher ne recompte
+plus huit décalages par dispatch), les fenêtres bus sont lues sur place
+par un pointeur vers les tableaux du CPU (une région ne copie plus
+16 pointeurs à l'entrée, et le TAM prouvé n'a plus de rebase à payer), et
+le repli interprété court **la tranche entière** (son propre code, son
+propre échantillonnage d'IRQ) au lieu d'une instruction par appel — le
+dépassement de tranche qu'il laisse dans `cpu->cycles` est préservé.  Les
+hooks de traçage ne comptent que sur `--coverage`.  Bilan : le natif
+rejoint la vitesse de l'interpréteur sur le titre de Raiden (0.165 s contre
+0.165 s pour 300 images, l'interpréteur seul) là où il était deux fois
+plus lent, et le profilé complet reste l'item ouvert du paragraphe
+précédent.  L'expérience suivante, non retenue : planifier les régions
+**par contexte** (le tri (pc, contexte) du map entrelace les instances du
+même span sous ses plusieurs contextes et fait éclater les régions en
+~1 instruction, d'où un appel de fonction par instruction exécutée) —
+5 153 régions au lieu de 58 702 et 0.122 s (25 % sous l'interpréteur),
+mais le run_hash précis profilé de Raiden diverge, et la cause exacte
+(échantillonnage d'IRQ à travers les enchaînements internes à une région
+longue ?) n'est pas tranchée ; le code est revenu à l'ordre du map et
+l'outillage (diff d'écritures WRAM horodatées, flux de dispatch, états
+par dispatch) est en place pour la reprise.
+
 La couverture du harness (`--coverage`) porte les contextes : le tracer
 enregistre, par adresse, les octets MPR sous lesquels elle a tourné
 (quatre au plus) et les atterrissages dynamiques (RTS, RTI, sauts par

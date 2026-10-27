@@ -43,6 +43,9 @@ typedef struct {
     /* the bus's fast windows, in step with mpr[] */
     const uint8_t *rbase[8];
     uint8_t *wbase[8];
+    /* the MPR bytes packed MPR0 first: the dispatcher's entry key, kept
+     * in step by huc6280_map (every mpr[] write goes through it) */
+    uint64_t mpr_key;
     /* the bus lands here */
     uint8_t *wram;
     const uint8_t *rom;

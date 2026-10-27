@@ -455,7 +455,12 @@ void Emitter::plan() {
     }
     /* regions: runs of neighbouring instructions under one context — a
      * TAM whose bank the walk could not prove ends its run (its exit
-     * hands the new mapping back to the dispatcher's check) */
+     * hands the new mapping back to the dispatcher's check).  The runs
+     * stay in the map's (pc, ctx) order: grouping per context first
+     * (longer regions, a fifth of the dispatch round-trips) broke the
+     * profiled precise run_hash on Raiden for reasons the tooling has
+     * not pinned yet — the experiment and its numbers are in
+     * docs/PCE.fr.md. */
     const size_t cap = 256;
     for (auto& [key, in] : ins_) {
         const bool joins = !regions_.empty() && regions_.back().size() < cap &&
@@ -960,13 +965,12 @@ bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
     o << "    { " << pre << body << t_clear;
     if (cycles) o << " budget -= " << cycles << ";";
     o << " }";
-    if (opt_.precise) {
-        if (may_bus(in))
-            /* the region leaves after this instruction whatever the
-             * budget: one exit, with the hint the dispatcher validates */
-            o << " { pc_ = " << hex(in.next) << "; ni = " << std::to_string(next_hint) << "; goto out; }";
-        else if (!fall_exits) o << budget_exit();
-    }
+    if (opt_.precise)
+        /* precise: the dispatcher regains control after every
+         * instruction — the budget and the IRQ line are sampled exactly
+         * where the interpreter samples them, whatever the region's
+         * length (the fast mode keeps its regions whole) */
+        o << " { pc_ = " << hex(in.next) << "; ni = " << std::to_string(next_hint) << "; goto out; }";
     if (op == Op::cli)
         after = "if (machine.cpu.irq_low & machine.cpu.irq_mask) { pc_ = " + hex(in.next) +
                 "; ni = " + std::to_string(next_hint) + "; goto out; }";
