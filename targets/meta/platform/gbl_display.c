@@ -237,7 +237,8 @@ uint8_t gbl_display_mode(void) { return display_mode; }
 
 void gbl_display_set_mode(uint8_t mode) {
 #if defined(GBL_TARGET_PC) && GBL_TARGET_PC
-    if (mode >= META_MODE_COUNT) mode = META_MODE_NATIVE;
+    (void)mode;
+    display_mode = META_MODE_NATIVE; /* the PC plays the DMG's own lines */
 #else
     if (mode >= META_MODE_COUNT) mode = META_MODE_TBLEND;
 #endif

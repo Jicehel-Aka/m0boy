@@ -42,11 +42,6 @@ void pc_frontend_poll(PcFrontend *pc, int escape_quits) {
         else if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_F8) {
             pc->filter = (pc->filter + 1u) % FILTER_COUNT;
             fprintf(stderr, "filter: %s (F8)\n", filter_name[pc->filter]);
-        } else if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_F10) {
-            pc->scale = (pc->scale + 1u) % 3u;
-            SDL_RenderSetIntegerScale(pc->renderer, pc->scale == 0 ? SDL_TRUE : SDL_FALSE);
-            if (pc->texture)
-                SDL_SetTextureScaleMode(pc->texture, pc->scale == 2 ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
         } else if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_F11) {
             SDL_SetWindowFullscreen(pc->window, SDL_GetWindowFlags(pc->window) & SDL_WINDOW_FULLSCREEN_DESKTOP ?
                                     0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -150,7 +145,7 @@ int pc_frontend_present(PcFrontend *pc, const uint32_t *pixels,
         pc->texture_width = tw;
         pc->texture_height = th;
         if (!pc->texture) return 0;
-        SDL_SetTextureScaleMode(pc->texture, pc->scale == 2 ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+        SDL_SetTextureScaleMode(pc->texture, SDL_ScaleModeNearest);
     }
     if (pc->filter == RAW) SDL_UpdateTexture(pc->texture, NULL, pixels, (int)(stride * sizeof *pixels));
     else {
@@ -165,8 +160,7 @@ int pc_frontend_present(PcFrontend *pc, const uint32_t *pixels,
         filter_frame(pixels, stride, pc->filtered, width, height, pc->filter);
         SDL_UpdateTexture(pc->texture, NULL, pc->filtered, (int)(tw * sizeof *pc->filtered));
     }
-    SDL_RenderSetLogicalSize(pc->renderer, pc->scale == 2 ? 0 : (int)tw,
-                            pc->scale == 2 ? 0 : (int)th);
+    SDL_RenderSetLogicalSize(pc->renderer, (int)tw, (int)th);
     SDL_RenderClear(pc->renderer);
     SDL_RenderCopy(pc->renderer, pc->texture, NULL, NULL);
     SDL_RenderPresent(pc->renderer);

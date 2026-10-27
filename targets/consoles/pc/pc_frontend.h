@@ -19,12 +19,13 @@ typedef struct {
     SDL_Joystick *joystick;
     uint32_t *filtered;
     unsigned width, height, texture_width, texture_height;
-    unsigned filter, scale;
+    unsigned filter;
     int quit;
 } PcFrontend;
 
 /* SDL_Init must precede open. F8: none (default), pixel, DMG, LCD RGB,
- * scanlines, grid. F10: integer, fitted, stretched. F11: fullscreen. */
+ * scanlines, grid. F11: fullscreen. The picture always scales by whole
+ * pixels (nearest neighbour): the PC never resamples it. */
 int pc_frontend_open(PcFrontend *pc, const char *title, unsigned width, unsigned height);
 void pc_frontend_poll(PcFrontend *pc, int escape_quits);
 uint16_t pc_frontend_buttons(const PcFrontend *pc);
