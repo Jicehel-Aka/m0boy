@@ -301,6 +301,46 @@ static void hdma_test(void) {
     snes_bus_write(0x420c, 0);
 }
 
+/* The H/V timer IRQs: an H-IRQ on every line, a V-IRQ on one line, the
+ * handler counts in WRAM and clears $4211. */
+static void irq_test(void) {
+    rom[0] = 0x80; rom[1] = 0xfe; /* the reset code idles at $8000 */
+    /* the handler at $008100: PHA, read $4211, INC $30, PLA, RTI */
+    const uint8_t handler[] = {0x48, 0xad, 0x11, 0x42, 0xee, 0x30, 0x00, 0x68, 0x40};
+    memcpy(rom + 0x100, handler, sizeof handler);
+    rom[0x7fee] = rom[0x7ffe] = 0x00; /* IRQ and BRK vectors -> $008100 */
+    rom[0x7fef] = rom[0x7fff] = 0x81;
+    snes_init(rom, sizeof rom, 0, 0);
+    machine.cpu.e = 0;
+    machine.cpu.p &= (uint8_t)~SNES_P_I;
+    snes_bus_write(0x4207, 100); /* HTIME = 100: the pair's latch composes */
+    snes_bus_write(0x4208, 0);
+    snes_bus_write(0x4200, 0x10); /* H-IRQ enabled */
+    snes_frame();
+    CHECK(machine.wram[0x30] == 262u % 256u); /* one match per line, 8-bit INC */
+    CHECK(machine.timeup == 0);       /* the last handler read cleared it */
+
+    machine.wram[0x30] = 0;
+    snes_bus_write(0x4200, 0x00);
+    snes_bus_write(0x4209, 100); /* VTIME = 100 */
+    snes_bus_write(0x420a, 0);
+    snes_bus_write(0x4200, 0x20); /* V-IRQ enabled */
+    snes_frame();
+    CHECK(machine.wram[0x30] == 1);
+    snes_bus_write(0x4200, 0x00);
+    /* without the $4211 read the level stays asserted: the handler loops
+     * until the line's budget is spent */
+    rom[0x100] = 0x40; /* the handler is just RTI */
+    snes_init(rom, sizeof rom, 0, 0);
+    machine.cpu.e = 0;
+    machine.cpu.p &= (uint8_t)~SNES_P_I;
+    snes_bus_write(0x4207, 100);
+    snes_bus_write(0x4200, 0x10);
+    snes_frame();
+    CHECK(machine.timeup == 1 && machine.cpu.irq_line == 1);
+    snes_bus_write(0x4200, 0x00);
+}
+
 int main(void) {
     rom[0] = 0x42;
     rom[0x7ffa] = rom[0x7fea] = rom[0x7ffc] = 0;
@@ -308,6 +348,7 @@ int main(void) {
     snes_init(rom, sizeof rom, 0, 0);
     CHECK(snes_bus_read(0x808000) == 0x42);
     hdma_test();
+    irq_test();
     /* the SRAM window: mirrored through the $6000-$7FFF offsets of the
      * LoROM banks, open bus when nothing is declared */
     snes_init(rom, sizeof rom, 0, 8192);

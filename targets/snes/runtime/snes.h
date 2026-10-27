@@ -55,7 +55,7 @@ typedef struct {
     int nmi_enable;
     int vblank_flag;
     int nmi_pending; /* the frame's edge, latched */
-    int irq_line;    /* no source in phase 1: never set */
+    int irq_line;    /* the level of $4211's TIMEUP: set by the H/V timers */
     int halted;      /* STP: the CPU stopped until the next reset */
     int waiting;     /* WAI: waits for an interrupt request */
     uint32_t wram_addr; /* the $2181-$2183 port */
@@ -76,6 +76,10 @@ typedef struct {
     uint8_t hdma_count[8], hdma_len[8], hdma_rep[8]; /* the current table entry */
     uint16_t vmaddr, cgaddr, oamaddr, scroll[8];
     uint8_t cg_latch, oam_latch, scroll_latch;
+    uint8_t timer_latch;
+    uint16_t htime, vtime; /* $4207-$420A, the H/V compare values */
+    uint8_t timeup;        /* $4211 bit 7, cleared by the read */
+    uint8_t h_irq_en, v_irq_en; /* $4200 bits 4-5 */
     uint8_t vblank, hblank;
     uint8_t screen[224 * 256 * 3]; /* the frame as the lines displayed it */
     uint16_t joypad, joy_auto, joy_shift;

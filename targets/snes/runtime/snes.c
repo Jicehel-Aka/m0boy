@@ -57,7 +57,12 @@ static uint8_t io_read(uint16_t at) {
         c->vblank_flag = 0;
         return v;
     }
-    case 0x4211: return 0;
+    case 0x4211: { /* TIMEUP: the H/V timer's flag, cleared by the read */
+        const uint8_t v = machine.timeup ? 0x80 : 0;
+        machine.timeup = 0;
+        c->irq_line = 0;
+        return v;
+    }
     case 0x4212: return (machine.vblank ? 0x80 : 0) | (machine.hblank ? 0x40 : 0) | machine.joy_busy;
     case 0x2180: { /* the WRAM port */
         const uint8_t v = machine.wram[c->wram_addr & 0x1FFFF];
@@ -89,9 +94,19 @@ static void io_write(uint16_t at, uint8_t v) {
         break;
     case 0x420b: snes_dma_start(v); break;
     case 0x420c: machine.hdma_enable = v; break;
-    case 0x4200: /* NMI and the IRQ enables: only the NMI has a source */
+    case 0x4207: case 0x4208:
+        machine.htime = (uint16_t)(((unsigned)v << 8 | machine.timer_latch) & 0x1FF);
+        machine.timer_latch = v;
+        break;
+    case 0x4209: case 0x420a:
+        machine.vtime = (uint16_t)(((unsigned)v << 8 | machine.timer_latch) & 0x1FF);
+        machine.timer_latch = v;
+        break;
+    case 0x4200: /* NMI, the H/V timer IRQ enables and the auto-read */
         if ((v & 0x80) && !c->nmi_enable && c->vblank_flag) c->nmi_pending = 1;
         c->nmi_enable = (v & 0x80) != 0;
+        machine.h_irq_en = (v & 0x10) != 0;
+        machine.v_irq_en = (v & 0x20) != 0;
         machine.joy_auto_enable = v & 1;
         break;
     case 0x2180:
@@ -217,12 +232,21 @@ void snes_take_interrupt(snes_cpu_t *c, uint16_t vector) {
                        snes_bus_read(0x000000u | (uint32_t)(vector + 1)) << 8);
 }
 
+/* the H/V timer's IRQ: TIMEUP rises at the match and stays until the
+ * $4211 read; the level is what the CPU samples */
+static void irq_fire(void) {
+    machine.timeup = 1;
+    machine.cpu.irq_line = 1;
+}
+
 /* Line-level approximation: the line's pixels go out with the registers as
  * the previous lines' code left them (a write during a line's HBlank
  * reaches the next line), the CPU runs the visible part, the HBlank flag
  * rises and the rest of the line runs.  VBlank and the NMI enter at line
  * 225; the auto-read latches there and its time is approximated at three
- * lines. */
+ * lines.  The H/V timers compare at the line's start (a V match without
+ * H) and at one of the line's two slice boundaries for the H match: the
+ * visible part is 3/4 of the line, HTIME's exact dot is not modelled. */
 void snes_frame(void) {
     const uint32_t start = machine.cpu.cycles;
     machine.frames++;
@@ -244,6 +268,10 @@ void snes_frame(void) {
             }
         }
         if (line == 228) machine.joy_busy = 0;
+        const int v_match = line == machine.vtime;
+        machine.cpu.irq_line = machine.timeup; /* the level persists */
+        if (machine.v_irq_en && v_match && !machine.h_irq_en) irq_fire();
+        if (machine.h_irq_en && (!machine.v_irq_en || v_match) && machine.htime < 256) irq_fire();
         if (line < 224) snes_render_line(line, machine.screen + line * 256u * 3u);
         const uint32_t until = start + (uint32_t)(((uint64_t)(line + 1) * SNES_FRAME_CYCLES) / 262);
         /* three quarters of the line's cycles before the HBlank flag, as
@@ -255,6 +283,7 @@ void snes_frame(void) {
         snes_run(&machine.cpu, visible);
         machine.hblank = 1;
         snes_hdma_line();
+        if (machine.h_irq_en && (!machine.v_irq_en || v_match) && machine.htime >= 256) irq_fire();
         snes_run(&machine.cpu, until);
     }
     machine.hblank = 0;
