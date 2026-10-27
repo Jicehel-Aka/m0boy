@@ -220,7 +220,7 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                     code << "m0_native_finish(m, 2); return 1;\n";
                 } else if ((op & 0xf000u) == 0xd000u && ((op >> 8) & 15u) < 14u) {
                     const uint32_t target = pc + 4u + uint32_t(int32_t(int8_t(op)) * 2);
-                    code << "    if (m0_native_cond(m, " << ((op >> 8) & 15u) << ")) { m->r[15] = 0x"
+                    code << "    if (m0_native_cond(m, " << std::dec << ((op >> 8) & 15u) << std::hex << ")) { m->r[15] = 0x"
                          << target << "u; m0_native_finish(m, 2); } else { m->r[15] = 0x"
                          << pc + 2 << "u; m0_native_finish(m, 1); } return 1;\n";
                 } else if ((op & 0xf800u) == 0xe000u) {
