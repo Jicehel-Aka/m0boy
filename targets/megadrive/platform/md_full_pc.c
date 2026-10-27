@@ -52,6 +52,33 @@ static uint32_t image_hash(const uint32_t *pixels) {
     }
     return h;
 }
+/* The battery: --save FILE, else the cartridge's international name ($150)
+ * as one word — a game keeping its progress in SRAM finds it next run. */
+static void default_save_name(char *out, unsigned cap) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < 48u && 0x150u + i < md_rom_size && n + 5u < cap; ++i) {
+        const char c = (char)md_rom[0x150u + i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '_')
+            out[n++] = c;
+    }
+    if (!n) { out[n++] = 'm'; out[n++] = 'd'; }
+    memcpy(out + n, ".sav", 5u);
+}
+static void load_sram(const char *path, MdFull *m) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    const size_t got = fread(m->sram, 1, sizeof m->sram, f);
+    fclose(f);
+    fprintf(stderr, "sram: %zu bytes from %s\n", got, path);
+}
+static int save_sram(const char *path, const MdFull *m) {
+    FILE *f = fopen(path, "wb");
+    if (!f) { perror(path); return 0; }
+    const int ok = fwrite(m->sram, 1, sizeof m->sram, f) == sizeof m->sram && fclose(f) == 0;
+    if (!ok) fprintf(stderr, "%s: sram save failed\n", path);
+    return ok;
+}
 static void ym_log(void *user, uint64_t sample, unsigned bank, uint8_t reg, uint8_t value) {
     fprintf((FILE *)user, "%llu %u %02x %02x\n", (unsigned long long)sample, bank, reg, value);
 }
@@ -66,6 +93,7 @@ int main(int argc, char **argv) {
     unsigned limit = 0;
     int interp = 0;
     const char *ppm = NULL, *script = NULL, *coverage = NULL, *wav = NULL, *ym_path = NULL, *record_path = NULL;
+    const char *save_arg = NULL;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) limit = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) script = argv[++i];
@@ -74,8 +102,9 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav = argv[++i];
         else if (!strcmp(argv[i], "--ym-log") && i + 1 < argc) ym_path = argv[++i];
         else if (!strcmp(argv[i], "--record-input") && i + 1 < argc) record_path = argv[++i];
+        else if (!strcmp(argv[i], "--save") && i + 1 < argc) save_arg = argv[++i];
         else if (!strcmp(argv[i], "--interp")) interp = 1;
-        else { fprintf(stderr, "usage: md_pc [--frames N] [--input SCRIPT] [--ppm FILE] [--wav FILE] [--ym-log FILE] [--coverage FILE] [--record-input FILE] [--interp]\n"); return 2; }
+        else { fprintf(stderr, "usage: md_pc [--frames N] [--input SCRIPT] [--ppm FILE] [--wav FILE] [--ym-log FILE] [--coverage FILE] [--record-input FILE] [--save FILE] [--interp]\n"); return 2; }
     }
     Event *events = NULL;
     size_t event_count = 0, event_at = 0;
@@ -86,6 +115,10 @@ int main(int argc, char **argv) {
     uint32_t *pixels = calloc(W * H, sizeof *pixels);
     if (!m || !pixels) { free(m); free(pixels); free(events); return 1; }
     md_full_reset(m);
+    char save_name[64];
+    if (save_arg) snprintf(save_name, sizeof save_name, "%s", save_arg);
+    else default_save_name(save_name, sizeof save_name);
+    load_sram(save_name, m);
     if (coverage) {
         m->coverage_bytes = (md_rom_size + 7u) / 8u;
         m->coverage = calloc(m->coverage_bytes, 1);
@@ -134,6 +167,7 @@ int main(int argc, char **argv) {
     }
     uint64_t deadline = SDL_GetTicks64();
     unsigned frame_fraction = 0;
+    unsigned sram_flushed = 0;
     while (running && !m->fault && (!limit || m->frames < limit)) {
         if (!limit) {
             pc_frontend_poll(&pc, 1);
@@ -151,6 +185,11 @@ int main(int argc, char **argv) {
          * the last frame is needed. */
         m->screen = !limit || m->frames + 1u >= limit ? pixels : NULL;
         md_full_frame(m, !interp);
+        /* the battery back every two seconds of play, and once at the end */
+        if (m->sram_dirty && m->frames - sram_flushed >= 120u) {
+            if (save_sram(save_name, m)) m->sram_dirty = 0;
+            sram_flushed = m->frames;
+        }
         int16_t pcm[2 * 4096];
         const unsigned audio_frames = md_full_audio_read(m, pcm, 4096);
         if (wav_file) { fwrite(pcm, 2 * sizeof *pcm, audio_frames, wav_file); wav_samples += audio_frames; }
@@ -168,12 +207,17 @@ int main(int argc, char **argv) {
         }
     }
     int okay = (!ppm || write_ppm(ppm, pixels)) && (!coverage || save_coverage(coverage, m));
+    if (m->sram_dirty) { /* the battery once more: everything the game wrote */
+        if (save_sram(save_name, m)) m->sram_dirty = 0;
+        else okay = 0;
+    }
     if (record_file && fclose(record_file)) okay = 0;
     if (wav_file) { wav_header(wav_file, wav_samples); if (fclose(wav_file)) okay = 0; }
     if (ym_file && fclose(ym_file)) okay = 0;
-    printf("frames=%u pc=%06x fault=%u fault_pc=%06x opcode=%04x native_hits=%u fallback_hits=%u run_hash=%08x image_hash=%08x audio_hash=%08x\n",
+    printf("frames=%u pc=%06x fault=%u fault_pc=%06x opcode=%04x native_hits=%u fallback_hits=%u run_hash=%08x image_hash=%08x audio_hash=%08x sram_dirty=%u\n",
         m->frames, m->pc, m->fault, m->fault_pc, m->last_opcode,
-        m->native_hits, m->fallback_hits, md_full_hash(m), image_hash(pixels), m->audio_hash);
+        m->native_hits, m->fallback_hits, md_full_hash(m), image_hash(pixels), m->audio_hash,
+        m->sram_dirty);
     if (audio_device) SDL_CloseAudioDevice(audio_device);
     pc_frontend_close(&pc);
     if (!limit) SDL_Quit();

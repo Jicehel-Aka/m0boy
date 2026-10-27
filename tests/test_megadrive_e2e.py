@@ -145,6 +145,42 @@ def hint_image():
     return bytes(rom)
 
 
+def emit_words(rom, pc, words):
+    for i, w in enumerate(words):
+        rom[pc + 2 * i:pc + 2 * i + 2] = w.to_bytes(2, "big")
+
+
+def sram_write_image():
+    """The battery's write side: SRAM on, $200001 <- $42, idle loop."""
+    rom = bytearray(rom_image())
+    pc = 0x200
+
+    def move_byte(value, address):
+        nonlocal pc
+        emit_words(rom, pc, [0x13fc, value, address >> 16, address & 0xffff])
+        pc += 8
+
+    move_byte(0x01, 0xa130f1)   # SRAM mapped, writes allowed
+    move_byte(0x42, 0x200001)
+    rom[pc:pc + 2] = (0x60fe).to_bytes(2, "big")
+    return bytes(rom)
+
+
+def sram_read_image():
+    """The battery's read side: CRAM 0 <- $200001 (the saved byte shows as
+    the backdrop), then the fixture's own $99."""
+    rom = bytearray(rom_image())
+    words = [0x13fc, 0x01, 0x00a1, 0x30f1,   # MOVE.B #1,$A130F1: SRAM on
+             0x1039, 0x0020, 0x0001,         # MOVE.B $200001,D0
+             0x23fc, 0xc000, 0x0000, 0x00c0, 0x0004,   # CRAM address 0
+             0x33c0, 0x00c0, 0x0000,         # MOVE.W D0,$C00000
+             0x13fc, 0x99, 0x0020, 0x0001]   # MOVE.B #$99,$200001
+    emit_words(rom, 0x200, words)
+    tail = 0x200 + 2 * len(words)
+    rom[tail:tail + 2] = (0x60fe).to_bytes(2, "big")
+    return bytes(rom)
+
+
 def run(*args, success=True, env=None):
     result = subprocess.run([str(x) for x in args], text=True, capture_output=True, env=env)
     if (result.returncode == 0) != success:
@@ -245,6 +281,37 @@ def main():
             row = lambda y: pixels[y * 320 * 3:y * 320 * 3 + 3]
             assert row(0) == row(99) == bytes((0, 0, 255)), (row(0), row(99))
             assert row(100) == row(223) == bytes((255, 0, 0)), (row(100), row(223))
+        # The battery: SRAM ($200000) written in one run comes back in the
+        # next through the file --save points at (the default beside the
+        # program is the cartridge's own name).
+        srom = work / "sram.md"
+        srom.write_bytes(sram_write_image())
+        spc = work / "sram_pc"
+        run(exe, srom, "--system", "megadrive", "--target", "pc", "-o", spc)
+        run("cmake", "-G", "Ninja", "-S", spc, "-B", spc / "build")
+        run("ninja", "-C", spc / "build")
+        save = work / "battery.sav"
+        for mode in ((), ("--interp",)):
+            out = run(spc / "build" / "md_pc", *mode, "--frames", "3", "--save", save, env=pc_env)
+            assert re.search(r"sram_dirty=0\b", out), out   # flushed at exit
+            data = save.read_bytes()
+            assert len(data) == 65536 and data[0] == 0 and data[1] == 0x42, (len(data), data[:2])
+        rrom = work / "sram_read.md"
+        rrom.write_bytes(sram_read_image())
+        rpc = work / "sram_read_pc"
+        run(exe, rrom, "--system", "megadrive", "--target", "pc", "-o", rpc)
+        run("cmake", "-G", "Ninja", "-S", rpc, "-B", rpc / "build")
+        run("ninja", "-C", rpc / "build")
+
+        def backdrop(name):
+            return (work / name).read_bytes().split(b"\n", 3)[3][:3]
+
+        run(rpc / "build" / "md_pc", "--frames", "3", "--save", save, "--ppm", work / "sram.ppm", env=pc_env)
+        assert backdrop("sram.ppm") != b"\x00\x00\x00", backdrop("sram.ppm")  # $42 came back
+        assert save.read_bytes()[1] == 0x99                                   # the read fixture wrote too
+        save.unlink()
+        run(rpc / "build" / "md_pc", "--frames", "3", "--save", save, "--ppm", work / "fresh.ppm", env=pc_env)
+        assert backdrop("fresh.ppm") == b"\x00\x00\x00", backdrop("fresh.ppm")  # no battery, no colour
         # Random 68000 code (tests/md_fixture.py): the C from the static walk
         # alone and the C from an interpreter profile end on the
         # interpreter's run, image and sound; the profiled one never falls back.

@@ -152,7 +152,10 @@ void md_full_write8(MdFull *m, uint32_t addr, uint8_t v) {
         m->ram[addr & 0xffffu] = v; return;
     }
     if (addr >= 0x200000u && addr < 0x210000u) {
-        if (m->sram_enable && !m->sram_protect) m->sram[addr & 0xffffu] = v;
+        if (m->sram_enable && !m->sram_protect) {
+            m->sram[addr & 0xffffu] = v;
+            m->sram_dirty = 1;
+        }
         return;
     }
     if (addr >= 0xa13000u && addr < 0xa14000u) {
