@@ -159,7 +159,7 @@ int main(int argc, char **argv) {
     pc_input_free(&script);
     uint8_t *image = malloc(256u * 224u * 3u);
     if (!image) { fprintf(stderr, "cannot allocate image\n"); return 2; }
-    snes_render(image);
+    memcpy(image, machine.screen, 256u * 224u * 3u); /* the frame as displayed */
     uint32_t image_hash = fnv(image, 256u * 224u * 3u, 2166136261u);
     if (capture) {
         FILE *out = fopen(capture, "wb");
@@ -202,6 +202,17 @@ int main(int argc, char **argv) {
         (uint8_t)machine.cgaddr, (uint8_t)(machine.cgaddr >> 8),
         (uint8_t)machine.oamaddr, (uint8_t)(machine.oamaddr >> 8),
         machine.cg_latch, machine.oam_latch, machine.scroll_latch, machine.vblank, machine.hblank,
+        machine.hdma_enable,
+        machine.hdma_run[0], machine.hdma_run[1], machine.hdma_run[2], machine.hdma_run[3],
+        machine.hdma_run[4], machine.hdma_run[5], machine.hdma_run[6], machine.hdma_run[7],
+        machine.hdma_done[0], machine.hdma_done[1], machine.hdma_done[2], machine.hdma_done[3],
+        machine.hdma_done[4], machine.hdma_done[5], machine.hdma_done[6], machine.hdma_done[7],
+        machine.hdma_count[0], machine.hdma_count[1], machine.hdma_count[2], machine.hdma_count[3],
+        machine.hdma_count[4], machine.hdma_count[5], machine.hdma_count[6], machine.hdma_count[7],
+        machine.hdma_len[0], machine.hdma_len[1], machine.hdma_len[2], machine.hdma_len[3],
+        machine.hdma_len[4], machine.hdma_len[5], machine.hdma_len[6], machine.hdma_len[7],
+        machine.hdma_rep[0], machine.hdma_rep[1], machine.hdma_rep[2], machine.hdma_rep[3],
+        machine.hdma_rep[4], machine.hdma_rep[5], machine.hdma_rep[6], machine.hdma_rep[7],
         (uint8_t)machine.joypad, (uint8_t)(machine.joypad >> 8),
         (uint8_t)machine.joy_auto, (uint8_t)(machine.joy_auto >> 8),
         (uint8_t)machine.joy_shift, (uint8_t)(machine.joy_shift >> 8),

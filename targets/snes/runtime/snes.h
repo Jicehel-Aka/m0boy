@@ -71,9 +71,13 @@ typedef struct {
     uint8_t sram_dirty;
     uint8_t vram[65536], cgram[512], oam[544];
     uint8_t ppu_regs[0x40], dma[8][16];
+    uint8_t hdma_enable;  /* $420C, write only */
+    uint8_t hdma_run[8], hdma_done[8];  /* started / ended this frame */
+    uint8_t hdma_count[8], hdma_len[8], hdma_rep[8]; /* the current table entry */
     uint16_t vmaddr, cgaddr, oamaddr, scroll[8];
     uint8_t cg_latch, oam_latch, scroll_latch;
     uint8_t vblank, hblank;
+    uint8_t screen[224 * 256 * 3]; /* the frame as the lines displayed it */
     uint16_t joypad, joy_auto, joy_shift;
     uint8_t joy_strobe, joy_count, joy_auto_enable, joy_busy;
     uint32_t frames;
@@ -91,7 +95,10 @@ void snes_run(snes_cpu_t *cpu, uint32_t until);
 void snes_frame(void);
 /* Standard controller report: BYsS UDLR AXLR 0000, pressed bits set. */
 void snes_set_joypad(uint16_t buttons);
-/* Render the current low-resolution background state as 256x224 RGB888. */
+/* Render one line from the current registers as 256 RGB888 pixels. */
+void snes_render_line(unsigned y, uint8_t *row);
+/* The whole 224-line frame from the current registers (the reference the
+ * tests render; the frame loop fills machine.screen itself). */
 void snes_render(uint8_t *rgb);
 
 /* the bus: everything but the ROM/WRAM windows */

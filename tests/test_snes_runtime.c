@@ -2,6 +2,7 @@
 #include "../targets/snes/runtime/snes.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 static uint8_t rom[0x10000];
@@ -272,12 +273,41 @@ static void cpu_index_test(void) {
     CHECK(machine.cpu.x == 0x8012 && machine.cpu.y == 0x236 && machine.cpu.pc == 0x8003);
 }
 
+/* The HDMA feeds one unit per line: a direct-mode table paints three red
+ * colors then one blue into CGRAM, the repeat entry carrying three units. */
+static void hdma_test(void) {
+    static const uint8_t table[] = {
+        0x83, 0x1f, 0x00, 0x1f, 0x00, 0x1f, 0x00, /* repeat, 3 lines of red */
+        0x01, 0x00, 0x7c,                          /* one line of blue */
+        0x00,                                      /* end */
+    };
+    memcpy(rom + 0x100, table, sizeof table);
+    snes_init(rom, sizeof rom, 0, 0);
+    uint8_t *d = machine.dma[0];
+    d[0] = 0x02;              /* mode 2: two bytes to one register, A to B */
+    d[1] = 0x22;              /* CGDATA */
+    d[2] = 0x00; d[3] = 0x81; /* the table at $008100 */
+    d[4] = 0x00;
+    snes_bus_write(0x2121, 0); /* CGADD = 0 */
+    snes_bus_write(0x420c, 1); /* channel 0 on */
+    snes_frame();
+    CHECK(machine.hdma_done[0] && !machine.hdma_run[0]);
+    CHECK(d[8] == 0x0b && d[9] == 0x81); /* the table pointer ran through */
+    CHECK(machine.cgram[0] == 0x1f && machine.cgram[1] == 0x00);
+    CHECK(machine.cgram[2] == 0x1f && machine.cgram[3] == 0x00);
+    CHECK(machine.cgram[4] == 0x1f && machine.cgram[5] == 0x00);
+    CHECK(machine.cgram[6] == 0x00 && machine.cgram[7] == 0x7c);
+    CHECK(machine.cgram[8] == 0 && machine.cgram[9] == 0);
+    snes_bus_write(0x420c, 0);
+}
+
 int main(void) {
     rom[0] = 0x42;
     rom[0x7ffa] = rom[0x7fea] = rom[0x7ffc] = 0;
     rom[0x7ffb] = rom[0x7feb] = rom[0x7ffd] = 0x80;
     snes_init(rom, sizeof rom, 0, 0);
     CHECK(snes_bus_read(0x808000) == 0x42);
+    hdma_test();
     /* the SRAM window: mirrored through the $6000-$7FFF offsets of the
      * LoROM banks, open bus when nothing is declared */
     snes_init(rom, sizeof rom, 0, 8192);

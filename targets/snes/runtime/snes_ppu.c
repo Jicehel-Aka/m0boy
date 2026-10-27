@@ -1,5 +1,8 @@
 /* Initial SNES PPU: VRAM/CGRAM/OAM ports, DMA, backgrounds and objects.
- * The renderer samples register state at the end of the frame. */
+ * The renderer samples the registers per line — the frame's rows keep the
+ * registers as the code left them, so a write during a line's HBlank
+ * reaches the next line (writes inside the visible part too: the exact
+ * mid-scanline change points are not modelled). */
 #include "snes.h"
 
 static unsigned vram_word(void) {
@@ -85,12 +88,15 @@ uint8_t snes_ppu_read(uint16_t at) {
     return machine.cpu.mdr;
 }
 
+/* the transfer modes' B-side register offsets and unit sizes, shared by
+ * the general DMA and the HDMA */
+static const uint8_t dma_offsets[8][4] = {
+    {0,0,0,0}, {0,1,0,1}, {0,0,0,0}, {0,0,1,1},
+    {0,1,2,3}, {0,1,0,1}, {0,0,0,0}, {0,0,1,1}
+};
+static const uint8_t dma_periods[8] = {1,2,2,4,4,4,2,4};
+
 void snes_dma_start(uint8_t mask) {
-    static const uint8_t offsets[8][4] = {
-        {0,0,0,0}, {0,1,0,1}, {0,0,0,0}, {0,0,1,1},
-        {0,1,2,3}, {0,1,0,1}, {0,0,0,0}, {0,0,1,1}
-    };
-    static const uint8_t periods[8] = {1,2,2,4,4,4,2,4};
     for (unsigned ch = 0; ch < 8; ch++) if (mask & (1u << ch)) {
         uint8_t *d = machine.dma[ch];
         unsigned mode = d[0] & 7, addr = d[2] | d[3] << 8;
@@ -98,12 +104,74 @@ void snes_dma_start(uint8_t mask) {
         if (!n) n = 65536;
         for (unsigned i = 0; i < n; i++) {
             uint32_t a = (uint32_t)d[4] << 16 | addr;
-            uint32_t b = 0x2100u | (uint8_t)(d[1] + offsets[mode][i % periods[mode]]);
+            uint32_t b = 0x2100u | (uint8_t)(d[1] + dma_offsets[mode][i % dma_periods[mode]]);
             if (d[0] & 0x80) snes_bus_write(a, snes_bus_read(b));
             else snes_bus_write(b, snes_bus_read(a));
             if (!(d[0] & 8)) addr = (addr + ((d[0] & 0x10) ? -1 : 1)) & 0xffff;
         }
         d[2] = addr; d[3] = addr >> 8; d[5] = d[6] = 0;
+    }
+}
+
+/* The HDMA: one unit per line, run at the line's H-Blank (no bus time
+ * stolen, as the general DMA).  Each enabled channel walks its table at
+ * A1Bx/A2Ax: a 0 count byte ends the channel for the frame, bit 7 of the
+ * count byte repeats the entry's unit every line for count lines, and
+ * 01h-7Fh transfer one unit then pause count-1 lines.  Indirect mode
+ * (DMAPx bit 6) loads DASx from a 16-bit table pointer per entry, the
+ * data bank being DASBx; the data address always increments. */
+void snes_hdma_line(void) {
+    for (unsigned ch = 0; ch < 8; ch++) {
+        if (!(machine.hdma_enable & (1u << ch)) || machine.hdma_done[ch]) continue;
+        uint8_t *d = machine.dma[ch];
+        if (!machine.hdma_run[ch]) {
+            machine.hdma_run[ch] = 1; /* started this frame, possibly mid-frame */
+            machine.hdma_count[ch] = 0;
+            d[8] = d[2]; d[9] = d[3]; /* the table pointer reloads */
+        }
+        const unsigned mode = d[0] & 7;
+        const uint16_t period = dma_periods[mode];
+        if (!machine.hdma_count[ch]) {
+            uint16_t table = d[8] | d[9] << 8;
+            const uint32_t at = (uint32_t)d[4] << 16 | table;
+            const uint8_t b = snes_bus_read(at);
+            table++;
+            if (d[0] & 0x40) {
+                const uint16_t p = (uint16_t)(snes_bus_read((uint32_t)d[4] << 16 | table) |
+                                             snes_bus_read((uint32_t)d[4] << 16 | (uint16_t)(table + 1)) << 8);
+                table += 2;
+                d[5] = (uint8_t)p; d[6] = (uint8_t)(p >> 8); /* DASx: the data address */
+            }
+            d[8] = (uint8_t)table; d[9] = (uint8_t)(table >> 8);
+            if (!b) {
+                machine.hdma_done[ch] = 1;
+                machine.hdma_run[ch] = 0;
+                continue;
+            }
+            machine.hdma_len[ch] = b & 0x7F;
+            machine.hdma_count[ch] = b & 0x7F;
+            machine.hdma_rep[ch] = b >> 7;
+        }
+        if ((machine.hdma_rep[ch] && machine.hdma_count[ch]) ||
+            (!machine.hdma_rep[ch] && machine.hdma_count[ch] == machine.hdma_len[ch])) {
+            for (unsigned j = 0; j < period; j++) {
+                const uint32_t bport = 0x2100u | (uint8_t)(d[1] + dma_offsets[mode][j]);
+                if (d[0] & 0x40) { /* indirect: the data at DASBx/DASx */
+                    const uint32_t a = (uint32_t)d[7] << 16 | d[5] | d[6] << 8;
+                    if (d[0] & 0x80) snes_bus_write(a, snes_bus_read(bport));
+                    else snes_bus_write(bport, snes_bus_read(a));
+                    const uint16_t da = (uint16_t)(d[5] | d[6] << 8) + 1;
+                    d[5] = (uint8_t)da; d[6] = (uint8_t)(da >> 8);
+                } else { /* direct: the table itself is the data */
+                    const uint32_t a = (uint32_t)d[4] << 16 | d[8] | d[9] << 8;
+                    if (d[0] & 0x80) snes_bus_write(a, snes_bus_read(bport));
+                    else snes_bus_write(bport, snes_bus_read(a));
+                    const uint16_t ta = (uint16_t)(d[8] | d[9] << 8) + 1;
+                    d[8] = (uint8_t)ta; d[9] = (uint8_t)(ta >> 8);
+                }
+            }
+        }
+        if (machine.hdma_count[ch]) machine.hdma_count[ch]--;
     }
 }
 
@@ -160,14 +228,13 @@ static unsigned bg_priority(unsigned mode, unsigned bg, unsigned high, unsigned 
     return mode1[bg][high];
 }
 
-void snes_render(uint8_t *rgb) {
+void snes_render_line(unsigned y, uint8_t *row) {
     const uint8_t *r = machine.ppu_regs;
     unsigned mode = r[5] & 7, bright = r[0] & 15;
-    for (unsigned y = 0; y < 224; y++) {
-      uint8_t obj_color[256] = {0}, obj_prio[256] = {0};
-      if (!(r[0] & 0x80) && (r[0x2c] & 0x10) && (mode == 0 || mode == 1))
-          object_line(y, obj_color, obj_prio);
-      for (unsigned x = 0; x < 256; x++) {
+    uint8_t obj_color[256] = {0}, obj_prio[256] = {0};
+    if (!(r[0] & 0x80) && (r[0x2c] & 0x10) && (mode == 0 || mode == 1))
+        object_line(y, obj_color, obj_prio);
+    for (unsigned x = 0; x < 256; x++) {
         unsigned color = 0, best = 0;
         if (!(r[0] & 0x80) && (mode == 0 || mode == 1)) {
             if (obj_color[x]) {
@@ -194,10 +261,10 @@ void snes_render(uint8_t *rgb) {
                 if (entry & 0x8000) py = size - 1 - py;
                 unsigned tile = (entry & 0x3ff) + (px >> 3) + (py >> 3) * 16;
                 unsigned base = ((r[0x0b + bg / 2] >> ((bg & 1) * 4)) & 15) * 0x2000u;
-                unsigned row = base + tile * (bpp * 8) + (py & 7) * 2;
+                unsigned row_ = base + tile * (bpp * 8) + (py & 7) * 2;
                 unsigned bit = 7 - (px & 7), index = 0;
                 for (unsigned p = 0; p < bpp; p++)
-                    index |= ((machine.vram[(row + (p / 2) * 16 + (p & 1)) & 0xffff] >> bit) & 1) << p;
+                    index |= ((machine.vram[(row_ + (p / 2) * 16 + (p & 1)) & 0xffff] >> bit) & 1) << p;
                 unsigned priority = bg_priority(mode, bg, (entry >> 13) & 1, r[5] & 8);
                 if (index && priority > best) {
                     best = priority;
@@ -209,8 +276,12 @@ void snes_render(uint8_t *rgb) {
         if (r[0] & 0x80) c = 0;
         for (unsigned k = 0; k < 3; k++) {
             unsigned v = (c >> (k * 5)) & 31;
-            *rgb++ = (uint8_t)((v * 255u * bright + 232u) / (31u * 15u));
+            *row++ = (uint8_t)((v * 255u * bright + 232u) / (31u * 15u));
         }
-      }
     }
+}
+
+void snes_render(uint8_t *rgb) {
+    for (unsigned y = 0; y < 224; y++)
+        snes_render_line(y, rgb + y * 256u * 3u);
 }

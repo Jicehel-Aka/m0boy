@@ -5,6 +5,7 @@
 void snes_ppu_write(uint16_t at, uint8_t v);
 uint8_t snes_ppu_read(uint16_t at);
 void snes_dma_start(uint8_t mask);
+void snes_hdma_line(void);
 
 snes_t machine; /* one machine per firmware, as the other runtimes' own */
 
@@ -87,6 +88,7 @@ static void io_write(uint16_t at, uint8_t v) {
         machine.joy_strobe = v & 1;
         break;
     case 0x420b: snes_dma_start(v); break;
+    case 0x420c: machine.hdma_enable = v; break;
     case 0x4200: /* NMI and the IRQ enables: only the NMI has a source */
         if ((v & 0x80) && !c->nmi_enable && c->vblank_flag) c->nmi_pending = 1;
         c->nmi_enable = (v & 0x80) != 0;
@@ -215,13 +217,20 @@ void snes_take_interrupt(snes_cpu_t *c, uint16_t vector) {
                        snes_bus_read(0x000000u | (uint32_t)(vector + 1)) << 8);
 }
 
-/* Frame-level approximation: enter VBlank at line 225 and sample the NMI
- * at the next instruction boundary. */
+/* Line-level approximation: the line's pixels go out with the registers as
+ * the previous lines' code left them (a write during a line's HBlank
+ * reaches the next line), the CPU runs the visible part, the HBlank flag
+ * rises and the rest of the line runs.  VBlank and the NMI enter at line
+ * 225; the auto-read latches there and its time is approximated at three
+ * lines. */
 void snes_frame(void) {
     const uint32_t start = machine.cpu.cycles;
     machine.frames++;
     machine.vblank = 0;
+    machine.hblank = 0;
     machine.cpu.vblank_flag = 0;
+    memset(machine.hdma_run, 0, sizeof machine.hdma_run);
+    memset(machine.hdma_done, 0, sizeof machine.hdma_done);
     for (unsigned line = 0; line < 262; line++) {
         if (line == 225) {
             machine.vblank = 1;
@@ -235,6 +244,18 @@ void snes_frame(void) {
             }
         }
         if (line == 228) machine.joy_busy = 0;
-        snes_run(&machine.cpu, start + (uint32_t)(((uint64_t)(line + 1) * SNES_FRAME_CYCLES) / 262));
+        if (line < 224) snes_render_line(line, machine.screen + line * 256u * 3u);
+        const uint32_t until = start + (uint32_t)(((uint64_t)(line + 1) * SNES_FRAME_CYCLES) / 262);
+        /* three quarters of the line's cycles before the HBlank flag, as
+         * the visible part's share of the 1364 dots, rounded */
+        const uint32_t visible = start +
+            (uint32_t)(((uint64_t)line * SNES_FRAME_CYCLES) / 262 +
+                       ((((uint64_t)(line + 1) * SNES_FRAME_CYCLES) / 262 -
+                         ((uint64_t)line * SNES_FRAME_CYCLES) / 262) * 3) / 4);
+        snes_run(&machine.cpu, visible);
+        machine.hblank = 1;
+        snes_hdma_line();
+        snes_run(&machine.cpu, until);
     }
+    machine.hblank = 0;
 }
