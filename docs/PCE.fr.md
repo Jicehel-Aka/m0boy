@@ -275,6 +275,22 @@ rendu après chaque instruction, les sorties de région après un TAM dont
 le banc n'est pas prouvé, la longueur 3 de `JMP (ind)`, et dans le
 cœur lui-même un `pc0` qui déviait un saut à sa propre adresse).
 
+## La cible AKA (ESP32-S3)
+
+`--target aka` ajoute la Gamebuino AKA : le frontend console
+(`targets/pce/platform/pce_main.cpp`) reçoit chaque ligne rendue, planne
+la fenêtre active du VDC sur 120 rangées (le panneau les zoome ×2,
+`M0_PANEL_SRC_ROWS`), échantillonne la largeur 256 -> 160 au filtre 5-in-8
+(`m0_box58_fast` ; une autre largeur : pixel le plus proche) et mélange
+les deux lignes sources d'une même rangée (`m0_avg2_panel`) ; le menu
+d'options, le repli au launcher (redémarrage) et la vitesse du pad suivent
+le contrat commun (`sg_menu.h`, `sg_frontend.h`, `esp32_hw`).  La HuCard
+voyage entière dans la partition application (0x370000, rejet au-delà de
+2,5 Mio — la fenêtrage en flash des plus grandes suit) ; `pio run`
+construit le firmware (Raiden : 2 245 instructions compilées, succès de
+la chaîne ESP-IDF/Arduino, aucune exécution sur console physique).  Le
+pad : A/B = I/II, RUN ou D = Start, MENU ou C = options, joystick complet.
+
 ## Chantiers suivants
 
 - Le décalage de scroll : la référence défile de quelques pixels de plus
