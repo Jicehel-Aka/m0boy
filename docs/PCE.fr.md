@@ -322,14 +322,25 @@ documenté).  **Raiden (USA)**, 768 Kio : le projet précis de la marche
 statique seule imprime le hash de l'interpréteur (`14af7372` à l'image
 300, la même valeur que l'interpréteur seul et que les binaires livrés),
 et le profilé le garde jusqu'à ~1 300 des 9 096 adresses du profil de
-jeu (le mode rapide est en plus ×30 sur 300 images du titre).  Reste
-ouvert : avec le profil complet, une instance compilée par une graine
-que la marche n'a pas prouvée diverge encore — le diff d'écritures WRAM
-horodatées et l'anneau des pc du dispatcher dans les projets générés
-sont l'outil (les correctifs déjà tirés de la chasse : le drapeau T
-rendu après chaque instruction, les sorties de région après un TAM dont
-le banc n'est pas prouvé, la longueur 3 de `JMP (ind)`, et dans le
-cœur lui-même un `pc0` qui déviait un saut à sa propre adresse).
+jeu (le mode rapide est en plus ×30 sur 300 images du titre).  Le profil complet (~21 000 instructions jouées, ~71 000 instances sous
+leurs contextes MPR) a fini par diverger pour quatre causes, toutes dans
+le générateur et corrigées : les tables `entry_region`/`entry_slot` en
+`uint16_t` tronquaient les index au-delà de 65 534 régions ou entrées ;
+le masque de vivacité des flags passait aux macros dans son codage
+compact (N=1, Z=2, C=4, V=8) au lieu des bits de P (BIT ne mettait plus
+N ni V à jour, ADC/SBC plus V) ; l'adresse d'écriture de `STA (zp),Y`
+(et des autres écritures `(zp),Y`) oubliait Y ; en mode précis, une
+branche ou un saut pris vers une étiquette de la même région ne
+contrôlait pas le budget (une instruction de trop au bord de la
+tranche).  Avec un profil de sessions aléatoires et d'un idle long
+(`m0search.py run --no-explore`, 12 s), le projet `--meta-precise` de
+Raiden imprime le `run_hash` de `--interp` à 60, 300, 1 500 et
+3 000 images (`9288e16e`, `66b29e2e`, `6ae87821`, `23a4547f`).  Le mode
+rapide ne vérifie le budget qu'aux étiquettes : son hash diffère de
+l'interpréteur par construction, l'image reste celle du jeu.
+L'outil de la chasse : un journal par tranche (registres et hash de la
+WRAM) puis par instruction sur la fenêtre de la première tranche qui
+diverge, comparés entre `--interp` et le natif.
 
 ## La cible AKA (ESP32-S3)
 

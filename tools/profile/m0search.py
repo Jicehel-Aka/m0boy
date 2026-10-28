@@ -110,7 +110,7 @@ SYSTEMS = {
         b1="a", b2="b",
     ),
     "pce": dict(
-        explore=True, coverage=True, interp=[], rom_arg=False,
+        explore=True, coverage=True, interp=["--interp"], rom_arg=False,
         input="momentary-named",
         names={"i": 1, "ii": 2, "select": 4, "run": 8,
                "up": 16, "right": 32, "down": 64, "left": 128},
@@ -317,7 +317,7 @@ def cmd_run(a):
     # rejeux manuels ; (nom, fichier d'entrées ou None, budget de trames)
     total_frames = a.frames * a.sessions
     plan = []
-    if sys_["explore"]:
+    if sys_["explore"] and not a.no_explore:
         plan.append(("explore", None, total_frames))
     else:
         for i in range(a.sessions):
@@ -393,6 +393,9 @@ def main():
                    help="sessions random (1 long explorateur sur les "
                         "coeurs à --explore : total = sessions x frames)")
     r.add_argument("--frames", type=int, default=1500)
+    r.add_argument("--no-explore", action="store_true",
+                   help="sessions scriptées au hasard au lieu de l'explorateur "
+                        "guidé par la couverture")
     r.add_argument("--idle-frames", type=int, default=6000,
                    help="la session sans touches (0 : aucune) ; les modes "
                         "démo n'entrent dans la couverture que là")

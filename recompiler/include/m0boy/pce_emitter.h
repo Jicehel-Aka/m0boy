@@ -28,10 +28,13 @@ struct EmitOptions {
     size_t max_instructions = 0; /* 0: every reachable instruction */
     unsigned check_cycles = 48;  /* fast mode: the most cycles between two budget checks */
     bool sweep = false;          /* the card swept for JSR/JMP abs targets the walk cannot reach */
+    size_t regions_per_file = 0; /* >0: the regions go to EmitStats::parts, that many per C file (one file of
+                                    tens of MB is more than the compiler's memory) */
 };
 
 struct EmitStats {
     size_t compiled = 0, covered = 0, regions = 0, entries = 0;
+    std::vector<std::string> parts; /* pce_gen_1.c, pce_gen_2.c...: regions of a split build */
 };
 
 std::string emit_code(const std::vector<uint8_t>& rom, const std::vector<CoverageEntry>& coverage,

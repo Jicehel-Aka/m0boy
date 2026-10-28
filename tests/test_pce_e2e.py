@@ -266,6 +266,23 @@ hasbit:
     lda ($50),y
     adc $2038,y
     sta ($50),y
+    ; -- the store through a pointer lands at pointer + Y, BIT sets N and V
+    ; from the operand, a taken branch at the slice edge is counted as one
+    lda #$80
+    sta $54
+    lda #$22
+    sta $55
+    ldy #$07
+    lda #$C0
+    sta ($54),y
+    bit $2287
+    bvc no_v
+    inc $2290
+no_v:
+    bpl no_n
+    inc $2291
+no_n:
+    ldy #$00
     lda ($52,x)
     and table0,y
     ora $2030,y
