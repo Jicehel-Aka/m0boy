@@ -735,6 +735,47 @@ uint32_t samd21_room(const Samd21 *b) {
     return limit - now > 0x7fffffffu ? 0x7fffffffu : (uint32_t)(limit - now);
 }
 
+/* Registers whose read changes nothing (SERCOM4 INTFLAG, TC4/TC5 INTFLAG,
+ * STATUS, COUNT, DAC STATUS): the board only has to know the time. */
+static int pure_status(uint32_t a) {
+    const uint32_t lo = a & 0x3ffu;
+    return ((a & 0xfffffc00u) == 0x42001800u && lo == 0x18u) ||
+           ((a & 0xfffff800u) == 0x42003000u && (lo == 0x0eu || lo == 0x0fu || lo == 0x10u)) ||
+           ((a & 0xfffffc00u) == 0x42004800u && lo == 0x07u);
+}
+/* Writes the board only has to see in time: a DAC sample (it is logged with the
+ * cycle), the clearing of a TC4/TC5 INTFLAG. */
+static int pure_write(uint32_t a) {
+    const uint32_t lo = a & 0x3ffu;
+    return ((a & 0xfffff800u) == 0x42003000u && lo == 0x0eu) ||
+           ((a & 0xfffffc00u) == 0x42004800u && (lo == 0x08u || lo == 0x09u));
+}
+uint32_t m0_native_ld_slow(M0Cpu *m, uint32_t a, unsigned n, uint32_t *c, int *hw) {
+    const M0Machine *b = (const M0Machine *)m->board;
+    uint32_t o = a - b->flash_base, v = 0;
+    /* code and constants: reading the flash has no side effect and no wait state */
+    if (o <= b->flash_size - n) { memcpy(&v, b->flash + o, n); return v; }
+    ++m->stores;
+    if (pure_status(a)) {
+        m->cycles += *c;                /* the board sees the time of the access, the chain goes on */
+        v = m->read(m->board, a, n);
+        m->cycles -= *c;
+        return v;
+    }
+    m->cycles += *c; *c = 0; *hw = 1;
+    return m->read(m->board, a, n);
+}
+void m0_native_st_slow(M0Cpu *m, uint32_t a, uint32_t v, unsigned n, uint32_t *c, int *hw) {
+    if (pure_write(a)) {
+        m->cycles += *c;
+        m->write(m->board, a, v, n);
+        m->cycles -= *c;
+        return;
+    }
+    m->cycles += *c; *c = 0; *hw = 1;
+    m->write(m->board, a, v, n);
+}
+
 void m0_native_idle(M0Cpu *m, uint32_t pc, uint32_t addr) { samd21_idle((Samd21 *)m->board, pc, addr); }
 
 /* A short loop with no store, visited again with the same registers, flags

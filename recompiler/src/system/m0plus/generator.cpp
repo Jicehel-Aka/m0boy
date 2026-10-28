@@ -199,10 +199,31 @@ static unsigned max_cycles(const std::string& body) {
 
 bool write_native_pages(const fs::path& source,
                         const std::map<uint32_t, std::pair<uint16_t, std::string>>& bodies,
-                        uint32_t base, size_t rom_size, std::string& error) {
+                        uint32_t base, const std::vector<uint8_t>& rom, std::string& error) {
+    const size_t rom_size = rom.size();
+    /* a load from a constant flash address (a literal pool word) is the constant */
+    auto fold_literals = [&](std::string text) {
+        static const std::regex literal("LD32\\(0x([0-9a-f]+)u\\)");
+        std::string out;
+        auto last = text.cbegin();
+        for (std::sregex_iterator it(text.begin(), text.end(), literal), end; it != end; ++it) {
+            const uint64_t at = std::stoull((*it)[1], nullptr, 16);
+            out.append(last, text.cbegin() + it->position());
+            last = text.cbegin() + it->position() + it->length();
+            if (at >= base && at - base + 4 <= rom_size) {
+                const uint32_t v = rom[at - base] | rom[at - base + 1] << 8 | rom[at - base + 2] << 16 |
+                                   uint32_t(rom[at - base + 3]) << 24;
+                char buffer[16];
+                std::snprintf(buffer, sizeof buffer, "0x%xu", v);
+                out += buffer;
+            } else out.append(it->str());
+        }
+        out.append(last, text.cend());
+        return out;
+    };
     std::map<uint32_t, Entry> entries;
     for (const auto& [pc, e] : bodies)
-        entries[pc] = {pc, e.first, (e.first & 0xf800u) >= 0xe800u ? 4u : 2u, strip_dialect(e.second)};
+        entries[pc] = {pc, e.first, (e.first & 0xf800u) >= 0xe800u ? 4u : 2u, fold_literals(strip_dialect(e.second))};
     auto branch_of = [](const Entry& e, uint32_t* target) {
         static const std::regex direct("BRANCH\\(0x([0-9a-f]+)u\\)");
         std::smatch m;
@@ -260,19 +281,27 @@ bool write_native_pages(const fs::path& source,
     std::map<uint32_t, std::ostringstream> files;              /* 4 KiB per file */
     std::ostringstream dispatch, header;
     dispatch << "#include \"m0_native_glue.h\"\n#include \"m0_native_pages.h\"\n#include \"samd21.h\"\n"
-                "/* Flash is read-only here: translated code never re-reads its opcodes. */\n"
+                "/* Flash is read-only here: translated code never re-reads its opcodes.\n"
+                " * A page returns 0 (nothing run), 1 (run, the clock has been ticked: a\n"
+                " * machine access or an exception return) or 2 (run, cycles on the\n"
+                " * clock, nothing else can have happened inside `room`): the next page\n"
+                " * is entered at once, and the machine ticks once when the chain stops. */\n"
                 "int m0_native_step(M0Cpu *m) {\n"
-                "  uint32_t pc = m->r[15], index = pc - M0_FLASH_BASE;\n"
-                "  if (index >= " << rom_size << "u) return 0;\n"
                 "  uint32_t room = samd21_room((const Samd21 *)m->board);\n"
-                "  if (!room) return 0;\n  switch (pc >> 10) {\n";
+                "  if (!room) return 0;\n"
+                "  const uint64_t start = m->cycles;\n  int ran = 0;\n"
+                "  for (;;) {\n"
+                "    uint32_t pc = m->r[15], used = (uint32_t)(m->cycles - start);\n"
+                "    if (pc - M0_FLASH_BASE >= " << rom_size << "u || used >= room) break;\n"
+                "    const uint32_t left = room - used;\n    int r;\n"
+                "    switch (pc >> 10) {\n";
     for (const auto& [page, list] : pages) {
         std::ostringstream& out = files[(page << 10) >> 12];
         if (out.tellp() == 0) out << "#include \"m0_native_glue.h\"\n#include \"m0_native_pages.h\"\n";
         std::ostringstream name;
         name << "m0_page_" << std::hex << page;
         header << "int " << name.str() << "(M0Cpu *m, uint32_t pc, uint32_t room);\n";
-        dispatch << "  case 0x" << std::hex << page << "u: return " << name.str() << "(m, pc, room);\n";
+        dispatch << "    case 0x" << std::hex << page << "u: r = " << name.str() << "(m, pc, left); break;\n";
         out << "int " << name.str() << "(M0Cpu *m, uint32_t pc, uint32_t room) {\n"
                "uint32_t c = 0; int hw = 0; (void)hw;\nswitch (pc) {\n";
         for (const Entry* e : list)
@@ -298,7 +327,7 @@ bool write_native_pages(const fs::path& source,
                 if (kind == 1 && here.count(target))
                     line << "if (hw) { m->r[15] = 0x" << target << "u; goto out; } goto L_" << target << ";";
                 else if (kind == 1) line << "m->r[15] = 0x" << target << "u; goto out;";
-                else line << "m0_native_branch(m, bt); goto out;";
+                else line << "m0_native_branch(m, bt); hw = bt >= 0xfffffff0u; goto out;";
                 line << " }\n";
             }
             if (reaches_machine(e)) line << "if (hw) { m->r[15] = 0x" << next << "u; goto out; }\n";
@@ -308,14 +337,16 @@ bool write_native_pages(const fs::path& source,
             if (flows && !adjacent) line << "m->r[15] = 0x" << next << "u; goto out;\n";
             out << line.str();
         }
-        out << "out: m0_native_finish(m, c); return 1;\n}\n";
+        out << "out: if (hw) { m0_native_finish(m, c); return 1; }\nm->cycles += c; return 2;\n}\n";
     }
     for (auto& [file, text] : files) {
         std::ofstream unit(source / ("m0_native_page_" + [&] { std::ostringstream n; n << std::hex << (file << 12); return n.str(); }() + ".c"));
         unit << text.str();
         if (!unit) { error = "Cannot write M0+ native page"; return false; }
     }
-    dispatch << "  default: return 0;\n  }\n}\n";
+    dispatch << "    default: r = 0; break;\n    }\n"
+                "    if (!r) break;\n    ran = 1;\n    if (r == 1) return 1;\n  }\n"
+                "  if (ran && m->event) m->event(m->board, m, 0);\n  return ran;\n}\n";
     std::ofstream(source / "m0_native.c") << dispatch.str();
     std::ofstream(source / "m0_native_pages.h") << header.str();
     (void)base;
@@ -654,7 +685,7 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                          << "(T, pc, op, waits, cycles);\n";
             }
             if (system != SystemId::meta && (!code || !dispatch)) { error = "Cannot write gm0 native entries"; return false; }
-            if (system == SystemId::meta && !write_native_pages(source, bodies, base, bytes.size(), error))
+            if (system == SystemId::meta && !write_native_pages(source, bodies, base, bytes, error))
                 return false;
         }
         {

@@ -53,24 +53,24 @@ static inline uint32_t m0_bswap32(uint32_t x) {
     return x << 24 | (x & 0xff00u) << 8 | (x >> 8 & 0xff00u) | x >> 24;
 }
 
-/* The clock must show the time of the access: the cycles of the chain so far
- * go onto it before a peripheral sees the access. */
-static inline void m0_reach(M0Cpu *m, uint32_t *c, int *hw) { m->cycles += *c; *c = 0; *hw = 1; ++m->stores; }
+/* Anything but SRAM goes to the board (samd21.c): flash reads and the few
+ * registers it can serve without ending the chain run there, the rest puts
+ * the chain's cycles on the clock first and sets *hw. */
+uint32_t m0_native_ld_slow(M0Cpu *m, uint32_t a, unsigned n, uint32_t *c, int *hw);
+void m0_native_st_slow(M0Cpu *m, uint32_t a, uint32_t v, unsigned n, uint32_t *c, int *hw);
 
 static inline uint32_t m0_ld(M0Cpu *m, uint32_t a, unsigned n, uint32_t *c, int *hw) {
     M0Machine *b = (M0Machine *)m->board;
     uint32_t o = a - b->ram_base, v = 0;
     if (__builtin_expect(o <= M0_MACHINE_RAM_BYTES - n, 1)) { memcpy(&v, b->ram + o, n); return v; }
-    m0_reach(m, c, hw);
-    return m->read(m->board, a, n);
+    return m0_native_ld_slow(m, a, n, c, hw);
 }
 static inline void m0_st(M0Cpu *m, uint32_t a, uint32_t v, unsigned n, uint32_t *c, int *hw) {
     M0Machine *b = (M0Machine *)m->board;
     uint32_t o = a - b->ram_base;
     ++m->stores;
     if (__builtin_expect(o <= M0_MACHINE_RAM_BYTES - n, 1)) { memcpy(b->ram + o, &v, n); return; }
-    m0_reach(m, c, hw);
-    m->write(m->board, a, v, n);
+    m0_native_st_slow(m, a, v, n, c, hw);
 }
 static inline void m0_stm(M0Cpu *m, uint32_t a, uint32_t list, uint32_t *c, int *hw) {
     for (; list; list &= list - 1, a += 4) m0_st(m, a, m->r[__builtin_ctz(list)], 4, c, hw);

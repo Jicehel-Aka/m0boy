@@ -112,6 +112,25 @@ int main(void) {
         assert(!machine.cpu.fault && machine.cpu.exception == 0 && machine.cpu.r[0] == 33 &&
                machine.cpu.r[13] == 0x20000100 && machine.cpu.r[15] == 0x400c);
     }
+    {
+        /* Translated blocks put cycles on the clock before the machine ticks
+         * them: SysTick's VAL read must count them, across a reload too. */
+        uint8_t image[64] = {0};
+        M0Machine machine;
+        image[1] = 0x01; image[3] = 0x20; image[4] = 9; image[5] = 0x40;
+        m0_machine_init(&machine, image, sizeof image, 0x4000, 0x20000000);
+        m0_machine_write(&machine, 0xe000e014, 999, 4);
+        m0_machine_write(&machine, 0xe000e018, 0, 4);
+        m0_machine_write(&machine, 0xe000e010, 1, 4);
+        machine.cpu.cycles += 10;
+        assert(m0_machine_read(&machine, 0xe000e018, 4) == 990);
+        machine.cpu.cycles += 990;                          /* exactly one period: reaches 0 */
+        assert(m0_machine_read(&machine, 0xe000e018, 4) == 0);
+        machine.cpu.cycles += 5;
+        assert(m0_machine_read(&machine, 0xe000e018, 4) == 995);
+        m0_machine_tick(&machine, &machine.cpu, 0);
+        assert(machine.systick_val == 995);
+    }
     puts("M0+ CPU basic bus/branch parity OK");
     return 0;
 }

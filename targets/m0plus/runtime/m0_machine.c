@@ -9,11 +9,27 @@ static uint32_t load_le(const uint8_t *p, unsigned width) {
 static void store_le(uint8_t *p, uint32_t value, unsigned width) {
     for (unsigned i = 0; i < width; ++i) p[i] = (uint8_t)(value >> (i * 8));
 }
+/* SysTick as it stands now: block-accumulated cycles are on the CPU clock
+ * before the machine has ticked them, so a read counts them in. */
+static uint32_t systick_now(const M0Machine *m, int *wrapped) {
+    uint64_t delta = m->cpu.cycles - m->accounted_cycles;
+    uint32_t val = m->systick_val;
+    *wrapped = 0;
+    if (!(m->systick_ctrl & 1u) || !delta) return val;
+    const uint64_t rem = val ? val : (uint64_t)m->systick_load + 1u;
+    if (delta < rem) return (uint32_t)(rem - delta);
+    delta -= rem;
+    *wrapped = 1;
+    if (!delta) return 0;
+    delta %= (uint64_t)m->systick_load + 1u;
+    return delta ? (uint32_t)(m->systick_load + 1u - delta) : 0;
+}
 static uint32_t scs_word(M0Machine *m, uint32_t address) {
+    int wrapped;
     switch (address) {
-    case 0xe000e010u: return m->systick_ctrl;
+    case 0xe000e010u: systick_now(m, &wrapped); return m->systick_ctrl | (uint32_t)wrapped << 16;
     case 0xe000e014u: return m->systick_load;
-    case 0xe000e018u: return m->systick_val;
+    case 0xe000e018u: return systick_now(m, &wrapped);
     case 0xe000e100u: return m->nvic_enable;
     case 0xe000e180u: return m->nvic_enable;
     case 0xe000e200u: return m->nvic_pending;
