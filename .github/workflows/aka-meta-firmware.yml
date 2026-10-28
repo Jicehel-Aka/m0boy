@@ -86,7 +86,9 @@ jobs:
             done
             if [ "$n" -gt 0 ]; then sed -i '1i #include "esp_attr.h"' src/m0_native_page_*.c; fi
             echo "=== essai avec $n pages en RAM interne ==="
-            if pio run; then break; fi
+            if pio run > "$RUNNER_TEMP/build.log" 2>&1; then tail -n 25 "$RUNNER_TEMP/build.log"; break; fi
+            # les erreurs, lisibles dans les annotations du run
+            grep -E "error|undefined reference|overflow|will not fit|region" "$RUNNER_TEMP/build.log" | head -n 8 | while IFS= read -r l; do echo "::error::[n=$n] ${l:0:400}"; done
             [ "$n" -eq 0 ] && exit 1
             n=$(( n > 2 ? n - 2 : 0 ))
             for f in src/m0_native_page_*.c; do sed -i '1{/esp_attr.h/d}' "$f"; done

@@ -1,6 +1,8 @@
 /* META firmware on the Gamebuino AKA: the translated Thumb code and the
  * SAMD21 board model (samd21.c) run on the ESP32-S3; no emulator. */
 #include <Arduino.h>
+#include <string.h>
+#include "esp_heap_caps.h"
 extern "C" {
 #include "samd21.h"
 #include "m0_audio.h"
