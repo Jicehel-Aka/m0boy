@@ -679,6 +679,8 @@ int samd21_init(Samd21 *b, const uint8_t *flash, size_t flash_size, uint32_t fla
 void samd21_buttons(Samd21 *b, uint8_t pressed) { b->buttons = (uint8_t)~pressed; }
 void samd21_sd(Samd21 *b, Samd21SdRead r, Samd21SdWrite w) { b->sd_read = r; b->sd_write = w; }
 
+/* counters for the AKA runtime's [perf] line: chains run natively / instructions interpreted */
+uint32_t m0_stat_native, m0_stat_interp;
 void samd21_frame(Samd21 *b, int (*native_step)(M0Cpu *)) {
     M0Cpu *cpu = &b->m.cpu;
     {   /* the cursor stays where the last frame left it, in this frame's time */
@@ -696,7 +698,8 @@ void samd21_frame(Samd21 *b, int (*native_step)(M0Cpu *)) {
             if (b->mmio) b->mmio->pc = pc;
             m0_cpu_step(cpu);
             b->step_hook(b->hook_ctx, pc, cpu->cycles - c0);
-        } else if (!(native_step && native_step(cpu))) m0_cpu_step(cpu);
+        } else if (native_step && native_step(cpu)) { m0_stat_native++; }
+        else { m0_stat_interp++; m0_cpu_step(cpu); }
     }
     sync(b);
     b->frac += 11u;                                         /* 803649.1.. cycles per frame */
