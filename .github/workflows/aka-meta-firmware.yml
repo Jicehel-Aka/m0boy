@@ -9,6 +9,14 @@ on:
         description: "Chemin du .bin META dans le depot"
         type: string
         default: "tools/aka/samples/CatsAndCoinsDemo.bin"
+      bgr:
+        description: "Ordre des couleurs BGR de l'ecran (coche si rouge et bleu sont inverses)"
+        type: boolean
+        default: true
+      parties:
+        description: "Parties aleatoires jouees pour decouvrir le code a traduire (plus = mieux couvert, plus long)"
+        type: string
+        default: "4"
 
 jobs:
   firmware:
@@ -24,14 +32,27 @@ jobs:
         run: |
           cmake -G Ninja -B build .
           ninja -C build m0recomp
-      - name: Projet AKA
+      - name: Couverture (parties jouees sur PC)
         run: |
           rom="${{ inputs.rom }}"
           name="$(basename "$rom" .bin)"
           echo "NAME=$name" >> "$GITHUB_ENV"
-          ./build/bin/m0recomp "$rom" --system meta --target aka -o "$RUNNER_TEMP/aka"
+          ./build/bin/m0recomp "$rom" --system meta --target pc -o "$RUNNER_TEMP/pc"
+          cmake -G Ninja -S "$RUNNER_TEMP/pc" -B "$RUNNER_TEMP/pc/build"
+          ninja -C "$RUNNER_TEMP/pc/build" m0_headless
+          for seed in $(seq 1 ${{ inputs.parties }}); do
+            "$RUNNER_TEMP/pc/build/m0_headless" --frames 3000 --random "$seed" --profile "$RUNNER_TEMP/p$seed" | tail -1
+          done
+          cat "$RUNNER_TEMP"/p*.cov | awk '{ if (!($1 in n)) n[$1]=0; n[$1]+=$2 } END { for (a in n) print a, n[a] }' | sort > "$RUNNER_TEMP/all.cov"
+          wc -l "$RUNNER_TEMP/all.cov"
+      - name: Projet AKA
+        run: |
+          ./build/bin/m0recomp "${{ inputs.rom }}" --system meta --target aka --coverage "$RUNNER_TEMP/all.cov" -o "$RUNNER_TEMP/aka"
+          cat "$RUNNER_TEMP/aka/native-status.txt"
       - name: Compilation PlatformIO
         working-directory: ${{ runner.temp }}/aka
+        env:
+          PLATFORMIO_BUILD_FLAGS: ${{ inputs.bgr && '-DAKA_LCD_BGR=1' || '' }}
         run: pio run
       - name: Paquet
         run: |
