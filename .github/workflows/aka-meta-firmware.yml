@@ -16,11 +16,11 @@ on:
       iram:
         description: "Pages (1 Ko de code ARM chacune) les plus chaudes copiees en RAM interne, essayees de la plus grande valeur vers 0 jusqu'a ce que ca tienne"
         type: string
-        default: "6"
+        default: "24"
       parties:
         description: "Parties aleatoires jouees pour decouvrir le code a traduire (plus = mieux couvert, plus long)"
         type: string
-        default: "4"
+        default: "8"
 
 jobs:
   firmware:
@@ -45,7 +45,7 @@ jobs:
           cmake -G Ninja -S "$RUNNER_TEMP/pc" -B "$RUNNER_TEMP/pc/build"
           ninja -C "$RUNNER_TEMP/pc/build" m0_headless
           for seed in $(seq 1 ${{ inputs.parties }}); do
-            "$RUNNER_TEMP/pc/build/m0_headless" --frames 3000 --random "$seed" --profile "$RUNNER_TEMP/p$seed" | tail -1
+            "$RUNNER_TEMP/pc/build/m0_headless" --frames 6000 --random "$seed" --profile "$RUNNER_TEMP/p$seed" | tail -1
           done
           cat "$RUNNER_TEMP"/p*.cov | awk '{ if (!($1 in n)) n[$1]=0; n[$1]+=$2 } END { for (a in n) print a, n[a] }' | sort > "$RUNNER_TEMP/all.cov"
           wc -l "$RUNNER_TEMP/all.cov"
@@ -90,7 +90,7 @@ jobs:
             # les erreurs, lisibles dans les annotations du run
             { grep -i -E "error|undefined|overflow|will not fit|region|fatal" "$RUNNER_TEMP/build.log" | head -n 10; tail -n 6 "$RUNNER_TEMP/build.log"; } | while IFS= read -r l; do echo "::error::[n=$n] ${l:0:400}"; done || true
             [ "$n" -eq 0 ] && exit 1
-            n=$(( n > 2 ? n - 2 : 0 ))
+            n=$(( n > 4 ? n - 4 : 0 ))
             for f in src/m0_native_page_*.c; do sed -i '1{/esp_attr.h/d}' "$f"; done
           done
       - name: Paquet
