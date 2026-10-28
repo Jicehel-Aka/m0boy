@@ -53,11 +53,13 @@ extern "C" int m0boy_console_main(void) {
     /* Profiling: prints, once a second on the serial port (115200), where the
      * time goes (guest emulation / audio / screen), the frame rate reached and
      * the guest cycles per frame. */
-    uint32_t t_emu = 0, t_aud = 0, t_lcd = 0, frames = 0, t_rep = m0_micros();
+    uint32_t t_btn = 0, t_emu = 0, t_aud = 0, t_lcd = 0, frames = 0, t_rep = m0_micros();
     uint64_t c_rep = board.m.cpu.cycles;
     for (;;) {
         uint32_t t0 = m0_micros();
         samd21_buttons(&board, esp32_buttons());
+        uint32_t tb = m0_micros();
+        t_btn += tb - t0;
         samd21_frame(&board, m0_native_step);
         uint32_t t1 = m0_micros();
         m0_audio_frame();
@@ -74,16 +76,16 @@ extern "C" int m0boy_console_main(void) {
             m0_lcd_send_rows(rows, (uint8_t)y0, 8);
         }
         uint32_t t3 = m0_micros();
-        t_emu += t1 - t0; t_aud += t2 - t1; t_lcd += t3 - t2; ++frames;
+        t_emu += t1 - tb; t_aud += t2 - t1; t_lcd += t3 - t2; ++frames;
         if (t3 - t_rep >= 1000000u) {
-            Serial.printf("[perf] %u fps | per frame: emu %u us, audio %u us, lcd %u us | "
+            Serial.printf("[perf] %u fps | per frame: buttons %u us, emu %u us, audio %u us, lcd %u us | "
                           "%u Mcycles/s guest, idle skipped %u Mc | native chains %u, interpreted %u per frame\n",
-                          frames, t_emu / frames, t_aud / frames, t_lcd / frames,
+                          frames, t_btn / frames, t_emu / frames, t_aud / frames, t_lcd / frames,
                           (unsigned)((board.m.cpu.cycles - c_rep) / 1000000u),
                           (unsigned)(board.idle_skipped / 1000000u),
                           m0_stat_native / frames, m0_stat_interp / frames);
             m0_stat_native = m0_stat_interp = 0;
-            t_emu = t_aud = t_lcd = frames = 0; t_rep = t3; c_rep = board.m.cpu.cycles;
+            t_btn = t_emu = t_aud = t_lcd = frames = 0; t_rep = t3; c_rep = board.m.cpu.cycles;
         }
         next += 16743u;
         const uint32_t now = m0_micros();
