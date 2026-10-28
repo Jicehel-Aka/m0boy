@@ -43,12 +43,23 @@ extern "C" void md_platform_audio_render(uint8_t *out, unsigned n) { samd21_audi
 extern "C" int m0boy_console_main(void) {
     Serial.begin(115200);
     m0_lcd_init();
-    if (samd21_init(&board, m0_rom, m0_rom_size, M0_FLASH_BASE, pixels)) {
+    /* The ROM image sits in the console's flash, whose cache refill costs ~2 us
+     * a line (DIO, measured with [bench]); the game reads its data tables from
+     * it all the time.  A copy in internal RAM (or PSRAM) makes those reads
+     * 10-50x quicker. */
+    const uint8_t *rom = m0_rom;
+    if (uint8_t *copy = (uint8_t *)heap_caps_malloc(m0_rom_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) {
+        memcpy(copy, m0_rom, m0_rom_size); rom = copy;
+    } else if (uint8_t *copy2 = (uint8_t *)ps_malloc(m0_rom_size)) {
+        memcpy(copy2, m0_rom, m0_rom_size); rom = copy2;
+    }
+    if (samd21_init(&board, rom, m0_rom_size, M0_FLASH_BASE, pixels)) {
         m0_lcd_fill(M0_COLOR(0x00800000));
         for (;;) delay(1000);
     }
     m0_audio_init();
     m0_bench(&board, pixels);
+    Serial.printf("[bench] ROM read from %s\n", rom == m0_rom ? "flash" : "RAM copy");
     uint32_t next = m0_micros();
     /* Profiling: prints, once a second on the serial port (115200), where the
      * time goes (guest emulation / audio / screen), the frame rate reached and

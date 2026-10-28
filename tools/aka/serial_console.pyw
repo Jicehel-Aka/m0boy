@@ -48,7 +48,15 @@ class Console(tk.Tk):
     def toggle(self):
         if self.ser: return self.close()
         try:
-            self.ser = serial.Serial(self.port.get(), int(self.baud.get()), timeout=0.2)
+            # DTR/RTS a l'etat bas AVANT l'ouverture : sur l'USB de l'ESP32-S3 ces lignes
+            # declenchent un redemarrage (c'est ce qui relancait le jeu a la connexion
+            # et a la deconnexion).
+            ser = serial.Serial()
+            ser.port, ser.baudrate, ser.timeout = self.port.get(), int(self.baud.get()), 0.2
+            ser.dtr = False
+            ser.rts = False
+            ser.open()
+            self.ser = ser
         except Exception as e:
             return messagebox.showerror("Connexion impossible", str(e))
         self.stop.clear(); self.btn["text"] = "Déconnecter"
@@ -57,7 +65,9 @@ class Console(tk.Tk):
     def close(self):
         self.stop.set()
         time.sleep(0.3)
-        try: self.ser.close()
+        try:
+            self.ser.dtr = False; self.ser.rts = False
+            self.ser.close()
         except Exception: pass
         self.ser = None; self.btn["text"] = "Connecter"
 

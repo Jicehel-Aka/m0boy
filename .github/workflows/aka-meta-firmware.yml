@@ -13,6 +13,10 @@ on:
         description: "Ordre des couleurs BGR de l'ecran (coche si rouge et bleu sont inverses)"
         type: boolean
         default: true
+      iram:
+        description: "Pages (1 Ko de code ARM chacune) les plus chaudes copiees en RAM interne, essayees de la plus grande valeur vers 0 jusqu'a ce que ca tienne"
+        type: string
+        default: "6"
       parties:
         description: "Parties aleatoires jouees pour decouvrir le code a traduire (plus = mieux couvert, plus long)"
         type: string
@@ -49,11 +53,44 @@ jobs:
         run: |
           ./build/bin/m0recomp "${{ inputs.rom }}" --system meta --target aka --coverage "$RUNNER_TEMP/all.cov" -o "$RUNNER_TEMP/aka"
           cat "$RUNNER_TEMP/aka/native-status.txt"
+      - name: Pages chaudes en RAM interne
+        run: |
+          python3 - <<'PY'
+          import re, glob, os, collections
+          tmp = os.environ["RUNNER_TEMP"]
+          pg = collections.Counter()
+          for f in glob.glob(tmp + "/p*.hot"):
+              for l in open(f):
+                  m = re.match(r"([0-9a-f]+) cycles=(\d+)", l)
+                  if m: pg[int(m.group(1), 16) >> 10] += int(m.group(2))
+          order = [p for p, _ in pg.most_common()]
+          open(tmp + "/hot_pages.txt", "w").write(" ".join("%x" % p for p in order))
+          print("pages les plus chaudes :", " ".join("%x" % p for p in order[:12]))
+          PY
       - name: Compilation PlatformIO
         working-directory: ${{ runner.temp }}/aka
         env:
           PLATFORMIO_BUILD_FLAGS: ${{ inputs.bgr && '-DAKA_LCD_BGR=1' || '' }}
-        run: pio run
+        run: |
+          read -r -a hot < "$RUNNER_TEMP/hot_pages.txt"
+          n=${{ inputs.iram }}
+          while true; do
+            git -C . status >/dev/null 2>&1 || true
+            # repart des sources d'origine a chaque essai
+            rm -rf .iram_done
+            for f in src/m0_native_page_*.c; do sed -i -E 's/^(IRAM_ATTR )+int m0_page_/int m0_page_/' "$f"; done
+            for p in "${hot[@]:0:$n}"; do
+              for f in src/m0_native_page_*.c; do
+                sed -i -E "s/^int m0_page_${p}\(/IRAM_ATTR int m0_page_${p}(/" "$f"
+              done
+            done
+            if [ "$n" -gt 0 ]; then sed -i '1i #include "esp_attr.h"' src/m0_native_page_*.c; fi
+            echo "=== essai avec $n pages en RAM interne ==="
+            if pio run; then break; fi
+            [ "$n" -eq 0 ] && exit 1
+            n=$(( n > 2 ? n - 2 : 0 ))
+            for f in src/m0_native_page_*.c; do sed -i '1{/esp_attr.h/d}' "$f"; done
+          done
       - name: Paquet
         run: |
           out="$RUNNER_TEMP/pack/$NAME"
