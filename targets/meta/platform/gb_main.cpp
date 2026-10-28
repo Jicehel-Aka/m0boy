@@ -342,9 +342,16 @@ static void pace_frame(void) {
 }
 
 #if M0_SCALED_MODES
+#if defined(GBL_TARGET_PC) && GBL_TARGET_PC
+/* the PC plays the DMG's own 160x144, no scaling: the menu carries no
+ * screen entry and gbl_display_set_mode refuses every other mode */
+static const char *const mode_names[1] = {"NATIVE"};
+#define SCREEN_MODES 1
+#else
 static const char *const mode_names[META_MODE_COUNT] = {"SMOOTH", "TILE", "BLEND", "DARK",
                                                         "CROP", "SKIP", "TBLEND"};
 #define SCREEN_MODES META_MODE_COUNT
+#endif
 #else /* Pokitto: unscaled, gm0's 200x176, or 200x176 with every line */
 static const char *const mode_names[POKITTO_MODE_COUNT] = {"1:1", "200x176", "200x176 entier"};
 #define SCREEN_MODES POKITTO_MODE_COUNT
@@ -417,6 +424,11 @@ static void run_menu(void) {
 #if M0_TARGET_POKITTO
 extern "C" char __bss_end__;
 #define DATA_END __bss_end__
+#elif defined(__MINGW32__)
+/* the PE linker script provides `end` from a discarded section; any stable
+ * address does here — the PC bounds its own process stack with it */
+static char mingw_data_end;
+#define DATA_END mingw_data_end
 #else
 extern "C" char end; /* after .bss and .noinit (gamebuino_meta.ld) */
 #define DATA_END end
@@ -486,7 +498,9 @@ static void option_menu(void) {
         ADD(M_LOAD, "Charger l'etat", META_MENU_ACTION, 0, 0, 0);
     }
     ADD(M_VOLUME, "Volume", META_MENU_CHOICE, &vol, 9, volume_names);
+#if !(defined(GBL_TARGET_PC) && GBL_TARGET_PC)
     ADD(M_SCREEN, "Ecran", META_MENU_CHOICE, &mode, SCREEN_MODES, mode_names);
+#endif
     ADD(M_PALETTE, "Palette", META_MENU_CHOICE, &pal, META_PALETTE_COUNT, gbl_palette_names);
     ADD(M_SKIP, "Images", META_MENU_CHOICE, &skip, FSKIP_MODES, skip_names);
     ADD(M_SPEED, "Vitesse", META_MENU_CHOICE, &fast, 2, speed_names);
@@ -823,7 +837,11 @@ int main(void) {
     m0_audio_init();
 
 #if M0_SCALED_MODES
+#if defined(GBL_TARGET_PC) && GBL_TARGET_PC
+    gbl_display_set_mode(META_MODE_NATIVE); /* the PC window plays 160x144 */
+#else
     gbl_display_set_mode(META_MODE_TBLEND); /* TILE without META_TBLEND */
+#endif
 #else
     gbl_display_set_mode(0);
 #endif

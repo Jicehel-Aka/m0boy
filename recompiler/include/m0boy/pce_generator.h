@@ -22,6 +22,7 @@ struct GenerateOptions {
     bool interpret = false;       /* --nes-interp: no recompiled code, the interpreter only */
     size_t code_budget_bytes = 0; /* the recompiled code's flash budget (0: all of it) */
     unsigned bytes_per_instruction = 0; /* the budget's cost estimate, default 24 */
+    bool sweep = false;           /* --pce-sweep: the walk also seeds from the card's JSR/JMP targets */
 };
 
 struct GenerateStats {

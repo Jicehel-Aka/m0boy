@@ -20,7 +20,7 @@ static uint8_t cart_ram[GG_CART_RAM_SIZE];
 static FILE *audio;
 static uint32_t audio_samples;
 static int audio_error;
-static unsigned frames = 300, buttons, start_frame = ~0u, explore_frames;
+static unsigned frames = 300, buttons, start_frame = ~0u;
 static const char *save_state_file, *load_state_file;
 static uint32_t *hits;
 static uint8_t *entries;
@@ -104,19 +104,18 @@ static void inputs(void) {
     gg_buttons((uint8_t)keys);
 }
 #ifdef GG_ROM_TRACE
-/* --explore frames: the coverage-guided player of m0_explore.h, from the
- * start or from snapshots of the machine (and cartridge RAM) that reached
- * code or ROM data never seen.
+/* --explore frames: the coverage-guided player of m0_explore.h (the glue
+ * in m0_explore_host.h), from the start or from snapshots of the machine
+ * (and cartridge RAM) that reached code or ROM data never seen.
  * Segments plus longs que le défaut partagé : sur six jeux GG, 120 000 images
  * d'exploration et huit graines, 1920 + 3840 gagne 1 à 4 % de « locations »
  * en moyenne (2880 + 5760 ne fait pas mieux ; voir
  * docs/GG_RISTAR_VITESSE_2026-10-14.fr.md). */
 #define M0X_SEGMENT_MIN 1920
 #define M0X_SEGMENT_SPAN 3840
-#include "m0_explore.h"
+#include "m0_explore_host.h"
 typedef struct { gg_t machine; uint8_t cart[GG_CART_RAM_SIZE]; } snapshot_t;
-static m0x_t explorer;
-static unsigned explore_on;
+static m0xh_t xh;
 static void snapshot_save(void *ctx, void *state) {
     snapshot_t *s = state;
     (void)ctx;
@@ -130,7 +129,7 @@ static void snapshot_load(void *ctx, const void *state) {
     memcpy(cart_ram, s->cart, sizeof cart_ram);
     gg_vdp_restore();
 }
-static void explore_inputs(unsigned k) {
+static unsigned explore_map(unsigned k) {
     unsigned keys = 0;
     if (k & M0X_RIGHT) keys |= GG_RIGHT_KEY;
     if (k & M0X_LEFT) keys |= GG_LEFT_KEY;
@@ -139,22 +138,20 @@ static void explore_inputs(unsigned k) {
     if (k & M0X_B1) keys |= GG_B1;
     if (k & M0X_B2) keys |= GG_B2;
     if (k & M0X_START) keys |= GG_START;
-    gg_buttons((uint8_t)keys);
+    return keys;
 }
-static void explore(unsigned total) {
+static uint32_t explore_novelty(void) { return gg_new_locations + new_sectors; }
+static void explore_play(unsigned count) {
+    (void)count; /* the segments bound themselves: m0x_keys ends them */
+    machine.stop = 0;
+    gg_run();
+}
+static int explore_again(void) { return !machine.cpu.fault; } /* a crashed game restarts from the pool */
+static void explore(void) {
     const m0x_machine_t m = { 0, sizeof(snapshot_t), snapshot_save, snapshot_load, GG_IS_SMS ? M0X_NO_START : 0 };
     machine.row = 0; /* nothing is drawn: the game does not need it */
-    if (!m0x_begin(&explorer, &m, random_state, total)) return;
-    explore_on = 1;
-    for (;;) {
-        machine.stop = 0;
-        gg_run();
-        m0x_observe(&explorer, gg_new_locations + new_sectors);
-        if (explorer.segment_left && !machine.cpu.fault) continue; /* discovery */
-        if (!m0x_next(&explorer, gg_new_locations + new_sectors)) break;
-    }
-    fprintf(stderr, "explore: %u frames, %u segments, %u snapshots, %u locations\n", explorer.frames,
-            explorer.segments, explorer.pool_size, gg_new_locations);
+    m0xh_run(&xh, &m, explore_novelty, explore_play, explore_again);
+    machine.frames = xh.x.frames; /* the snapshots rewound it */
 }
 #endif
 static void frame(void *ctx) {
@@ -162,11 +159,12 @@ static void frame(void *ctx) {
 #ifdef GG_ROM_TRACE
     trace_clock++;
     m0_rom_trace_frame(&rom_trace);
-    if (explore_on) {
-        const unsigned k = m0x_keys(&explorer);
-        if (k == M0X_END) machine.stop = 1;
-        else explore_inputs(k);
-        if (gg_new_locations + new_sectors > explorer.novelty) machine.stop = 1;
+    if (xh.on) {
+        gg_buttons((uint8_t)explore_map(m0xh_keys(&xh, explore_map)));
+        /* a discovery stops the frame run at this boundary: the machine
+         * is checkpointed with the observation, the segment goes on */
+        m0xh_seen(&xh, explore_novelty());
+        machine.stop = xh.stop;
         return;
     }
 #endif
@@ -251,13 +249,26 @@ int main(int argc, char **argv) {
             if (strchr(argv[++i], ':')) input_script = argv[i];
             else if (!m0_input_load(&input_file, argv[i], input_names, 8)) { perror(argv[i]); return 2; }
         }
-        else if (!strcmp(argv[i], "--explore") && i + 1 < argc) explore_frames = (unsigned)strtoul(argv[++i], 0, 0);
+        else if (!strcmp(argv[i], "--random") && i + 1 < argc) {
+            random_state = m0_random_seed(argv[++i]);
+#ifdef GG_ROM_TRACE
+            xh.seed = random_state; /* the explorer draws from the same seed */
+#endif
+        }
+#ifdef GG_ROM_TRACE
+        else if (m0xh_arg(&xh, argc, argv, &i)) { /* --explore frames */ }
+#endif
         else if (!strcmp(argv[i], "--save-state") && i + 1 < argc) save_state_file = argv[++i];
         else if (!strcmp(argv[i], "--load-state") && i + 1 < argc) load_state_file = argv[++i];
-        else if (!strcmp(argv[i], "--random") && i + 1 < argc) random_state = m0_random_seed(argv[++i]);
         else if (argv[i][0] != '-' && !rom_path) rom_path = argv[i];
         else { fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]); return 1; }
     }
+#ifdef GG_ROM_TRACE
+    if (xh.total && !cov_path) {
+        fprintf(stderr, "--explore needs --coverage: the explorer's novelty is the trace\n");
+        return 2;
+    }
+#endif
     uint8_t *loaded = 0;
     const uint8_t *rom;
     size_t size;
@@ -333,7 +344,7 @@ int main(int argc, char **argv) {
     if (load_state_file) state_file(load_state_file, 1);
     inputs();
 #ifdef GG_ROM_TRACE
-    if (explore_frames && cov_path) { explore(explore_frames); machine.frames = explorer.frames; }
+    if (xh.total) explore();
     else
 #endif
     if (frames) gg_run();

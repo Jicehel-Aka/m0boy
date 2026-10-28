@@ -21,6 +21,10 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 
 add_subdirectory(recompiler)
 
+add_library(m0boy_m0plus_runtime STATIC targets/m0plus/runtime/m0_cpu.c
+    targets/m0plus/runtime/m0_machine.c)
+target_include_directories(m0boy_m0plus_runtime PUBLIC targets/m0plus/runtime)
+
 add_library(m0boy_z80_runtime STATIC targets/sg1000/runtime/z80.c)
 target_include_directories(m0boy_z80_runtime PUBLIC targets/sg1000/runtime)
 add_library(m0boy_sg1000_runtime STATIC targets/sg1000/runtime/sg1000.c targets/sg1000/runtime/sg_audio.c targets/sg1000/runtime/tms9918.c)
@@ -46,6 +50,11 @@ target_compile_definitions(m0boy_gg_runtime PUBLIC GG_ROM_TRACE=1) # host profil
 add_executable(gg_host targets/gamegear/host/gg_host.c)
 target_include_directories(gg_host PRIVATE targets/common/host) # m0_explore.h
 target_link_libraries(gg_host PRIVATE m0boy_gg_runtime)
+# SNES desktop reference harness (the PPU currently renders a subset).
+add_executable(snes_host targets/snes/host/snes_host.c targets/snes/runtime/snes.c
+    targets/snes/runtime/snes_cpu.c targets/snes/runtime/snes_ppu.c targets/snes/runtime/snes_smp.c targets/snes/runtime/snes_dsp.c)
+target_compile_definitions(snes_host PRIVATE SNES_TRACE=1)
+target_include_directories(snes_host PRIVATE targets/consoles/pc)
 # Card cache and flash residency simulated on host ROM traces (tools/profile).
 add_executable(m0romsim tools/profile/m0romsim.cpp)
 target_link_libraries(m0romsim PRIVATE m0boy_rom_storage)
@@ -63,6 +72,12 @@ endif()
 option(BUILD_TESTS "Build the META and Pokitto target tests" OFF)
 if(BUILD_TESTS)
     enable_testing()
+    add_executable(test_snes_runtime tests/test_snes_runtime.c
+        targets/snes/runtime/snes.c targets/snes/runtime/snes_cpu.c targets/snes/runtime/snes_ppu.c targets/snes/runtime/snes_smp.c targets/snes/runtime/snes_dsp.c)
+    add_test(NAME snes_runtime_bus_interrupt COMMAND test_snes_runtime)
+    add_executable(test_m0plus_cpu tests/test_m0plus_cpu.c)
+    target_link_libraries(test_m0plus_cpu PRIVATE m0boy_m0plus_runtime)
+    add_test(NAME m0plus_cpu_core COMMAND test_m0plus_cpu)
     add_executable(test_explore tests/test_explore.c)
     target_include_directories(test_explore PRIVATE targets/common/host)
     add_test(NAME common_explorer_checkpoints COMMAND test_explore)
@@ -73,6 +88,12 @@ if(BUILD_TESTS)
     add_executable(rom_codec_bench_data tests/rom_codec_bench_data.cpp)
     target_link_libraries(rom_codec_bench_data PRIVATE m0boy_rom_storage)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME snes_native_end_to_end
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_snes_e2e.py"
+                "$<TARGET_FILE:m0recomp>")
+    add_test(NAME m0plus_native_end_to_end
+        COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_m0plus_e2e.py"
+                "$<TARGET_FILE:m0recomp>")
     add_test(NAME compile_batch_source_systems
         COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_compile_batch.py")
     add_executable(test_z80_execution tests/test_z80_execution.cpp)
@@ -144,9 +165,16 @@ if(BUILD_TESTS)
     add_executable(test_pce_psg tests/test_pce_psg.c targets/pce/runtime/psg.c)
     target_include_directories(test_pce_psg PRIVATE targets/pce/runtime)
     add_test(NAME pce_psg_clock_and_balance COMMAND test_pce_psg)
+    add_executable(test_pce_vdc tests/test_pce_vdc.c targets/pce/runtime/vdc.c)
+    target_include_directories(test_pce_vdc PRIVATE targets/pce/runtime)
+    add_test(NAME pce_vdc_render_and_vram COMMAND test_pce_vdc)
     add_executable(test_pc_input tests/test_pc_input.c)
     target_include_directories(test_pc_input PRIVATE targets/consoles/pc)
     add_test(NAME pc_input_scripts_and_recordings COMMAND test_pc_input)
+    # the PC save states of m0_state.cpp: the plain file store, host side
+    add_executable(test_pc_state tests/pc_state_check.cpp targets/common/platform/m0_state.cpp)
+    target_include_directories(test_pc_state PRIVATE tests/pc_state_stub targets/common/platform)
+    add_test(NAME pc_state_file_store COMMAND test_pc_state)
     if(TARGET sg1000_host)
         add_test(NAME profile_gm0_sessions
             COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/tests/test_profile_sessions.py"

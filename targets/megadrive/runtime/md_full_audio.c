@@ -73,7 +73,10 @@ static void audio_emit(MdFull *m, int left, int right) {
     }
 }
 
-/* Produces every FM sample that ends at or before master clock `until`. */
+/* Produces every FM sample that ends at or before master clock `until`.
+ * Output frame k sits at k * MASTER_HZ (scaled by AUDIO_RATE); that
+ * position is tracked in audio_next, so a sample emits without any
+ * division or 64-bit product — the FM step adds a constant span. */
 static void audio_run(MdFull *m, uint64_t until) {
     while (m->audio_time + FM_MASTER <= until) {
         int fm[2];
@@ -85,12 +88,9 @@ static void audio_run(MdFull *m, uint64_t until) {
         }
         if (ticks) psg /= ticks;
         const int now[2] = {fm[0] * 3 / 4 + psg, fm[1] * 3 / 4 + psg};
-        /* Output frame k sits at k * MASTER_HZ / AUDIO_RATE: emit those that
-         * fall inside this FM sample, interpolating from the previous one. */
-        const uint64_t start = m->audio_time * AUDIO_RATE, end = (m->audio_time + FM_MASTER) * AUDIO_RATE;
-        uint64_t k = (start + MASTER_HZ) / MASTER_HZ;   /* first k with k*MASTER_HZ > start */
-        for (; k * MASTER_HZ <= end; ++k) {
-            const int64_t f = (int64_t)(k * MASTER_HZ - start), span = (int64_t)(end - start);
+        const uint64_t start = m->audio_time * AUDIO_RATE;
+        for (; m->audio_next <= start + (uint64_t)FM_MASTER * AUDIO_RATE; m->audio_next += MASTER_HZ) {
+            const int64_t f = (int64_t)(m->audio_next - start), span = (int64_t)FM_MASTER * AUDIO_RATE;
             audio_emit(m, (int)(m->audio_last[0] + (now[0] - m->audio_last[0]) * f / span),
                           (int)(m->audio_last[1] + (now[1] - m->audio_last[1]) * f / span));
         }
@@ -111,11 +111,14 @@ static void z80_run(MdFull *m, uint64_t until) {
         if (z->cycles < target) z->cycles = target;
         return;
     }
+    /* /INT is held for about one line from the start of vertical blank;
+     * the frame phase advances by each step's own clocks (a step is far
+     * below one frame, so one conditional subtract keeps the modulo). */
+    uint32_t at = (uint32_t)(z80_time(m) % FRAME_MASTER);
     while (z->cycles < target && !z->fault) {
-        /* /INT is held for about one line from the start of vertical blank. */
-        const uint64_t at = z80_time(m) % FRAME_MASTER;
         z->irq = at >= VINT_MASTER && at < VINT_MASTER + VINT_LENGTH;
-        z80_step(z);
+        at += z80_step(z) * 15u;
+        if (at >= FRAME_MASTER) at -= FRAME_MASTER;
     }
     z->irq = 0;
 }
@@ -183,6 +186,7 @@ void md_full_audio_reset(MdFull *m) {
     m->psg.lfsr = 0x8000u;
     for (unsigned i = 0; i < 4; ++i) m->psg.volume[i] = 15;
     m->audio_time = 0;
+    m->audio_next = MASTER_HZ;   /* the first output frame k=1 */
     m->audio_frames = 0;
     m->audio_hash = 2166136261u;
 }

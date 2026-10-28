@@ -102,6 +102,17 @@ def main():
             run([cli, str(pico), '--system', 'pico8', '--target', 'pc', '-o', str(pico_project)])
             assert (pico_project / 'src/pc_hw.c').is_file()
 
+        # the SNES window project: the runtime, the SDL2 shell, the ROM as data
+        from test_snes_e2e import build_rom as snes_rom
+        snes = root / 'synthetic.sfc'
+        snes.write_bytes(snes_rom())
+        snes_project = root / 'snes_pc'
+        run([cli, str(snes), '--system', 'snes', '--target', 'pc', '-o', str(snes_project)])
+        assert (snes_project / 'src/snes_pc.c').is_file()
+        assert (snes_project / 'src/snes_cart.c').is_file()
+        assert (snes_project / 'src/snes_hash.h').is_file()
+        assert 'pkg_check_modules(SDL2' in (snes_project / 'CMakeLists.txt').read_text()
+
         # the PCE window project: the runtime, the SDL2 shell, the ROM as data
         from test_pce_e2e import build_rom as pce_rom
         pce = root / 'synthetic.pce'
@@ -113,27 +124,32 @@ def main():
         assert 'pkg_check_modules(SDL2' in (pce_project / 'CMakeLists.txt').read_text()
 
         sega_projects = []
-        for system, extension in (('gg', '.gg'), ('sms', '.sms')):
+        for system, extension, cols, rows in (('gg', '.gg', 160, 144), ('sms', '.sms', 256, 192)):
             cart = root / ('synthetic' + extension)
             cart.write_bytes(gg_fixture())
             sega_project = root / (system + '_pc')
             run([cli, str(cart), '--system', system, '--target', 'pc', '-o', str(sega_project)])
             assert (sega_project / 'src/pc_frontend.c').is_file()
             assert (sega_project / 'src/gg_stream.c').is_file()
-            sega_projects.append((system, sega_project))
+            # the PC window is the source console's own screen: the Game
+            # Gear's 160x144, the Master System's whole 256x192 (no crop)
+            sega_config = (sega_project / 'src/sg_config.h').read_text()
+            assert f'#define PC_COLS {cols}' in sega_config and f'#define PC_ROWS {rows}' in sega_config, sega_config
+            assert f'#define GG_OUT_WIDTH {cols}' in sega_config, sega_config
+            sega_projects.append((system, sega_project, cols, rows))
 
         if can_build:
             exe = build(project)
             firmware_run(exe, 120, root / 'gb.ppm')
             header = (root / 'gb.ppm').read_bytes().split(b'\n')[1]
-            assert header == b'160 128', header  # the META view, columns intact
+            assert header == b'160 144', header  # the DMG's own lines, native
             exe = build(sg_project)
             firmware_run(exe, 120, root / 'sg.ppm')
             header = (root / 'sg.ppm').read_bytes().split(b'\n')[1]
             assert header == b'256 192', header  # the TMS9918A's own screen
             nes_exe = None
             for system, project, dims in (('msx', msx_project, b'256 192'),
-                                          ('nes', nes_project, b'160 128')):
+                                          ('nes', nes_project, b'256 240')):
                 exe = build(project)
                 firmware_run(exe, 60, root / (system + '.ppm'))
                 assert (root / (system + '.ppm')).read_bytes().split(b'\n')[1] == dims
@@ -157,6 +173,36 @@ def main():
                 native = host_ppm.read_bytes().split(b'\n255\n', 1)[1]
                 rgb565 = bytes((c & (252 if i % 3 == 1 else 248)) for i, c in enumerate(native))
                 assert crop == rgb565, 'PC PICO-8 frame 30 differs from the host harness'
+            snes_exe = build(snes_project)
+            env = dict(os.environ, SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
+            shot = root / 'snes.ppm'
+            result = subprocess.run([str(snes_exe), '--frames', '60', '--ppm', str(shot)],
+                                    env=env, capture_output=True, text=True, timeout=120)
+            assert result.returncode == 0, (result.stdout, result.stderr)
+            header, _, body = shot.read_bytes().partition(b'\n255\n')
+            assert header == b'P6\n256 224', header  # the PPU's own screen
+            assert body == bytes([255, 0, 0]) * (256 * 224), 'the red backdrop'
+
+            # the window's fingerprint is the harness's: a scripted session
+            # prints the same run_hash and the same audio bytes
+            snes_host_build = snes_project / 'host' / 'build'
+            subprocess.run(['cmake', '-G', 'Ninja', '-S', str(snes_project / 'host'),
+                            '-B', str(snes_host_build)], check=True, capture_output=True)
+            subprocess.run(['ninja', '-C', str(snes_host_build)], check=True, capture_output=True)
+            snes_host, = snes_host_build.glob('*_host')
+            play = root / 'snes_play.input'
+            play.write_text('10 b\n20 start\n')
+            win_out = subprocess.run([str(snes_exe), '--frames', '40', '--input', str(play)],
+                                     env=env, capture_output=True, text=True, timeout=120)
+            host_out = subprocess.run([str(snes_host), '--frames', '40', '--input', str(play)],
+                                      capture_output=True, text=True, timeout=120)
+            win_hash = [t for t in win_out.stdout.split() if t.startswith('run_hash=')][0]
+            host_hash = [t for t in host_out.stdout.split() if t.startswith('run_hash=')][0]
+            assert win_hash == host_hash, (win_out.stdout, host_out.stdout)
+            win_audio = [t for t in win_out.stdout.split() if t.startswith('audio_hash=')][0]
+            host_audio = [t for t in host_out.stdout.split() if t.startswith('audio_hash=')][0]
+            assert win_audio == host_audio, (win_out.stdout, host_out.stdout)
+
             pce_exe = build(pce_project)
             env = dict(os.environ, SDL_VIDEODRIVER='dummy', SDL_AUDIODRIVER='dummy')
             shot = root / 'pce.ppm'
@@ -166,8 +212,10 @@ def main():
             header, _, body = shot.read_bytes().partition(b'\n255\n')
             assert header == b'P6\n256 60', header  # the synthetic card's VDW+1 lines
             assert len({body[i:i + 3] for i in range(0, len(body), 3)}) > 1
-            for system, sega_project in sega_projects:
+            for system, sega_project, cols, rows in sega_projects:
                 firmware_run(build(sega_project), 120, root / (system + '.ppm'))
+                header = (root / (system + '.ppm')).read_bytes().split(b'\n')[1]
+                assert header == f'{cols} {rows}'.encode(), header
 
             # ---- recorded sessions replay in the harnesses ----
             # Each window plays a script (its harness's dialect), records
@@ -258,8 +306,8 @@ def main():
                                                   capture_output=True, text=True).stdout)
             assert replayed == window_hash, (replayed, window_hash)
 
-            print('pc: GB, SG-1000, MSX, NES, PICO-8, Game Gear, SMS and PCE built and run head first')
-            print('pc: NES, PICO-8 and PCE recorded sessions replay in their harnesses')
+            print('pc: GB, SG-1000, MSX, NES, PICO-8, Game Gear, SMS, PCE and SNES built and run head first')
+            print('pc: NES, PICO-8, PCE and SNES recorded sessions replay in their harnesses')
         else:
             print('pc: SDL2 absent, generation checks only')
     finally:

@@ -19,6 +19,7 @@
  * same instruction as the interpreter; the fast mode checks at entries
  * only, at most `check_cycles` apart, a slice overrunning by that much. */
 #include "m0boy/vectrex_emitter.h"
+#include "m0boy/sweep.h"
 #include <algorithm>
 #include <cstdio>
 #include <deque>
@@ -523,29 +524,31 @@ void Emitter::select(const std::vector<CoverageEntry>& coverage, EmitStats& stat
     std::stable_sort(hot.begin(), hot.end(), [](const auto& a, const auto& b) { return a.hits > b.hits; });
     std::map<uint16_t, Ins> found;
     std::vector<uint16_t> order;
-    std::deque<uint16_t> work;
-    auto visit = [&](uint16_t at) {
+    std::deque<uint16_t> work, swept_q;
+    auto visit = [&](uint16_t at, std::deque<uint16_t>& sink, m0::Sweep* budget) {
         if (found.count(at)) return;
         Ins in;
         if (!decode(at, in)) return;
+        if (budget && !budget->take()) return;
         found[at] = in;
         order.push_back(at);
-        work.push_back(at);
+        sink.push_back(at);
     };
-    auto drain = [&] {
-        while (!work.empty()) {
-            const Ins in = found[work.front()];
-            work.pop_front();
-            if (in.falls || in.call) visit(in.next);
-            if (in.has_target) visit(in.target);
+    auto drain = [&](std::deque<uint16_t>& queue, m0::Sweep* budget) {
+        while (!queue.empty()) {
+            const Ins in = found[queue.front()];
+            queue.pop_front();
+            if (in.falls || in.call) visit(in.next, queue, budget);
+            if (in.has_target) visit(in.target, queue, budget);
         }
     };
     std::map<uint16_t, uint32_t> played;
     for (const auto& e : hot) played[e.pc] += e.hits;
-    for (const auto& e : hot) visit(e.pc);
+    for (const auto& e : hot) visit(e.pc, work, nullptr);
     const size_t covered = order.size();
     if (!bios_.empty())
-        for (unsigned v = 0xFFF2; v < 0x10000; v += 2) visit(uint16_t(byte(uint16_t(v)) << 8 | byte(uint16_t(v + 1))));
+        for (unsigned v = 0xFFF2; v < 0x10000; v += 2)
+            visit(uint16_t(byte(uint16_t(v)) << 8 | byte(uint16_t(v + 1))), work, nullptr);
     /* the cartridge's code follows its header: "g GCE", text up to 0x80,
      * the music's pointer, then title lines (4 bytes, text, 0x80) up to 0 */
     if (cart_.size() > 16 && cart_[0] == 'g') {
@@ -557,9 +560,25 @@ void Emitter::select(const std::vector<CoverageEntry>& coverage, EmitStats& stat
             while (i < cart_.size() && cart_[i] != 0x80) i++;
             i++;
         }
-        if (i + 1 < cart_.size()) visit(uint16_t(i + 1));
+        if (i + 1 < cart_.size()) visit(uint16_t(i + 1), work, nullptr);
     }
-    drain();
+    drain(work, nullptr);
+    /* the sweep: the JSR extended ($BD) and JMP extended ($7E) whose
+     * target the walk did not reach — the callers behind a jump table,
+     * compiled the same way.  Nothing lands there until the game jumps
+     * (no banking: the dispatcher enters by PC), but the generated file
+     * grows: the swept instructions rank after the played ones and take
+     * what the code budget has left (m0/sweep.h), the walk itself never
+     * being capped.  The direct-mode forms ($9D, $0E) depend on DP and
+     * stay the interpreter's. */
+    m0::Sweep swept(m0::sweep_room(covered, opt_.max_instructions));
+    if (opt_.sweep)
+        for (uint32_t at = 0; at < 0x10000; at++) {
+            const uint8_t op = byte(uint16_t(at));
+            if (op != 0xBD && op != 0x7E) continue;
+            visit(uint16_t(byte(uint16_t(at + 1)) << 8 | byte(uint16_t(at + 2))), swept_q, &swept);
+        }
+    drain(swept_q, &swept);
     const size_t keep = opt_.max_instructions ? std::min(order.size(), opt_.max_instructions) : order.size();
     for (size_t i = 0; i < keep; i++) {
         Ins in = found[order[i]];

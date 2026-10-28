@@ -6,16 +6,21 @@ des sessions de jeu qui font découvrir du code, leur couverture collectée
 puis fusionnée en un profil prêt pour le générateur.  Deux moteurs selon
 le coeur :
 
-  - les coeurs à explorateur (Game Boy, SG-1000, MSX, Game Gear) délèguent
-    à leur harnais : --explore FRAMES --random GRAINE joue par segments
-    depuis des instantanés (m0_explore.h) et la couverture se écrit toute
-    seule ;
-  - NES et Vectrex sauvegardent un instantané après chaque session ; la
-    suivante repart de l'état qui a apporté du code neuf ;
-  - les autres (Mega Drive, PC Engine, PICO-8) reçoivent des
-    scripts d'entrées générés ici, même politique que m0_explore : une
-    direction tenue 8 à 63 trames, les boutons tenus ou tapotés, START de
-    temps en temps, dans le dialecte d'entrées du coeur.
+  - les coeurs à explorateur (tous ceux qui ont une couverture : Game
+    Boy, SG-1000, MSX, Game Gear, NES, Vectrex, Mega Drive, PC Engine)
+    délèguent à leur harnais : --explore FRAMES --random GRAINE joue par
+    segments depuis des instantanés (m0_explore.h et la colle partagée
+    m0_explore_host.h) et la couverture se écrit toute seule ;
+  - PICO-8 reçoit des scripts d'entrées générés ici, même politique que
+    m0_explore : une direction tenue 8 à 63 trames, les boutons tenus ou
+    tapotés, START de temps en temps, dans le dialecte d'entrées du
+    coeur (son Lua recompilé n'a pas de consommateur de profil).
+
+Une session « idle » complète le plan : --idle-frames TRAMES (6000 par
+défaut, 0 la retire) lance la cartouche depuis la mise sous tension sans
+toucher à rien — les écrans titre passés seuls et les modes démo qui
+attendent une inaction entrent dans la couverture, ce qu'aucune main
+aléatoire (la nôtre presse quelque chose ~80 % du temps) n'obtient.
 
 Les enregistrements manuels (--input d'une partie jouée : gm0 converti par
 m0profile.py, --record-input du Mega Drive ou du Vectrex, ou toute main)
@@ -84,28 +89,28 @@ SYSTEMS = {
         b1="1", b2="2",
     ),
     "megadrive": dict(
-        explore=False, coverage=True, interp=["--interp"], rom_arg=False,
+        explore=True, coverage=True, interp=["--interp"], rom_arg=False,
         input="mask",
         names={"up": 1, "down": 2, "left": 4, "right": 8,
                "a": 16, "b": 32, "c": 64, "start": 128},
         b1="a", b2="b",
     ),
     "nes": dict(
-        explore=False, checkpoint=True, coverage=True, interp=["--interp"], rom_arg=False,
+        explore=True, coverage=True, interp=["--interp"], rom_arg=False,
         input="momentary-named",
         names={"a": 1, "b": 2, "select": 4, "start": 8,
                "up": 16, "down": 32, "left": 64, "right": 128},
         b1="a", b2="b",
     ),
     "vectrex": dict(
-        explore=False, checkpoint=True, coverage=True, interp=["--interp"], rom_arg=False,
+        explore=True, coverage=True, interp=["--interp"], rom_arg=False,
         input="held-named", bios=True,
         names={"up": 1, "down": 2, "left": 4, "right": 8,
                "a": 16, "b": 32, "c": 64, "d": 512},
         b1="a", b2="b",
     ),
     "pce": dict(
-        explore=False, coverage=True, interp=[], rom_arg=False,
+        explore=True, coverage=True, interp=["--interp"], rom_arg=False,
         input="momentary-named",
         names={"i": 1, "ii": 2, "select": 4, "run": 8,
                "up": 16, "right": 32, "down": 64, "left": 128},
@@ -307,52 +312,38 @@ def cmd_run(a):
         raise SystemExit("m0search : --rom est requis pour %s" % a.system)
 
     # le plan : un long explorateur sur les coeurs à --explore (il partage
-    # lui-même en segments), sinon N sessions scriptées, puis les rejeux
-    # manuels ; (nom, fichier d'entrées ou None, budget de trames)
+    # lui-même en segments), sinon N sessions scriptées, puis la session
+    # idle (aucune touche : les écrans titre et les modes démo), puis les
+    # rejeux manuels ; (nom, fichier d'entrées ou None, budget de trames)
     total_frames = a.frames * a.sessions
     plan = []
-    if sys_["explore"]:
+    if sys_["explore"] and not a.no_explore:
         plan.append(("explore", None, total_frames))
     else:
         for i in range(a.sessions):
             inp = outdir / ("session-%02d.input" % (i + 1))
-            if not sys_.get("checkpoint"):
-                inp.write_text(render_input(sys_["input"],
-                                            random_events(a.seed + i, a.frames, sys_),
-                                            sys_["names"]))
+            inp.write_text(render_input(sys_["input"],
+                                        random_events(a.seed + i, a.frames, sys_),
+                                        sys_["names"]))
             plan.append((inp.stem, inp, a.frames))
+    if a.idle_frames:
+        plan.append(("idle", None, a.idle_frames))
     for i, manual in enumerate(a.input):
         plan.append(("manual-%02d" % (i + 1), Path(manual), a.manual_frames))
 
     report = {"system": a.system, "harness": a.harness, "seed": a.seed,
-              "frames_per_session": a.frames, "sessions": [], "union": 0}
-    covs, union, checkpoints = [], set(), []
+              "frames_per_session": a.frames, "idle_frames": a.idle_frames,
+              "sessions": [], "union": 0}
+    covs, union = [], set()
     for name, inp, frames in plan:
-        checkpoint = sys_.get("checkpoint") and name.startswith("session-")
-        parent = checkpoints[-1] if checkpoint and checkpoints and checkpoints[-1][2] else None
-        start_frame = parent[1] if parent else 0
-        if checkpoint:
-            events = random_events(a.seed + int(name[-2:]) - 1, frames, sys_)
-            inp.write_text(render_input(sys_["input"],
-                                        [(f + start_frame, mask) for f, mask in events],
-                                        sys_["names"]))
         cov = outdir / (name + ".cov") if sys_["coverage"] else None
         argv = harness_argv(sys_, a, cov, inp)
-        state = outdir / (name + ".state") if checkpoint else None
-        if parent:
-            argv += ["--load-state", str(parent[0])]
-        if state:
-            argv += ["--save-state", str(state)]
-        if sys_["explore"] and inp is None:
+        if sys_["explore"] and name == "explore":
             argv += ["--explore", str(frames), "--random", str(a.seed),
                      "--frames", str(frames)]
         else:
             argv += ["--frames", str(frames)]
         row = {"name": name, "argv": [str(x) for x in argv], "frames": frames}
-        if checkpoint:
-            row["start_frame"] = start_frame
-            row["state"] = str(state)
-            if parent: row["parent"] = str(parent[0])
         h = run_session(argv, frames, a.timeout)
         if h:
             row["run_hash"] = h.group(1)
@@ -362,8 +353,6 @@ def cmd_run(a):
             row["locations"] = len(keys)
             row["new"] = len(keys - union)
             union |= keys
-        if checkpoint:
-            checkpoints.append((state, start_frame + frames, row.get("new", 0)))
         report["sessions"].append(row)
         print("%-12s locations=%-6s new=%-6s %s" % (
             name, row.get("locations", "-"), row.get("new", "-"),
@@ -404,6 +393,12 @@ def main():
                    help="sessions random (1 long explorateur sur les "
                         "coeurs à --explore : total = sessions x frames)")
     r.add_argument("--frames", type=int, default=1500)
+    r.add_argument("--no-explore", action="store_true",
+                   help="sessions scriptées au hasard au lieu de l'explorateur "
+                        "guidé par la couverture")
+    r.add_argument("--idle-frames", type=int, default=6000,
+                   help="la session sans touches (0 : aucune) ; les modes "
+                        "démo n'entrent dans la couverture que là")
     r.add_argument("--seed", type=int, default=1)
     r.add_argument("--input", action="append", default=[],
                    help="enregistrement manuel à rejouer (répétable)")

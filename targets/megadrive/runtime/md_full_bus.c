@@ -6,6 +6,22 @@ static uint32_t rom32(uint32_t a) {
         (uint32_t)md_rom[a + 1] << 16 | (uint32_t)md_rom[a + 2] << 8 | md_rom[a + 3] : 0;
 }
 
+/* 255 * i / 7 in integer arithmetic for the 3-bit CRAM channels; the
+ * palette LUTs are rebuilt on every CRAM write, never in the render path */
+static const uint8_t md_scale3[8] = {0, 36, 72, 109, 145, 182, 218, 255};
+
+static void cram_lut(MdFull *m, unsigned index) {
+    const unsigned c = m->cram[index & 63u];
+    const unsigned r = md_scale3[(c & 14u) >> 1], g = md_scale3[(c >> 5) & 7u], b = md_scale3[(c >> 9) & 7u];
+    m->cram_argb[index & 63u] = 0xff000000u | r << 16 | g << 8 | b;
+    m->cram_565[index & 63u] = (uint16_t)(r >> 3 << 11 | g >> 2 << 5 | b >> 3);
+}
+
+/* Rebuilds both palette LUTs from cram — after an external state load. */
+void md_full_cram_sync(MdFull *m) {
+    for (unsigned i = 0; i < 64; ++i) cram_lut(m, i);
+}
+
 void md_full_reset(MdFull *m) {
     memset(m, 0, sizeof *m);
     m->a[7] = rom32(0);
@@ -13,6 +29,7 @@ void md_full_reset(MdFull *m) {
     m->sr = 0x2700;
     m->vdp_reg[15] = 2;
     m->pad_th = 0x40;
+    for (unsigned i = 0; i < 64; ++i) cram_lut(m, i);
     md_full_audio_reset(m);
 }
 
@@ -116,7 +133,10 @@ static void vdp_store(MdFull *m, uint16_t v) {
         m->vram[addr] = (uint8_t)(v >> 8);
         m->vram[(addr + 1u) & 0xffffu] = (uint8_t)v;
         break;
-    case 3: m->cram[(addr >> 1) & 63u] = v & 0x0eeeu; break;
+    case 3:
+        m->cram[(addr >> 1) & 63u] = v & 0x0eeeu;
+        cram_lut(m, (addr >> 1) & 63u);
+        break;
     case 5:
         m->vsram[addr % 80u] = (uint8_t)(v >> 8);
         m->vsram[(addr + 1u) % 80u] = (uint8_t)v;
@@ -170,7 +190,10 @@ void md_full_write8(MdFull *m, uint32_t addr, uint8_t v) {
         m->ram[addr & 0xffffu] = v; return;
     }
     if (addr >= 0x200000u && addr < 0x210000u) {
-        if (m->sram_enable && !m->sram_protect) m->sram[addr & 0xffffu] = v;
+        if (m->sram_enable && !m->sram_protect) {
+            m->sram[addr & 0xffffu] = v;
+            m->sram_dirty = 1;
+        }
         return;
     }
     if (addr >= 0xa13000u && addr < 0xa14000u) {

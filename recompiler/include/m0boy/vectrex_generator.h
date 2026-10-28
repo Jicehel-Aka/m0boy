@@ -18,6 +18,7 @@ struct GenerateOptions {
    * interpret: the run loop alone */
   bool interpret = false;
   bool precise = false; /* the slice ends on the interpreter's instruction */
+  bool sweep = false;   /* --vectrex-sweep: the walk also seeds from the JSR/JMP extended targets */
   std::vector<std::filesystem::path> coverage; /* the host's --coverage files */
   size_t max_instructions = 0;
   /* the console's flash for the recompiled code (0: what the firmware

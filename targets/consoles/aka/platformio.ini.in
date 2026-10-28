@@ -12,6 +12,6 @@ board_upload.flash_size = 8MB
 board_build.partitions = aka.csv
 build_flags = -Os -Wno-unused-label
     -DCORE_DEBUG_LEVEL=0
-build_src_filter = +<*> -<*.S>
+build_src_filter = +<*>
 extra_scripts = pre:aka_build.py
     post:aka_size.py

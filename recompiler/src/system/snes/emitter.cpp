@@ -117,6 +117,22 @@ const std::vector<OpInfo>& table() {
         group(Op::sbc, Shape::arith, sbc, 4, 4);
         group(Op::cmp, Shape::cmp, cmp_, 4, 4, true);
         group(Op::lda, Shape::load, lda, 4, 4);
+        /* the long forms: the operand is the 24-bit address itself, no page
+         * crossing to pay (the interpreter counts 5 + width only) */
+        set(0x0F, Op::ora, Shape::logic, Mode::long_, 5, 4, P_M);
+        set(0x1F, Op::ora, Shape::logic, Mode::longx, 5, 4, P_M);
+        set(0x2F, Op::and_, Shape::logic, Mode::long_, 5, 4, P_M);
+        set(0x3F, Op::and_, Shape::logic, Mode::longx, 5, 4, P_M);
+        set(0x4F, Op::eor, Shape::logic, Mode::long_, 5, 4, P_M);
+        set(0x5F, Op::eor, Shape::logic, Mode::longx, 5, 4, P_M);
+        set(0x6F, Op::adc, Shape::arith, Mode::long_, 5, 4, P_M);
+        set(0x7F, Op::adc, Shape::arith, Mode::longx, 5, 4, P_M);
+        set(0x8F, Op::sta, Shape::store, Mode::long_, 5, 4, P_M);
+        set(0x9F, Op::sta, Shape::store, Mode::longx, 5, 4, P_M);
+        set(0xAF, Op::lda, Shape::load, Mode::long_, 5, 4, P_M);
+        set(0xBF, Op::lda, Shape::load, Mode::longx, 5, 4, P_M);
+        set(0xCF, Op::cmp, Shape::cmp, Mode::long_, 5, 4, P_M, true);
+        set(0xDF, Op::cmp, Shape::cmp, Mode::longx, 5, 4, P_M, true);
         /* the stores pay no page-cross penalty; (sr,S),Y closes the set */
         set(sta[1], Op::sta, Shape::store, Mode::dp, 4, 2, P_M | P_DP);
         set(sta[2], Op::sta, Shape::store, Mode::dpx, 4, 2, P_M | P_DP);
@@ -196,10 +212,10 @@ const std::vector<OpInfo>& table() {
         set(0x6C, Op::jmp, Shape::flow, Mode::ind, 5, 3, 0, true);
         set(0x7C, Op::jmp, Shape::flow, Mode::absx, 6, 3, 0, true);
         set(0xDC, Op::jmp, Shape::flow, Mode::indlp, 6, 3, 0, true);
-        set(0x5C, Op::jml, Shape::flow, Mode::long_, 4, 3, 0, true);
+        set(0x5C, Op::jml, Shape::flow, Mode::long_, 4, 4, 0, true);
         set(0x20, Op::jsr, Shape::flow, Mode::abs, 6, 3, 0, true);
         set(0xFC, Op::jsr, Shape::flow, Mode::absx, 8, 3, 0, true);
-        set(0x22, Op::jsl, Shape::flow, Mode::long_, 8, 3, 0, true);
+        set(0x22, Op::jsl, Shape::flow, Mode::long_, 8, 4, 0, true);
         set(0x60, Op::rts, Shape::flow, Mode::imp, 6, 1, 0, true);
         set(0x6B, Op::rtl, Shape::flow, Mode::imp, 6, 1, 0, true);
         set(0x40, Op::rti, Shape::flow, Mode::imp, 0, 1, 0, true);
@@ -332,7 +348,7 @@ private:
      * byte only where the file backs the address */
     std::optional<uint8_t> rom_at(uint32_t at) const {
         const unsigned bank = at >> 16, off = at & 0xFFFF;
-        if (bank >= 0x7E) return std::nullopt;
+        if (bank == 0x7E || bank == 0x7F) return std::nullopt;
         if (off < 0x2000) return std::nullopt;                    /* the WRAM mirror */
         if (off < 0x8000) return std::nullopt;                    /* I/O and SRAM */
         if ((bank >= 0x40 && bank <= 0x7D) || bank >= 0xC0) {
@@ -396,6 +412,7 @@ bool Emitter::decode(uint32_t at, uint64_t ctx, Ins& in) const {
     if (op == Op::jmp && in.info.mode == Mode::rel) {
         in.target = at + 2 + (uint32_t)(int8_t)in.o[0];
         in.has_target = true;
+        if (in.code == 0x80) in.falls = false; /* BRA is unconditional */
     } else if (op == Op::jmp && in.info.mode == Mode::rell) { /* BRL */
         in.target = at + 3 + (uint32_t)(int16_t)w;
         in.has_target = true;
@@ -405,8 +422,6 @@ bool Emitter::decode(uint32_t at, uint64_t ctx, Ins& in) const {
         in.has_target = true;
         in.falls = false;
     } else if (op == Op::jmp && in.info.mode == Mode::indlp) {
-        in.target = (uint32_t)in.o[2] << 16 | w;
-        in.has_target = true;
         in.falls = false;
     } else if (op == Op::jml) {
         in.target = (uint32_t)in.o[2] << 16 | w;
@@ -508,6 +523,7 @@ void Emitter::select(const std::vector<CoverageEntry>& coverage, EmitStats& stat
         case Op::mvn: case Op::mvp: /* the block move's done mark */
             na_known = true;
             nav = 0xFFFF;
+            brk = true; /* destination bank changes DBR; recheck the context */
             break;
         case Op::tcd:
             if (s.a_known) {
@@ -718,17 +734,17 @@ std::string Emitter::ea(const Ins& in, std::string& pre) const {
     case Mode::dp:
         return hex24((d + in.o[0]) & 0xFFFF);
     case Mode::dpx:
-        return xf ? "(uint32_t)(uint16_t)(" + hex(d) + "u + (uint8_t)(" + hex(in.o[0], 2) + "u + x_))"
+        return (ctx_e(in.ctx) && !(d & 0xff)) ? "(uint32_t)(uint16_t)(" + hex(d) + "u + (uint8_t)(" + hex(in.o[0], 2) + "u + x_))"
                   : "(uint32_t)(uint16_t)(" + hex(d) + "u + " + hex(in.o[0], 2) + "u + x_)";
     case Mode::dpy:
-        return xf ? "(uint32_t)(uint16_t)(" + hex(d) + "u + (uint8_t)(" + hex(in.o[0], 2) + "u + y_))"
+        return (ctx_e(in.ctx) && !(d & 0xff)) ? "(uint32_t)(uint16_t)(" + hex(d) + "u + (uint8_t)(" + hex(in.o[0], 2) + "u + y_))"
                   : "(uint32_t)(uint16_t)(" + hex(d) + "u + " + hex(in.o[0], 2) + "u + y_)";
     case Mode::ind:
         pre += "const unsigned w_ = SNES_RD(" + hex24((d + in.o[0]) & 0xFFFF) + "u) | SNES_RD(" +
                hex24((uint16_t)(d + in.o[0] + 1)) + "u) << 8; ";
         return hex24((uint32_t)dbr << 16) + "u | w_";
     case Mode::indx: {
-        const std::string at = xf
+        const std::string at = (ctx_e(in.ctx) && !(d & 0xff))
             ? "(uint32_t)(uint16_t)(" + hex(d) + "u + (uint8_t)(" + hex(in.o[0], 2) + "u + x_))"
             : "(uint32_t)(uint16_t)(" + hex(d) + "u + " + hex(in.o[0], 2) + "u + x_)";
         pre += "const unsigned w_ = SNES_RD(" + at + ") | SNES_RD((uint32_t)(uint16_t)(" + at + " + 1u)) << 8; ";
@@ -782,12 +798,16 @@ std::string Emitter::operand(const Ins& in, std::string& pre) const {
     const auto fold = [&](uint32_t at) -> std::string {
         if (wide) {
             const auto w = rom_word(at);
-            if (w) return hex(*w, 4) + "u";
-            return std::string();
+            if (!w) return std::string();
+            /* the folded read never touches the bus, so the MDR's last
+             * byte comes from the read itself, as the interpreter's rd() */
+            pre += "machine.cpu.mdr = " + hex(*w >> 8 & 0xFF, 2) + "; ";
+            return hex(*w, 4) + "u";
         }
         const auto b = rom_at(at);
-        if (b) return hex(*b, 2) + "u";
-        return std::string();
+        if (!b) return std::string();
+        pre += "machine.cpu.mdr = " + hex(*b, 2) + "; ";
+        return hex(*b, 2) + "u";
     };
     switch (in.info.mode) {
     case Mode::imm:
@@ -806,6 +826,11 @@ std::string Emitter::operand(const Ins& in, std::string& pre) const {
         const uint32_t at = in.o[0] | in.o[1] << 8 | in.o[2] << 16;
         if (const std::string f = fold(at); !f.empty()) return f;
         return wide ? "SNES_RD24(" + hex24(at) + "u)" : "SNES_RD(" + hex24(at) + "u)";
+    }
+    case Mode::longx: {
+        /* long,X reaches a runtime address; its 16-bit read carries into the
+         * next bank, as the interpreter's RD24 */
+        return wide ? "SNES_RD24(" + ea(in, pre) + ")" : "SNES_RD(" + ea(in, pre) + ")";
     }
     default: {
         const std::string at = ea(in, pre);
@@ -900,13 +925,25 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
     std::string pre, body;
     unsigned cyc = cycles(in);
     std::string after;
+    /* the fetch: the interpreter's bus reads update the MDR byte for byte
+     * (the opcode, then the operands; BRK and COP never fetch their
+     * signature byte).  The generated operands are constants, so the
+     * fetches shrink to this one store — the open-bus reads read back
+     * exactly what the interpreter's would. */
+    const unsigned fetched = op == Op::brk || op == Op::cop || in.len == 1
+                                 ? in.code : in.o[in.len - 2];
+    o << "    machine.cpu.mdr = " << hex(fetched, 2) << ";\n";
     auto store = [&](const std::string& value) {
         std::string pre2;
         const std::string at = ea(in, pre2);
         if (!pre2.empty()) pre += pre2;
         const bool wide = (op == Op::sta || op == Op::stz) ? !mf : !xf;
-        if (wide) return "SNES_WRW(" + at + ", (uint16_t)(" + value + "));";
-        return "SNES_WR(" + at + ", (uint8_t)(" + value + "));";
+        if (!wide) return "SNES_WR(" + at + ", (uint8_t)(" + value + "));";
+        /* the long forms' second byte carries into the next bank, as the
+         * interpreter's WR24 */
+        return m == Mode::long_ || m == Mode::longx
+                   ? "SNES_WR24(" + at + ", (uint16_t)(" + value + "));"
+                   : "SNES_WRW(" + at + ", (uint16_t)(" + value + "));";
     };
     auto rmw_at = [&](std::string& expr8, std::string& expr16) {
         const std::string at = ea(in, pre);
@@ -946,7 +983,10 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         break;
     }
     case Shape::bit:
-        body = "SNES_BIT(" + operand(in, pre) + ", " + (mf ? "0" : "1") + ");";
+        if (m == Mode::imm)
+            body = "p_ = (uint8_t)((p_ & ~SNES_P_Z) | ((a_ & " + operand(in, pre) + ") ? 0 : SNES_P_Z));";
+        else
+            body = "SNES_BIT(" + operand(in, pre) + ", " + (mf ? "0" : "1") + ");";
         break;
     case Shape::shift: {
         const char* f8 = op == Op::asl ? "SNES_ASL8" : op == Op::lsr ? "SNES_LSR8" : op == Op::rol ? "SNES_ROL8" : "SNES_ROR8";
@@ -974,14 +1014,14 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         const std::string at = ea(in, pre);
         if (op == Op::tsb)
             body = mf ? "{ const uint32_t e_ = " + at + "; const uint8_t m_ = SNES_RD(e_); "
-                        "p_ = (uint8_t)((p_ & ~SNES_P_Z) | ((m_ | a_) ? 0 : SNES_P_Z)); SNES_WR(e_, (uint8_t)(m_ | (uint8_t)a_)); }"
+                        "p_ = (uint8_t)((p_ & ~SNES_P_Z) | ((m_ & a_) ? 0 : SNES_P_Z)); SNES_WR(e_, (uint8_t)(m_ | (uint8_t)a_)); }"
                       : "{ const uint32_t e_ = " + at + "; const uint16_t m_ = SNES_RDW(e_); "
-                        "p_ = (uint8_t)((p_ & ~SNES_P_Z) | ((m_ | a_) ? 0 : SNES_P_Z)); SNES_WRW(e_, (uint16_t)(m_ | a_)); }";
+                        "p_ = (uint8_t)((p_ & ~SNES_P_Z) | ((m_ & a_) ? 0 : SNES_P_Z)); SNES_WRW(e_, (uint16_t)(m_ | a_)); }";
         else
             body = mf ? "{ const uint32_t e_ = " + at + "; const uint8_t m_ = SNES_RD(e_); "
-                        "p_ = (uint8_t)((p_ & ~SNES_P_Z) | ((m_ & (uint8_t)~a_) ? 0 : SNES_P_Z)); SNES_WR(e_, (uint8_t)(m_ & (uint8_t)~a_)); }"
+                        "p_ = (uint8_t)((p_ & ~SNES_P_Z) | ((m_ & a_) ? 0 : SNES_P_Z)); SNES_WR(e_, (uint8_t)(m_ & (uint8_t)~a_)); }"
                       : "{ const uint32_t e_ = " + at + "; const uint16_t m_ = SNES_RDW(e_); "
-                        "p_ = (uint8_t)((p_ & ~SNES_P_Z) | ((m_ & (uint16_t)~a_) ? 0 : SNES_P_Z)); SNES_WRW(e_, (uint16_t)(m_ & (uint16_t)~a_)); }";
+                        "p_ = (uint8_t)((p_ & ~SNES_P_Z) | ((m_ & a_) ? 0 : SNES_P_Z)); SNES_WRW(e_, (uint16_t)(m_ & (uint16_t)~a_)); }";
         break;
     }
     case Shape::imp:
@@ -1003,10 +1043,8 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         case Op::tdc: body = "{ a_ = d_; SNES_ZN16(a_); }"; break;
         case Op::tcs: body = "{ s_ = a_; if (e_) s_ = (uint16_t)(0x0100u | (s_ & 0xFF)); }"; break;
         case Op::tsc: body = "{ a_ = s_; SNES_ZN16(a_); }"; break;
-        case Op::txy: body = "if (SNES_XF) { const uint8_t t_ = (uint8_t)x_; x_ = y_ & 0xFF; y_ = t_; }"
-                             " else { const uint16_t t_ = x_; x_ = y_; y_ = t_; }"; break;
-        case Op::tyx: body = "if (SNES_XF) { const uint8_t t_ = (uint8_t)y_; y_ = x_ & 0xFF; x_ = t_; }"
-                             " else { const uint16_t t_ = y_; y_ = x_; x_ = t_; }"; break;
+        case Op::txy: body = "SNES_WR_Y(x_);"; break;
+        case Op::tyx: body = "SNES_WR_X(y_);"; break;
         case Op::wdm: body = ""; break;
         default: body = ""; break;
         }
@@ -1084,31 +1122,34 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         break;
     case Shape::block: {
         const int back = op == Op::mvp;
-        body = "{ const uint8_t sb_ = " + hex(in.o[0], 2) + "u, db_ = " + hex(in.o[1], 2) + "u;"
+        body = "{ const uint8_t db_ = " + hex(in.o[0], 2) + "u, sb_ = " + hex(in.o[1], 2) + "u;"
                " const uint32_t bytes_ = (uint32_t)a_ + 1u;"
                " for (uint32_t i_ = 0; i_ < bytes_; i_++) {"
-               " const uint32_t s_at = (uint32_t)sb_ << 16 | (uint16_t)(x_ " +
-               std::string(back ? "- (uint16_t)i_" : "+ (uint16_t)i_") + ");"
-               " const uint32_t d_at = (uint32_t)db_ << 16 | (uint16_t)(y_ " +
-               std::string(back ? "- (uint16_t)i_" : "+ (uint16_t)i_") + ");"
+               " const uint32_t s_at = (uint32_t)sb_ << 16 | (SNES_XF ? (uint8_t)(x_ " +
+               std::string(back ? "- (uint16_t)i_" : "+ (uint16_t)i_") + ")"
+               " : (uint16_t)(x_ " + std::string(back ? "- (uint16_t)i_" : "+ (uint16_t)i_") + "));"
+               " const uint32_t d_at = (uint32_t)db_ << 16 | (SNES_XF ? (uint8_t)(y_ " +
+               std::string(back ? "- (uint16_t)i_" : "+ (uint16_t)i_") + ")"
+               " : (uint16_t)(y_ " + std::string(back ? "- (uint16_t)i_" : "+ (uint16_t)i_") + "));"
                " SNES_WR(d_at, SNES_RD(s_at)); }"
                " const uint16_t step_ = (uint16_t)(bytes_ & 0xFFFFu);"
                " if (SNES_XF) { x_ = (uint8_t)(x_ " + std::string(back ? "-" : "+") + " step_);"
                " y_ = (uint8_t)(y_ " + std::string(back ? "-" : "+") + " step_); }"
                " else { x_ = (uint16_t)(x_ " + std::string(back ? "-" : "+") + " step_);"
                " y_ = (uint16_t)(y_ " + std::string(back ? "-" : "+") + " step_); }"
-               " a_ = 0xFFFF;"
-               " budget -= 7u * bytes_ + 1u; }";
+               " a_ = 0xFFFF; dbr_ = db_;"
+               " budget -= 7u * bytes_; }";
         cyc = 0; /* subtracted inside */
+        after = "{ pc_ = " + hex(in.next & 0xFFFF) + "; goto out; }";
         break;
     }
     case Shape::wai:
         /* the sleep spends the rest of the slice with pc past it, as the
          * interpreter; the frame's NMI lands at the dispatcher's boundary */
-        o << "    { pc_ = " << hex(in.next & 0xFFFF) << "; budget = 0; goto out; }\n";
+        o << "    { machine.cpu.waiting = 1; pc_ = " << hex(in.next & 0xFFFF) << "; budget -= 3; goto out; }\n";
         return;
     case Shape::stp:
-        o << "    { machine.cpu.halted = 1; pc_ = " << hex(in.next & 0xFFFF) << "; budget = 0; goto out; }\n";
+        o << "    { machine.cpu.halted = 1; pc_ = " << hex(in.next & 0xFFFF) << "; budget -= 3; goto out; }\n";
         return;
     case Shape::flow:
         if (is_branch(op, m)) {
@@ -1132,7 +1173,8 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         if (op == Op::jmp && m == Mode::abs) {
             if (in.target == in.addr) {
                 /* the idle loop the other runtimes spend at once
-                 * (m0_idle.h): left with pc on it, as the interpreter */
+                 * (m0_idle.h): left with pc on it, as the interpreter;
+                 * the MDR carries the fetch store's target high byte */
                 o << "    budget = SNES_SPIN3(budget); { pc_ = " << hex(in.addr & 0xFFFF) << "; goto out; }\n";
                 return;
             }
@@ -1164,7 +1206,14 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
               << "    goto dyn;\n";
             return;
         }
-        if ((op == Op::jml) || (op == Op::jmp && m == Mode::indlp)) {
+        if (op == Op::jmp && m == Mode::indlp) {
+            o << "    { const uint16_t q_ = " << hex(in.o[0] | in.o[1] << 8) << "u;"
+              << " const unsigned lo_ = SNES_RD(q_), hi_ = SNES_RD((uint16_t)(q_ + 1));"
+              << " k_ = SNES_RD((uint16_t)(q_ + 2)); pc_ = (uint16_t)(lo_ | hi_ << 8); } budget -= 6;\n"
+              << "    goto dyn;\n";
+            return;
+        }
+        if (op == Op::jml) {
             const bool far = (in.target >> 16) != ctx_k(in.ctx);
             o << "    budget -= " << (op == Op::jml ? 4 : 6) << ";";
             if (opt_.precise)
@@ -1184,7 +1233,7 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         if (op == Op::jsl) {
             const unsigned ret = unsigned(in.addr & 0xFFFF) + 3;
             const bool far = (in.target >> 16) != ctx_k(in.ctx);
-            o << "    SNES_PUSH16(" << hex(ret) << "u); SNES_PUSH(k_); budget -= 8;";
+            o << "    SNES_PUSH(k_); SNES_PUSH16(" << hex(ret) << "u); budget -= 8;";
             if (opt_.precise)
                 o << " if (budget <= 0) " << (far ? "{ k_ = " + hex(in.target >> 16, 2) + "; pc_ = " +
                                                        hex(in.target & 0xFFFF) + "; goto out; }"
@@ -1208,7 +1257,7 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
             return;
         }
         if (op == Op::rtl) {
-            o << "    { k_ = SNES_POP(); const unsigned w_ = SNES_POP16(); pc_ = (uint16_t)(w_ + 1u); } budget -= 6;\n"
+            o << "    { const unsigned w_ = SNES_POP16(); k_ = SNES_POP(); pc_ = (uint16_t)(w_ + 1u); } budget -= 6;\n"
               << "    goto dyn;\n";
             return;
         }
@@ -1223,8 +1272,9 @@ void Emitter::emit_ins(std::ostream& o, const Ins& in) {
         if (op == Op::brk || op == Op::cop) {
             const unsigned vector = op == Op::brk ? (ef ? 0xFFFE : 0xFFE6) : (ef ? 0xFFF4 : 0xFFE4);
             o << "    { pc_ = (uint16_t)(" << hex(unsigned(in.addr & 0xFFFF) + 2) << "u);"
-              << " SNES_PUSH16(pc_); SNES_PUSH((uint8_t)(e_ ? (p_ | 0x30u) : (p_ | 0x10u)));"
+              << " if (!e_) SNES_PUSH(k_); SNES_PUSH16(pc_); SNES_PUSH((uint8_t)(e_ ? (p_ | 0x30u) : p_));"
               << " p_ |= SNES_P_I; p_ &= (uint8_t)~SNES_P_D;"
+              << " k_ = 0;"
               << " if (e_) s_ = (uint16_t)(0x0100u | (s_ & 0xFF));"
               << " pc_ = (uint16_t)(SNES_RD(" << hex(vector) << "u) | SNES_RD(" << hex(vector + 1) << "u) << 8); }"
               << " budget -= " << (ef ? 7 : 8) << ";\n"

@@ -2,10 +2,13 @@
 
 The same firmware the consoles run, as a SDL2 window: the emulation, the
 option menu (hold Escape), the save states and the SD card are those of the
-shared frontend. The card is the file `sd.img` in the working directory —
+shared frontend. The save states need no card: the slots are a plain file in
+the working directory (the state file's name, e.g. `GAME.STA`), created on
+the first save. The card is the file `sd.img` in the working directory —
 `dd if=/dev/zero of=sd.img bs=1M count=8 && mkfs.fat -F 16 sd.img` makes one
 (put the game's `.GB`/`.SAV` files on it as compile.sh does for the META).
-Without it the game still runs; saves and states need the image.
+Without it the game still runs; states work, the cartridge's battery saves
+and streamed cartridges need the image.
 
 - Window: the source console's native resolution, scaled to the window.
 - Pad: arrows or gamepad D-pad/left stick, X = A, Z = B, Return or gamepad Start = Menu,

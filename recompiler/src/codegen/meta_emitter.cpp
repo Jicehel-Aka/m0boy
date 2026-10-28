@@ -19,6 +19,7 @@
 
 #include "recompiler/codegen/meta_emitter.h"
 #include "m0boy/rom_storage.h"
+#include "m0boy/sweep.h"
 #include "recompiler/decoder.h"
 #include "recompiler/codegen/register_ir.h"
 
@@ -416,7 +417,8 @@ private:
      * in an executable and knows no budget. */
     size_t app_flash() const {
         return opt_.pc ? SIZE_MAX : opt_.espboy ? kEspApp
-             : opt_.odroid || opt_.aka ? 0x370000
+             : opt_.aka ? 0x2EE000 /* the AKA's official 3000K app slot */
+             : opt_.odroid ? 0x370000
              : opt_.pokitto ? 0x39000 : 245760;
     }
     std::vector<std::vector<uint8_t>> packed_sector_; /* per ROM sector (banks 1+) */
@@ -456,6 +458,34 @@ bool Generator::load_coverage(MetaTargetStats& stats, std::string& error) {
         }
     }
     stats.covered = cov.size();
+
+    /* --meta-sweep: every bank's CALL ($CD) and JP abs ($C3) offers its
+     * target as an entry, the callers behind a bank table included.  A
+     * target below $4000 keys under bank 0 (fixed), one in the switchable
+     * window under the bank it was read from — the dispatcher checks the
+     * mapped bank at run time, so a wrongly assumed bank never runs
+     * anything.  The candidates carry the entry flag only (2): no
+     * execution count, the budget ranks them with the static analysis's
+     * speculative code. */
+    if (opt_.sweep) {
+        size_t swept = 0;
+        for (uint16_t bank = 0; bank < rom_.bank_count() && swept < m0::kSweepDefault; bank++) {
+            for (unsigned at = bank ? 0x4000u : 0u; at < 0x8000u && swept < m0::kSweepDefault; at++) {
+                if (rom_.read_banked(bank, static_cast<uint16_t>(at)) != 0xCD &&
+                    rom_.read_banked(bank, static_cast<uint16_t>(at)) != 0xC3)
+                    continue;
+                if (at + 2 >= 0x8000u) break;
+                const uint16_t to = static_cast<uint16_t>(
+                    rom_.read_banked(bank, static_cast<uint16_t>(at + 1)) |
+                    rom_.read_banked(bank, static_cast<uint16_t>(at + 2)) << 8);
+                const uint32_t k = key(to < 0x4000u ? static_cast<uint16_t>(0) : bank, to);
+                if (!cov.count(k)) {
+                    cov[k] = 2;
+                    swept++;
+                }
+            }
+        }
+    }
 
     std::vector<Ins> all;
     for (const auto& [k, flags] : cov) {
@@ -2138,7 +2168,13 @@ std::string Generator::emit_config(std::string& error) const {
       << (opt_.espboy
               ? "#define GBL_TARGET_ESPBOY 1\n#define GBL_ERAM_ON_SD 0\n"
               : std::string())
-      << (opt_.pc ? "#define GBL_TARGET_PC 1\n#define GBL_ERAM_ON_SD 0\n" : std::string())
+      << (opt_.pc ? "#define GBL_TARGET_PC 1\n#define GBL_ERAM_ON_SD 0\n"
+                    /* the PC window plays the DMG's own 160x144 (NES and SG
+                     * write the same geometry into their configs); guarded,
+                     * m0_target.h keeps its defaults elsewhere */
+                    "#ifndef PC_ROWS\n#define PC_ROWS 144\n#endif\n"
+                    "#ifndef M0_SCREEN_ROWS\n#define M0_SCREEN_ROWS 144\n#endif\n"
+                  : std::string())
       << (opt_.pokitto ? "#define GBL_TARGET_POKITTO 1\n" : "")
       << (opt_.odroid ? "#define GBL_TARGET_ODROID 1\n" : "")
       << (opt_.aka ? "#define GBL_TARGET_AKA 1\n#define GBL_ERAM_ON_SD 0\n" : "")

@@ -16,37 +16,58 @@ build/bin/m0recomp firmware.bin --system meta --cpu m0plus --info
 build/bin/m0recomp firmware.bin --system pokitto --disasm --limit 40
 ```
 
-`--target pc` prépare désormais un projet contenant le firmware validé et un
-`run.py` qui le lance dans une copie intégrée du modèle de
-[gm0](https://github.com/r043v/gm0), remise sous MIT par son auteur pour
-m0boy (`targets/m0plus/gm0/LICENSE` conserve les notices tierces MIT).
-Ce modèle fournit le CPU M0+, les périphériques SAMD21 ou LPC11U68, l'écran,
-le stockage et les entrées. Le binaire `.bin`
-ne contient pas les fichiers de la carte : les passer au lanceur si le jeu en
-a besoin. Exemple :
+`--system meta --target pc` (et `--target aka`) écrit un projet **sans émulateur** :
+le code Thumb de `firmware.bin` atteint par le parcours statique et par
+`--coverage` est traduit en C, une fonction par Ko de flash
+(`src/m0_native_page_*.c`). Dans la fonction, chaque instruction a un label,
+les branchements directs de la page sont des `goto`, les cycles d'une chaîne
+d'instructions s'additionnent dans une variable locale, et la machine (timers,
+DMA, NVIC) n'est consultée qu'aux endroits où elle peut avoir changé : au début
+d'un bloc, où la marge avant la prochaine échéance (`samd21_room`) doit couvrir
+le plus long chemin du bloc — sinon l'instruction passe par l'interpréteur
+`m0_cpu.c`, qui avance l'horloge instruction par instruction —, et après une
+instruction qui a touché la machine (accès hors SRAM, saut d'attente, PRIMASK).
+Mêmes cycles et mêmes effets de bord que l'interpréteur, pas de décodage ni de
+dispatch par instruction (`m0_native_glue.h` est le vocabulaire des corps).
+`m0_machine.c` fournit SysTick et le NVIC, `samd21.c` la carte Gamebuino META
+(TC4/TC5, DMAC, SERCOM4 avec l'écran ST7735 et le pavé, PORT et IOBUS, DAC, ADC,
+SYSCTRL/GCLK). gm0 n'est pas dans le projet. Les périphériques sont paresseux :
+ils rattrapent l'horloge du CPU quand le guest touche un registre ou à la
+prochaine échéance ; le flux DMA vers l'écran est déroulé en bloc quand il va
+d'une mémoire SRAM à la fenêtre RAMWR ; les boucles d'attente (chargement,
+comparaison, branchement en arrière) dont la valeur ne change qu'à un événement
+sont avancées d'un coup jusqu'à cet événement.
 
 ```bash
-build/bin/m0recomp firmware.bin --system meta --target pc -o output/firmware-pc
+build/bin/m0recomp firmware.bin --system meta --target pc --coverage p1.cov -o output/firmware-pc
 cmake -G Ninja -S output/firmware-pc -B output/firmware-pc/build
 ninja -C output/firmware-pc/build
-python3 output/firmware-pc/run.py carte/ --frames 300
+output/firmware-pc/build/m0_firmware_pc          # fenêtre SDL2 : flèches, J=A K=B U=menu I=home
+output/firmware-pc/build/m0_headless --frames 600 --ppm out.ppm --wav out.wav
 ```
 
-Le même projet contient une première traduction C des adresses flash atteintes
-depuis les vecteurs, augmentée par les adresses de `--coverage` (le format
-`EMU_PROF` de gm0, « adresse cycles », convient). Les instructions courantes
-MOV, calcul immédiat, accès mémoire et branches ont un corps C direct ; les
-autres passent par le cœur Thumb portable. Si le PC est en RAM ou si un mot de
-flash a changé, le repli interprète l'instruction. Le harnais CPU se construit
-avec `cmake -G Ninja -S output/firmware-pc -B output/firmware-pc/build`, puis
-compare `build/m0_native_pc --steps N` avec `--interp --steps N` sur
-`run_hash`. Il ne modélise encore que flash, SRAM, SysTick et NVIC : un
-firmware réel qui accède aux périphériques de la console doit utiliser
-`run.py` pour le moment.
+Règle : `m0_headless --frames N` imprime `run_hash`, `image_hash`, `audio_hash` ;
+`--interp` (interpréteur seul) doit imprimer la même ligne (hors `idle_skipped`).
+Le profil est standard : `m0_headless --frames N --random SEED --profile p`
+(ou `--input script`, lignes « image masque-hexa ») écrit `p.cov` (instructions
+exécutées, relu par la régénération), `p.mmio` (accès aux registres ; une lecture
+`UNMODELLED-READ` est un registre dont la carte répond 0 sans modèle) et `p.hot`
+(cycles par instruction). Non modélisés pour l'instant : la carte SD (lue comme
+absente), l'écriture de la flash, les attentes du cache NVM (le décompte de
+cycles diffère donc légèrement de gm0 : Lapinou, 300 images, 241 094 733 contre
+241 095 159 cycles ; l'image est identique hors compteur de fps, et les valeurs
+écrites dans le DAC sont identiques à 99,99 %).
 
-La cible AKA reste hors de la matrice : le modèle SAMD21/LPC11U68 de gm0 est
-une application SDL2 de bureau et n'est pas encore un runtime autonome
-compilable sur ESP32-S3. Un firmware META ne tourne pas sur Pokitto, ni
+`--system pokitto --target pc` garde l'ancien chemin : une copie intégrée du
+modèle de [gm0](https://github.com/r043v/gm0), remise sous MIT par son auteur
+pour m0boy (`targets/m0plus/gm0/LICENSE` conserve les notices tierces MIT),
+avec `run.py` et `m0_native_pc` (harnais CPU : flash, SRAM, SysTick, NVIC).
+
+`--system meta --target aka` écrit le projet PlatformIO du même runtime
+(`targets/m0plus/platform/m0_aka_native.cpp` : la carte, l'écran par le pilote
+i80 de l'AKA, l'audio du cœur ESP32 partagé). Il se construit (`pio run`) ; il
+n'est pas validé sur la console, la carte SD n'y est pas modélisée et la
+vitesse sur l'ESP32-S3 n'est pas mesurée. Pokitto n'a pas de cible AKA. Un firmware META ne tourne pas sur Pokitto, ni
 l'inverse.
 
 | Axe | Game Boy | SG-1000 | Game Gear | Master System | PICO-8 |
@@ -126,13 +147,16 @@ la table des faits, et un refus dit lequel des deux manque et pourquoi
 |---|---|---|
 | gameboy, sg1000, gg, sms | desktop, meta, pokitto, espboy, pc, odroid, aka | — |
 | msx | desktop, meta, pokitto, pc | (espboy non câblé) |
-| pico8 | desktop, meta, pokitto, espboy, pc | — |
+| pico8 | desktop, meta, pokitto, espboy, pc, aka | — |
 | nes | desktop, meta, pokitto, pc (6502 recompilé, interpréteur de repli) | — |
 | pce | desktop, pc (interpréteur HuC6280 ; voir `docs/PCE.fr.md`) | consoles > 32 Kio RAM, VRAM 64 Kio |
-| vectrex | meta, pc (6809 recompilé, interpréteur de repli ; voir `docs/VECTREX.fr.md`) | (pokitto, espboy et ESP32 non câblés) |
+| vectrex | meta, pc, aka (6809 recompilé, interpréteur de repli ; voir `docs/VECTREX.fr.md`) | (pokitto et espboy non câblés) |
 | megadrive | desktop, pc, aka (68000 recompilé, interpréteur de repli ; voir `docs/MEGADRIVE.fr.md`) | (meta : le vieux profil « 4 Kio » seulement) |
 
-Les cibles pc (fenêtre SDL2, la carte en fichier `sd.img`), odroid
+Les cibles pc (fenêtre SDL2, la carte en fichier `sd.img` ; les save states
+sans carte — les emplacements d'un même fichier à plat dans le répertoire
+courant, `m0_state.cpp` — et les sauvegardes de cartouche Game Boy via
+l'image), odroid
 (ODROID-GO : ESP32, ILI9341 320×240, carte SD, DAC) et aka (Gamebuino
 AKA CORE v1.4 : ESP32-S3, 8 Mio flash, écran i80 320×240, SDMMC,
 expandeurs I²C, codec TAS2505 — voir `docs/AKA.fr.md`) partagent le noyau ESP32 de
@@ -450,6 +474,43 @@ bouton 1 et bouton 2 (bits 0 à 5) ; `--start-frame` tient le bouton 1 pendant
 dix images. Le `run_hash` couvre registres, cycles, RAM, VRAM, état VDP/PSG,
 RAM de cartouche et image ; chaque ligne du rendu des consoles est comparée
 au rendu de référence (`out_mismatch`).
+
+Chaque cœur à couverture jouée (gameboy, sg1000, msx, gamegear, nes,
+vectrex, megadrive, pce) propose aussi `--explore FRAMES --random SEED` :
+des segments d'entrées aléatoires, un instantané de la machine entre
+segments, et des segments qui s'arrêtent dès qu'ils découvrent une adresse
+interprétée nouvelle — l'explorateur privilégie les reprises qui ouvrent du
+code jamais vu. L'explorateur est partagé
+(`targets/common/host/m0_explore.h`, branché par
+`targets/common/host/m0_explore_host.h` : analyse des arguments, traduction
+des touches, boucle à segments) ; un cœur nouveau le raccorde en quelques
+lignes. Le Game Boy garde son propre câblage : ses instantanés ne se posent
+qu'aux points sûrs du runtime (longjmp). Le SG-1000 joue chaque segment
+entier sans reprise — `sg1000_t` doit rester identique à l'octet pour la
+chaîne firmware/référence — et compte la nouveauté en scannant les adresses
+touchées à la fin des segments. `tools/profile/m0search.py` enchaîne une
+session explore, une partie sans touche (`m0_idle.h` : logos, titres,
+démos) et les parties scriptées, puis fusionne la couverture pour le
+générateur ; seul le PICO-8 reste entièrement scripté (pas de couverture à
+consommer).
+
+Cinq drapeaux étendent la marche statique aux cibles d'appel et de saut
+que l'atteignabilité ne prouve pas (gestionnaires derrière une table de
+sauts, appelants derrière une table de bancs) : `--pce-sweep` (HuC6280),
+`--nes-sweep` (6502), `--vectrex-sweep` (6809), `--megadrive-sweep`
+(68000) et `--meta-sweep` (SM83, cible console). Chacun balaye la ROM
+pour les encodages d'appel/saut absolu de son processeur et sème les
+cibles comme entrées de région. La discipline est partagée
+(`recompiler/include/m0boy/sweep.h`) : la marche de la couverture n'a
+jamais de plafond ; le balayage et son expansion partagent un budget —
+sur le PCE, le NES et le Vectrex, ce qui reste du budget code
+(`--meta-code-budget`), 16384 instructions sinon ; sur le Mega Drive et
+le Game Boy, 16384 instructions. Rien ne s'exécute tant que le jeu n'y
+va pas : une entrée n'est prise que sous son propre contexte (octets MPR
+du PCE, banque vérifiée du Game Boy, PC ailleurs) et la sémantique
+compilée est celle de l'interpréteur. Le code généré grossit, le
+`run_hash` ne doit pas bouger — chaque e2e (PCE, NES, Vectrex, Mega
+Drive, cible META) vérifie les deux.
 
 `--meta-precise` synchronise avant chaque instruction et calcule tous les
 drapeaux : le code recompilé doit alors donner exactement le `run_hash` de

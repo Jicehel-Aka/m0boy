@@ -38,7 +38,7 @@ def main():
                 result=subprocess.run([pio,'run','-d',str(project),'-j','2'],capture_output=True,text=True,timeout=600)
                 assert result.returncode==0,result.stdout[-3000:]+result.stderr[-3000:]
                 firmware=project/'.pio/build/aka/firmware.bin'
-                assert firmware.stat().st_size<=0x370000
+                assert firmware.stat().st_size<=0x2EE000
                 gm0=os.environ.get('AKA_GM0')
                 if gm0:
                     env=dict(os.environ,SDL_VIDEODRIVER='dummy',SDL_AUDIODRIVER='dummy',EMU_NOPACE='1')

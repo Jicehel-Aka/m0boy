@@ -15,6 +15,8 @@
 extern "C" {
 #endif
 
+#include "gbl_config.h" /* GBL_TARGET_PC gates the PC's native mode below */
+
 enum {
     META_MODE_SMOOTH, /* every row is two DMG lines weighted by area (9 -> 8) */
     META_MODE_TILE,  /* drop line 7 of each tile row (gm0), keep 63 and 95 */
@@ -23,6 +25,9 @@ enum {
     META_MODE_CROP,  /* no scaling: DMG lines 8..135 */
     META_MODE_SKIP,  /* drop the ninth line of every nine */
     META_MODE_TBLEND, /* default: TILE's rows, line 7 of each tile row merged into the next (gm0 ESPboy) */
+#ifdef GBL_TARGET_PC
+    META_MODE_NATIVE, /* the PC window: the DMG's own 144 lines, 160x144 (PC_ROWS) */
+#endif
     META_MODE_COUNT
 };
 
@@ -35,7 +40,6 @@ enum {
  * (gbl_palette_boot) — they are stored as the boot ROM's 30 base
  * palettes and (OBJ0, OBJ1, BG) triplets (GBL_GBC_BASE, GBL_GBC_COMBOS)
  * for the day sprites get palettes of their own. */
-#include "gbl_config.h"
 #ifdef GBL_PALETTE_GBC
 #define META_PALETTE_COUNT 6
 #else

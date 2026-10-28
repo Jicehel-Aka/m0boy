@@ -1,5 +1,6 @@
 #include "m0boy/megadrive_generator.h"
 #include "m0boy/console_project.h"
+#include "m0boy/sweep.h"
 #include "emitter.h"
 #include <cstdint>
 #include <cstdio>
@@ -59,10 +60,15 @@ void generate_full_native(const std::vector<uint8_t> &rom, const GenerateOptions
     fs::remove(o.output / "rom.md");
     for (const char *n : {"md_full.h", "md_full_cpu.c", "md_full_bus.c", "md_full_video.c", "md_full_audio.c", "md_ym2612.h", "md_ym2612.c", "md_m68k_time.h", "md_m68k_ops.h"})
         copy_template(tpl / "runtime" / n, src / n);
+    if (o.target == TargetId::aka)
+        copy_template(tpl / "runtime/md_video_asm.S", src / "md_video_asm.S");
     for (const char *n : {"z80.h", "z80.c", "z80_ops.h"})
         copy_template(o.targets_dir / "sg1000/runtime" / n, src / n);
     if (pc) {
         copy_template(tpl / "platform/md_full_pc.c", src / "md_full_pc.c");
+        /* the harness's --explore player */
+        copy_template(o.targets_dir / "common/host" / "m0_explore.h", src / "m0_explore.h");
+        copy_template(o.targets_dir / "common/host" / "m0_explore_host.h", src / "m0_explore_host.h");
         for (const char *n : {"pc_frontend.c", "pc_frontend.h"})
             copy_template(o.targets_dir / "consoles/pc" / n, src / n);
     } else {
@@ -89,11 +95,28 @@ void generate_full_native(const std::vector<uint8_t> &rom, const GenerateOptions
         const uint32_t to = be32(rom, v * 4);
         if (to < rom.size() && !(to & 1u)) covered.insert(to);
     }
+    /* --megadrive-sweep: the ROM's JSR/JMP absolute long ($4EB9/$4EF9)
+     * whose target lies in the ROM seeds the walk too — the jump-table
+     * handlers reachability cannot prove, compiled the same way.  Nothing
+     * lands there until the game jumps (the ROM is flat: the dispatcher
+     * enters by PC), but the generated file grows: the speculative seeds
+     * are bounded (m0boy/sweep.h's default cap).  The absolute-short
+     * forms target low memory and stay the interpreter's. */
+    size_t swept = 0;
+    if (o.sweep)
+        for (uint32_t at = 0; at + 6 <= rom.size() && swept < m0::kSweepDefault; at += 2) {
+            const uint16_t op = be16(rom, at);
+            if (op != 0x4eb9 && op != 0x4ef9) continue;
+            const uint32_t to = be32(rom, at + 2);
+            if (to < rom.size() && !(to & 1u) && covered.insert(to).second)
+                ++swept;
+        }
     EmitStats stats;
     const std::string code = emit_m68k(rom, covered, stats);
     write(src / "md_full_code.c", code);
-    std::printf("megadrive: %zu instructions in %zu regions, %zu idle loops\n",
-                stats.compiled, stats.regions, stats.idle_loops);
+    std::printf("megadrive: %zu instructions in %zu regions, %zu idle loops%s\n",
+                stats.compiled, stats.regions, stats.idle_loops,
+                o.sweep ? ", the ROM's JSR/JMP targets swept" : "");
     std::ostringstream data;
     data << "#include <stdint.h>\nconst uint32_t md_rom_size = " << rom.size() << "u;\n"
             "const uint8_t md_rom[] = {\n";
@@ -110,7 +133,7 @@ void generate_full_native(const std::vector<uint8_t> &rom, const GenerateOptions
             "pkg_check_modules(SDL2 REQUIRED IMPORTED_TARGET sdl2)\n"
             "add_executable(md_pc src/md_full_pc.c src/pc_frontend.c src/md_full_code.c src/md_full_cpu.c "
             "src/md_full_bus.c src/md_full_video.c src/md_full_audio.c src/md_ym2612.c src/z80.c src/md_rom.c)\n"
-            "target_compile_options(md_pc PRIVATE -O2)\n"
+            "target_compile_options(md_pc PRIVATE -O3)\n"
             "target_link_libraries(md_pc PRIVATE PkgConfig::SDL2 m)\n");
     } else {
         /* The ESP32 console project: the family's shared core, the console's
@@ -132,15 +155,19 @@ void generate_full_native(const std::vector<uint8_t> &rom, const GenerateOptions
         project::write_profile(o.target, src, {false, false, false}, false);
         write(src / "md_config.h",
               "#pragma once\n#define MD_ROM_SIZE " + std::to_string(rom.size()) + "u\n"
-              "#define MD_ROWS 224u\n#define MD_PANEL_ROW0 8u\n");
+              "#define MD_ROWS 224u\n#define MD_PANEL_ROW0 8u\n"
+              /* AKA only: the tile-run kernel is Xtensa there (md_video_asm.S,
+               * copied below), and the second core renders one batch behind. */
+              + std::string(o.target == TargetId::aka ?
+                    "#define MD_VIDEO_ASM 1\n#define MD_RENDER_THREAD 1\n" : ""));
         fs::create_directories(o.output / "boards");
         copy_template(platform / "boards" / "gamebuino_aka.json", o.output / "boards" / "gamebuino_aka.json");
         std::error_code list_error;
         for (const auto &entry : fs::directory_iterator(platform, list_error)) {
             if (entry.is_directory() || entry.path().extension() != ".in") continue;
-            /* the 68000 core has RAM to spare (77% of 320 KiB): -O2, not -Os */
+            /* the 68000 core lives on hot loops: -O3, not PlatformIO's -Os */
             write(o.output / entry.path().stem(),
-                  replace(replace(read(entry.path()), "@NAME@", o.name), "-Os", "-O2"));
+                  replace(replace(read(entry.path()), "@NAME@", o.name), "-Os", "-O3"));
         }
     }
     write(o.output / "README.md", pc ?
@@ -155,6 +182,10 @@ void generate_full_native(const std::vector<uint8_t> &rom, const GenerateOptions
         "The image is unfiltered by default. F8 cycles gm0-style filters; "
         "F10 changes scale; F11 toggles fullscreen. "
         "`--wav FILE` saves 44.1 kHz stereo audio.\n"
+        "The cartridge SRAM ($200000, the battery) persists: `--save FILE` "
+        "chooses the file, by default `<cartridge name>.sav` in the working "
+        "directory — read at boot, written back about every two seconds of "
+        "play and at exit.\n"
         "Profile: `build/md_pc --interp --frames 1200 --input start.input --coverage run.cov`, "
         "then regenerate with `m0recomp --coverage run.cov`.\n"
         : "# Mega Drive AKA project: " + o.name + "\n\n"

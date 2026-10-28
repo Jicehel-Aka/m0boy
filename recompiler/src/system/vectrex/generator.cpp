@@ -1,9 +1,11 @@
 /* Vectrex project generation: the interpreter core (targets/vectrex/runtime)
  * with the cartridge as data, and either the SDL host (pc: the BIOS is read
- * at run time) or the META's drivers (meta: the BIOS is built into the
- * firmware, as the cartridge is; neither ever enters the repository). */
+ * at run time) or a console firmware with the BIOS built in (the META, or
+ * the Gamebuino AKA on the ESP32 family's shared core; neither ever enters
+ * the repository). */
 #include "m0boy/vectrex_generator.h"
 #include "m0boy/vectrex_emitter.h"
+#include "m0boy/console_project.h"
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -127,15 +129,15 @@ std::vector<CoverageEntry> read_coverage(const std::vector<fs::path> &files) {
 bool generate(const fs::path &cartridge, const GenerateOptions &o,
               GenerateStats &stats, std::string &error) {
   try {
-    if (o.target != TargetId::pc && o.target != TargetId::meta)
-      throw std::runtime_error("Vectrex projects target the META (--target meta) or the PC (--target pc)");
+    if (o.target != TargetId::pc && o.target != TargetId::meta && o.target != TargetId::aka)
+      throw std::runtime_error("Vectrex projects target the META (--target meta), the PC (--target pc) or the AKA (--target aka)");
     const auto rom = read_binary(cartridge);
     if (rom.empty() || rom.size() > 32768)
       throw std::runtime_error("Vectrex cartridge must be 1 to 32768 bytes");
     const fs::path tpl = o.targets_dir / "vectrex";
     if (!fs::is_regular_file(tpl / "runtime" / "vectrex.c"))
       throw std::runtime_error("Vectrex templates missing in " + o.targets_dir.string());
-    const std::string target = o.target == TargetId::meta ? "meta" : "pc";
+    const std::string target = o.target == TargetId::meta ? "meta" : o.target == TargetId::aka ? "aka" : "pc";
     const fs::path marker = o.output / "vectrex-project.txt";
     if (fs::exists(o.output) && !fs::exists(marker) && !fs::is_empty(o.output)) {
       bool foreign = false; /* compile.sh writes its log first */
@@ -156,7 +158,7 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
      * is at hand, its code is compiled too (the host checks the ROM it
      * loads against it) */
     std::vector<unsigned char> bios;
-    if (o.target == TargetId::meta)
+    if (o.target != TargetId::pc)
       bios = bios_image(find_bios(cartridge, o.bios));
     else if (!o.interpret) {
       const auto path = find_bios(cartridge, o.bios, false);
@@ -167,15 +169,18 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
       EmitOptions eo;
       eo.precise = o.precise;
       eo.max_instructions = o.max_instructions;
-      /* the META's 256 KiB less the bootloader's 16: the runtime, the
-       * drivers and the system ROM (56), the cartridge, a margin (4); the
+      eo.sweep = o.sweep;
+      /* a console's flash less the runtime, the drivers and a margin: the
        * rest for as many instructions as it holds, played ones first.
        * 42 to 50 bytes an instruction in the fast mode (arm-gcc -Os: Vecmania
        * Part 2, Berzerk),
        * the precise mode's check after each one adds ~12 */
-      if (o.target == TargetId::meta && !eo.max_instructions) {
+      if (o.target != TargetId::pc && !eo.max_instructions) {
         const unsigned bpi = o.bytes_per_instruction ? o.bytes_per_instruction : o.precise ? 64u : 46u;
-        const size_t budget = o.code_budget_bytes ? o.code_budget_bytes : (240u - 56u - 4u) * 1024u - rom.size();
+        const size_t budget = o.code_budget_bytes ? o.code_budget_bytes
+                              : o.target == TargetId::aka
+                                  ? (3520u - 192u) * 1024u - rom.size()
+                                  : (240u - 56u - 4u) * 1024u - rom.size();
         eo.max_instructions = budget / bpi;
       }
       EmitStats es;
@@ -201,6 +206,9 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
                                      "/* the host's --coverage and the dispatcher's counts */\n"
                                      "#define VX_COVERAGE 1\n#define VX_GEN_STATS 1\n");
       copy_template(tpl / "host" / "vectrex_host.c", src / "vectrex_host.c");
+      /* the harness's --explore player */
+      copy_template(o.targets_dir / "common/host" / "m0_explore.h", src / "m0_explore.h");
+      copy_template(o.targets_dir / "common/host" / "m0_explore_host.h", src / "m0_explore_host.h");
       for (const char* name : {"pc_frontend.c", "pc_frontend.h"})
         copy_template(o.targets_dir / "consoles/pc" / name, src / name);
       write(o.output / "CMakeLists.txt",
@@ -233,16 +241,20 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
     write(src / "vx_cart.c", cart + "\n/* The system ROM (E000-FFFF). */\nconst uint8_t vectrex_bios[8192] = {\n" +
                                  bytes(bios.data(), bios.size()) + "};\n");
     const std::string sd = state_base(o.name);
+    /* A state slot: the META's phosphor fits 24 sectors; the AKA's 240x240
+     * phosphor (28.8 KiB) asks for 60. */
     write(src / "vx_config.h",
           std::string("#pragma once\n"
-                      "/* the panel's byte order: the META's SPI takes the high byte first */\n"
-                      "#define VX_PANEL_SWAP 1\n" + native +
+                      "/* the panel's colour order: the META's SPI takes the high byte first; the AKA's i80 swaps the bytes in hardware */\n"
+                      "#define VX_PANEL_SWAP ") + (o.target == TargetId::aka ? "0" : "1") + "\n" + native +
+              std::string(
                       "#define VX_FULL_BOOT ") +
               (o.full_boot ? "1" : "0") + "\n" +
               "#define VX_STATE_NAME \"" + sd + ".ST8\"\n" +
               "#define VX_STATE_NAME83 \"" + name83(sd, "ST8") + "\"\n" +
               "#define VX_BIN_NAME83 \"" + name83(sd, "BIN") + "\"\n" +
-              "#define VX_STATE_SLOTS 10\n#define VX_STATE_SLOT_SECTORS 24\n");
+              "#define VX_STATE_SLOTS 10\n#define VX_STATE_SLOT_SECTORS " +
+              (o.target == TargetId::aka ? "60" : "24") + "\n");
     copy_template(tpl / "platform" / "vx_main.cpp", src / "vx_main.cpp");
 
     const fs::path common = o.targets_dir / "common";
@@ -257,49 +269,102 @@ bool generate(const fs::path &cartridge, const GenerateOptions &o,
                              "m0_menu.cpp", "m0_sd.c", "m0_sd.h", "m0_fat.c", "m0_fat.h", "m0_card.h"})
       copy_template(shared / name, src / name);
     copy_template(o.targets_dir / "meta" / "runtime" / "gbl_board.h", src / "gbl_board.h");
-    copy_template(platform / "meta_sd_bus.cpp", src / "meta_sd_bus.cpp");
     /* the audio driver: a frame's samples are 30000 cycles at 1.5 MHz */
     write(src / "m0_audio.h",
           replace(replace(read(shared / "m0_audio.h"), "70224u", "30000u"), "4194304u", "1500000u"));
-    auto audio = read(platform / "meta_audio.cpp");
-    audio = replace(audio, "#include \"gbl.h\"", "#include \"vectrex.h\"\nvoid vx_audio_render(uint8_t *, unsigned);\n"
-                                                 "void vx_audio_set_rate(unsigned);");
-    audio = replace(replace(audio, "gbl_apu_render", "vx_audio_render"), "gbl_apu_set_rate", "vx_audio_set_rate");
-    write(src / "meta_audio.cpp", audio);
-    write(src / "gbl_config.h", std::string("#pragma once\n#define GBL_TARGET_POKITTO 0\n#define GBL_GEN_VERSION \"") +
-                                    GBRECOMP_META_VERSION + "\"\n");
-    write(src / "gbl_profile.h",
-          "#pragma once\n#include \"gbl_board.h\"\n"
-          "#ifndef META_OVERCLOCK\n#define META_OVERCLOCK 1\n#endif\n"
-          "#define POKITTO_LCD_ASM 0\n#define POKITTO_RAM_BANKS 0\n#define POKITTO_AUDIO_ASM 0\n"
-          "#ifndef META_AUDIO_DMA\n#define META_AUDIO_DMA 0\n#endif\n"
-          "#ifndef META_AUDIO_RING\n#define META_AUDIO_RING 512u\n#endif\n");
-    for (const char *name : {"meta_startup.c", "meta_clock.cpp", "meta_lcd.cpp", "meta_lcd_pack.h", "meta_lcd_queue.h",
-                             "meta_dma.h", "meta_dma.cpp", "meta_spi.c", "meta_hw.h", "meta_usb.c", "meta_usb.h",
-                             "meta_usb_msc.c", "meta_usb_msc.h"})
-      copy_template(platform / name, src / name);
-    write(o.output / "platformio.ini",
-          replace(replace(read(platform / "platformio.ini.in"), "@NAME@", o.name), "@COMPILER@", o.compiler));
-    write(o.output / "gamebuino_meta.ld", replace(read(platform / "gamebuino_meta.ld.in"), "@NAME@", o.name));
-    fs::create_directories(o.output / "boards");
-    copy_template(platform / "boards" / "gamebuino_meta.json", o.output / "boards" / "gamebuino_meta.json");
-    fs::create_directories(o.output / "toolchain");
-    for (const auto &entry : fs::directory_iterator(common / "toolchain"))
-      if (entry.is_regular_file())
-        copy_template(entry.path(), o.output / "toolchain" / entry.path().filename());
-    if (!fs::exists(o.output / (sd + ".ST8")))
-      write(o.output / (sd + ".ST8"), std::string(10u * 24u * 512u, char(0xff)));
+    if (o.target == TargetId::aka) {
+      /* the ESP32 family's shared core and the AKA's pins; the card rides
+       * its own SDMMC bus (m0_sd.c over esp32_sd.cpp's hooks), the phosphor
+       * rows go to the panel by the AKA's i80 driver */
+      const fs::path core = common / "consoles" / "esp32";
+      const fs::path aka_platform = o.targets_dir / "consoles" / "aka";
+      copy_template(core / "esp32_hw.h", src / "esp32_hw.h");
+      copy_template(core / "esp32_sd.cpp", src / "esp32_sd.cpp");
+      copy_template(aka_platform / "esp32_config.h", src / "esp32_config.h");
+      copy_template(aka_platform / "aka_hw.h", src / "aka_hw.h");
+      {
+        /* m0_audio_frame renders a 50 Hz frame (220 samples at 11025 Hz) */
+        auto hw = read(core / "esp32_hw.cpp");
+        const std::string frame = "uint8_t samples[192];";
+        if (hw.find(frame) == std::string::npos)
+          throw std::runtime_error("esp32_hw.cpp changed: the Vectrex patch no longer applies");
+        hw = replace(hw, frame, "uint8_t samples[256]; /* a 50 Hz frame at 11025 Hz */");
+        write(src / "esp32_hw.cpp", hw);
+      }
+      copy_template(aka_platform / "aka_hw.cpp", src / "aka_hw.cpp");
+      /* the panel's resample (aka_hw.cpp samples m0_nearest) */
+      copy_template(common / "runtime" / "m0_scale.h", src / "m0_scale.h");
+      /* the audio hooks the ESP32 core finds by its sg_audio.h */
+      write(src / "sg_audio.h", "#pragma once\n#include \"vectrex.h\"\n"
+                                "#ifdef __cplusplus\nextern \"C\" {\n#endif\n"
+                                "void vx_audio_render(uint8_t *, unsigned);\n"
+                                "void vx_audio_set_rate(unsigned);\n"
+                                "#ifdef __cplusplus\n}\n#endif\n"
+                                "#define sg_platform_audio_rate vx_audio_set_rate\n"
+                                "#define sg_platform_audio_render vx_audio_render\n");
+      fs::create_directories(o.output / "boards");
+      copy_template(aka_platform / "boards" / "gamebuino_aka.json",
+                    o.output / "boards" / "gamebuino_aka.json");
+      std::error_code list_error;
+      for (const auto &entry : fs::directory_iterator(aka_platform, list_error))
+        if (entry.is_regular_file() && entry.path().extension() == ".in")
+          write(o.output / entry.path().stem(), replace(read(entry.path()), "@NAME@", o.name));
+      project::write_config(o.target, src);
+      project::write_profile(o.target, src, {});
+    } else {
+      copy_template(platform / "meta_sd_bus.cpp", src / "meta_sd_bus.cpp");
+      auto audio = read(platform / "meta_audio.cpp");
+      audio = replace(audio, "#include \"gbl.h\"", "#include \"vectrex.h\"\nvoid vx_audio_render(uint8_t *, unsigned);\n"
+                                                   "void vx_audio_set_rate(unsigned);");
+      audio = replace(replace(audio, "gbl_apu_render", "vx_audio_render"), "gbl_apu_set_rate", "vx_audio_set_rate");
+      write(src / "meta_audio.cpp", audio);
+      write(src / "gbl_config.h", std::string("#pragma once\n#define GBL_TARGET_POKITTO 0\n#define GBL_GEN_VERSION \"") +
+                                      GBRECOMP_META_VERSION + "\"\n");
+      write(src / "gbl_profile.h",
+            "#pragma once\n#include \"gbl_board.h\"\n"
+            "#ifndef META_OVERCLOCK\n#define META_OVERCLOCK 1\n#endif\n"
+            "#define POKITTO_LCD_ASM 0\n#define POKITTO_RAM_BANKS 0\n#define POKITTO_AUDIO_ASM 0\n"
+            "#ifndef META_AUDIO_DMA\n#define META_AUDIO_DMA 0\n#endif\n"
+            "#ifndef META_AUDIO_RING\n#define META_AUDIO_RING 512u\n#endif\n");
+      for (const char *name : {"meta_startup.c", "meta_clock.cpp", "meta_lcd.cpp", "meta_lcd_pack.h", "meta_lcd_queue.h",
+                               "meta_dma.h", "meta_dma.cpp", "meta_spi.c", "meta_hw.h", "meta_usb.c", "meta_usb.h",
+                               "meta_usb_msc.c", "meta_usb_msc.h"})
+        copy_template(platform / name, src / name);
+      write(o.output / "platformio.ini",
+            replace(replace(read(platform / "platformio.ini.in"), "@NAME@", o.name), "@COMPILER@", o.compiler));
+      write(o.output / "gamebuino_meta.ld", replace(read(platform / "gamebuino_meta.ld.in"), "@NAME@", o.name));
+      fs::create_directories(o.output / "boards");
+      copy_template(platform / "boards" / "gamebuino_meta.json", o.output / "boards" / "gamebuino_meta.json");
+      fs::create_directories(o.output / "toolchain");
+      for (const auto &entry : fs::directory_iterator(common / "toolchain"))
+        if (entry.is_regular_file())
+          copy_template(entry.path(), o.output / "toolchain" / entry.path().filename());
+      if (!fs::exists(o.output / (sd + ".ST8")))
+        write(o.output / (sd + ".ST8"), std::string(10u * 24u * 512u, char(0xff)));
+    }
     write(o.output / "README.md",
-          "# Vectrex META: " + o.name +
-              "\n\n" +
-              std::string(o.interpret ? "The cartridge interpreted (6809, VIA, AY-3-8912) and drawn at 128x128.\n"
-                                      : "The 6809 recompiled to C (src/vx_gen.c) in front of the interpreter, the VIA\n"
-                                        "and the AY-3-8912 emulated, the beam drawn at 128x128.\n") +
-              "The system ROM is built into this firmware: do not distribute it.\n\n"
-              "Firmware: pio run  (flash with pio run -t upload, or copy\n"
-              ".pio/build/meta/firmware.bin to the SD card)\n\n"
-              "Copy " + sd + ".ST8 beside " + sd + ".BIN on the SD card for ten save-state slots.\n"
-              "D-pad: stick; A, B, MENU, HOME: buttons 1-4; HOME held: options.\n");
+          o.target == TargetId::aka
+              ? "# Vectrex AKA: " + o.name +
+                    "\n\n" +
+                    std::string(o.interpret ? "The cartridge interpreted (6809, VIA, AY-3-8912), the beam drawn\n"
+                                              "1:1 at the panel's 240x240 (320-column rows).\n\n"
+                                            : "The 6809 recompiled to C (src/vx_gen.c) in front of the interpreter, the VIA\n"
+                                              "and the AY-3-8912 emulated, the beam drawn 1:1 at the panel's 240x240\n"
+                                              "(320-column rows).\n\n") +
+                    "The system ROM is built into this firmware: do not distribute it.\n\n"
+                    "Firmware: pio run  (flash with pio run -t upload)\n\n"
+                    "Save states live on the card, at its root, as " + sd + ".ST8.\n"
+                    "D-pad or joystick: stick; A, B, RUN, MENU: buttons 1-4; MENU held: options.\n"
+              : "# Vectrex META: " + o.name +
+                    "\n\n" +
+                    std::string(o.interpret ? "The cartridge interpreted (6809, VIA, AY-3-8912) and drawn at 128x128.\n"
+                                            : "The 6809 recompiled to C (src/vx_gen.c) in front of the interpreter, the VIA\n"
+                                              "and the AY-3-8912 emulated, the beam drawn at 128x128.\n") +
+                    "The system ROM is built into this firmware: do not distribute it.\n\n"
+                    "Firmware: pio run  (flash with pio run -t upload, or copy\n"
+                    ".pio/build/meta/firmware.bin to the SD card)\n\n"
+                    "Copy " + sd + ".ST8 beside " + sd + ".BIN on the SD card for ten save-state slots.\n"
+                    "D-pad: stick; A, B, MENU, HOME: buttons 1-4; HOME held: options.\n");
     write(marker, target + "\n");
     return true;
   } catch (const std::exception &e) {

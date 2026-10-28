@@ -1,20 +1,37 @@
 /*
- * Save states on the SD card.
+ * Save states.
  *
- * The file GBL_STATE_NAME (made by compile.sh / the Node converter, never
- * resized here) holds GBL_STATE_SLOTS slots of GBL_STATE_SLOT_SECTORS
- * sectors: a header, then the machine as gbl_state_io streams it.  The
- * header names the format (generator version and state size), the
- * game, the size and a checksum of the data; it is written last, and a
- * load first reads the whole slot to check the checksum, so a state cut
- * short by a power loss is refused instead of half applied.
+ * On the consoles the file GBL_STATE_NAME (made by compile.sh / the Node
+ * converter, never resized here) holds GBL_STATE_SLOTS slots of
+ * GBL_STATE_SLOT_SECTORS sectors: a header, then the machine as the
+ * runtime's state_io streams it.  The header names the format (generator
+ * version and state size), the game, the size and a checksum of the data;
+ * it is written last, and a load first reads the whole slot to check the
+ * checksum, so a state cut short by a power loss is refused instead of
+ * half applied.
+ *
+ * The PC has no card: the same slot area is a plain file in the working
+ * directory (STATE_NAME), created zero-filled on the first save.  The
+ * header, the checksum and the layout are the card file's.
  */
 #include "m0_state.h"
 
 #include <string.h>
 
+#if __has_include("gbl_config.h")
+#include "gbl_config.h" /* GBL_TARGET_PC: the slots are a plain file */
+#endif
+
+#if defined(GBL_TARGET_PC) && GBL_TARGET_PC
+#define STATE_FILE_STORE 1
+#else
+#define STATE_FILE_STORE 0
+#endif
+
+#if !STATE_FILE_STORE
 #include "m0_fat.h"
 #include "m0_sd.h"
+#endif
 
 /* Sega projects name their state file in sg_config.h, PICO-8 ones in
  * p8_config.h; without it this file built its empty stubs on the consoles
@@ -43,6 +60,7 @@ extern "C" {
 }
 
 #define STATE_NAME83 GBL_STATE_NAME83
+#define STATE_FILE GBL_STATE_NAME
 #define STATE_SLOTS GBL_STATE_SLOTS
 #define STATE_SLOT_SECTORS GBL_STATE_SLOT_SECTORS
 #define STATE_TITLE GBL_TITLE
@@ -67,6 +85,7 @@ uint32_t SEGA_STATE(frame)(void);
 }
 
 #define STATE_NAME83 GG_STATE_NAME83
+#define STATE_FILE GG_STATE_NAME
 #define STATE_SLOTS GG_STATE_SLOTS
 #define STATE_SLOT_SECTORS GG_STATE_SLOT_SECTORS
 #ifdef GG_STREAM_NAME
@@ -86,6 +105,7 @@ uint32_t SEGA_STATE(frame)(void);
 /* the heap's pointers are absolute: the firmware's code joins the format */
 extern "C" uint32_t p8_state_identity(void);
 #define STATE_NAME83 P8_STATE_NAME83
+#define STATE_FILE P8_STATE_NAME
 #define STATE_SLOTS P8_STATE_SLOTS
 #define STATE_SLOT_SECTORS P8_STATE_SLOT_SECTORS
 #define STATE_TITLE P8_STATE_NAME
@@ -100,6 +120,7 @@ extern "C" uint32_t p8_state_identity(void);
 #include "nes.h"
 
 #define STATE_NAME83 NES_STATE_NAME83
+#define STATE_FILE NES_STATE_NAME
 #define STATE_SLOTS NES_STATE_SLOTS
 #define STATE_SLOT_SECTORS NES_STATE_SLOT_SECTORS
 #define STATE_TITLE NES_STATE_NAME
@@ -119,6 +140,7 @@ uint32_t vx_state_identity(void);
 }
 
 #define STATE_NAME83 VX_STATE_NAME83
+#define STATE_FILE VX_STATE_NAME
 #define STATE_SLOTS VX_STATE_SLOTS
 #define STATE_SLOT_SECTORS VX_STATE_SLOT_SECTORS
 #define STATE_TITLE VX_STATE_NAME
@@ -142,12 +164,82 @@ typedef struct {
     char title[16];
 } state_header;
 
+#if STATE_FILE_STORE
+
+#include <stdio.h>
+
+/* The PC's slot area: one file in the working directory, slots back to
+ * back.  It is created zero-filled the first time a save needs it; reads
+ * never create it (a firmware that only loads leaves none behind). */
+static FILE *state_file;
+
+static int file_open(int create) {
+    if (state_file) return 1;
+    state_file = fopen(STATE_FILE, "r+b");
+    if (state_file) return 1;
+    if (!create) return 0;
+    static const uint8_t zero[512] = {0};
+    state_file = fopen(STATE_FILE, "wb");
+    if (state_file)
+        for (uint32_t s = 0; s < (uint32_t)STATE_SLOTS * STATE_SLOT_SECTORS; s++)
+            if (fwrite(zero, 1, sizeof zero, state_file) != sizeof zero) {
+                fclose(state_file);
+                state_file = NULL;
+                break;
+            }
+    if (!state_file) return 0;
+    if (fflush(state_file) || fclose(state_file)) {
+        state_file = NULL;
+        return 0;
+    }
+    state_file = fopen(STATE_FILE, "r+b");
+    return state_file != NULL;
+}
+
+static int file_at(uint32_t lba) { return fseek(state_file, (long)lba * 512, SEEK_SET) == 0; }
+
+static int read_sector(uint32_t lba, uint8_t *buf) {
+    return file_open(0) && file_at(lba) && fread(buf, 1, 512, state_file) == 512;
+}
+
+static uint32_t slot_lba(unsigned slot, uint32_t sector) {
+    return (uint32_t)slot * STATE_SLOT_SECTORS + sector;
+}
+
+static int sd_read(uint32_t lba, uint8_t *buf) { return read_sector(lba, buf); }
+
+static int sd_write(uint32_t lba, const uint8_t *buf) {
+    if (!file_open(1) || !file_at(lba) || fwrite(buf, 1, 512, state_file) != 512) return 0;
+    return fflush(state_file) == 0;
+}
+
+#else /* the consoles: the state file on the card, through the FAT */
+
 static meta_extent extents[MAX_EXTENTS];
 static int n_extents;
-static uint8_t have_file;
-static uint16_t used;
 
 static int read_sector(uint32_t lba, uint8_t *buf) { return m0_sd_read(lba, buf); }
+
+static uint32_t slot_lba(unsigned slot, uint32_t sector) {
+    return m0_fat_lba(extents, n_extents, slot * STATE_SLOT_SECTORS + sector);
+}
+
+static int sd_read(uint32_t lba, uint8_t *buf) {
+    for (int k = 0; lba && k < 3; k++)
+        if (m0_sd_read(lba, buf)) return 1;
+    return 0;
+}
+
+static int sd_write(uint32_t lba, const uint8_t *buf) {
+    for (int k = 0; lba && k < 3; k++)
+        if (m0_sd_write(lba, buf)) return 1;
+    return 0;
+}
+
+#endif /* STATE_FILE_STORE */
+
+static uint8_t have_file;
+static uint16_t used;
 
 static uint32_t fnv(uint32_t h, const uint8_t *p, uint32_t n) {
     while (n--) h = (h ^ *p++) * 16777619u;
@@ -167,39 +259,28 @@ static uint32_t format_tag(void) {
     return h;
 }
 
-static uint32_t slot_lba(unsigned slot, uint32_t sector) {
-    return m0_fat_lba(extents, n_extents, slot * STATE_SLOT_SECTORS + sector);
-}
-
-static int sd_read(uint32_t lba, uint8_t *buf) {
-    for (int k = 0; lba && k < 3; k++)
-        if (m0_sd_read(lba, buf)) return 1;
-    return 0;
-}
-
-static int sd_write(uint32_t lba, const uint8_t *buf) {
-    for (int k = 0; lba && k < 3; k++)
-        if (m0_sd_write(lba, buf)) return 1;
-    return 0;
-}
-
 static int header_ok(const state_header *h) {
     return !memcmp(h->magic, "GBLSTATE", 8) && h->format == format_tag() &&
            h->bytes == STATE_BYTES() && !strncmp(h->title, STATE_TITLE, sizeof(h->title));
 }
 
 void m0_state_init(int card_ok, uint8_t *buf) {
-    uint32_t size = 0;
     have_file = 0;
     used = 0;
-    if (!card_ok || STATE_BYTES() > (STATE_SLOT_SECTORS - 1u) * 512u) return;
-    if (m0_fat_find(read_sector, buf, STATE_NAME83, extents, MAX_EXTENTS, &n_extents, &size) !=
-            M0_FAT_OK ||
+    if (STATE_BYTES() > (STATE_SLOT_SECTORS - 1u) * 512u) return;
+#if STATE_FILE_STORE
+    (void)card_ok;
+    have_file = 1;
+#else
+    uint32_t size = 0;
+    if (!card_ok || m0_fat_find(read_sector, buf, STATE_NAME83, extents, MAX_EXTENTS, &n_extents,
+                                &size) != M0_FAT_OK ||
         size < (uint32_t)STATE_SLOTS * STATE_SLOT_SECTORS * 512u)
         return;
     have_file = 1;
+#endif
     for (unsigned s = 0; s < STATE_SLOTS; s++)
-        if (sd_read(slot_lba(s, 0), buf) && header_ok((const state_header *)buf)) used |= 1u << s;
+        if (read_sector(slot_lba(s, 0), buf) && header_ok((const state_header *)buf)) used |= 1u << s;
 }
 
 int m0_state_available(void) { return have_file; }
@@ -259,9 +340,9 @@ int m0_state_save(unsigned slot, uint8_t *buf) {
     return 1;
 }
 
-/* gbl_state_io in "check" mode must not touch the machine: it streams into
- * a sink.  The structure of the stream is the save order, so a dry pass is
- * a save-mode walk whose bytes come from the card instead. */
+/* state_io in "check" mode must not touch the machine: it streams into a
+ * sink.  The structure of the stream is the save order, so a dry pass is a
+ * save-mode walk whose bytes come from the card instead. */
 static void check_io(void *data, uint32_t bytes, void *ctxp) {
     stream_ctx *c = (stream_ctx *)ctxp;
     (void)data;

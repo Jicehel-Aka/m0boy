@@ -31,7 +31,7 @@ tools/pce/build_pc_binaries.sh                       # raiden-linux + raiden.exe
 build/bin/gbrecomp --system pce "Raiden (USA).pce" --target pc -o out/raiden_pc
 cmake -G Ninja -S out/raiden_pc -B out/raiden_pc/build && ninja -C out/raiden_pc/build
 out/raiden_pc/build/Raiden__USA__pc --frames 300 --ppm shot.ppm
-# frames=300 pc=4e2f run_hash=c6637372  (le harness donne le même)
+# frames=300 pc=4e2f run_hash=14af7372  (le harness donne le même)
 ```
 
 Le harness imprime le `run_hash` (CPU, WRAM, VRAM, SATB, palette, frame),
@@ -77,6 +77,11 @@ cartouche synthétique dont il vérifie hash et pixels.
   mednafen, un pas par ligne : latches BYR/BXR, RCRCount (comparé à
   RCR-0x40 pour l'IRQ raster), IRQ VBlank et SATB à la première ligne
   après VDW.
+  La VRAM est un tableau de 32 768 mots de 16 bits. Les adresses de port
+  et de DMA restent sur 16 bits : au-delà de $7FFF, les lectures donnent
+  zéro et les écritures sont ignorées ; une copie SATB en fin de VRAM
+  s'arrête à la limite. Le fond lit le BAT et les deux mots de motif une
+  fois par tuile de huit pixels, y compris avec un décalage horizontal.
 - **VCE** : la table de 512 couleurs (B bits 0-2, R 3-5, G 6-8) et sa
   LUT RGB565 ; la couleur 0 de chaque palette montre l'entrée 0 (le fond),
   comme le FixPCache de mednafen.
@@ -116,6 +121,18 @@ sortie. La ligne de lecture
 du pad et la sonde `m0input` suivent le modèle commun (une session gm0
 rejouera sur le harness quand l'application gm0 saura la lancer).
 
+`--explore FRAMES --random GRAINE` (qui demande `--coverage`) joue la
+cartouche comme l'explorateur des autres cœurs (`m0_explore.h`, copié
+dans `src/` des projets générés) : des segments de 8 à 40 s avec une main
+plausible (direction tenue, I et II tenus ou tapotés, RUN de temps en
+temps), depuis la mise sous tension ou depuis un instantané de la
+machine — la structure entière, les pointeurs du bus y compris, qui
+visent toujours les mêmes adresses — quand un segment atteint des
+adresses jamais vues. La nouveauté qui l'arrête est le compte d'adresses
+différentes de la trace. Rien n'est lu de `--input` sur ce chemin, et le
+son n'est pas rendu. Deux exécutions de même graine découvrent
+exactement les mêmes adresses (vérifié par `tests/test_pce_e2e.py`).
+
 La fenêtre PC (`pce_pc.c`) enregistre le même dialecte :
 `--record-input fichier` écrit une ligne pour chaque trame où le jeu
 reçoit des boutons (fermeture propre à la sortie, sur Échap comme sur
@@ -140,7 +157,7 @@ reçoit des boutons (fermeture propre à la sortie, sur Échap comme sur
   octet mort restait dans la pile, le RTS final partait dans la page
   matérielle et la tempête de BRK→RTI qui suit laissait le programme
   principal attendre le drapeau vblank $207E pour toujours.
-  run_hash stable d'une exécution à l'autre (c6637372 à l'image 300,
+  run_hash stable d'une exécution à l'autre (14af7372 à l'image 300,
   harness desktop = binaire PC).
 - **Le budget CPU par ligne suit CSL/CSH** : Raiden démarre en CSL
   (1,79 MHz) et passe tôt en CSH (7,16 MHz) ; une ligne VDC fait 1365
@@ -216,6 +233,27 @@ la région après toute instruction pouvant toucher le bus d'E/S ou le
 contrôleur d'interruption, pour échantillonner la ligne IRQ exactement où
 l'interpréteur le fait.
 
+`--pce-sweep` ajoute à la marche un balayage préliminaire de la
+cartouche : chaque fenêtre (les huit) mappant chaque page, un octet `$20`
+(JSR) ou `$4C` (JMP abs) dont la cible se décode sous ce contexte sème
+la marche. Le but : le code que l'atteignabilité ne prouve pas — les
+gestionnaires de tables de sauts, les appelants derrière une table de
+bancs — compilé comme le reste, pour les cartes où la couverture jouée
+reste mince. Rien ne s'exécute tant que le jeu n'y va pas (une entrée
+n'est prise que sous ses propres octets MPR, et la sémantique compilée
+est celle de l'interpréteur), mais le `pce_gen.c` grossit : le balayage
+est borné — ce qui reste du budget code (`--meta-code-budget`), 16384
+instructions sinon — et ses entrées rangent après les adresses jouées.
+La marche de la couverture, elle, n'a jamais de plafond. `tests/test_pce_e2e.py` vérifie sur la carte d'exercice que
+le balayage compile plus d'instructions que la marche seule sans bouger
+le `run_hash`. Le balayage est une famille générique — `--nes-sweep`,
+`--vectrex-sweep`, `--megadrive-sweep`, `--meta-sweep` — avec la même
+discipline (`recompiler/include/m0boy/sweep.h`) ; voir
+`docs/MULTI_SYSTEM.fr.md`. Le harness PCE et les autres cœurs à
+couverture partagent aussi l'explorateur `--explore`/`--random`
+(`targets/common/host/m0_explore.h`, câblé par
+`targets/common/host/m0_explore_host.h`).
+
 Le coût de dispatch a été cherché au profil (Raiden, profil complet) :
 le VDC prend ~43 % du temps (le coût fixe du runtime), et la mécanique de
 dispatch pesait 24 % contre ~10 % au code compilé lui-même.  Trois
@@ -242,6 +280,24 @@ longue ?) n'est pas tranchée ; le code est revenu à l'ordre du map et
 l'outillage (diff d'écritures WRAM horodatées, flux de dispatch, états
 par dispatch) est en place pour la reprise.
 
+Le rendu du fond lit maintenant BAT et plans 4 bpp par tuile au lieu de
+les relire à chaque pixel. Sur le harness Raiden en partie, 3 000 images
+avec le même script d'entrée et `--interp`, cinq mesures `perf stat`
+passent de 1 617 à 1 451 ms de temps CPU (−10 %, sur cet hôte). Les
+captures PPM du titre (300 images) et de la partie (3 000 images) sont
+identiques avant et après. La correction du tableau VRAM de 128 à 64 Kio
+change le `run_hash` parce que celui-ci hache toute la VRAM : à 300
+images il devient `14af7372`, et à 3 000 images avec le script de partie
+`76637455`. Le natif et l'interpréteur donnent le même nouveau hash.
+
+Le passage de composition des sprites est sauté sur les lignes sans sprite
+actif. Sur les autres lignes, son tampon temporaire et la fusion avec le
+fond sont limités à la plage horizontale couverte par les sprites visibles.
+Sur le même parcours Raiden et cinq mesures `perf stat`, le temps CPU passe
+de 1 456 à 1 348 ms par rapport au rendu précédent (−7 % supplémentaires,
+environ −17 % depuis le rendu par pixel initial). Le `run_hash` reste
+`76637455` et la capture PPM à 3 000 images est identique.
+
 La vivacité des drapeaux N/Z/C/V traverse les régions en mode rapide (le
 modèle NES) : une marche arrière par région, tous les drapeaux vivants
 aux étiquettes et aux sorties, et les mises à jour émises sous masque
@@ -263,17 +319,28 @@ avec le profil (`tests/test_pce_e2e.py`, cartouche d'exercice : TAM entre
 pages, mode T, décimal, déplacements de blocs, BSR, BBR/BBS, TST,
 routine copiée en WRAM, interruption timer avec RTI, opcode non
 documenté).  **Raiden (USA)**, 768 Kio : le projet précis de la marche
-statique seule imprime le hash de l'interpréteur (`c6637372` à l'image
+statique seule imprime le hash de l'interpréteur (`14af7372` à l'image
 300, la même valeur que l'interpréteur seul et que les binaires livrés),
 et le profilé le garde jusqu'à ~1 300 des 9 096 adresses du profil de
-jeu (le mode rapide est en plus ×30 sur 300 images du titre).  Reste
-ouvert : avec le profil complet, une instance compilée par une graine
-que la marche n'a pas prouvée diverge encore — le diff d'écritures WRAM
-horodatées et l'anneau des pc du dispatcher dans les projets générés
-sont l'outil (les correctifs déjà tirés de la chasse : le drapeau T
-rendu après chaque instruction, les sorties de région après un TAM dont
-le banc n'est pas prouvé, la longueur 3 de `JMP (ind)`, et dans le
-cœur lui-même un `pc0` qui déviait un saut à sa propre adresse).
+jeu (le mode rapide est en plus ×30 sur 300 images du titre).  Le profil complet (~21 000 instructions jouées, ~71 000 instances sous
+leurs contextes MPR) a fini par diverger pour quatre causes, toutes dans
+le générateur et corrigées : les tables `entry_region`/`entry_slot` en
+`uint16_t` tronquaient les index au-delà de 65 534 régions ou entrées ;
+le masque de vivacité des flags passait aux macros dans son codage
+compact (N=1, Z=2, C=4, V=8) au lieu des bits de P (BIT ne mettait plus
+N ni V à jour, ADC/SBC plus V) ; l'adresse d'écriture de `STA (zp),Y`
+(et des autres écritures `(zp),Y`) oubliait Y ; en mode précis, une
+branche ou un saut pris vers une étiquette de la même région ne
+contrôlait pas le budget (une instruction de trop au bord de la
+tranche).  Avec un profil de sessions aléatoires et d'un idle long
+(`m0search.py run --no-explore`, 12 s), le projet `--meta-precise` de
+Raiden imprime le `run_hash` de `--interp` à 60, 300, 1 500 et
+3 000 images (`9288e16e`, `66b29e2e`, `6ae87821`, `23a4547f`).  Le mode
+rapide ne vérifie le budget qu'aux étiquettes : son hash diffère de
+l'interpréteur par construction, l'image reste celle du jeu.
+L'outil de la chasse : un journal par tranche (registres et hash de la
+WRAM) puis par instruction sur la fenêtre de la première tranche qui
+diverge, comparés entre `--interp` et le natif.
 
 ## La cible AKA (ESP32-S3)
 
@@ -293,16 +360,72 @@ pad : A/B = I/II, RUN ou D = Start, MENU ou C = options, joystick complet.
 
 ## Chantiers suivants
 
-- Le décalage de scroll : la référence défile de quelques pixels de plus
-  que le cœur m0boy, sur le titre comme en niveau (même section au même
-  moment, même ennemi, décalage stable) — un temporisateur ou un compte
-  de lignes reste à trancher, le diff de trajectoire WRAM trame à trame
-  des deux parties réelles est l'outil (les sondes de la chasse au TST
-  sont dans /tmp, à repositer au besoin).
-- La couche sprite : les gros glyphs du titre tombent juste, le texte
-  sprite des bords de lignes montre des artefacts de découpe (limite des
-  16 sprites de ligne ou fetch des demi-motifs 32 px — à trancher contre
-  la même référence).
+### Passe VDP du 27 octobre 2026
+
+Le VDC conserve les indices de palette sur 9 bits et la VRAM de 64 Kio.
+Le rendu des sprites décode maintenant les quatre plans par groupes de
+quatre pixels, sans cache de VRAM. Le tampon sprite est effacé et combiné
+sur l'étendue effectivement couverte. Le marqueur interne du sprite 0 a
+désormais 32 bits : auparavant son bit 16 était tronqué, donc la collision
+ne pouvait pas lever `VDCS_CR`. Le test VDC couvre les bords gauche et
+droit, les deux moitiés des sprites de 32 pixels, le retournement, les
+plans multicolores, la priorité, la collision, la limite de 16 sprites,
+le scroll et une écriture VRAM entre deux lignes. Les cas de sprites sont
+recoupés avec le décodage bit à bit du motif. La correction de collision
+peut changer le statut VDC et les hashes des jeux qui lisent ce bit.
+La sélection verticale des sprites utilise le compteur de ligne précédent :
+le compteur RCR a déjà avancé quand le modèle effectue le fetch. Au titre
+de Raiden, cela corrige le placement du texte sprite d'une ligne ; un test
+reproduit ce cas.
+
+Profil synthétique hôte avant la correction du fetch vertical (`-O3`,
+1 million de lignes par scène, même checksum) : ligne vide 79–83 ms,
+fond dense 635–643 ms, fond et douze
+sprites 1 505 ms avant le décodage groupé contre 1 420 ms après. Ce sont
+des temps sur le PC de développement, pas des mesures AKA. Le coût VCE,
+la copie des lignes et le DMA restent à mesurer séparément sur AKA ;
+aucun changement de leur algorithme n'est retenu sans gain constaté.
+Un microbanc hôte des mêmes opérations mesure 194 ms pour un million de
+conversions de 256 indices VCE, 6 ms pour un million de copies de ces
+lignes et 20 ms pour 100 000 DMA de 256 mots (ports compris). Ces boucles
+isolées indiquent le coût relatif des postes sur ce CPU, pas celui d'une
+trame Raiden ni d'un ESP32-S3.
+Le projet Raiden précis pour AKA construit avec PlatformIO : 102 656 octets
+de RAM utilisés sur 327 680 et 1 377 389 octets de flash sur 3 604 480
+(rapport de compilation, aucune mesure sur console).
+Dans gm0 AKA (`4b4e145`), ce firmware Raiden s'arrête dès l'initialisation
+sur `AKA memset 00000000 + 1070170304 pc=400011e8` ; le compteur
+`--frames 24` et son débit affiché ne mesurent donc aucun rendu VDP.
+Raiden depuis le même projet précis : au titre (300 trames), interpréteur,
+natif et fenêtre PC impriment `run_hash=66b29e2e` et les trois PPM sont
+identiques ; avec `output/raiden-pc/seed.input` (1 100 trames), ils
+impriment `run_hash=6c7927fa` et les PPM sont encore identiques. Ces
+captures restent dans `logs/`, hors suivi Git.
+Le balayage optionnel `--pce-sweep` marche depuis une seconde file,
+plafonnée (ce qui reste du budget code, 16384 instructions sinon) : la
+marche de la couverture et des vecteurs reste illimitée et prioritaire,
+les instances balayées s'ajoutent après elle, et le budget explicite
+retire les instances excédentaires avant de planifier les régions. Cela
+évite que des octets de données ressemblant à `JSR` ou `JMP` génèrent
+un fichier C géant ; le repli interprété couvre les entrées écartées.
+`pce_end_to_end` passe à nouveau (104 s sur cet hôte) après ce bornage.
+
+La [référence mednafen](https://github.com/libretro/beetle-pce-libretro/blob/master/mednafen/hw_video/huc6270/vdc.cpp)
+produit au titre, à la trame 300, exactement les mêmes 61 440 pixels : sa
+capture de 256 × 243 est recadrée de trois lignes en haut pour comparer
+la zone 256 × 240. En partie à la trame 1 100, avec RUN sur les trames
+450 à 480 dans les deux pilotes, 65,52 % des pixels concordent ; décaler
+RUN d'une trame dans le pilote libretro porte cette proportion à 98,35 %.
+La convention d'entrée influe donc sur la comparaison ; les différences
+restantes ne démontrent pas à elles seules une erreur de scroll.
+
+Mednafen place le latch BXR dans la phase horizontale HDS, après le latch
+BYR et avant HDW. Le modèle ici rend une ligne après son budget CPU entier :
+un traçage comparé des écritures et de leur position horizontale reste
+nécessaire pour les changements de scroll pendant l'affichage. Les cas de
+bord synthétiques et le titre ne prouvent pas la fidélité de toutes les
+scènes de sprites ni de tous les jeux.
+
 - La cible META du recompilateur — la VRAM de 64 Kio ne tient pas dans
   les 32 Kio de SRAM : il faudra la fenêtrer en flash comme la ROM Sega.
 - Les contextes que la marche ne prouve pas (les jeux qui changent de

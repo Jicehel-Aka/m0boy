@@ -162,6 +162,9 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
         copy_template(common_dir.parent_path() / "consoles" / "pc" / "pc_input.h", src / "pc_input.h");
         /* the idle loops' count (nes_gen.h) */
         copy_template(common_dir / "runtime" / "m0_idle.h", src / "m0_idle.h");
+        /* the harness's --explore player */
+        copy_template(common_dir / "host" / "m0_explore.h", src / "m0_explore.h");
+        copy_template(common_dir / "host" / "m0_explore_host.h", src / "m0_explore_host.h");
 
         /* the recompiled 6502 code: the vectors, the profile, what they
          * reach; on a console, as much as the flash budget holds, played
@@ -171,6 +174,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
             EmitOptions emit;
             emit.prg_size = prg_size;
             emit.precise = o.precise;
+            emit.sweep = o.sweep;
             const unsigned bpi = o.bytes_per_instruction ? o.bytes_per_instruction : 24u;
             /* the META's 256 KiB less the bootloader's 16, the Pokitto's
              * 228 below its loader: the runtime and the drivers (66, the
@@ -225,7 +229,11 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
                 write(src / "sg_audio.h", "#pragma once\n#include \"nes.h\"\n"
                                           "#define sg_platform_audio_rate nes_audio_set_rate\n"
                                           "#define sg_platform_audio_render nes_audio_render\n");
-                write(src / "nes_config.h", config.str() + "#define PC_COLS 160\n#define PC_ROWS 128\n");
+                /* the PC plays the NES's own 256x240: the reference renderer
+                 * (NES_PPU_REFERENCE) is the display, the panel plan stays off */
+                write(src / "nes_config.h", config.str() +
+                      "#define PC_COLS 256\n#define PC_ROWS 240\n#define M0_SCREEN_ROWS 240\n"
+                      "#define NES_PPU_REFERENCE 1\n");
                 write(o.output / "CMakeLists.txt", replace(read(pc / "CMakeLists.txt.in"), "@NAME@", o.name));
             } else if (pokitto) {
                 copy_template(t.frontend() / "m0_sd.c", src / "m0_sd.c");

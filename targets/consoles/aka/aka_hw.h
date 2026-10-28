@@ -16,6 +16,12 @@ void m0_watchdog_feed(void);
 uint8_t esp32_buttons(void);
 void esp32_restart(void);
 
+/* The 320-column row path, 1:1 on the glass: compiled when the project's
+ * config asks for it (the Mega Drive's md_config.h, the Vectrex's
+ * vx_config.h); the other frontends' 160-column rows take
+ * m0_lcd_send_rows. */
+uint32_t m0_lcd_send_wide(const void *buf, uint8_t row0, uint8_t rows);
+
 #ifdef __cplusplus
 }
 #endif

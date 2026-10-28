@@ -163,7 +163,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
         /* the recompiled code's dispatcher (huc6280.c) */
         if (!o.interpret) config += "#ifndef PCE_NATIVE\n#define PCE_NATIVE 1\n#endif\n";
         if (console) {
-            /* the HuCard rides in the app partition (0x370000) with the
+            /* the HuCard rides in the app partition (0x2EE000) with the
              * firmware: above ~2.5 MiB the image no longer fits whole */
             if (rom_bytes > 0x280000u)
                 throw std::runtime_error("HuCard too large for the AKA's app partition whole (" +
@@ -181,18 +181,37 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
         /* the input scripts' reader (the harness's --input, the window's
          * --input / --record-input) */
         copy_template(o.meta_templates.parent_path() / "consoles" / "pc" / "pc_input.h", src / "pc_input.h");
+        /* the harness's --explore player */
+        copy_template(o.meta_templates.parent_path() / "common" / "host" / "m0_explore.h", src / "m0_explore.h");
+        copy_template(o.meta_templates.parent_path() / "common" / "host" / "m0_explore_host.h", src / "m0_explore_host.h");
 
         /* the recompiled HuC6280 code: the vectors, the profile, what they
          * reach under the MPR contexts the walk can prove */
         const bool native = !o.interpret;
+        std::string gen_parts_pc;
+        std::vector<std::string> gen_parts; /* pce_gen_N.c: the regions of a split build */
         if (native) {
             EmitOptions emit;
             emit.rom_bytes = uint32_t(rom_bytes);
             emit.precise = o.precise;
+            emit.sweep = o.sweep;
             const unsigned bpi = o.bytes_per_instruction ? o.bytes_per_instruction : 24u;
             emit.max_instructions = o.code_budget_bytes ? o.code_budget_bytes / bpi : 0;
+            /* The AKA's app slot (3000K, the official partitions.csv) holds the ROM, a runtime of ~0x30000 and the code: ~133 bytes
+             * per instruction measured on Xtensa (Raiden: 63670 instructions = 9.6 MB), 147 here for margin (the flag fixes grew it: 3.16 MB for 15473 instructions, about 105 bytes more per instruction at the margin); the runtime measures ~0x1B000. */
+            if (!emit.max_instructions && o.target == TargetId::aka) {
+                const size_t app = 0x2EE000, runtime = 0x30000;
+                emit.max_instructions = app > rom_bytes + runtime ? (app - rom_bytes - runtime) / 147 : 1;
+            }
+            /* thousands of regions: one C file of tens of MB needs more RAM than the compiler has */
+            emit.regions_per_file = 4000;
             EmitStats es;
             write(src / "pce_gen.c", emit_code(rom, read_coverage(o.coverage), emit, es));
+            for (size_t k = 0; k < es.parts.size(); k++) {
+                write(src / ("pce_gen_" + std::to_string(k + 1) + ".c"), es.parts[k]);
+                gen_parts.push_back("pce_gen_" + std::to_string(k + 1) + ".c");
+                gen_parts_pc += " ${CMAKE_CURRENT_SOURCE_DIR}/src/" + gen_parts.back();
+            }
             stats.compiled = es.compiled;
             stats.covered = es.covered;
             stats.regions = es.regions;
@@ -257,8 +276,9 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
               replace(replace(read(tpl / "host" / "pce_host.c"),
                               "#include \"../runtime/pce.h\"", "#include \"../src/pce.h\""),
                       "#include \"../../consoles/pc/pc_input.h\"", "#include \"../src/pc_input.h\""));
-        const std::string sources = "${SRC}/pce.c ${SRC}/huc6280.c ${SRC}/vdc.c ${SRC}/psg.c ${SRC}/pce_cart.c" +
+        std::string sources = "${SRC}/pce.c ${SRC}/huc6280.c ${SRC}/vdc.c ${SRC}/psg.c ${SRC}/pce_cart.c" +
                                     std::string(native ? " ${SRC}/pce_gen.c" : "");
+        for (const auto& part : gen_parts) sources += " ${SRC}/" + part;
         write(o.output / "host" / "CMakeLists.txt",
               "cmake_minimum_required(VERSION 3.20)\nproject(" + o.name + "_pce_host C)\nset(CMAKE_C_STANDARD 11)\n"
               "if(NOT CMAKE_BUILD_TYPE)\n    set(CMAKE_BUILD_TYPE Release)\nendif()\n"
@@ -282,7 +302,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, GenerateStats
                   "${CMAKE_CURRENT_SOURCE_DIR}/src/pce.c ${CMAKE_CURRENT_SOURCE_DIR}/src/huc6280.c "
                   "${CMAKE_CURRENT_SOURCE_DIR}/src/vdc.c ${CMAKE_CURRENT_SOURCE_DIR}/src/psg.c "
                   "${CMAKE_CURRENT_SOURCE_DIR}/src/pce_cart.c" +
-                  std::string(native ? " ${CMAKE_CURRENT_SOURCE_DIR}/src/pce_gen.c" : "") + ")\n"
+                  std::string(native ? " ${CMAKE_CURRENT_SOURCE_DIR}/src/pce_gen.c" : "") + gen_parts_pc + ")\n"
                   "target_include_directories(" + o.name + "_pc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)\n"
                   "target_compile_definitions(" + o.name + "_pc PRIVATE PCE_EMBEDDED)\n"
                   "target_compile_options(" + o.name + "_pc PRIVATE -O2 -w)\n"

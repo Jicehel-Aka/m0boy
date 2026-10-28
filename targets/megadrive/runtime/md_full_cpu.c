@@ -416,8 +416,13 @@ void md_full_step_interp(MdFull *m) {
     ++m->fallback_hits;
     const uint32_t pc = m->pc;
     m->fault_pc = pc;
-    if (m->coverage && pc < m->coverage_bytes * 8u)
-        m->coverage[pc >> 3] |= (uint8_t)(1u << (pc & 7u));
+    if (m->coverage && pc < m->coverage_bytes * 8u) {
+        const uint8_t bit = (uint8_t)(1u << (pc & 7u));
+        if (!(m->coverage[pc >> 3] & bit)) {
+            m->coverage[pc >> 3] |= bit;
+            m->coverage_locations++; /* the explorer's novelty */
+        }
+    }
     const uint16_t op = md_rd16(m, pc);   /* timed by md_full_execute */
     m->pc = pc + 2u;
     if (m->fault) return;
@@ -480,7 +485,12 @@ void md_full_frame(MdFull *m, int native) {
         m->line = (uint16_t)line;
         if (line == ACTIVE_LINES) m->irq_pending = 1;        /* vertical blank */
         run_slice(m, (line + 1u) * LINE_CYCLES, native);
-        if (line < ACTIVE_LINES && m->screen) md_full_render_line(m, line, m->screen + line * 320u);
+        if (line < ACTIVE_LINES) {
+            /* the frontend hook first (the ESP32 one captures the line's
+             * registers for its second core), then the reference row */
+            if (m->line_hook) m->line_hook(m->hook_user, m, line);
+            if (m->screen) md_full_render_line(m, line, m->screen + line * 320u);
+        }
         /* The horizontal counter counts active lines (and the first blank
          * one) and is reloaded during the vertical blank. */
         if (line <= ACTIVE_LINES) {

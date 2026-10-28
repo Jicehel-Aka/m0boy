@@ -425,6 +425,19 @@ def main() -> int:
             if interp["run_hash"] != ref["run_hash"]:
                 raise SystemExit("%s: interpreter run differs from profile run" % mode)
 
+        # --meta-sweep: every bank's CALL/JP abs targets offered as
+        # speculative entries compile within the budget, the run unchanged
+        plain_text = run([args.gbrecomp, str(rom), "--target", "meta", "--coverage", str(cov),
+                          "-o", str(tmp / "plain")] + common)
+        swept_text = run([args.gbrecomp, str(rom), "--target", "meta", "--coverage", str(cov),
+                          "-o", str(tmp / "swept"), "--meta-sweep"] + common)
+        count = lambda text: int(re.search(r"compiled:\s+(\d+)", text).group(1))
+        assert count(swept_text) >= count(plain_text), (count(plain_text), count(swept_text))
+        swept_build = build_host(tmp / "swept")
+        swept = parse(run([str(swept_build / "e2e_host"), "--frames", str(FRAMES),
+                           "--wram-hash-bytes", str(RESULT_BYTES)]))
+        assert swept["run_hash"] == ref["run_hash"], "--meta-sweep moved the run"
+
         # Runtime options: with batching, the frame/line signatures and -Os
         # disabled (and the pal32 table enabled) the fast build must behave
         # identically (this ROM only

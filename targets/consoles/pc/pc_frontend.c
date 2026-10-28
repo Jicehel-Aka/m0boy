@@ -42,11 +42,6 @@ void pc_frontend_poll(PcFrontend *pc, int escape_quits) {
         else if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_F8) {
             pc->filter = (pc->filter + 1u) % FILTER_COUNT;
             fprintf(stderr, "filter: %s (F8)\n", filter_name[pc->filter]);
-        } else if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_F10) {
-            pc->scale = (pc->scale + 1u) % 3u;
-            SDL_RenderSetIntegerScale(pc->renderer, pc->scale == 0 ? SDL_TRUE : SDL_FALSE);
-            if (pc->texture)
-                SDL_SetTextureScaleMode(pc->texture, pc->scale == 2 ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
         } else if (ev.type == SDL_KEYUP && ev.key.keysym.sym == SDLK_F11) {
             SDL_SetWindowFullscreen(pc->window, SDL_GetWindowFlags(pc->window) & SDL_WINDOW_FULLSCREEN_DESKTOP ?
                                     0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
@@ -72,6 +67,7 @@ uint16_t pc_frontend_buttons(const PcFrontend *pc) {
         (k[SDL_SCANCODE_RIGHT] ? PC_RIGHT : 0) |
         (k[SDL_SCANCODE_X] ? PC_A : 0) | (k[SDL_SCANCODE_Z] ? PC_B : 0) |
         (k[SDL_SCANCODE_C] || k[SDL_SCANCODE_A] ? PC_C : 0) | (k[SDL_SCANCODE_S] ? PC_D : 0) |
+        (k[SDL_SCANCODE_Q] ? PC_L : 0) | (k[SDL_SCANCODE_E] ? PC_R : 0) |
         (k[SDL_SCANCODE_RETURN] ? PC_START : 0) |
         (k[SDL_SCANCODE_LSHIFT] || k[SDL_SCANCODE_RSHIFT] || k[SDL_SCANCODE_BACKSPACE] ||
          k[SDL_SCANCODE_ESCAPE] ? PC_SELECT : 0);
@@ -86,6 +82,8 @@ uint16_t pc_frontend_buttons(const PcFrontend *pc) {
         if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_A)) b |= PC_B;
         if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_X)) b |= PC_C;
         if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_Y)) b |= PC_D;
+        if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) b |= PC_L;
+        if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) b |= PC_R;
         if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_START)) b |= PC_START;
         if (SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_BACK) ||
             SDL_GameControllerGetButton(pc->pad, SDL_CONTROLLER_BUTTON_GUIDE)) b |= PC_SELECT;
@@ -150,7 +148,7 @@ int pc_frontend_present(PcFrontend *pc, const uint32_t *pixels,
         pc->texture_width = tw;
         pc->texture_height = th;
         if (!pc->texture) return 0;
-        SDL_SetTextureScaleMode(pc->texture, pc->scale == 2 ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
+        SDL_SetTextureScaleMode(pc->texture, SDL_ScaleModeNearest);
     }
     if (pc->filter == RAW) SDL_UpdateTexture(pc->texture, NULL, pixels, (int)(stride * sizeof *pixels));
     else {
@@ -165,8 +163,7 @@ int pc_frontend_present(PcFrontend *pc, const uint32_t *pixels,
         filter_frame(pixels, stride, pc->filtered, width, height, pc->filter);
         SDL_UpdateTexture(pc->texture, NULL, pc->filtered, (int)(tw * sizeof *pc->filtered));
     }
-    SDL_RenderSetLogicalSize(pc->renderer, pc->scale == 2 ? 0 : (int)tw,
-                            pc->scale == 2 ? 0 : (int)th);
+    SDL_RenderSetLogicalSize(pc->renderer, (int)tw, (int)th);
     SDL_RenderClear(pc->renderer);
     SDL_RenderCopy(pc->renderer, pc->texture, NULL, NULL);
     SDL_RenderPresent(pc->renderer);

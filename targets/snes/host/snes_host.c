@@ -10,8 +10,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "pc_input.h"
 
 #include "../runtime/snes.h"
+#include "snes_hash.h"
 #ifdef SNES_EMBEDDED
 #include "snes_config.h"
 extern const uint8_t snes_rom[];
@@ -20,12 +22,6 @@ extern const uint8_t snes_rom[];
 #ifdef SNES_NATIVE
 extern int snes_native;
 #endif
-
-static uint32_t fnv(const void *data, size_t n, uint32_t h) {
-    const uint8_t *p = data;
-    for (size_t i = 0; i < n; i++) h = (h ^ p[i]) * 16777619u;
-    return h;
-}
 
 /* the 65816 interpreter calls these every instruction when the build
  * defines SNES_TRACE (the generated host projects do); --coverage dumps
@@ -84,15 +80,25 @@ static int detect_hirom(const uint8_t *rom, uint32_t bytes) {
     if (lo == 0 || lo == 2 || lo == 3) return 0;
     return hi >= 0 && lo < 0;
 }
+/* the header's RAM byte, as the generator reads it: $01-$03 are 2/8/32 KiB,
+ * the runtime's window mirrors 32 KiB at most */
+static uint32_t header_sram(const uint8_t *rom, uint32_t bytes, int hirom) {
+    static const uint32_t table[4] = {0, 2048, 8192, 32768};
+    const size_t at = (hirom ? 0xFFC0u : 0x7FC0u) + 0x18;
+    if (at >= bytes) return 0;
+    return rom[at] < 4 ? table[rom[at]] : 0;
+}
 
 int main(int argc, char **argv) {
-    const char *rom_path = 0, *input_path = 0, *coverage = 0;
+    const char *rom_path = 0, *input_path = 0, *coverage = 0, *capture = 0, *wav_path = 0;
     unsigned frames = 60;
     int interp = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--input") && i + 1 < argc) input_path = argv[++i];
         else if (!strcmp(argv[i], "--coverage") && i + 1 < argc) coverage = argv[++i];
+        else if (!strcmp(argv[i], "--capture") && i + 1 < argc) capture = argv[++i];
+        else if (!strcmp(argv[i], "--wav") && i + 1 < argc) wav_path = argv[++i];
         else if (!strcmp(argv[i], "--interp")) interp = 1;
         else rom_path = argv[i];
     }
@@ -101,15 +107,16 @@ int main(int argc, char **argv) {
     snes_native = !(interp || coverage);
 #endif
     (void)interp;
-    (void)input_path; /* the pad's registers read released in phase 1 */
     const uint8_t *rom;
     uint32_t rom_bytes;
     int hirom = 0;
+    uint32_t sram_bytes = 0;
     if (!rom_path) {
 #ifdef SNES_EMBEDDED
         rom = snes_rom;
         rom_bytes = SNES_ROM_SIZE;
         hirom = SNES_HIROM;
+        sram_bytes = SNES_SRAM_BYTES;
 #else
         fprintf(stderr, "usage: snes_host rom.sfc [--frames n] [--input f] [--coverage f] [--interp]\n");
         return 2;
@@ -129,26 +136,74 @@ int main(int argc, char **argv) {
         fclose(file);
         rom = bytes;
         hirom = detect_hirom(rom, rom_bytes);
+        sram_bytes = header_sram(rom, rom_bytes, hirom);
     }
 
-    snes_init(rom, rom_bytes, hirom);
-    for (unsigned f = 0; f < frames; f++) snes_frame();
-
-    uint32_t h = 2166136261u;
-    /* registers field by field, as the other runtimes' explicit order */
-    const uint8_t regs[16] = {
-        (uint8_t)machine.cpu.a, (uint8_t)(machine.cpu.a >> 8),
-        (uint8_t)machine.cpu.x, (uint8_t)(machine.cpu.x >> 8),
-        (uint8_t)machine.cpu.y, (uint8_t)(machine.cpu.y >> 8),
-        (uint8_t)machine.cpu.s, (uint8_t)(machine.cpu.s >> 8),
-        (uint8_t)machine.cpu.d, (uint8_t)(machine.cpu.d >> 8),
-        machine.cpu.k, machine.cpu.dbr, machine.cpu.p, machine.cpu.e,
-        (uint8_t)machine.cpu.pc, (uint8_t)(machine.cpu.pc >> 8),
+    snes_init(rom, rom_bytes, hirom, sram_bytes);
+    static const char *const names[12] = {
+        "b", "y", "select", "start", "up", "down", "left", "right", "a", "x", "l", "r"
     };
-    h = fnv(regs, sizeof regs, h);
-    h = fnv(&machine.cpu.cycles, 4, h);
-    h = fnv(machine.wram, sizeof machine.wram, h);
-    h = fnv(&machine.frames, 4, h);
+    pc_input_t script = {0};
+    if (input_path && !pc_input_load(&script, input_path, names, 12)) return 2;
+    /* the DSP's ring drained once per frame: the samples the S-DSP
+     * rendered, 32000 Hz stereo, for --wav and the audio_hash */
+    int16_t *audio = 0;
+    size_t audio_n = 0, audio_cap = 0;
+    for (unsigned f = 0; f < frames; f++) {
+        unsigned keys = pc_input_keys(&script, f);
+        uint16_t report = 0;
+        for (unsigned i = 0; i < 12; i++) if (keys & (1u << i)) report |= (uint16_t)(0x8000u >> i);
+        snes_set_joypad(report);
+        snes_frame();
+        const unsigned fill = (unsigned)((machine.dsp.ring_w - machine.dsp.ring_r) & 8191);
+        if (audio_n + fill > audio_cap) {
+            audio_cap = (audio_n + fill + 8192u) & ~(size_t)8191u;
+            audio = realloc(audio, audio_cap * sizeof *audio);
+        }
+        for (unsigned i = 0; i < fill; i++) {
+            audio[audio_n++] = machine.dsp.ring[machine.dsp.ring_r];
+            machine.dsp.ring_r = (machine.dsp.ring_r + 1) & 8191;
+        }
+    }
+    pc_input_free(&script);
+    uint8_t *image = malloc(256u * 224u * 3u);
+    if (!image) { fprintf(stderr, "cannot allocate image\n"); return 2; }
+    memcpy(image, machine.screen, 256u * 224u * 3u); /* the frame as displayed */
+    if (capture) {
+        FILE *out = fopen(capture, "wb");
+        if (!out) { fprintf(stderr, "cannot write %s\n", capture); free(image); return 2; }
+        fprintf(out, "P6\n256 224\n255\n");
+        if (fwrite(image, 1, 256u * 224u * 3u, out) != 256u * 224u * 3u || fclose(out)) {
+            fprintf(stderr, "cannot write capture\n"); free(image); return 2;
+        }
+    }
+    free(image);
+
+    const uint32_t h = snes_run_hash();
+    const uint32_t image_hash = snes_image_hash();
+    const uint32_t audio_hash = snes_audio_hash(audio, audio_n);
+    if (wav_path && audio_n) { /* 32000 Hz, 16-bit stereo */
+        FILE *out = fopen(wav_path, "wb");
+        if (!out) { fprintf(stderr, "cannot write %s\n", wav_path); return 2; }
+        const uint32_t data_bytes = (uint32_t)(audio_n * sizeof *audio);
+        const uint8_t header[] = {
+            'R','I','F','F', 0,0,0,0, 'W','A','V','E', 'f','m','t',' ',
+            16,0,0,0, 1,0, 2,0, 0x80,0x7d,0,0, 0,0x25,3,0, 4,0, 16,0,
+            'd','a','t','a', (uint8_t)data_bytes, (uint8_t)(data_bytes >> 8),
+            (uint8_t)(data_bytes >> 16), (uint8_t)(data_bytes >> 24),
+        };
+        uint8_t hdr[44];
+        memcpy(hdr, header, sizeof header);
+        const uint32_t riff = data_bytes + 36;
+        hdr[4] = (uint8_t)riff; hdr[5] = (uint8_t)(riff >> 8);
+        hdr[6] = (uint8_t)(riff >> 16); hdr[7] = (uint8_t)(riff >> 24);
+        if (fwrite(hdr, 1, 44, out) != 44 ||
+            fwrite(audio, sizeof *audio, audio_n, out) != audio_n || fclose(out)) {
+            fprintf(stderr, "cannot write the wav\n");
+            return 2;
+        }
+    }
+    free(audio);
     if (coverage) {
         FILE *out = fopen(coverage, "w");
         if (!out) { fprintf(stderr, "cannot write %s\n", coverage); return 2; }
@@ -165,7 +220,8 @@ int main(int argc, char **argv) {
         }
         fclose(out);
     }
-    printf("frames=%u cycles=%u k=%02x pc=%04x run_hash=%08x\n",
-           machine.frames, (unsigned)machine.cpu.cycles, machine.cpu.k, machine.cpu.pc, h);
+    printf("frames=%u cycles=%u k=%02x pc=%04x run_hash=%08x image_hash=%08x audio_hash=%08x sram_dirty=%u\n",
+           machine.frames, (unsigned)machine.cpu.cycles, machine.cpu.k, machine.cpu.pc, h, image_hash,
+           audio_hash, machine.sram_dirty);
     return 0;
 }

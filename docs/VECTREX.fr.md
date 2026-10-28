@@ -61,11 +61,16 @@ BIOS sur la console (par défaut elle est raccourcie, comme sur PC).
     connue d'avance).
 - `targets/vectrex/host/vectrex_host.c` : l'hôte SDL (image 512×512,
   `--frames N --ppm f --wav f`, affiche un `run_hash` des traits).
-- `targets/vectrex/platform/vx_main.cpp` : la META. Le carré du faisceau est
-  dessiné en 128×128 dans un phosphore 4 bits (8 Kio) centré sur l'écran ;
-  la trame de 30 000 cycles tourne en 128 tranches et chaque tranche envoie
-  une ligne d'écran puis la fait décroître (DMA en parallèle de
-  l'émulation) ; les lignes restées noires ne sont pas renvoyées.
+- `targets/vectrex/platform/vx_main.cpp` : la META et l'AKA. Le carré du
+  faisceau est dessiné 1:1 dans un phosphore 4 bits à la hauteur de
+  l'écran, centré : la META en 128×128 (8 Kio), l'AKA en 240×240 (28,8 Kio,
+  ses lignes envoyées telles quelles sur les 320 colonnes,
+  `m0_lcd_send_wide` — aucun rééchantillonnage). La trame de 30 000 cycles
+  tourne en autant de tranches et chaque tranche envoie une ligne du
+  phosphore puis la fait décroître (DMA en parallèle de l'émulation sur la
+  META, envoi synchrone sur l'AKA) ; les lignes restées noires ne sont pas
+  renvoyées. Sur l'AKA, un emplacement d'état fait 60 secteurs (le
+  phosphore dépasse les 24 de la META).
   Croix : manche ; A, B, MENU, HOME : boutons 1 à 4 ; HOME maintenu : menu.
 
 ## Recompilation 6809 → C

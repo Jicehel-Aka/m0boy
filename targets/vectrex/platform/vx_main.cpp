@@ -1,12 +1,15 @@
-/* Vectrex frontend for the Gamebuino META: the cartridge and the system ROM
- * (vx_cart.c) on the core in ../runtime, the console's LCD, audio, clock and
- * button drivers.
+/* Vectrex frontend for the Gamebuino META and the ESP32 family (Gamebuino
+ * AKA): the cartridge and the system ROM (vx_cart.c) on the core in
+ * ../runtime, the console's LCD, audio, clock and button drivers.
  *
- * The 512x512 beam square is drawn at 128x128 in a 4-bit phosphor (8 KiB),
- * centred on the panel.  The frame's 30000 cycles run in 128 slices; after
- * each one the next panel row is sent and fades, so the LCD's DMA overlaps
- * the emulation instead of following it.  A stroke stays lit for two frames
- * (VX_FADE): the games that draw at 25 Hz do not blink.
+ * The 512x512 beam square is drawn 1:1 in a 4-bit phosphor at the panel's
+ * full height (the META's 128 rows, 8 KiB; the AKA's 240x240, 28.8 KiB,
+ * its rows going out at 320 columns), centred on the panel.  The frame's
+ * 30000 cycles run in VX_SIZE slices; after each one the next panel row
+ * is sent and fades, so the LCD's DMA overlaps the emulation instead of
+ * following it (the META; on the ESP32 panels the send is synchronous and
+ * the fade still spans two frames).  A stroke stays
+ * lit for two frames (VX_FADE): the games that draw at 25 Hz do not blink.
  *
  * Buttons: the d-pad is the stick, A, B, MENU and HOME the four buttons;
  * HOME held half a second opens the option menu (sg_menu.h). */
@@ -16,7 +19,11 @@
 #include "m0_clock.h"
 #include "m0_audio.h"
 #include "m0_lcd.h"
+#if M0_TARGET_ESP32
+#include "aka_hw.h"
+#else
 #include "meta_hw.h"
+#endif
 #include "m0_pad.h"
 #include "sg_frontend.h"
 #include "m0_state.h"
@@ -28,8 +35,18 @@ extern "C" {
 extern const uint8_t vectrex_bios[];
 }
 
+/* The beam's square rasterizes at the panel's full height (the META's
+ * 128 rows, the AKA's 240 of its 320x240 glass), centred; on the AKA each
+ * row then goes out 1:1 at 320 columns (m0_lcd_send_wide): every phosphor
+ * pixel is a panel pixel, nothing resamples. */
+#if M0_TARGET_ESP32
+#define VX_OUT_COLS 320
+#define VX_SIZE 240
+#else
+#define VX_OUT_COLS 160
 #define VX_SIZE 128
-#define VX_LEFT ((160 - VX_SIZE) / 2)
+#endif
+#define VX_LEFT ((VX_OUT_COLS - VX_SIZE) / 2)
 /* 4-bit levels lost per frame */
 #define VX_FADE 8
 
@@ -57,7 +74,12 @@ static inline uint32_t fade_word(uint32_t w) {
     return r;
 #endif
 }
-static uint16_t line_buffer[2][160] __attribute__((aligned(4)));
+static uint16_t line_buffer[2][VX_OUT_COLS] __attribute__((aligned(4)));
+#if M0_TARGET_ESP32
+/* the option menu draws 160-column rows (m0_lcd_send_rows resamples them
+ * onto the glass): apart from the game's wider rows */
+static uint16_t menu_rows[2][160] __attribute__((aligned(4)));
+#endif
 static uint32_t line_sequence[2];
 static unsigned line_slot;
 static uint32_t deadline;
@@ -131,10 +153,19 @@ extern "C" void vx_draw(Vectrex *, int32_t x0, int32_t y0, int32_t x1, int32_t y
     draw_hash((uint32_t)y1);
     draw_hash(z << 16 | cycles);
 #endif
+    /* the full beam grid (512 pixels, 131072 beam units a side) fits the
+     * phosphor's height; the META's shift is this multiply at 128 */
+#if M0_TARGET_ESP32
+    x0 = (int32_t)((int64_t)x0 * VX_SIZE >> 17);
+    y0 = (int32_t)((int64_t)y0 * VX_SIZE >> 17);
+    x1 = (int32_t)((int64_t)x1 * VX_SIZE >> 17);
+    y1 = (int32_t)((int64_t)y1 * VX_SIZE >> 17);
+#else
     x0 >>= 10;
     y0 >>= 10;
     x1 >>= 10;
     y1 >>= 10;
+#endif
     if (!vx_clip(&x0, &y0, &x1, &y1, VX_SIZE, VX_SIZE)) return;
     int dx = x1 - x0, dy = y1 - y0;
     int sx = dx < 0 ? -1 : 1, sy = dy < 0 ? -1 : 1;
@@ -191,7 +222,7 @@ static void panel_row(unsigned r) {
     }
     if (!skip_video) {
         uint16_t *out = line_buffer[line_slot];
-        for (unsigned x = 0; x < VX_LEFT; x++) out[x] = out[160 - 1 - x] = palette[0];
+        for (unsigned x = 0; x < VX_LEFT; x++) out[x] = out[VX_OUT_COLS - 1 - x] = palette[0];
         uint32_t *o = (uint32_t *)(out + VX_LEFT);
         uint32_t *w = (uint32_t *)row;
         for (unsigned x = 0; x < VX_SIZE / 8; x++) {
@@ -203,7 +234,11 @@ static void panel_row(unsigned r) {
             o += 4;
             w[x] = fade_word(b);
         }
+#if M0_TARGET_ESP32
+        line_sequence[line_slot] = m0_lcd_send_wide(out, (uint8_t)r, 1);
+#else
         line_sequence[line_slot] = m0_lcd_send_rows(out, (uint8_t)r, 1);
+#endif
         line_slot ^= 1;
         while ((int32_t)(m0_lcd_done_seq() - line_sequence[line_slot]) < 0) {}
     } else {
@@ -243,7 +278,11 @@ extern "C" void vx_audio_render(uint8_t *buffer, unsigned n) {
 /* ---- option menu (sg_menu.h) ---- */
 extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
     *rows = 2;
+#if M0_TARGET_ESP32
+    return menu_rows[0];
+#else
     return line_buffer[0];
+#endif
 }
 static void restart(void) {
     machine.bios = vectrex_bios;
@@ -259,11 +298,13 @@ static void restart(void) {
         deadline = m0_micros(); \
         skipped_run = 0; \
     } while (0)
-#if META_USB_SERIAL
+#if M0_TARGET_META && META_USB_SERIAL
 #define VX_MENU_USB_STOP() meta_usb_stop()
 #else
 #define VX_MENU_USB_STOP() do { } while (0)
 #endif
+#if M0_TARGET_META
+/* The USB bootloader (sam-ba) directly, as the Game Boy frontend does. */
 #define SG_MENU_BOOTLOADER() do { \
         m0_audio_stop(); \
         NVIC_DisableIRQ(DMAC_IRQn); \
@@ -272,6 +313,20 @@ static void restart(void) {
         *(volatile uint32_t *)0x20007FFC = 0x3aecfd88u; \
         NVIC_SystemReset(); \
     } while (0)
+#if META_USB_SERIAL
+#include "meta_usb_msc.h"
+#define SG_MENU_USB_SD() do { \
+        m0_lcd_end_frame(); \
+        m0_audio_stop(); \
+        NVIC_DisableIRQ(DMAC_IRQn); \
+        m0_watchdog_stop(); \
+        unsigned rows; \
+        uint8_t *sector = (uint8_t *)m0_menu_scratch(&rows); \
+        meta_usb_msc_enter(sector); \
+    } while (0)
+#endif
+/* Hand the console back to the Gamebuino loader (the Game Boy frontend's
+ * enter_loader); the ESP32 consoles restart into their own firmware. */
 #define VX_MENU_QUIT() do { \
         m0_lcd_end_frame(); \
         m0_clock_set_lcd_spi(24); \
@@ -282,6 +337,9 @@ static void restart(void) {
         VX_MENU_USB_STOP(); \
         ((void (*)(void))(*((uint32_t *)0x3FF4)))(); \
     } while (0)
+#else
+#define VX_MENU_QUIT() do { esp32_restart(); } while (0)
+#endif
 #define VX_MENU_RESUME() do { \
         m0_lcd_fill(0); \
         deadline = m0_micros(); \
@@ -301,21 +359,11 @@ static void restart(void) {
     } while (0)
 static int vx_card_open(void) {
     if (!m0_sd_init()) return 0;
+#if M0_TARGET_META /* the META loader's app start identifies the game's folder */
     m0_fat_dir = m0_fat_game_dir(m0_card_sector, SG_MENU_STATE_BUF(), VX_BIN_NAME83, META_APP_START);
+#endif
     return 1;
 }
-#if META_USB_SERIAL
-#include "meta_usb_msc.h"
-#define SG_MENU_USB_SD() do { \
-        m0_lcd_end_frame(); \
-        m0_audio_stop(); \
-        NVIC_DisableIRQ(DMAC_IRQn); \
-        m0_watchdog_stop(); \
-        unsigned rows; \
-        uint8_t *sector = (uint8_t *)m0_menu_scratch(&rows); \
-        meta_usb_msc_enter(sector); \
-    } while (0)
-#endif
 #ifndef SG_MENU_TAP
 #define SG_MENU_TAP() do { } while (0)
 #endif
@@ -338,7 +386,12 @@ static void frame(void) {
     SG_PACE_FRAME(deadline, skip_video, skipped_run, VX_MAX_SKIP);
 }
 
+#if M0_TARGET_ESP32
+extern "C" int m0boy_console_main(void); /* the console file's setup() */
+int m0boy_console_main() {
+#else
 int main() {
+#endif
     SG_PLATFORM_INIT();
     video_init();
     restart();

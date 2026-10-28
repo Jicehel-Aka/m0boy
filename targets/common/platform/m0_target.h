@@ -124,8 +124,8 @@
 /* ODROID-GO (ESP32-WROVER, ILI9341 320x240, SD, 16 MiB flash, 4 MiB PSRAM)
  * and Gamebuino AKA (ESP32-S3, 320x240, SD, 8 MiB PSRAM): the shared ESP32
  * core (targets/common/consoles/esp32) plays the console, each with its own
- * pins and buttons.  The panel doubles the 160-column rows; RGB565
- * byte-swapped on the wire like the META's strips. */
+ * pins and buttons.  The panel doubles the 160-column rows; the ODROID's
+ * RGB565 is byte-swapped in memory like the META's strips, the AKA's native. */
 #define M0_TARGET_POKITTO 0
 #if M0_TARGET_ODROID
 #define M0_TARGET_NAME "odroid"
@@ -139,10 +139,17 @@
 #endif
 #define M0_SWAP_AB_DEFAULT 0 /* the console's A is the right-hand button */
 #define M0_CLOCK_DEFAULT 240 /* 80 and 160 are menu choices */
+#if M0_TARGET_AKA
+/* Panel colours: native RGB565 — the AKA's i80 bus swaps each pixel's bytes
+ * in hardware (swap_color_bytes, aka_hw.cpp). */
+#define M0_COLOR(rgb) \
+    ((uint16_t)((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)))
+#else
 /* Panel colours: RGB565 byte-swapped (the SPI sends the high byte first). */
 #define M0_COLOR(rgb) ((uint16_t)( \
     (((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) >> 8) | \
     (((((rgb) >> 8) & 0xF800u) | (((rgb) >> 5) & 0x07E0u) | (((rgb) >> 3) & 0x001Fu)) << 8)))
+#endif
 
 #else
 

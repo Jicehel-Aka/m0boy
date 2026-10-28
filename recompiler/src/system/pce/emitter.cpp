@@ -25,6 +25,7 @@
  * exactly where the interpreter does; the fast mode checks it only at
  * labels and at most every `check_cycles` cycles. */
 #include "m0boy/pce_emitter.h"
+#include "m0boy/sweep.h"
 #include <algorithm>
 #include <cstdio>
 #include <deque>
@@ -406,47 +407,80 @@ void Emitter::select(const std::vector<CoverageEntry>& coverage, EmitStats& stat
     std::stable_sort(hot.begin(), hot.end(), [](const auto& a, const auto& b) { return a.hits > b.hits; });
     std::deque<Seed> work;
     std::vector<Key> order;
-    auto visit = [&](uint16_t at, uint64_t ctx, bool a_known, uint8_t a_val) {
+    auto visit = [&](uint16_t at, uint64_t ctx, bool a_known, uint8_t a_val,
+                     std::deque<Seed>& sink, m0::Sweep* budget) {
         const Key key{at, ctx};
         if (ins_.count(key)) return;
         Ins in;
         if (!decode(at, ctx, in)) return;
+        if (budget && !budget->take()) return;
         ins_[key] = in;
         order.push_back(key);
-        work.push_back({at, ctx, a_known, a_val});
+        sink.push_back({at, ctx, a_known, a_val});
     };
     for (const auto& e : hot)
-        for (uint64_t ctx : e.contexts) visit(e.pc, ctx, false, 0);
+        for (uint64_t ctx : e.contexts) visit(e.pc, ctx, false, 0, work, nullptr);
     const uint64_t reset_ctx = 0; /* every MPR at $00: the cartridge's page 0 */
     for (uint16_t v : { uint16_t(0xFFFE), uint16_t(0xFFFC), uint16_t(0xFFFA), uint16_t(0xFFF8), uint16_t(0xFFF6) }) {
         const auto lo = ctx_byte(reset_ctx, v);
         const auto hi = ctx_byte(reset_ctx, uint16_t(v + 1));
-        if (lo && hi) visit(uint16_t(*lo | *hi << 8), reset_ctx, false, 0);
+        if (lo && hi) visit(uint16_t(*lo | *hi << 8), reset_ctx, false, 0, work, nullptr);
     }
     const size_t covered = order.size();
-    while (!work.empty()) {
-        const Seed s = work.front();
-        work.pop_front();
-        Ins& in = ins_[Key{s.pc, s.ctx}];
-        in.tracked_a = s.a_known;
-        uint64_t nctx = s.ctx;
-        if (in.info.op == Op::tam && s.a_known) {
-            for (unsigned i = 0; i < 8; i++)
-                if (in.o[0] & (1u << i)) nctx |= uint64_t(s.a_val) << (8 * i);
+    /* the sweep's own budget: a code budget's leftovers, else its modest
+     * cap — a byte $20/$4C is mostly data, an unbounded sweep compiles
+     * the whole card under every context */
+    m0::Sweep swept_budget(m0::sweep_room(covered, opt_.max_instructions));
+    std::deque<Seed> swept;
+    if (opt_.sweep)
+        /* the sweep: every window's mapping of every page, a JSR or a JMP
+         * abs whose target decodes seeds the walk — code the reachability
+         * walk cannot prove (jump-table handlers, callers behind a bank
+         * table) compiled the same way.  Nothing lands there until the
+         * game does: an entry is entered only under its own MPR bytes,
+         * and the compiled semantics stay the interpreter's.  Swept
+         * entries rank after the played ones (order is visit order) and
+         * take what the code budget has left, the walk itself never
+         * being capped (m0/sweep.h). */
+        for (unsigned w = 0; w < 8; w++)
+            for (unsigned page = 0; page < pages(); page++) {
+                const uint64_t ctx = uint64_t(page) << (8 * w);
+                for (unsigned at = w << 13; at < (w << 13) + 0x2000u; at++) {
+                    const auto op_b = ctx_byte(ctx, uint16_t(at));
+                    if (!op_b || (*op_b != 0x20 && *op_b != 0x4C)) continue;
+                    if (at + 2 > 0xFFFFu) break;
+                    const auto lo = ctx_byte(ctx, uint16_t(at + 1));
+                    const auto hi = ctx_byte(ctx, uint16_t(at + 2));
+                    if (lo && hi) visit(uint16_t(*lo | *hi << 8), ctx, false, 0, swept, &swept_budget);
+                }
+            }
+    auto expand = [&](std::deque<Seed>& queue, m0::Sweep* budget) {
+        while (!queue.empty()) {
+            const Seed s = queue.front();
+            queue.pop_front();
+            Ins& in = ins_[Key{s.pc, s.ctx}];
+            in.tracked_a = s.a_known;
+            uint64_t nctx = s.ctx;
+            if (in.info.op == Op::tam && s.a_known) {
+                for (unsigned i = 0; i < 8; i++)
+                    if (in.o[0] & (1u << i)) nctx |= uint64_t(s.a_val) << (8 * i);
+            }
+            bool nak;
+            uint8_t nav = s.a_val;
+            if (in.info.op == Op::lda && in.info.mode == Mode::imm) {
+                nak = true;
+                nav = in.o[0];
+            } else {
+                nak = in.info.preserves_a && s.a_known;
+            }
+            if (in.falls) visit(in.next, nctx, nak, nav, queue, budget);
+            if (in.has_target) visit(in.target, nctx, nak, nav, queue, budget);
         }
-        bool nak;
-        uint8_t nav = s.a_val;
-        if (in.info.op == Op::lda && in.info.mode == Mode::imm) {
-            nak = true;
-            nav = in.o[0];
-        } else {
-            nak = in.info.preserves_a && s.a_known;
-        }
-        if (in.falls) visit(in.next, nctx, nak, nav);
-        if (in.has_target) visit(in.target, nctx, nak, nav);
-    }
+    };
+    expand(work, nullptr);
+    expand(swept, &swept_budget);
     const size_t keep = opt_.max_instructions ? std::min(order.size(), opt_.max_instructions) : order.size();
-    for (size_t i = 0; i < keep; i++) ins_.at(order[i]).label = false;
+    for (size_t i = keep; i < order.size(); i++) ins_.erase(order[i]);
     /* the profile: exact contexts attach to their instance, context-less
      * addresses rank and label every instance found there */
     std::map<Key, const CoverageEntry*> exact;
@@ -565,8 +599,15 @@ std::string Emitter::go(const Ins& from, uint16_t to) const {
     auto p = ins_.find(Key{to, from.ctx});
     if (p == ins_.end() || !p->second.label) return "{ pc_ = " + hex(to) + "; goto out; }";
     if (p->second.region == from.region) {
-        char b[16];
-        snprintf(b, sizeof b, "goto L_%04X;", to);
+        char b[96];
+        /* precise mode checks the budget after every instruction, taken
+         * branches and jumps within the region included (the labels
+         * check only in the fast mode) */
+        if (opt_.precise)
+            snprintf(b, sizeof b, "if (budget <= 0) { pc_ = 0x%04X; ni = %u; goto out; } goto L_%04X;",
+                     to, p->second.global, to);
+        else
+            snprintf(b, sizeof b, "goto L_%04X;", to);
         return b;
     }
     return "{ pc_ = " + hex(to) + "; ni = " + std::to_string(p->second.global) + "; goto out; }";
@@ -619,7 +660,7 @@ std::string Emitter::ea(const Ins& in, std::string& pre) const {
         pre += "const unsigned lo_ = PCE_RD(PCE_ZP_AT((uint8_t)o_)); ";
         pre += "const unsigned hi_ = PCE_RD(PCE_ZP_AT((uint8_t)(o_ + 1u))); ";
         pre += "const uint16_t t_ = (uint16_t)(lo_ | hi_ << 8); ";
-        return "t_";
+        return "(uint16_t)(t_ + y_)"; /* the pointer, then Y */
     }
     default: return "0";
     }
@@ -793,7 +834,10 @@ bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
     /* the flags still read after this instruction (the liveness pass
      * keeps 0xF in precise mode and at every exit) */
     const uint8_t lv = in.live_out;
-    const std::string lvm = hex(lv, 2);
+    /* the macros of pce_gen.h take the mask in the bits of P (N=$80, V=$40,
+     * Z=2, C=1), not in the liveness encoding above */
+    const std::string lvm = hex(uint8_t((lv & FNZ_N ? 0x80 : 0) | (lv & FNZ_V ? 0x40 : 0) |
+                                        (lv & FNZ_Z ? 0x02 : 0) | (lv & FNZ_C ? 0x01 : 0)), 2);
     const bool nzl = (lv & (FNZ_N | FNZ_Z)) != 0;
     auto store = [&](const std::string& value) {
         std::string pre2;
@@ -1049,7 +1093,7 @@ bool Emitter::emit_ins(std::ostream& o, const Ins& in, bool t_zero, bool tail) {
 
 void Emitter::emit_region(std::ostream& o, int r) {
     const auto& keys = regions_[size_t(r)];
-    o << "\nstatic int32_t r_" << r << "(int32_t budget, unsigned entry) {\n"
+    o << "\n" << (opt_.regions_per_file ? "" : "static ") << "int32_t r_" << r << "(int32_t budget, unsigned entry) {\n"
       << "    PCE_LOAD();\n    uint16_t pc_;\n    int ni = -1;\n    switch (entry) {\n";
     for (const Key& k : keys) {
         const Ins& in = ins_.at(k);
@@ -1086,22 +1130,39 @@ std::string Emitter::run(const std::vector<CoverageEntry>& coverage, EmitStats& 
     select(coverage, stats);
     plan();
     std::ostringstream o;
-    o << "/* Generated by gbrecomp --system pce" << (opt_.precise ? " --meta-precise" : "")
-      << ". Do not edit. */\n"
-      << "#define PCE_GEN_IMPL\n"
-      << "#include \"pce_gen.h\"\n"
-      << "#pragma GCC diagnostic ignored \"-Wunused-label\"\n"
-      << "#pragma GCC diagnostic ignored \"-Wunused-variable\"\n"
-      << "#pragma GCC diagnostic ignored \"-Wunused-but-set-variable\"\n"
-      << "#if defined(__arm__) && !defined(PCE_GEN_O2)\n"
-      << "#pragma GCC optimize(\"Os\") /* a fifth smaller than -O2 on Thumb-1 */\n"
-      << "#endif\n\n"
-      << "/* the next entry a region left for the dispatcher (checked against pc and MPR) */\n"
-      << "static int pce_gen_next = -1;\n";
-    /* noinline: one function per region, called by the dispatcher only */
-    for (size_t r = 0; r < regions_.size(); r++)
-        o << "static int32_t r_" << r << "(int32_t budget, unsigned entry) __attribute__((noinline));\n";
-    for (size_t r = 0; r < regions_.size(); r++) emit_region(o, int(r));
+    std::ostringstream pre;
+    pre << "/* Generated by gbrecomp --system pce" << (opt_.precise ? " --meta-precise" : "")
+        << ". Do not edit. */\n"
+        << "#define PCE_GEN_IMPL\n"
+        << "#include \"pce_gen.h\"\n"
+        << "#pragma GCC diagnostic ignored \"-Wunused-label\"\n"
+        << "#pragma GCC diagnostic ignored \"-Wunused-variable\"\n"
+        << "#pragma GCC diagnostic ignored \"-Wunused-but-set-variable\"\n"
+        << "#if defined(__arm__) && !defined(PCE_GEN_O2)\n"
+        << "#pragma GCC optimize(\"Os\") /* a fifth smaller than -O2 on Thumb-1 */\n"
+        << "#endif\n\n";
+    o << pre.str();
+    if (opt_.regions_per_file) {
+        /* the regions live in other files: one function each, called through region_fn */
+        o << "/* the next entry a region left for the dispatcher (checked against pc and MPR) */\n"
+          << "int pce_gen_next = -1;\n";
+        for (size_t r = 0; r < regions_.size(); r++)
+            o << "int32_t r_" << r << "(int32_t budget, unsigned entry);\n";
+        for (size_t first = 0; first < regions_.size(); first += opt_.regions_per_file) {
+            std::ostringstream part;
+            part << pre.str() << "extern int pce_gen_next;\n";
+            const size_t last = std::min(regions_.size(), first + opt_.regions_per_file);
+            for (size_t r = first; r < last; r++) emit_region(part, int(r));
+            stats.parts.push_back(part.str());
+        }
+    } else {
+        o << "/* the next entry a region left for the dispatcher (checked against pc and MPR) */\n"
+          << "static int pce_gen_next = -1;\n";
+        /* noinline: one function per region, called by the dispatcher only */
+        for (size_t r = 0; r < regions_.size(); r++)
+            o << "static int32_t r_" << r << "(int32_t budget, unsigned entry) __attribute__((noinline));\n";
+        for (size_t r = 0; r < regions_.size(); r++) emit_region(o, int(r));
+    }
 
     std::vector<const Ins*> entries;
     for (const auto& [key, in] : ins_)
@@ -1112,13 +1173,18 @@ std::string Emitter::run(const std::vector<CoverageEntry>& coverage, EmitStats& 
     o << "\nstatic const pce_region_fn region_fn[" << std::max<size_t>(regions_.size(), 1) << "] = {";
     for (size_t r = 0; r < regions_.size(); r++) o << (r % 8 ? " " : "\n    ") << "r_" << r << ",";
     if (regions_.empty()) o << "0";
+    /* the region and slot indexes outgrow 16 bits on a big profile (one
+     * entry per address and MPR context): 0xFFFF stays the empty slot */
+    const bool wide = regions_.size() >= 0xFFFFu || entries.size() >= 0xFFFFu;
+    const char* idx_t = wide ? "uint32_t" : "uint16_t";
+    const uint32_t empty = wide ? 0xFFFFFFFFu : 0xFFFFu;
     o << "\n};\nstatic const uint16_t entry_pc[" << count << "] = {";
     for (size_t i = 0; i < entries.size(); i++) o << (i % 12 ? " " : "\n    ") << hex(entries[i]->addr) << ",";
     if (entries.empty()) o << "0";
     o << "\n};\nstatic const uint64_t entry_mpr[" << count << "] = {";
     for (size_t i = 0; i < entries.size(); i++) o << (i % 4 ? " " : "\n    ") << hex64(entries[i]->ctx) << ",";
     if (entries.empty()) o << "0";
-    o << "\n};\nstatic const uint16_t entry_region[" << count << "] = {";
+    o << "\n};\nstatic const " << idx_t << " entry_region[" << count << "] = {";
     for (size_t i = 0; i < entries.size(); i++) o << (i % 16 ? " " : "\n    ") << entries[i]->region << ",";
     if (entries.empty()) o << "0";
     o << "\n};\nstatic const uint16_t entry_local[" << count << "] = {";
@@ -1133,13 +1199,13 @@ std::string Emitter::run(const std::vector<CoverageEntry>& coverage, EmitStats& 
         const uint64_t h64 = uint64_t(pc) * 0x9E3779B97F4A7C15ull + mpr * 0xFF51AFD7ED558CCDull;
         return unsigned((uint32_t(h64) ^ uint32_t(h64 >> 32)) >> (32 - bits));
     };
-    std::vector<uint32_t> slot(slots, 0xFFFFu);
+    std::vector<uint32_t> slot(slots, empty);
     for (size_t i = 0; i < entries.size(); i++) {
         unsigned h = slot_of(entries[i]->addr, entries[i]->ctx);
-        while (slot[h] != 0xFFFFu) h = (h + 1) & (slots - 1);
+        while (slot[h] != empty) h = (h + 1) & (slots - 1);
         slot[h] = uint32_t(i);
     }
-    o << "\n};\nstatic const uint16_t entry_slot[" << slots << "] = {";
+    o << "\n};\nstatic const " << idx_t << " entry_slot[" << slots << "] = {";
     for (size_t i = 0; i < slots; i++) o << (i % 12 ? " " : "\n    ") << hex(slot[i]) << ",";
     o << "\n};\n\n"
       << "int pce_gen_lookup(uint16_t pc, uint64_t mpr) {\n"
@@ -1150,7 +1216,7 @@ std::string Emitter::run(const std::vector<CoverageEntry>& coverage, EmitStats& 
       << (32 - bits) << ";\n"
       << "    for (;;) {\n"
       << "        const unsigned i = entry_slot[h];\n"
-      << "        if (i == 0xFFFFu) return -1;\n"
+      << "        if (i == " << (wide ? "0xFFFFFFFFu" : "0xFFFFu") << ") return -1;\n"
       << "        if (entry_pc[i] == pc && entry_mpr[i] == mpr) return (int)i;\n"
       << "        h = (h + 1u) & " << (slots - 1) << "u;\n"
       << "    }\n}\n\n"

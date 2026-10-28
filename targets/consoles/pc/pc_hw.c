@@ -23,8 +23,10 @@
 #include "m0_clock.h"
 #include "m0_lcd.h"
 #include "m0_menu.h" /* M0_MB_*: the button bits pc_buttons returns */
-#if __has_include("sg_config.h") /* SG/GG/SMS: PC_COLS/PC_ROWS live there */
+#if __has_include("sg_config.h") /* SG/GG/SMS/MSX: PC_COLS/PC_ROWS live there */
 #include "sg_config.h"
+#elif __has_include("nes_config.h") /* NES: the native 256x240's config */
+#include "nes_config.h"
 #endif
 #include "m0_target.h" /* PC_COLS/PC_ROWS: this project's panel geometry */
 
@@ -111,7 +113,7 @@ void m0_lcd_init(void) {
 /* Native RGB565 rows (M0_COLOR keeps the host order) into the texture. */
 uint32_t m0_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows) {
     const uint16_t *p = (const uint16_t *)buf;
-    for (unsigned y = row0; y < (unsigned)row0 + rows && y < PC_ROWS; y++)
+    for (unsigned y = row0; y < (unsigned)row0 + rows && y < PC_ROWS; y++, p += PC_COLS)
         for (unsigned x = 0; x < PC_COLS; x++) {
             const uint16_t c = p[x];
             frame_pixels[y * PC_COLS + x] =

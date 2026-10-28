@@ -96,12 +96,14 @@ void nes6502_stall(nes6502_t *cpu, uint32_t cycles) { cpu->stall_pending += cycl
 #define NES_INTERP_FN void nes6502_run
 #endif
 #ifdef NES_COVERAGE
-/* the harness's --coverage: executions per PRG address, and the addresses
- * a dynamic transfer (RTS, RTI, JMP (ind)) landed on — the recompiler's
- * entries the static walk cannot see */
+/* the harness's --coverage: executions per PRG address, the addresses a
+ * dynamic transfer (RTS, RTI, JMP (ind)) landed on — the recompiler's
+ * entries the static walk cannot see — and the distinct addresses played,
+ * the explorer's novelty (m0_explore.h) */
 uint32_t nes_coverage_hits[0x8000];
 uint8_t nes_coverage_dynamic[0x8000];
-#define COVER(pc) do { if ((pc) >= 0x8000u) nes_coverage_hits[(pc) - 0x8000u]++; } while (0)
+uint32_t nes_coverage_locations;
+#define COVER(pc) do { if ((pc) >= 0x8000u && !nes_coverage_hits[(pc) - 0x8000u]++) nes_coverage_locations++; } while (0)
 #define COVER_DYNAMIC(pc) do { if ((pc) >= 0x8000u) nes_coverage_dynamic[(pc) - 0x8000u] = 1; } while (0)
 #else
 #define COVER(pc) do { } while (0)

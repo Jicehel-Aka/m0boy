@@ -1,9 +1,10 @@
-/* PICO-8 frontend for the Gamebuino META and the Pokitto: the recompiled
- * cartridge on the runtime in ../runtime, the console's LCD, audio, clock
- * and button drivers.
+/* PICO-8 frontend for the Gamebuino META, the Pokitto and the ESP32 family
+ * (ODROID-GO, Gamebuino AKA): the recompiled cartridge on the runtime in
+ * ../runtime, the console's LCD, audio, clock and button drivers.
  *
  * The 128x128 picture is drawn 1:1 in the middle of the screen (the META's
- * 160x128, the Pokitto's 220x176).  Buttons: the d-pad, A = O, B = X; MENU
+ * 160x128, the Pokitto's 220x176); the ESP32's panel takes 160-wide rows and
+ * resamples them onto its glass.  Buttons: the d-pad, A = O, B = X; MENU
  * (Pokitto: a tap on C) restarts the cartridge, HOME (Pokitto: C held) opens
  * the option menu. */
 #include "p8main.h"
@@ -15,6 +16,8 @@
 #include "m0_lcd.h"
 #if M0_TARGET_ESPBOY
 #include "espboy_hw.h"
+#elif M0_TARGET_ESP32
+#include "aka_hw.h"
 #elif M0_TARGET_POKITTO
 #include "pokitto_hw.h"
 #elif M0_TARGET_PC
@@ -54,8 +57,8 @@ static void p8_record_at_exit(void) { p8_record_stop("exit"); }
 #define P8_RECORD_INTERRUPT(why) do { } while (0)
 #endif
 
-/* The META sends rows of the picture's 128 columns (narrowed window); the ESPboy's adapter takes 160-wide rows and the picture is at column 16; the Pokitto's row writer takes the picture's 128 columns. */
-#if M0_TARGET_ESPBOY || M0_TARGET_PC
+/* The META sends rows of the picture's 128 columns (narrowed window); the ESPboy's and the ESP32 panels' adapters take 160-wide rows and the picture is at column 16; the Pokitto's row writer takes the picture's 128 columns. */
+#if M0_TARGET_ESPBOY || M0_TARGET_PC || M0_TARGET_ESP32
 #define P8_OUT_WIDTH 160
 #else
 #define P8_OUT_WIDTH 128
@@ -85,27 +88,38 @@ static const char version[] __attribute__((used)) = "m0boy-pico8-" M0_TARGET_NAM
 
 #if defined(P8_STATE_SLOTS)
 /* Save states hold the heap's absolute pointers: they load only into this
- * very firmware, known by a hash of its code (computed once, then kept). */
-#if M0_TARGET_ESPBOY
+ * very firmware, known by a hash of its code (computed once, then kept).
+ * The PC and the ESP32 consoles take the identity the generator computed
+ * from the generated code (P8_STATE_ID): their heap layout follows the
+ * generated code, not the firmware's build. */
+#if M0_TARGET_PC || M0_TARGET_ESP32
+extern "C" uint32_t p8_state_identity(void) { return P8_STATE_ID; }
+#elif M0_TARGET_ESPBOY
 extern "C" const uint32_t _irom0_text_start[], _irom0_text_end[];
-#elif M0_TARGET_POKITTO
-extern "C" const uint32_t _sidata[]; /* the .data load image: the flash before it is this firmware's code */
-#elif M0_TARGET_PC
-extern "C" uint32_t p8_state_identity(void) { return P8_PC_STATE_ID; }
-#else
-extern "C" const uint32_t __etext[];
-#endif
-#if !M0_TARGET_PC
 extern "C" uint32_t p8_state_identity(void) {
     static uint32_t id;
     if (id) return id;
-#if M0_TARGET_ESPBOY
     const uint32_t *p = _irom0_text_start, *e = _irom0_text_end; /* word loads: the mapped flash takes no other */
+    uint32_t h = 2166136261u;
+    for (; p < e; p++) h = (h ^ *p) * 16777619u;
+    return id = h | 1u;
+}
 #elif M0_TARGET_POKITTO
+extern "C" const uint32_t _sidata[]; /* the .data load image: the flash before it is this firmware's code */
+extern "C" uint32_t p8_state_identity(void) {
+    static uint32_t id;
+    if (id) return id;
     const uint32_t *p = (const uint32_t *)0, *e = _sidata; /* the app runs from 0 */
+    uint32_t h = 2166136261u;
+    for (; p < e; p++) h = (h ^ *p) * 16777619u;
+    return id = h | 1u;
+}
 #else
+extern "C" const uint32_t __etext[];
+extern "C" uint32_t p8_state_identity(void) {
+    static uint32_t id;
+    if (id) return id;
     const uint32_t *p = (const uint32_t *)META_APP_START, *e = __etext;
-#endif
     uint32_t h = 2166136261u;
     for (; p < e; p++) h = (h ^ *p) * 16777619u;
     return id = h | 1u;
@@ -118,8 +132,8 @@ extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
 #if M0_TARGET_POKITTO
     *rows = 1; /* the single line buffer: bands sliced to one row */
     return line_buffer;
-#elif M0_TARGET_ESPBOY
-    *rows = 2u * P8_BATCH; /* the ESPboy's rows take the whole 160 columns */
+#elif M0_TARGET_ESPBOY || M0_TARGET_ESP32
+    *rows = 2u * P8_BATCH; /* the ESPboy's and ESP32 panels' rows take the whole 160 columns */
     return line_buffers[0][0];
 #else
     *rows = 1; /* the picture's two 128-pixel buffers hold one 160-pixel row (RAM is short) */
@@ -147,6 +161,8 @@ extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
 #endif
 #if M0_TARGET_ESPBOY
 #define SG_MENU_QUIT() do { espboy_restart(); } while (0)
+#elif M0_TARGET_ESP32
+#define SG_MENU_QUIT() do { esp32_restart(); } while (0)
 #elif M0_TARGET_PC
 #define SG_MENU_QUIT() do { exit(0); } while (0)
 #elif M0_TARGET_POKITTO
@@ -209,9 +225,10 @@ extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
 #if M0_TARGET_PC
 #define SG_MENU_SCREEN_ENTER() do { } while (0)
 #define SG_MENU_SCREEN_LEAVE() do { } while (0)
-#elif M0_TARGET_ESPBOY
+#elif M0_TARGET_ESPBOY || M0_TARGET_ESP32
 /* the adapter takes the picture's 128 columns at 16 of each row, and the
- * menu's 160 narrowed while it is open (the generator's espboy_hw.cpp) */
+ * menu's 160 narrowed while it is open (p8_main.cpp; the generator's patch
+ * of the console's row writer reads p8_menu_wide) */
 extern "C" { unsigned char p8_menu_wide; }
 #define SG_MENU_SCREEN_ENTER() do { p8_menu_wide = 1; } while (0)
 #define SG_MENU_SCREEN_LEAVE() do { p8_menu_wide = 0; } while (0)
@@ -280,7 +297,7 @@ static void draw_screen(void) {
         uint16_t (*lines)[P8_OUT_WIDTH] = line_buffers[rows.slot];
         for (unsigned r = 0; r < P8_BATCH; r++) {
             uint16_t *out = lines[r];
-#if M0_TARGET_ESPBOY || M0_TARGET_PC
+#if M0_TARGET_ESPBOY || M0_TARGET_PC || M0_TARGET_ESP32
             out += P8_MARGIN;
 #endif
             const uint8_t *in = &p8_screen[(y + r) * 64];
@@ -366,6 +383,9 @@ static void stack_check(void) {
 
 #if M0_TARGET_ESPBOY
 int espboy_main() {
+#elif M0_TARGET_ESP32
+extern "C" int m0boy_console_main(void); /* the console file's setup() */
+int m0boy_console_main() {
 #else
 int main() {
 #endif

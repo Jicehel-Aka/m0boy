@@ -99,6 +99,14 @@ has not been compared with a console (see the Mega Drive notes).
 | Vectrex (cartridges up to 32 KiB, system ROM built in; experimental) | yes | — | — |
 | Mega Drive (bounded M68k colour-loop profile; experimental) | yes | — | — |
 
+META and Pokitto firmware `.bin` images are also explicit M0+ source systems:
+`--system meta|pokitto --target pc` packages an integrated PC board emulator
+derived from gm0 (MIT with its third-party notices retained). Reachable Thumb
+instructions are translated to C; dynamically reached code, RAM execution and
+modified flash fall back to the interpreter. The board model inherits gm0's
+hardware coverage and limitations. AKA firmware execution is not available yet.
+See [multi-system notes](docs/MULTI_SYSTEM.fr.md).
+
 The `--target pc` SDL2 backend is available for Game Boy, SG-1000, Game Gear,
 Master System, MSX, NES, PICO-8, PC Engine, Vectrex and Mega Drive. These projects share gamepad
 and joystick hotplug, an unfiltered image by default, F8 display filters,
@@ -254,6 +262,15 @@ instructions; a run counts as code only when it reaches an unconditional end
 without an illegal opcode or an access to nonexistent hardware. The flash is
 then filled with compiled code, most executed first, then the swept code the
 sessions never reached.
+
+Both mechanisms are shared by every source CPU with coverage: the generated
+harnesses expose the explorer as `--explore FRAMES --random SEED`
+(`targets/common/host/m0_explore_host.h`), and call/jump targets the
+reachability walk cannot prove can be swept on purpose with `--pce-sweep`,
+`--nes-sweep`, `--vectrex-sweep`, `--megadrive-sweep` or `--meta-sweep`
+(discipline in `recompiler/include/m0boy/sweep.h`; the swept entries only run
+under their own banking context, so the `run_hash` must not move). See
+[multi-system notes](docs/MULTI_SYSTEM.fr.md).
 
 The generated C keeps the source CPU's semantics: flags are computed only
 where a later instruction reads them, cycles are added per straight run,

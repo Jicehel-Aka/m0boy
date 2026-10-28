@@ -4,6 +4,7 @@
  */
 
 #include "m0boy/system.h"
+#include "m0boy/m0plus_generator.h"
 #include "m0boy/sg1000.h"
 #include "m0_msx_layout.h"
 #include "m0boy/sg1000_generator.h"
@@ -189,6 +190,11 @@ void print_usage(const char* program) {
     std::cout << "  --meta-precise        Poll interrupts before every instruction (differential tests)\n";
     std::cout << "  --meta-sync-cycles <n>  SG-1000/GG/SMS: also poll once n T-states ran since the last poll (default 40, 0: loop heads only)\n";
     std::cout << "  --nes-interp          NES, Vectrex: no recompiled code, the interpreter only (alias --interp)\n";
+    std::cout << "  --pce-sweep           PC Engine: the card swept for JSR/JMP targets the reachability walk cannot prove (pairs with --meta-code-budget)\n";
+    std::cout << "  --nes-sweep           NES: the PRG swept the same way (pairs with --meta-code-budget)\n";
+    std::cout << "  --vectrex-sweep       Vectrex: the cartridge swept for JSR/JMP extended targets\n";
+    std::cout << "  --megadrive-sweep     Mega Drive: the ROM swept for JSR/JMP absolute long targets\n";
+    std::cout << "  --meta-sweep          Game Boy: every bank's CALL/JP abs targets offered as speculative entries\n";
     std::cout << "  --bios <file>         Vectrex: the system ROM (4 or 8 KiB) a META firmware embeds\n";
     std::cout << "  --full-boot           Vectrex: keep the BIOS intro\n";
     std::cout << "  --meta-static         Add the code found by static analysis (no play session needed)\n";
@@ -1853,8 +1859,10 @@ static int run_meta_target(const char* argv0, const std::string& rom_path,
                            const fs::path& explicit_meta_dir,
                            const std::vector<fs::path>& coverage_paths, bool precise,
                            bool static_coverage, size_t bytes_per_instruction,
-                           bool emit_comments, m0boy::TargetId target_id, bool thumb, const std::string& compiler) {
+                           bool emit_comments, m0boy::TargetId target_id, bool thumb, const std::string& compiler,
+                           bool sweep) {
     gbrecomp::MetaTargetOptions options;
+    options.sweep = sweep;
     options.pokitto = target_id == m0boy::TargetId::pokitto;
     options.espboy = target_id == m0boy::TargetId::espboy;
     options.pc = target_id == m0boy::TargetId::pc;
@@ -2067,6 +2075,11 @@ int main(int argc, char* argv[]) {
     bool meta_thumb = false;
     bool meta_precise = false;
     bool nes_interp = false;
+    bool pce_sweep = false;
+    bool nes_sweep = false;
+    bool vectrex_sweep = false;
+    bool megadrive_sweep = false;
+    bool meta_sweep = false;
     bool meta_static = false;
     size_t meta_bpi = 20;
     bool meta_bpi_set = false;
@@ -2241,6 +2254,16 @@ int main(int argc, char* argv[]) {
             meta_precise = true;
         } else if (arg == "--nes-interp" || arg == "--interp") {
             nes_interp = true;
+        } else if (arg == "--pce-sweep") {
+            pce_sweep = true;
+        } else if (arg == "--nes-sweep") {
+            nes_sweep = true;
+        } else if (arg == "--vectrex-sweep") {
+            vectrex_sweep = true;
+        } else if (arg == "--megadrive-sweep") {
+            megadrive_sweep = true;
+        } else if (arg == "--meta-sweep") {
+            meta_sweep = true;
         } else if (arg == "--bios") {
             if (i + 1 >= argc) {
                 std::cerr << "Error: --bios requires a file\n";
@@ -2401,7 +2424,18 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: M0+ firmware analysis is not available\n";
             return 1;
         }
-        return refuse_target(source, *m0boy::parse_target(target), target);
+        const bool aka = target == "aka" && source.id == m0boy::SystemId::meta;
+        if (target != "pc" && !aka) return refuse_target(source, *m0boy::parse_target(target), target);
+        const fs::path output = output_dir.empty()
+            ? fs::path(fs::path(rom_path).stem().string() + "_" + std::string(source.name) + "_" + target)
+            : fs::path(output_dir);
+        const fs::path runtime = resolve_meta_dir(argv[0], meta_dir).parent_path() / "m0plus/runtime";
+        if (!m0boy::m0plus::generate(rom_path, source.id, output, error, runtime, coverage_paths, aka)) {
+            std::cerr << "Error: " << error << "\n";
+            return 1;
+        }
+        std::cout << (aka ? "AKA" : "PC") << " firmware project written to " << output.string() << "\n";
+        return 0;
     }
     if (disasm_only && source.id == m0boy::SystemId::sg1000 && !analyze_only) {
         if (specific_bank > 0) {
@@ -2515,7 +2549,7 @@ int main(int argc, char* argv[]) {
             meta_thumb || g_meta_pack || g_meta_stream != -1 ||
             !g_rom_profiles.empty() || g_meta_resident || emit_android_project ||
             !native_patch_manifest_path.empty() || specific_bank > 0) {
-            std::cerr << "Error: unsupported Mega Drive profile option; use --target, --coverage (PC) and --meta-compiler\n";
+            std::cerr << "Error: unsupported Mega Drive profile option; use --target, --coverage (PC), --megadrive-sweep and --meta-compiler\n";
             return 1;
         }
         m0boy::megadrive::GenerateOptions options;
@@ -2529,6 +2563,7 @@ int main(int argc, char* argv[]) {
         options.targets_dir = resolve_meta_dir(argv[0], meta_dir).parent_path();
         options.compiler = meta_compiler;
         options.coverage = coverage_paths;
+        options.sweep = megadrive_sweep;
         std::string error;
         if (!m0boy::megadrive::generate(rom_path, options, error)) {
             std::cerr << "Error: " << error << "\n";
@@ -2667,6 +2702,7 @@ int main(int argc, char* argv[]) {
         options.coverage = coverage_paths;
         options.precise = meta_precise;
         options.interpret = nes_interp;
+        options.sweep = nes_sweep;
         options.code_budget_bytes = g_meta_code_budget;
         if (meta_bpi_set) options.bytes_per_instruction = meta_bpi;
         std::string error;
@@ -2681,6 +2717,7 @@ int main(int argc, char* argv[]) {
         else
             std::cout << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played)\n"
                       << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
+                      << (nes_sweep ? "  sweep:              the PRG's JSR/JMP targets outside the walk are compiled too\n" : "")
                       << (meta_precise ? "  mode:               precise (budget checked after every instruction)\n" : "");
         return 0;
     }
@@ -2709,6 +2746,7 @@ int main(int argc, char* argv[]) {
         options.coverage = coverage_paths;
         options.precise = meta_precise;
         options.interpret = nes_interp;
+        options.sweep = vectrex_sweep;
         options.code_budget_bytes = g_meta_code_budget;
         if (meta_bpi_set) options.bytes_per_instruction = unsigned(meta_bpi);
         std::string error;
@@ -2724,6 +2762,7 @@ int main(int argc, char* argv[]) {
             std::cout << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played)"
                       << (stats.bios_compiled ? ", system ROM included" : ", cartridge only") << "\n"
                       << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
+                      << (vectrex_sweep ? "  sweep:              the JSR/JMP extended targets outside the walk are compiled too\n" : "")
                       << (meta_precise ? "  mode:               precise (slice checked after every instruction)\n" : "");
         return 0;
     }
@@ -2737,7 +2776,7 @@ int main(int argc, char* argv[]) {
             !symbol_file_path.empty() || !annotation_file_path.empty() ||
             specific_bank > 0 || !manual_entry_points.empty() || !trace_file_path.empty()) {
             std::cerr << "Error: unsupported PC Engine option; use --target, --coverage, --meta-precise, "
-                         "--nes-interp, --meta-code-budget and --meta-bytes-per-instruction\n";
+                         "--nes-interp, --pce-sweep, --meta-code-budget and --meta-bytes-per-instruction\n";
             return 1;
         }
         m0boy::pce::GenerateOptions options;
@@ -2753,6 +2792,7 @@ int main(int argc, char* argv[]) {
         options.coverage = coverage_paths;
         options.precise = meta_precise;
         options.interpret = nes_interp;
+        options.sweep = pce_sweep;
         options.code_budget_bytes = g_meta_code_budget;
         if (meta_bpi_set) options.bytes_per_instruction = meta_bpi;
         std::string error;
@@ -2767,6 +2807,7 @@ int main(int argc, char* argv[]) {
         else
             std::cout << "  instructions:       " << stats.compiled << " compiled (" << stats.covered << " played)\n"
                       << "  regions:            " << stats.regions << ", " << stats.entries << " entries\n"
+                      << (pce_sweep ? "  sweep:              the card's JSR/JMP targets outside the walk are compiled too\n" : "")
                       << (meta_precise ? "  mode:               precise (budget checked after every instruction)\n" : "");
         return 0;
     }
@@ -2822,10 +2863,10 @@ int main(int argc, char* argv[]) {
     if (target != "desktop") { /* every wired console of the Game Boy pipeline */
         return run_meta_target(argv[0], rom_path, output_dir, output_prefix, meta_dir,
                                coverage_paths, meta_precise, meta_static, meta_bpi, emit_comments,
-                               *m0boy::parse_target(target), meta_thumb, meta_compiler);
+                               *m0boy::parse_target(target), meta_thumb, meta_compiler, meta_sweep);
     }
-    if (!coverage_paths.empty() || meta_compiler != "gcc" || meta_thumb || meta_precise || meta_static || !meta_dir.empty()) {
-        std::cerr << "Error: --coverage, --meta-compiler, --meta-thumb, --meta-precise, --meta-static and --meta-dir require a console target (meta, pokitto, espboy, pc, odroid, aka)\n";
+    if (!coverage_paths.empty() || meta_compiler != "gcc" || meta_thumb || meta_precise || meta_static || meta_sweep || !meta_dir.empty()) {
+        std::cerr << "Error: --coverage, --meta-compiler, --meta-thumb, --meta-precise, --meta-static, --meta-sweep and --meta-dir require a console target (meta, pokitto, espboy, pc, odroid, aka)\n";
         return 1;
     }
     if (!emit_android_project && (!android_package.empty() || !android_app_name.empty())) {

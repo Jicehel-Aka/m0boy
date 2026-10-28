@@ -29,26 +29,32 @@ constexpr std::array console_targets = {
 };
 // The Sega consoles' frontends run on every destination, the ESPboy included.
 constexpr std::array sega_targets = console_targets;
-// PICO-8: compiled to C for the META, the Pokitto and the ESPboy (the PC
-// follows once its generator grows a branch).
-constexpr std::array pico8_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::espboy, TargetId::pc};
+// PICO-8: compiled to C for the META, the Pokitto, the ESPboy and the
+// Gamebuino AKA (the ESP32 family's shared core), plus the PC.
+constexpr std::array pico8_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::espboy, TargetId::pc, TargetId::aka};
 // MSX: the SG-1000 frontends (TMS9918A, Z80); the ESPboy and PC builds are
 // not wired up.
 constexpr std::array msx_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::pc};
 // NES: the recompiled pipeline on the META, the Pokitto and the desktop
 // harness.
-// PC Engine: the interpreter on the desktop harness and the PC's SDL2
-// window (the consoles wait on the picture's budget; a 768 KiB HuCard
+// PC Engine: the interpreter on the desktop harness, the PC's SDL2
+// window and the Gamebuino AKA (the HuCard whole in the app partition;
+// the other consoles wait on the picture's budget — a 768 KiB HuCard
 // does not fit a 256 KiB flash either).
 constexpr std::array nes_targets = {TargetId::desktop, TargetId::meta, TargetId::pokitto, TargetId::pc};
-constexpr std::array pce_targets = {TargetId::desktop, TargetId::pc};
-// Vectrex: the 6809 recompiled in front of the interpreter on the META,
-// and the SDL host (pc).
-constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc};
+constexpr std::array pce_targets = {TargetId::desktop, TargetId::pc, TargetId::aka};
+// Vectrex: the 6809 recompiled in front of the interpreter on the META and
+// the Gamebuino AKA (the ESP32 family's shared core), and the SDL host (pc).
+constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc, TargetId::aka};
 constexpr std::array megadrive_targets = {TargetId::desktop, TargetId::meta, TargetId::pc, TargetId::aka};
-// SNES, phase 1: the 65C816's interpreter and recompiler on the desktop
-// harness — the picture (PPU, APU) comes later.
-constexpr std::array snes_targets = {TargetId::desktop};
+constexpr std::array m0plus_targets = {TargetId::pc};
+// the META firmware also runs on the AKA, through the standalone SAMD21 runtime
+constexpr std::array meta_source_targets = {TargetId::pc, TargetId::aka};
+// SNES: the 65C816/PPU/APU runtime on the desktop harness and the PC's
+// SDL2 window (the cartridge embedded); the consoles wait on the RAM
+// budget — the runtime holds ~434 KiB between WRAM, VRAM, A-RAM, the
+// SRAM window and the displayed frame.
+constexpr std::array snes_targets = {TargetId::desktop, TargetId::pc};
 constexpr std::array<TargetId, 0> no_targets {};
 
 constexpr std::array system_table = {
@@ -81,18 +87,18 @@ constexpr std::array system_table = {
      * and rejects ROMs outside this deliberately small profile. */
     SystemDescriptor{SystemId::megadrive, "megadrive", CpuId::m68k, 0x0004,
                      65536, 8192, megadrive::inspect, megadrive_targets},
-    /* SNES phase 1: the CPU only.  128 KiB of WRAM and the runtime's own
-     * buffers; the ROM banks live through the LoROM/HiROM windows.  The
-     * PPU's 64 KiB VRAM and the APU's 64 KiB A-RAM join with the picture. */
+    /* SNES: the CPU, 128 KiB of WRAM, the cartridge's 32 KiB SRAM window,
+     * the PPU's 64 KiB VRAM, the APU's 64 KiB A-RAM and the displayed
+     * frame; the ROM banks live through the LoROM/HiROM windows. */
     SystemDescriptor{SystemId::snes, "snes", CpuId::w65c816, 0x00fffc,
-                     131072, 139264, snes::inspect, snes_targets},
+                     131072, 446464, snes::inspect, snes_targets},
     /* Firmware images, not cartridges.  The reset vector is at the image
      * start; META is linked at 0x4000, Pokitto at zero.  Execution/codegen
-     * requires an emulated board and is not wired yet. */
+     * PC projects include the board emulator. */
     SystemDescriptor{SystemId::meta, "meta", CpuId::m0plus, 0x4004,
-                     32768, 32768, m0plus::inspect_meta, no_targets},
+                     32768, 32768, m0plus::inspect_meta, meta_source_targets},
     SystemDescriptor{SystemId::pokitto, "pokitto", CpuId::m0plus, 0x0004,
-                     32768, 32768, m0plus::inspect_pokitto, no_targets},
+                     32768, 32768, m0plus::inspect_pokitto, m0plus_targets},
 };
 
 /* Facts of each destination.  meta/pokitto: the whole contiguous SRAM is
@@ -113,7 +119,7 @@ constexpr std::array target_table = {
                 "PC (SDL2 window, SD card as a file image)"},
     TargetFacts{TargetId::odroid, "odroid", false, 327680, 4194304, 2097152, 320, 240, true,
                 "ODROID-GO (ESP32-WROVER, ILI9341, 16 MiB flash, 4 MiB PSRAM)"},
-    TargetFacts{TargetId::aka, "aka", false, 327680, 8388608, 0x370000, 320, 240, true,
+    TargetFacts{TargetId::aka, "aka", false, 327680, 8388608, 0x2EE000, /* the official 3000K app slot */ 320, 240, true,
                 "Gamebuino AKA (ESP32-S3, 8 MiB flash, octal PSRAM, i80 LCD, SDMMC)"},
 };
 }

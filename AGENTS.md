@@ -62,9 +62,24 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
 - `compile.sh`, `tools/meta-compiler/`: batch conversion (shell and Node).
 - `tools/profile/`: the per-game profile store (`m0profile.py`, `play.sh`,
   `m0romsim.cpp`) and `m0search.py`, the generic play search shared by every
-  core's harness (random or recorded sessions through `--explore`/`--random`
-  where the harness has them, generated input scripts elsewhere, `--input`
-  replays, merged coverage for the generator).
+  core's harness (`--explore FRAMES --random SEED` coverage-guided sessions
+  through `targets/common/host/m0_explore.h` + `m0_explore_host.h` — every
+  coverage core has one: GB checkpoints at its runtime safe points, SG-1000
+  plays whole segments; PICO-8 stays scripted — plus generated input
+  scripts, `--input` replays, merged coverage for the generator). Bounded
+  sweeps of call/jump targets the reachability walk cannot prove:
+  `--pce-sweep`, `--nes-sweep`, `--vectrex-sweep`, `--megadrive-sweep`,
+  `--meta-sweep`, discipline in `recompiler/include/m0boy/sweep.h`.
+- M0+ source (`--system meta --target pc`, `recompiler/src/system/m0plus/`,
+  `targets/m0plus/runtime/`, `docs/MULTI_SYSTEM.fr.md`): Thumb -> C entries
+  (`m0_native_glue.h` is their vocabulary over `M0Cpu`), `m0_cpu.c` as fallback,
+  `m0_machine.c` (SysTick/NVIC), `samd21.c` (the META board), frontend
+  `targets/m0plus/platform/m0_pc.c`; no gm0 in the generated project (Pokitto
+  still uses gm0's copy). Rule: `m0_headless --frames N` prints the same
+  `run_hash`/`image_hash`/`audio_hash` as `--interp`
+  (`tests/test_m0plus_e2e.py`); the profile is `--profile prefix`
+  (`.cov` for regeneration, `.mmio`, `.hot`). Against gm0 (Lapinou) the image
+  and the DAC value sequence match; cycles differ slightly (no NVM wait model).
 - `tools/gb-emu/`: gamebuino-emulator fork used for profiling runs.
 
 ## Build and test
@@ -181,6 +196,19 @@ built firmware in it (`ESPBOY_PIO` for the build).
   `output/deps/ymfm` as a test oracle only) must stay exact.
   The AKA CORE v1.4 wiring follows the official Gamebuino_AKA_lib
   (`targets/consoles/aka/`, `docs/AKA.fr.md`).
+  SNES (`--system snes`, `--target desktop|pc`, `docs/SNES.fr.md`):
+  `recompiler/src/system/snes/` (the 65816 emitter with the context walk,
+  the dispatcher in `targets/snes/runtime/snes_cpu.c` under
+  `SNES_NATIVE`), the per-line PPU/HDMA/IRQ in `snes_ppu.c`, the SPC700
+  interpreter and the C-simulated IPL boot in `snes_smp.c`, the BRR DSP
+  in `snes_dsp.c`; the fingerprint recipe is `targets/snes/host/snes_hash.h`,
+  shared by the harness and the SDL2 window.  Rule: a `--meta-precise`
+  project prints the `--interp` run_hash/image_hash/audio_hash (the fast
+  mode's regions stop at their labels: the boundary state is not a
+  contract there); the SRAM, the A-RAM and the APU state are hashed.  A
+  change to the PPU, the DMA or the APU keeps Bucket's recorded hashes
+  (in docs/SNES.fr.md; the ROM stays in `output/snes/`) and the e2e's
+  backdrop.
 
 ## Commits
 

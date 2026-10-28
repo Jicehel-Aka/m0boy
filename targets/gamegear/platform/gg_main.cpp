@@ -68,8 +68,8 @@ int gg_stream_open(const uint8_t *rom, uint32_t rom_size, uint8_t *buf);
 #if SG_CART_RAM && !GG_CART_ON_CARD
 static uint8_t cart_ram[GG_CART_RAM_SIZE] __attribute__((aligned(4)));
 #endif
-/* Rows: GG_WIDTH pixels with GG_ROW_PAD writable pixels on each side.  Two
- * buffers: the META sends one by DMA while the other is drawn. */
+/* Rows: GG_OUT_WIDTH pixels with GG_ROW_PAD writable pixels on each side.
+ * Two buffers: the META sends one by DMA while the other is drawn. */
 static uint16_t line_buffers[2][GG_ROW_STRIDE] __attribute__((aligned(4)));
 #if !M0_TARGET_POKITTO
 static m0_rows rows;
@@ -153,8 +153,8 @@ static const char version[] __attribute__((used)) = "m0boy-gg-" M0_TARGET_NAME "
 
 #if M0_TARGET_PC
 /* The window is the VDP's own size (160x144 Game Gear, 256x192 in SMS
- * mode): no resampling, no border crop. */
-static unsigned display_row(unsigned y) { return y; }
+ * mode): no resampling, no border crop, the first window line on row 0. */
+static unsigned display_row(unsigned y) { return y - GG_WIN_TOP; }
 #define GG_PAIRS 0
 #define GG_PANEL_ROW0(row) (row)
 #elif M0_TARGET_ESP32
@@ -190,7 +190,9 @@ static int draw_line(void *, unsigned y) {
     return 0; /* the game and the VDP alone */
 #endif
     if (skip_video) return 0;
-#if GG_SMS
+#if M0_TARGET_PC
+    return 1; /* every window line is its own row */
+#elif GG_SMS
     return gg_sms_line_shown(y);
 #elif M0_TARGET_ESP32
     return (0x3eu >> ((y - GG_TOP) % 6)) & 1; /* the line nearest each 6/5 row's centre */
@@ -233,8 +235,8 @@ static void frame(void *);
 /* ---- option menu (sg_menu.h): HOME held half a second, MENU stays Start -- */
 extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
     /* the two line buffers, contiguous: the menu's bands of 8 rows are
-     * sliced to what fits (two rows of 160 pixels) */
-    *rows = 2u * GG_ROW_STRIDE / GG_WIDTH;
+     * sliced to what fits */
+    *rows = 2u * GG_ROW_STRIDE / GG_OUT_WIDTH;
     return line_buffers[0];
 }
 #if M0_TARGET_POKITTO

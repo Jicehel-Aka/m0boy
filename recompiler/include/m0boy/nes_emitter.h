@@ -21,6 +21,7 @@ struct EmitOptions {
     uint32_t prg_size = 32768;   /* 16 or 32 KiB, mirrored from $8000 */
     bool precise = false;        /* the slice ends after the same instruction as the interpreter's */
     size_t max_instructions = 0; /* 0: every reachable instruction */
+    bool sweep = false;          /* --nes-sweep: the walk also seeds from the PRG's JSR/JMP targets */
     unsigned check_cycles = 48;  /* fast mode: the most cycles between two budget checks */
 };
 

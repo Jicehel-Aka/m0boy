@@ -75,6 +75,20 @@ static uint16_t line_buffer[2][160] __attribute__((aligned(4)));
 #if !M0_TARGET_POKITTO
 static m0_rows rows;
 #endif
+#if M0_TARGET_PC && defined(NES_PPU_REFERENCE)
+/* the PC shows the reference renderer's own lines: the NES's 256x240 at
+ * PC_COLS/PC_ROWS (nes_config.h), as the harness's PPM captures — the
+ * panel plan and its box filter stay off.  screen pixel c of the fetched
+ * stream lives at pixels[c + fine x] (the harness does the same). */
+static uint16_t native_line[256];
+static void native_row(void *host, unsigned line, const uint16_t *pixels) {
+    (void)host;
+    if (line < PC_ROWS) {
+        for (unsigned x = 0; x < PC_COLS; x++) native_line[x] = pixels[x + machine.ppu.x];
+        m0_lcd_send_rows(native_line, (uint8_t)line, 1);
+    }
+}
+#endif
 static uint32_t deadline;
 #ifndef NES_MAX_SKIP
 #define NES_MAX_SKIP 2
@@ -85,6 +99,7 @@ static const char version[] __attribute__((used)) = "m0boy-nes-" M0_TARGET_NAME 
 
 /* The PPU scales the picture itself (ppu.h: 240 lines -> the panel's
  * rows, the 5-in-8 box filter across), straight into the row being filled. */
+#if !(M0_TARGET_PC && defined(NES_PPU_REFERENCE))
 static void panel_row(void *host, unsigned r) {
     (void)host;
 #if M0_TARGET_POKITTO
@@ -93,11 +108,17 @@ static void panel_row(void *host, unsigned r) {
     machine.ppu.panel_out = line_buffer[m0_rows_send(&rows, line_buffer[rows.slot], r, 1)];
 #endif
 }
+#endif
 
 /* ---- option menu (sg_menu.h) ---- */
 extern "C" uint16_t *m0_menu_scratch(unsigned *rows) {
+#if M0_TARGET_PC && defined(NES_PPU_REFERENCE)
+    *rows = 1; /* the bands slice to one native-width row */
+    return native_line;
+#else
     *rows = 2;
     return line_buffer[0];
+#endif
 }
 #define NES_MENU_RESTART() do { \
         NES_RECORD_INTERRUPT("restart"); \
@@ -224,8 +245,12 @@ static void frame(void *) {
 int main() {
     SG_PLATFORM_INIT();
     nes_init(nes_prg, NES_PRG_SIZE, NES_CHR_SIZE ? nes_chr : 0, NES_CHR_SIZE, NES_VERTICAL_MIRROR);
+#if M0_TARGET_PC && defined(NES_PPU_REFERENCE)
+    machine.row = native_row;
+#else
     machine.ppu.panel = panel_row;
     machine.ppu.panel_out = line_buffer[0];
+#endif
 #if M0_TARGET_POKITTO
     nes_ppu_set_rows(&machine.ppu, 176);
 #endif

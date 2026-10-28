@@ -20,6 +20,7 @@ struct EmitOptions {
      * check after every instruction, every instruction an entry) */
     bool precise = false;
     size_t max_instructions = 0; /* 0: every reachable instruction */
+    bool sweep = false;          /* --vectrex-sweep: the walk also seeds from the JSR/JMP extended targets */
     unsigned check_cycles = 64;  /* fast mode: the most cycles between two checks */
 };
 

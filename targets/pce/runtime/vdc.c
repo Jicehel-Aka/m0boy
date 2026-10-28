@@ -29,24 +29,27 @@ static const unsigned sprite_width_tab[2] = { 16, 32 };
 #define M_vdc_VCR ((v->vcr >> 0) & 0xFF)
 
 typedef struct {
-    uint16_t x, palette, flags;
+    uint16_t x, palette;
+    uint32_t flags; /* includes the internal sprite-0 marker above bit 15 */
     uint16_t pattern[4];
 } sprite_t;
 
 static sprite_t sprite_list[16];
 static int active_sprites;
 
+/* Spread a four-bit plane across four pixel nibbles, leftmost bit first. */
+static const uint16_t spread4[16] = {
+    0x0000, 0x1000, 0x0100, 0x1100,
+    0x0010, 0x1010, 0x0110, 0x1110,
+    0x0001, 0x1001, 0x0101, 0x1101,
+    0x0011, 0x1011, 0x0111, 0x1111
+};
+
 /* one 8x8 cell's pixel: the planes at char*16 (01) and char*16+8 (23),
  * bit 0 of the words is the cell's rightmost pixel */
-static unsigned bg_pixel(const vdc_t *v, unsigned charname, unsigned row, unsigned col) {
-    const unsigned bit = 7 - col;
-    const uint16_t w0 = v->vram[(charname * 16 + row) & 0xFFFF];
-    const uint16_t w1 = v->vram[(charname * 16 + row + 8) & 0xFFFF];
-    unsigned raw = (w0 >> bit) & 1;
-    raw |= ((w0 >> (bit + 8)) & 1) << 1;
-    raw |= ((w1 >> bit) & 1) << 2;
-    raw |= ((w1 >> (bit + 8)) & 1) << 3;
-    return raw;
+static uint16_t vram_read(const vdc_t *v, unsigned address) {
+    /* The registers have 16-bit addresses, but only $0000-$7FFF is fitted. */
+    return address < VDC_VRAM_WORDS ? v->vram[address] : 0;
 }
 
 static void draw_bg(vdc_t *v) {
@@ -59,11 +62,22 @@ static void draw_bg(vdc_t *v) {
     const unsigned bat_y = ((v->bg_y >> 3) & bat_height_mask) << bat_width_shift;
     const unsigned line_sub = v->bg_y & 7;
 
-    for (unsigned x = 0; x < width; x++) {
+    for (unsigned x = 0; x < width;) {
         const uint16_t bat = v->vram[((bx >> 3) & bat_width_mask) | bat_y];
-        v->linebuf[x] = (uint16_t)((((bat >> 12) & 0x0F) << 4) |
-            bg_pixel(v, bat & 0x0FFF, line_sub, bx & 7));
-        bx++;
+        const unsigned address = (bat & 0x0FFF) * 16 + line_sub;
+        const uint16_t w0 = vram_read(v, address);
+        const uint16_t w1 = vram_read(v, address + 8);
+        const unsigned palette = (bat >> 8) & 0xF0;
+        unsigned mask = 0x80u >> (bx & 7);
+        unsigned count = 8 - (bx & 7);
+        if (count > width - x) count = width - x;
+        for (unsigned i = 0; i < count; i++, mask >>= 1) {
+            const unsigned raw = !!(w0 & mask) | (!!(w0 & (mask << 8)) << 1) |
+                (!!(w1 & mask) << 2) | (!!(w1 & (mask << 8)) << 3);
+            v->linebuf[x + i] = (uint16_t)(palette | raw);
+        }
+        x += count;
+        bx += count;
     }
 }
 
@@ -71,6 +85,9 @@ static void draw_bg(vdc_t *v) {
  * two halves */
 static void fetch_sprites(vdc_t *v) {
     active_sprites = 0;
+    /* RCRCount has already advanced for this line. Sprite CG selection
+     * belongs to the preceding count, as in the VDC's line fetch phase. */
+    const int sprite_line = v->rcr_count - 1;
     for (unsigned i = 0; i < 64; i++) {
         const int y = (int)(v->sat[i * 4 + 0] & 0x3FF) - 0x40;
         uint16_t x = v->sat[i * 4 + 1] & 0x3FF;
@@ -80,7 +97,7 @@ static void fetch_sprites(vdc_t *v) {
         const unsigned height = sprite_height_tab[(flags >> 12) & 3];
         const unsigned width = sprite_width_tab[(flags >> 8) & 1];
 
-        if (v->rcr_count < y || v->rcr_count >= (int)(y + height))
+        if (sprite_line < y || sprite_line >= (int)(y + height))
             continue;
 
         for (unsigned half = 0; half < (width == 32 ? 2u : 1u); half++) {
@@ -88,7 +105,7 @@ static void fetch_sprites(vdc_t *v) {
                 if (v->cr & 0x02) v->status |= VDCS_OR;
                 return; /* the 16-sprite line limit */
             }
-            unsigned y_offset = (unsigned)(v->rcr_count - y);
+            unsigned y_offset = (unsigned)(sprite_line - y);
             if (flags & SPRF_VFLIP) y_offset = height - 1 - y_offset;
 
             unsigned no_half = no & sprite_height_no_mask[(flags >> 12) & 3];
@@ -100,10 +117,11 @@ static void fetch_sprites(vdc_t *v) {
             sprite_list[active_sprites].x = x;
             sprite_list[active_sprites].palette = palette;
             sprite_list[active_sprites].flags = flags | (i ? 0 : SPRF_SPRITE0);
-            sprite_list[active_sprites].pattern[0] = v->vram[(no_half * 64 + (y_offset & 15)) & 0xFFFF];
-            sprite_list[active_sprites].pattern[1] = v->vram[(no_half * 64 + (y_offset & 15) + 16) & 0xFFFF];
-            sprite_list[active_sprites].pattern[2] = v->vram[(no_half * 64 + (y_offset & 15) + 32) & 0xFFFF];
-            sprite_list[active_sprites].pattern[3] = v->vram[(no_half * 64 + (y_offset & 15) + 48) & 0xFFFF];
+            const unsigned pattern = no_half * 64 + (y_offset & 15);
+            sprite_list[active_sprites].pattern[0] = vram_read(v, pattern);
+            sprite_list[active_sprites].pattern[1] = vram_read(v, pattern + 16);
+            sprite_list[active_sprites].pattern[2] = vram_read(v, pattern + 32);
+            sprite_list[active_sprites].pattern[3] = vram_read(v, pattern + 48);
             active_sprites++;
 
             x += 16; /* the second half sits 16 pixels to the right */
@@ -112,31 +130,50 @@ static void fetch_sprites(vdc_t *v) {
 }
 
 static void draw_sprites(vdc_t *v) {
+    if (!active_sprites) return;
     uint16_t sprite_line[1024];
     const unsigned width = v->row_width;
+    unsigned first = width, end = 0;
 
-    memset(sprite_line, 0, width * sizeof sprite_line[0]);
+    for (int i = 0; i < active_sprites; i++) {
+        const int pos = (int)sprite_list[i].x - 0x20;
+        if (pos >= (int)width || pos <= -16) continue;
+        const unsigned left = pos > 0 ? (unsigned)pos : 0;
+        const unsigned right = pos + 16 < (int)width ? (unsigned)(pos + 16) : width;
+        if (left < first) first = left;
+        if (right > end) end = right;
+    }
+    if (first >= end) return;
+
+    memset(sprite_line + first, 0, (end - first) * sizeof sprite_line[0]);
     /* backwards: the first sprite of the list paints last and wins */
     for (int i = active_sprites - 1; i >= 0; i--) {
         const int pos = (int)sprite_list[i].x - 0x20;
         const unsigned prio_or = (sprite_list[i].flags & SPRF_PRIORITY) ? 0x200 : 0;
         const int collide = (sprite_list[i].flags & SPRF_SPRITE0) && (v->cr & 0x01);
-        for (unsigned px = 0; px < 16; px++) {
-            const unsigned rev = (sprite_list[i].flags & SPRF_HFLIP) ? px : 15 - px;
-            unsigned raw = (sprite_list[i].pattern[0] >> rev) & 1;
-            raw |= ((sprite_list[i].pattern[1] >> rev) & 1) << 1;
-            raw |= ((sprite_list[i].pattern[2] >> rev) & 1) << 2;
-            raw |= ((sprite_list[i].pattern[3] >> rev) & 1) << 3;
-            if (!raw) continue;
-            const int tx = pos + (int)px;
-            if (tx < 0 || (unsigned)tx >= width) continue;
-            if (collide && (sprite_line[tx] & 0xF)) v->status |= VDCS_CR;
-            sprite_line[tx] = (uint16_t)(sprite_list[i].palette | 0x100 | raw | prio_or);
+        for (unsigned px = 0; px < 16; px += 4) {
+            const unsigned shift = (sprite_list[i].flags & SPRF_HFLIP) ? px : 12 - px;
+            unsigned packed = spread4[(sprite_list[i].pattern[0] >> shift) & 15] |
+                (spread4[(sprite_list[i].pattern[1] >> shift) & 15] << 1) |
+                (spread4[(sprite_list[i].pattern[2] >> shift) & 15] << 2) |
+                (spread4[(sprite_list[i].pattern[3] >> shift) & 15] << 3);
+            if (sprite_list[i].flags & SPRF_HFLIP)
+                packed = ((packed & 0x000F) << 12) | ((packed & 0x00F0) << 4) |
+                    ((packed & 0x0F00) >> 4) | ((packed & 0xF000) >> 12);
+            if (!packed) continue;
+            for (unsigned j = 0; j < 4; j++, packed >>= 4) {
+                const unsigned raw = packed & 15;
+                if (!raw) continue;
+                const int tx = pos + (int)px + (int)j;
+                if (tx < 0 || (unsigned)tx >= width) continue;
+                if (collide && (sprite_line[tx] & 0xF)) v->status |= VDCS_CR;
+                sprite_line[tx] = (uint16_t)(sprite_list[i].palette | 0x100 | raw | prio_or);
+            }
         }
     }
     /* a sprite pixel wins over a transparent BG pixel, or with the
      * priority flag over any BG pixel */
-    for (unsigned x = 0; x < width; x++)
+    for (unsigned x = first; x < end; x++)
         if ((sprite_line[x] & 0xF) && (!(v->linebuf[x] & 0xF) || (sprite_line[x] & 0x200)))
             v->linebuf[x] = sprite_line[x] & 0x1FF;
 }
@@ -148,7 +185,7 @@ static void run_vram_dma(vdc_t *v) {
     const int ddir = (v->dcr & 0x08) ? -1 : 1;
     uint16_t len = v->lenr;
     do {
-        v->vram[dst] = v->vram[src];
+        if (dst < VDC_VRAM_WORDS) v->vram[dst] = vram_read(v, src);
         src = (uint16_t)(src + sdir);
         dst = (uint16_t)(dst + ddir);
         len--;
@@ -201,7 +238,7 @@ uint8_t vdc_read(vdc_t *v, unsigned at) {
     case 3:
         if (v->select == 0x02) { /* VRR: the word, then the next one */
             const uint8_t ret = (uint8_t)(v->read_buffer >> 8);
-            v->read_buffer = v->vram[v->marr & 0xFFFF];
+            v->read_buffer = vram_read(v, v->marr);
             v->marr = (uint16_t)(v->marr + vram_inc_tab[(v->cr >> 11) & 3]);
             return ret;
         }
@@ -227,14 +264,15 @@ void vdc_write(vdc_t *v, unsigned at, uint8_t value) {
     case 0x01: /* MARR: the read goes off on the high byte */
         REGSETP(v->marr);
         if (msb) {
-            v->read_buffer = v->vram[v->marr & 0xFFFF];
+            v->read_buffer = vram_read(v, v->marr);
             v->marr = (uint16_t)(v->marr + vram_inc_tab[(v->cr >> 11) & 3]);
         }
         break;
     case 0x02: /* the VRAM port */
         if (!msb) v->write_latch = value;
         else {
-            v->vram[v->mawr & 0xFFFF] = (uint16_t)(v->write_latch | value << 8);
+            if (v->mawr < VDC_VRAM_WORDS)
+                v->vram[v->mawr] = (uint16_t)(v->write_latch | value << 8);
             v->mawr = (uint16_t)(v->mawr + vram_inc_tab[(v->cr >> 11) & 3]);
         }
         break;

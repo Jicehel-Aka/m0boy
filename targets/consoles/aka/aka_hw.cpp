@@ -12,10 +12,12 @@
 #include "esp32_config.h"
 #include "m0_target.h"
 
-/* 1: the glass is BGR-wired (testé sur la carte : les canaux sortaient
- * inversés avec le seul RGB) ; 0 remettrait la rotation officielle. */
+/* MADCTL bit 3 (ST7789: 1 = the panel reads BGR words).  The official library
+ * sets it because its lcd_color_rgb() puts red in the low bits; m0boy sends
+ * RGB565 (red high), so it stays 0 — confirmed on the board (Alex Kidd came out
+ * BGR with the bit set).  AKA_LCD_BGR=1 for a frontend that sends BGR words. */
 #ifndef AKA_LCD_BGR
-#define AKA_LCD_BGR 1
+#define AKA_LCD_BGR 0
 #endif
 #include "m0_scale.h"
 extern "C" {
@@ -70,15 +72,29 @@ extern "C" uint8_t esp32_buttons(void) {
 }
 extern "C" void esp32_restart(void) { ESP.restart(); for (;;) {} }
 
-/* LCD: wait for each DMA before reusing the line buffer. Input pixels are
- * already byte-swapped by M0_COLOR, so hardware byte swapping is disabled. */
+/* LCD: wait for each DMA before reusing the line buffer.  The pixels are
+ * native RGB565; the i80 peripheral swaps the bytes of each one on the wire
+ * (swap_color_bytes, as the official library does) — no software swap. */
 static esp_lcd_panel_io_handle_t panel;
+/* What the panel is set to: the init below sends these very values, and gm0
+ * reads them to model the glass (MADCTL bit 3 = BGR, i80 byte swap). */
+extern "C" const struct m0_aka_lcd_setup {
+    uint8_t madctl, colmod, swap_color_bytes, inversion;
+} m0_aka_lcd __attribute__((used)) = {uint8_t(0x60u | (AKA_LCD_BGR ? 0x08u : 0u)), 0x55, 1, 1};
 static SemaphoreHandle_t color_done;
+/* free slots of the async wide path: the producer takes one per queued
+ * batch, the transfer-done ISR gives it back.  The count matches the
+ * frontends' ring of batches exactly: taking a slot means the oldest
+ * transfer in flight has completed, so the batch buffer the caller is
+ * about to refill is free again (transfers complete in queue order). */
+static SemaphoreHandle_t wide_slots;
+#define WIDE_QUEUE 4
 static uint32_t lcd_seq;
 static uint16_t line[320] __attribute__((aligned(64)));
 static bool color_sent(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *) {
     BaseType_t wake = pdFALSE;
     xSemaphoreGiveFromISR(color_done, &wake);
+    if (wide_slots) xSemaphoreGiveFromISR(wide_slots, &wake);
     return wake == pdTRUE;
 }
 static void command(int cmd, const void *data = nullptr, size_t n = 0) {
@@ -107,6 +123,8 @@ extern "C" void m0_lcd_init(void) {
     ledcWrite(0, 64);
     color_done = xSemaphoreCreateBinary();
     ESP_ERROR_CHECK(color_done ? ESP_OK : ESP_ERR_NO_MEM);
+    wide_slots = xSemaphoreCreateCounting(WIDE_QUEUE, WIDE_QUEUE);
+    ESP_ERROR_CHECK(wide_slots ? ESP_OK : ESP_ERR_NO_MEM);
     esp_lcd_i80_bus_handle_t bus;
     esp_lcd_i80_bus_config_t config = {};
     config.dc_gpio_num = AKA_LCD_DC;
@@ -115,32 +133,32 @@ extern "C" void m0_lcd_init(void) {
     const int data[] = AKA_LCD_DATA;
     for (unsigned i = 0; i < 8; i++) config.data_gpio_nums[i] = data[i];
     config.bus_width = 8;
-    config.max_transfer_bytes = sizeof line;
+    /* the largest transfer is a batch of eight 320-pixel rows (md_esp32.cpp,
+     * vx): esp_lcd asserts when one transfer outgrows this */
+    config.max_transfer_bytes = 8 * sizeof line;
     config.psram_trans_align = 64;
     config.sram_trans_align = 64;
     ESP_ERROR_CHECK(esp_lcd_new_i80_bus(&config, &bus));
     esp_lcd_panel_io_i80_config_t io = {};
     io.cs_gpio_num = -1; /* CS tied low on CORE v1.4 */
     io.pclk_hz = 20000000;
-    io.trans_queue_depth = 1;
+    io.trans_queue_depth = WIDE_QUEUE + 2;
     io.on_color_trans_done = color_sent;
     io.lcd_cmd_bits = io.lcd_param_bits = 8;
+    io.flags.swap_color_bytes = m0_aka_lcd.swap_color_bytes;
     io.dc_levels.dc_idle_level = io.dc_levels.dc_data_level = io.dc_levels.dc_dummy_level = 1;
     ESP_ERROR_CHECK(esp_lcd_new_panel_io_i80(bus, &io, &panel));
     command(0x01);
     delay(150);
     command(0x11);
     delay(120);
-    /* The glass's rotation is the official library's (MX | MV).  The RGB/BGR
-     * wiring question stays in MADCTL — no software byte swap anywhere: the
-     * Sega frontends and the Mega Drive both send native RGB565.  If the
-     * panel ever shows the channels swapped, flip AKA_LCD_BGR in the
-     * project's esp32_config.h; no code change. */
-    const uint8_t format = 0x55, rotation = 0x60u | (AKA_LCD_BGR ? 0x08u : 0u), te = 0;
-    command(0x3a, &format, 1);
+    /* The official library's sequence: COLMOD 16 bits, INVON, NORON, rotation 3
+     * (MX | MV) with MADCTL's bit 3 clear: the pixels are RGB. */
+    const uint8_t te = 0;
+    command(0x3a, &m0_aka_lcd.colmod, 1);
     command(0x21);
     command(0x13);
-    command(0x36, &rotation, 1);
+    command(0x36, &m0_aka_lcd.madctl, 1);
     command(0x29);
     command(0x35, &te, 1);
 }
@@ -155,9 +173,13 @@ extern "C" uint32_t m0_lcd_send_rows(const void *buf, uint8_t row0, uint8_t rows
     return ++lcd_seq;
 }
 extern "C" uint32_t m0_lcd_done_seq(void) { return lcd_seq; }
-#if __has_include("md_config.h")
-/* The Mega Drive's 320-column rows go out 1:1 (no 160-column rescale);
- * the rows already sit in the panel's RGB565 wire order. */
+#if __has_include("md_config.h") || __has_include("vx_config.h")
+/* The Mega Drive's and the Vectrex's 320-column rows go out 1:1 (no
+ * 160-column rescale); the rows already sit in the panel's RGB565 wire
+ * order.  The async path sets the address window once per frame, then
+ * streams whole batches of rows: the producer renders into a small ring
+ * of them and waits on a slot only when every queued transfer is still
+ * in flight. */
 extern "C" uint32_t m0_lcd_send_wide(const void *buf, uint8_t row0, uint8_t rows) {
     const uint16_t *p = (const uint16_t *)buf;
     for (unsigned y = 0; y < rows; y++) {
@@ -165,6 +187,29 @@ extern "C" uint32_t m0_lcd_send_wide(const void *buf, uint8_t row0, uint8_t rows
         draw_line(row0 + y);
     }
     return ++lcd_seq;
+}
+static bool wide_continue; /* the window's first batch is RAMWR, the next ones continue it */
+extern "C" void m0_lcd_wide_begin(uint8_t row0, uint8_t rows) {
+    wide_continue = false;
+    const uint8_t x[] = {0, 0, 1, 63};
+    const uint8_t r[] = {uint8_t(row0 >> 8), uint8_t(row0),
+                         uint8_t((row0 + rows - 1) >> 8), uint8_t(row0 + rows - 1)};
+    command(0x2a, x, sizeof x);
+    command(0x2b, r, sizeof r);
+}
+/* Reserve the batch buffer before filling it (the transfer that still
+ * reads it is then known to be done), submit once it is full. */
+extern "C" void m0_lcd_wide_reserve(void) {
+    xSemaphoreTake(wide_slots, portMAX_DELAY);
+}
+extern "C" void m0_lcd_wide_submit(const void *batch, uint8_t rows) {
+    /* every RAMWR (0x2C) rewinds the write pointer to the window's corner: only
+     * the first batch of a window may use it, the others are 0x3C (continue) */
+    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(panel, wide_continue ? 0x3c : 0x2c, batch, 320u * 2u * rows));
+    wide_continue = true;
+}
+extern "C" void m0_lcd_wide_flush(void) {
+    while (uxSemaphoreGetCount(wide_slots) < WIDE_QUEUE) vTaskDelay(1);
 }
 #endif
 extern "C" int m0_lcd_busy(void) { return 0; }

@@ -6,6 +6,11 @@
  */
 #include "m0_menu.h"
 
+#if __has_include("sg_config.h") /* PC_COLS: the project's config knows it */
+#include "sg_config.h"
+#elif __has_include("nes_config.h")
+#include "nes_config.h"
+#endif
 #include "m0_target.h"
 #include <string.h>
 #if M0_TARGET_ESPBOY
@@ -29,6 +34,14 @@
 static const uint16_t bg = M0_COLOR(0x081820);
 static const uint16_t bar = M0_COLOR(0x24524A);   /* selected line */
 static const uint16_t title_bg = M0_COLOR(0x346856);
+
+/* The bands span the panel's width (m0_target.h): 160 on the consoles, the
+ * PC's native width through the project's config (sg_config.h/nes_config.h,
+ * read above, define PC_COLS before m0_target.h). */
+#ifndef PC_COLS
+#define PC_COLS 160
+#endif
+#define M0_MENU_W PC_COLS
 
 /* Bands of 8 rows over the picture: 16 on the META, 18 on the Pokitto. */
 #define BANDS (M0_SCREEN_ROWS / 8)
@@ -55,8 +68,8 @@ static void draw_glyph(uint16_t *band, int x, unsigned c, unsigned first, unsign
     const unsigned stride = (w + 3) / 4;
     for (unsigned r = first; r < first + rows; r++) {
         const uint8_t *row = src + r * stride;
-        uint16_t *d = band + (r - first) * 160 + x; /* l'espacement est sur un seul côté (l'advance) */
-        for (unsigned i = 0; i < w && x + (int)i < 160; i++) {
+        uint16_t *d = band + (r - first) * M0_MENU_W + x; /* l'espacement est sur un seul côté (l'advance) */
+        for (unsigned i = 0; i < w && x + (int)i < (int)M0_MENU_W; i++) {
             unsigned v = (row[i >> 2] >> (6 - 2 * (i & 3))) & 3;
             if (v) d[i] = font_colour[v - 1];
         }
@@ -97,9 +110,9 @@ static void draw(uint16_t *buf, unsigned capacity, const char *title, const meta
         uint16_t fill = b == 0 ? title_bg : (item >= 0 && (unsigned)item == sel) ? bar : bg;
         for (unsigned first = 0; first < 8;) {
             unsigned rows = capacity < 8 - first ? capacity : 8 - first;
-            for (int i = 0; i < 160 * (int)rows; i++) buf[i] = fill;
-            if (b == 0) draw_text(buf, (160 - text_width(title)) / 2, title, first, rows);
-            if (b == BANDS - 2 && info) draw_text(buf, (160 - text_width(info)) / 2, info, first, rows);
+            for (int i = 0; i < M0_MENU_W * (int)rows; i++) buf[i] = fill;
+            if (b == 0) draw_text(buf, ((int)M0_MENU_W - text_width(title)) / 2, title, first, rows);
+            if (b == BANDS - 2 && info) draw_text(buf, ((int)M0_MENU_W - text_width(info)) / 2, info, first, rows);
             if (b == BANDS - 1) draw_text(buf, 4, "A:ok   B:retour", first, rows);
             if (item >= 0) {
                 const meta_menu_item *it = &items[item];
@@ -108,10 +121,10 @@ static void draw(uint16_t *buf, unsigned capacity, const char *title, const meta
                     const char *v = it->choices[*it->value];
                     int w = text_width(v);
                     if ((unsigned)item == sel) {
-                        draw_text(buf, 160 - 4 - w - 16, "<", first, rows);
-                        draw_text(buf, 160 - 4 - 8, ">", first, rows);
+                        draw_text(buf, (int)M0_MENU_W - 4 - w - 16, "<", first, rows);
+                        draw_text(buf, (int)M0_MENU_W - 4 - 8, ">", first, rows);
                     }
-                    draw_text(buf, 160 - 4 - 8 - 4 - w, v, first, rows);
+                    draw_text(buf, (int)M0_MENU_W - 4 - 8 - 4 - w, v, first, rows);
                 }
             }
             m0_lcd_send_rows(buf, (uint8_t)(b * 8 + first), (uint8_t)rows);

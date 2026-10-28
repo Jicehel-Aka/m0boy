@@ -42,8 +42,11 @@ intègrent la ROM passée au script ; gardez-les dans `output/`, conformément �
 la règle qui exclut les exécutables dérivés de ROMs du dépôt et des archives.
 La cartouche peut avoir un pointeur de pile initial nul (Sonic 3 installe le
 sien) ; son registre SRAM `$A130F1` (bit 0 : activation, bit 1 : protection en
-écriture) mappe la SRAM de `$200000` à `$20FFFF`, volatile au remise à zéro —
-Sonic 3 démarre et court en natif pur, ses sauvegardes restent à faire.
+écriture) mappe la SRAM de `$200000` à `$20FFFF`, volatile au remise à zéro.
+Sur PC la SRAM persiste : `--save FICHIER` choisit la pile (par défaut
+`<nom de cartouche>.sav` dans le répertoire courant) — relue au démarrage,
+réécrite environ toutes les deux secondes de jeu où la cartouche écrit, et à
+la sortie.
 
 Flèches pour bouger, X/Z/C pour A/B/C, Entrée pour Start, Échap pour quitter.
 Une manette SDL2 utilise la croix ou le stick gauche, B/A/X pour A/B/C et Start.
@@ -107,7 +110,11 @@ chaque instruction et de ses modes d'adressage, branchements pris ou non,
 DBcc, Scc, décalages par registre, MOVEM par registre, MULU/MULS selon les
 bits et DIVU/DIVS selon les étapes de la division, 44 cycles par
 interruption. États d'attente, préchargement fin et blocage du CPU pendant le
-DMA du VDP ne sont pas modélisés. Le jeu d'instructions comprend ADDX/SUBX,
+DMA du VDP ne sont pas modélisés. Le code généré plie ces temps en
+constantes par instruction (`fc_`, l'ombre de cycles de la région) et garde
+la limite de tranche dans un registre : un seul test par instruction, sans
+relecture mémoire — la limite est rechargée aux seuls points où une aide
+peut la bouger (`md_set_sr`, écriture VDP, fault). Le jeu d'instructions comprend ADDX/SUBX,
 CMPM, ABCD/SBCD/NBCD, TAS, CHK, TRAP/TRAPV, RTR, MOVEP, les exceptions
 (division par zéro, instructions illégales, lignes A et F) et le changement
 de pile superviseur/utilisateur.
@@ -174,17 +181,42 @@ reconnaissance du format, mais n'est pas incluse dans le dépôt.
 ## Gamebuino AKA
 
 `--target aka` produit le même projet natif pour l'ESP32-S3 de la Gamebuino
-AKA (`docs/AKA.fr.md`) : machine `md_full` en SRAM (64 Kio de work RAM, 64 Kio
-de VRAM, la SRAM de cartouche, le Z80 et le son — 77 % du budget statique),
-framebuffer ARGB de 320×224 en PSRAM rempli ligne à ligne par le VDP pendant
-la trame, lignes converties en RGB565 et poussées 1:1 au centre du panneau
-320×240 (8 lignes noires de part et d'autre), audio décimé en mono 8 bits
-11 025 Hz (l'anneau commun des consoles ESP32). Le profil vient des sessions
-PC (`--coverage` des projets `*-pc`). A = A, B = B, MENU/C = C, RUN/D =
-Start, le joystick complète la croix. Pas de menu d'options, pas d'états ;
-la SRAM de cartouche reste volatile. Sonic 1, Sonic 3, Castle of Illusion et
-QuackShot se construisent ainsi (`pio run`) ; les firmwares n'ont pas été
-exécutés sur la console — gm0, qui peint les firmwares Sega réels de façon
-incomplète sur sa machine AKA, montre un écran noir. La construction du
+AKA (`docs/AKA.fr.md`), compilé en -O3. Machine `md_full` en SRAM interne
+(64 Kio de work RAM, 64 Kio de VRAM, la SRAM de cartouche, le Z80 et le son),
+et pas de framebuffer : le VDP rend chaque ligne RGB565, pendant la trame,
+directement dans un anneau de quatre lots de 8 lignes en SRAM que le DMA du
+bus i80 vide pendant que l'émulation continue (la fenêtre d'adressage du
+panneau est posée une fois par trame, les lots partent en file ; un lot n'est
+rempli qu'après la prise de son créneau DMA, dont le nombre égale l'anneau —
+le transfert qui le lisait encore est alors fini) — rien ne va en PSRAM. La
+palette est tenue à jour à chaque écriture CRAM (LUT ARGB pour le rendu de
+référence, LUT RGB565 pour le panneau), le rendu trace des colonnes de tuiles
+entières (entrée de nametable et priorité une fois par colonne, colonnes de
+motif deux pixels par octet de motif) et les tranches de tuiles tournent en
+assembleur Xtensa (`md_video_asm.S`, deux pixels par octet lu), comparé au C
+par `md_span_selftest` au démarrage (écran rouge si le noyau diverge) ;
+`MD_VIDEO_ASM=0` dans `md_config.h` garde le C. Le second cœur rend : la
+tâche d'émulation ne capture par ligne que ce que le rendu lit hors VRAM
+(`MdLineCtx` : registres VDP, VSRAM, LUT CRAM — 256 octets, mesuré à ~0,2 %
+de la trame côté hôte) et une tâche sur le cœur 0 dessine chaque lot de 8
+lignes un lot en retard, via `md_full_render_line565_ctx`, puis le donne au
+DMA ; l'émulation ne peut passer devant que d'un lot. La VRAM elle-même est
+lue au moment du rendu : une écriture 68000 pendant l'affichage actif peut
+donc traverser une ligne (effet visible seulement si un jeu réécrit des
+motifs ou la nametable à chaud) ; registres, VSRAM et palette sont ceux de la
+ligne. Estimation (comptage d'instructions hôte, pas une mesure console) :
+~6,0 M instructions par trame sur chaque cœur au lieu de ~12,0 M pour
+émulation + rendu enchaînés sur un seul — chemin critique divisé par deux
+par rapport au dernier estimé à 60-90 ms/trame, soit de l'ordre de 22 à 33
+images par seconde attendues. Le moteur audio émet la ligne 44,1 kHz depuis
+une position courante (plus de division 64 bits par échantillon) et la phase
+d'interruption du Z80 avance d'un conditional-subtract par instruction (plus
+de modulo 64 bits que le driver sonore paie à chaque pas). Le profil vient
+des sessions PC (`--coverage` des projets `*-pc`). A = A, B = B, MENU/C = C,
+RUN/D = Start, le joystick complète la croix. Pas de menu d'options, pas
+d'états ; la SRAM de cartouche reste volatile. Sonic 1, Sonic 3, Castle of
+Illusion et QuackShot se construisent ainsi (`pio run`) ; les firmwares n'ont
+pas été exécutés sur la console — gm0, qui peint les firmwares Sega réels de
+façon incomplète sur sa machine AKA, montre un écran noir. La construction du
 YM2612 et du PSG ne contient plus de virgule flottante (tables log-sinus,
 exponentielle et amplitudes précalculées en constantes, audio bit-exact).

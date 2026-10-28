@@ -7,6 +7,13 @@
  * owns it, the host feeds machine.input (the standard controller bit order)
  * and takes the 160x128 picture through machine.ppu.panel/panel_out (ppu.h),
  * machine.ppu.skip leaving a frame out. */
+
+/* the generated project's config first: NES_PPU_REFERENCE gates struct
+ * fields (ppu.h, the row callback below) every translation unit must agree
+ * on; the checkout has no nes_config.h, the harness passes the define. */
+#if __has_include("nes_config.h")
+#include "nes_config.h"
+#endif
 #ifndef NES_RUNTIME_H
 #define NES_RUNTIME_H
 

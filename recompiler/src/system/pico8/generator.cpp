@@ -1,6 +1,6 @@
 /* PICO-8 project generation: p8c compiles the cartridge's Lua to C, the
- * runtime and, for the consoles (META, Pokitto, ESPboy), the drivers shared
- * with the other frontends come along. */
+ * runtime and, for the consoles (META, Pokitto, ESPboy, AKA), the drivers
+ * shared with the other frontends come along. */
 #include "m0boy/pico8_generator.h"
 #include "m0boy/console_project.h"
 #include <algorithm>
@@ -48,9 +48,10 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
 #else
     try {
         if (o.target != TargetId::meta && o.target != TargetId::desktop && o.target != TargetId::espboy &&
-            o.target != TargetId::pokitto && o.target != TargetId::pc)
-            throw std::runtime_error("PICO-8 projects target the META, the Pokitto, the ESPboy, the PC or the desktop harness");
+            o.target != TargetId::pokitto && o.target != TargetId::pc && o.target != TargetId::aka)
+            throw std::runtime_error("PICO-8 projects target the META, the Pokitto, the ESPboy, the AKA, the PC or the desktop harness");
         const bool esp = o.target == TargetId::espboy;
+        const bool aka = o.target == TargetId::aka;
         const bool pokitto = o.target == TargetId::pokitto;
         const bool pc = o.target == TargetId::pc;
         const auto tpl = o.meta_templates.parent_path() / "pico8";
@@ -63,7 +64,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             for (const auto& e : fs::directory_iterator(o.output)) foreign = foreign || e.path().filename() != "compile.log";
             if (foreign) throw std::runtime_error("Output directory is not a PICO-8 project; choose a fresh directory");
         }
-        const std::string target = o.target == TargetId::meta ? "meta" : esp ? "espboy" : pokitto ? "pokitto" : pc ? "pc" : "desktop";
+        const std::string target = o.target == TargetId::meta ? "meta" : esp ? "espboy" : pokitto ? "pokitto" : pc ? "pc" : aka ? "aka" : "desktop";
         if (fs::exists(marker) && read(marker) != target + "\n")
             throw std::runtime_error("Use a separate output directory for each destination");
         const auto src = o.output / "src";
@@ -85,14 +86,15 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
          * are counted; the heap's block headers limit it to 32 KiB (the Pokitto's main RAM is the
          * same 32 KiB, its audio queue lives in the 2 KiB bank) */
         /* ESPboy: 6 KiB of continuation stack in .bss (the PICO-8 code needs about 1 KiB of C
-         * stack, measured on the META) and 4 KiB left to the SDK's heap */
-        const unsigned heap = o.heap_bytes ? o.heap_bytes : pc ? 65536u : esp ? 22528u : 18432u;
+         * stack, measured on the META) and 4 KiB left to the SDK's heap; AKA: the ESP32-S3's
+         * RAM is ample, under the block headers' 32 KiB ceiling */
+        const unsigned heap = o.heap_bytes ? o.heap_bytes : pc ? 65536u : esp ? 22528u : aka ? 30720u : 18432u;
         config << "#ifndef P8_HEAP_BYTES /* the host harness takes more: its values are twice as large */\n#define P8_HEAP_BYTES " << heap << "\n#endif\n";
-        if (pc) {
+        if (pc || aka) {
             uint32_t identity = 2166136261u;
             for (const auto& path : {src / "p8_gen.c", src / "p8_cart.c"})
                 for (unsigned char c : read(path)) identity = (identity ^ c) * 16777619u;
-            config << "#define P8_PC_STATE_ID " << (identity | 1u) << "u\n";
+            config << "#define P8_STATE_ID " << (identity | 1u) << "u\n";
         }
         /* Save states (p8_state_io): the heap, the screen, the cartridge's globals (8 bytes each on the
          * consoles) and under 1 KiB of the rest; on the card next to the .BIN (NAME.ST8, made by
@@ -110,7 +112,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 config << "#define P8_STATE_SLOTS " << slots << " /* in flash */\n";
             } else {
                 config << "#define P8_STATE_NAME \"" << sd << ".ST8\"\n#define P8_STATE_NAME83 \"" << name83(sd, "ST8") << "\"\n#define P8_STATE_SLOTS 10\n";
-                if (!pokitto && !pc) /* the state file in the game's folder: a META loader notion */
+                if (!pokitto && !pc && !aka) /* the state file in the game's folder: a META loader notion */
                     config << "#define P8_BIN_NAME83 \"" << name83(sd, "BIN") << "\"\n";
             }
             config << "#define P8_STATE_SLOT_SECTORS " << sectors << "\n";
@@ -147,6 +149,12 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
             if (esp) {
                 copy_template(platform / "espboy_flash.cpp", src / "espboy_flash.cpp");
                 copy_template(common_dir / "runtime" / "m0_scale.h", src / "m0_scale.h"); /* espboy_hw.cpp */
+            } else if (aka) {
+                /* the card's state file at the card's root (no loader folder),
+                 * the FAT reader over the ESP32 core's SDMMC hooks */
+                copy_template(shared / "m0_state.cpp", src / "m0_state.cpp");
+                for (const char* name : { "m0_sd.h", "m0_sd.c", "m0_fat.c", "m0_fat.h", "m0_card.h" })
+                    copy_template(shared / name, src / name);
             } else {
                 copy_template(shared / "m0_state.cpp", src / "m0_state.cpp");
                 for (const char* name : { "m0_sd.h", "m0_fat.c", "m0_fat.h" })
@@ -201,6 +209,47 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
                 for (const char* name : { "platformio.ini", "espboy.ld", "espboy_build.py", "espboy_size.py" })
                     write(o.output / name, replace(replace(read(platform / (std::string(name) + ".in")), "@NAME@", o.name),
                                                    "-DCONT_STACKSIZE=12288", "-DCONT_STACKSIZE=6144"));
+            } else if (aka) {
+                /* the audio hooks the ESP32 core finds by its sg_audio.h */
+                write(src / "sg_audio.h", "#pragma once\n#include \"p8_audio.h\"\n"
+                                          "#define sg_platform_audio_rate p8_audio_set_rate\n"
+                                          "#define sg_platform_audio_render p8_audio_render\n");
+                /* the ESP32 family's shared core plus the AKA's pins; the
+                 * picture's 128 columns sit at 16 of each 160-wide row and
+                 * the menu widens them back (p8_menu_wide in p8_main.cpp) */
+                const auto core = common_dir / "consoles" / "esp32";
+                for (const char* name : { "esp32_hw.cpp", "esp32_hw.h", "esp32_sd.cpp" })
+                    copy_template(core / name, src / name);
+                copy_template(platform / "esp32_config.h", src / "esp32_config.h");
+                {
+                    auto hw = read(platform / "aka_hw.cpp");
+                    const std::string row = "line[x] = p[m0_nearest(x, 160, 320)];";
+                    if (hw.find(row) == std::string::npos)
+                        throw std::runtime_error("aka_hw.cpp changed: the PICO-8 patch no longer applies");
+                    hw = replace(hw, row, "line[x] = p8_menu_wide ? p[m0_nearest(x, 160, 320)] : p[x + 16];");
+                    hw = "extern \"C\" unsigned char p8_menu_wide;\n" + hw;
+                    write(src / "aka_hw.cpp", hw);
+                }
+                copy_template(platform / "aka_hw.h", src / "aka_hw.h");
+                {
+                    /* m0_audio_frame renders a 30 Hz frame (368 samples at 11025 Hz) */
+                    auto hw = read(core / "esp32_hw.cpp");
+                    const std::string frame = "uint8_t samples[192];";
+                    if (hw.find(frame) == std::string::npos)
+                        throw std::runtime_error("esp32_hw.cpp changed: the PICO-8 patch no longer applies");
+                    hw = replace(hw, frame, "uint8_t samples[400]; /* a 30 Hz frame at 11025 Hz */");
+                    write(src / "esp32_hw.cpp", hw);
+                }
+                /* the panel's resample (aka_hw.cpp samples m0_nearest) */
+                copy_template(common_dir / "runtime" / "m0_scale.h", src / "m0_scale.h");
+                fs::create_directories(o.output / "boards");
+                copy_template(platform / "boards" / "gamebuino_aka.json",
+                              o.output / "boards" / "gamebuino_aka.json");
+                std::error_code list_error;
+                for (const auto& entry : fs::directory_iterator(platform, list_error)) {
+                    if (entry.is_directory() || entry.path().extension() != ".in") continue;
+                    write(o.output / entry.path().stem(), replace(read(entry.path()), "@NAME@", o.name));
+                }
             } else if (pokitto) {
                 /* Bare-metal drivers and start-up, the Sega Pokitto projects' files; the
                  * picture's row writer is pokitto_p8lcd.c, a file of the PICO-8's own (the
@@ -244,6 +293,7 @@ bool generate(const fs::path& cartridge, const GenerateOptions& o, std::string& 
               "Run: host/build/" + o.name + "_host --frames 300 [--input \"frame:mask:frames,...\"] [--shot image.ppm]\n\n" +
               (o.target == TargetId::meta ? "Firmware: pio run  (copy .pio/build/meta/firmware.bin to the SD card as " + o.name + ".bin)\n"
                : o.target == TargetId::pokitto ? "Firmware: cmake -G Ninja -S . -B build -DCMAKE_TOOLCHAIN_FILE=arm-toolchain.cmake && ninja -C build\n"
+               : o.target == TargetId::aka ? "Firmware: pio run  (flash with pio run -t upload; save states live on the card as " + sd_base(o.name) + ".ST8)\n"
                                                : ""));
         return true;
     } catch (const std::exception& e) {
