@@ -72,7 +72,7 @@ jobs:
         env:
           PLATFORMIO_BUILD_FLAGS: ${{ inputs.bgr && '-DAKA_LCD_BGR=1' || '' }}
         run: |
-          read -r -a hot < "$RUNNER_TEMP/hot_pages.txt"
+          read -r -a hot < "$RUNNER_TEMP/hot_pages.txt" || true
           n=${{ inputs.iram }}
           while true; do
             git -C . status >/dev/null 2>&1 || true
