@@ -16,7 +16,11 @@ on:
       iram:
         description: "Pages (1 Ko de code ARM chacune) les plus chaudes copiees en RAM interne, essayees de la plus grande valeur vers 0 jusqu'a ce que ca tienne"
         type: string
-        default: "24"
+        default: "8"
+      pages:
+        description: "Pages a mettre en RAM interne (hex, separees par des espaces, ex: 24 2b 3a), vues par la ligne [prof] de la console. Vide = choix automatique par profil PC"
+        type: string
+        default: ""
       parties:
         description: "Parties aleatoires jouees pour decouvrir le code a traduire (plus = mieux couvert, plus long)"
         type: string
@@ -54,6 +58,8 @@ jobs:
           ./build/bin/m0recomp "${{ inputs.rom }}" --system meta --target aka --coverage "$RUNNER_TEMP/all.cov" -o "$RUNNER_TEMP/aka"
           cat "$RUNNER_TEMP/aka/native-status.txt"
       - name: Pages chaudes en RAM interne
+        env:
+          PAGES: ${{ inputs.pages }}
         run: |
           python3 - <<'PY'
           import re, glob, os, collections
@@ -64,6 +70,9 @@ jobs:
                   m = re.match(r"([0-9a-f]+) cycles=(\d+)", l)
                   if m: pg[int(m.group(1), 16) >> 10] += int(m.group(2))
           order = [p for p, _ in pg.most_common()]
+          manual = os.environ.get("PAGES", "").split()
+          if manual:
+              order = [int(x, 16) for x in manual]
           open(tmp + "/hot_pages.txt", "w").write(" ".join("%x" % p for p in order))
           print("pages les plus chaudes :", " ".join("%x" % p for p in order[:12]))
           PY

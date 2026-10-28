@@ -16,6 +16,37 @@ extern "C" const uint32_t m0_rom_size;
 extern "C" int m0_native_step(M0Cpu *);
 extern "C" uint32_t m0_stat_native, m0_stat_interp;
 
+/* Sampling profiler: a task on the otherwise idle core reads the guest PC a
+ * thousand times a second; the result (per 1 KB page of guest code) says where
+ * the time really goes on this chip.  The PC is written back at page exits, so
+ * a long loop inside one page is still counted on that page. */
+#define M0_PROF_PAGES 256
+static volatile uint32_t m0_prof[M0_PROF_PAGES + 1];
+static volatile const uint32_t *m0_prof_pc;
+static void m0_prof_task(void *) {
+    for (;;) {
+        uint32_t pc = *m0_prof_pc - M0_FLASH_BASE;
+        uint32_t i = pc >> 10;
+        m0_prof[i < M0_PROF_PAGES ? i : M0_PROF_PAGES]++;
+        vTaskDelay(1);
+    }
+}
+static void m0_prof_reset(void) { for (unsigned i = 0; i <= M0_PROF_PAGES; ++i) m0_prof[i] = 0; }
+static void m0_prof_report(void) {
+    uint32_t snap[M0_PROF_PAGES + 1], tot = 0;
+    for (unsigned i = 0; i <= M0_PROF_PAGES; ++i) { snap[i] = m0_prof[i]; m0_prof[i] = 0; tot += snap[i]; }
+    if (!tot) return;
+    Serial.printf("[prof] %u samples; hottest guest pages (page = pc>>10, as in m0_page_XX):", tot);
+    for (int k = 0; k < 10; ++k) {
+        unsigned best = 0;
+        for (unsigned i = 1; i <= M0_PROF_PAGES; ++i) if (snap[i] > snap[best]) best = i;
+        if (!snap[best]) break;
+        Serial.printf(" %x:%u%%", (unsigned)((M0_FLASH_BASE >> 10) + best), (unsigned)(100u * snap[best] / tot));
+        snap[best] = 0;
+    }
+    Serial.println();
+}
+
 /* Boot-time calibration, printed once: what this chip really does. */
 static void m0_bench(const Samd21 *b, const uint16_t *px) {
     volatile uint32_t sink = 0;
@@ -61,6 +92,8 @@ extern "C" int m0boy_console_main(void) {
     }
     m0_audio_init();
     m0_bench(&board, pixels);
+    m0_prof_pc = &board.m.cpu.r[15];
+    xTaskCreatePinnedToCore(m0_prof_task, "m0prof", 2048, nullptr, 1, nullptr, 0);
     Serial.printf("[bench] ROM read from %s\n", rom == m0_rom ? "flash" : "RAM copy");
     uint32_t next = m0_micros();
     /* Profiling: prints, once a second on the serial port (115200), where the
@@ -98,6 +131,8 @@ extern "C" int m0boy_console_main(void) {
                           (unsigned)(board.idle_skipped / 1000000u),
                           m0_stat_native / frames, m0_stat_interp / frames);
             m0_stat_native = m0_stat_interp = 0;
+            { static unsigned n; if (++n % 5 == 0) m0_prof_report(); else if (n % 5 == 1) m0_prof_reset(); }
+            Serial.printf("[heap] free %u min %u\n", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
             t_btn = t_emu = t_aud = t_lcd = frames = 0; t_rep = t3; c_rep = board.m.cpu.cycles;
         }
         next += 16743u;
