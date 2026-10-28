@@ -26,15 +26,17 @@ Le pilote remplace les anciennes broches supposées. Les lignes m0boy de
 qu'après la fin du transfert. Les boutons passent par les expandeurs,
 RUN étant actif haut, les autres actifs bas. Le joystick complète la croix.
 A/B : jeu ; RUN ou D : Start ; MENU ou C : options. L1/R1, NeoPixels,
-batterie et vibreur ne sont pas exploités par m0boy. La question RGB/BGR du
-verre reste dans le MADCTL, comme la bibliothèque officielle (rotation 3 =
-MX|MV avec le bit 3 `ST7789V_MADCTRL_RGB` = 0x08, `AKA_LCD_BGR` = 1 par
-défaut) ; l'échange des octets de chaque pixel est fait par le bus i80 en
+batterie et vibreur ne sont pas exploités par m0boy. La question RGB/BGR se règle dans le MADCTL
+(ST7789 : bit 3 = 1, le panneau lit des mots BGR). La bibliothèque officielle
+pose le bit (0x68) parce que son `lcd_color_rgb` range le rouge dans les bits
+bas ; m0boy envoie du RGB565 (rouge en haut), donc le bit reste à 0 (0x60,
+`AKA_LCD_BGR` = 0) — constaté sur la carte : Alex Kidd sortait en BGR avec le
+bit posé. L'échange des octets de chaque pixel est fait par le bus i80 en
 matériel (`swap_color_bytes = 1`, comme `gb_ll_lcd.c`). Aucun échange
 logiciel : tous les frontends envoient du RGB565 natif (`M0_COLOR` natif sur
 l'AKA, `*_PANEL_SWAP` à 0). Le firmware exporte `m0_aka_lcd` (MADCTL,
 COLMOD, `swap_color_bytes`, inversion), les valeurs que son init envoie ;
-gm0 les lit pour modéliser l'écran (bit BGR, échange d'octets du bus). Les
+gm0 les lit pour modéliser l'écran (bit 3, échange d'octets du bus). Les
 bits MX/MV/MY ne sont pas modélisés : le tampon est déjà en paysage.
 Les frontends Sega
 montrent 120 lignes visibles (GG 144→120, SMS et SG 192→120) que le panneau

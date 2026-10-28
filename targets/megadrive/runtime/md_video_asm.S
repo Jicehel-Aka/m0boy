@@ -22,15 +22,15 @@ md_span_run:
     extui   a6, a6, 5, 1
     s32i    a6, a1, 20          /* pr */
     l32i    a6, a1, 24
-    bbci    a6, 4, .Lrev
+    bbsi    a6, 4, .Lrev       /* reverse bit set */
 
     /* forward: columns col0.., high nibble first in every byte */
     extui   a6, a6, 8, 4        /* n */
     s32i    a6, a1, 16
+    extui   a8, a7, 1, 2        /* the byte of col0 */
+    add     a4, a4, a8
     bbci    a7, 0, .Lf_aligned
     /* col0 odd: one lone low-nibble pixel, then byte-aligned pairs */
-    extui   a7, a7, 1, 3
-    add     a4, a4, a7
     l8ui    a7, a4, 0
     extui   a7, a7, 0, 4
     beqz    a7, 1f
@@ -85,10 +85,10 @@ md_span_run:
 .Lrev:
     extui   a6, a6, 8, 4
     s32i    a6, a1, 16
-    bbci    a7, 0, .Lr_odd
+    extui   a8, a7, 1, 2        /* the byte of col0 */
+    add     a4, a4, a8
+    bbsi    a7, 0, .Lr_loop     /* col0 odd: pairs, low nibble first */
     /* col0 even: one lone high-nibble pixel, then pairs going down */
-    extui   a7, a7, 1, 3
-    add     a4, a4, a7
     l8ui    a7, a4, 0
     extui   a7, a7, 4, 4
     beqz    a7, 5f
@@ -103,10 +103,6 @@ md_span_run:
     s32i    a6, a1, 16
     beqz    a6, .Ldone
     addi    a4, a4, -1
-    j       .Lr_loop
-.Lr_odd:
-    extui   a7, a7, 1, 3
-    add     a4, a4, a7
 .Lr_loop:
     l32i    a6, a1, 16
     srli    a6, a6, 1

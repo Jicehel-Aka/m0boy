@@ -1,12 +1,12 @@
-"""Check the application against its 3.4 MiB partition (aka.csv)."""
+"""Check the application against its official 3000K app slot (aka.csv)."""
 Import("env")
 
 def check_size(source, target, env):
     from pathlib import Path
     image = Path(env.subst("$BUILD_DIR/${PROGNAME}.bin"))
     size = image.stat().st_size
-    if size > 0x370000:
-        raise RuntimeError("AKA firmware: %d bytes exceeds the 3.4 MiB application partition" % size)
+    if size > 0x2EE000:
+        raise RuntimeError("AKA firmware: %d bytes exceeds the 3000K application slot (the official AKA partitions.csv)" % size)
 
 env.AddPostAction("$BUILD_DIR/${PROGNAME}.bin", check_size)
 

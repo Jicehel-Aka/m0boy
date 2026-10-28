@@ -40,8 +40,10 @@ static unsigned skipped_run;
 static unsigned last_plan_row;
 static int have_last;
 
+static void row(void *, unsigned line, const uint16_t *pixels, unsigned width);
 static void pce_start(void) {
     pce_init(pce_rom, PCE_ROM_SIZE);
+    machine.row = row; /* pce_init clears it: every rendered line comes here */
 }
 /* The active window's plan: [first_active_line, +active_height) onto the
  * panel's 120 rows.  The VDC's window is the game's own (VDW/ VDS), read

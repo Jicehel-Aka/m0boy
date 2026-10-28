@@ -12,11 +12,12 @@
 #include "esp32_config.h"
 #include "m0_target.h"
 
-/* MADCTL bit 3 as the official library sets it (ST7789V_MADCTRL_RGB, 0x08, in
- * gb_ll_lcd.h): the glass is BGR-wired, the bit puts the channels right.  0
- * would show red and blue swapped. */
+/* MADCTL bit 3 (ST7789: 1 = the panel reads BGR words).  The official library
+ * sets it because its lcd_color_rgb() puts red in the low bits; m0boy sends
+ * RGB565 (red high), so it stays 0 — confirmed on the board (Alex Kidd came out
+ * BGR with the bit set).  AKA_LCD_BGR=1 for a frontend that sends BGR words. */
 #ifndef AKA_LCD_BGR
-#define AKA_LCD_BGR 1
+#define AKA_LCD_BGR 0
 #endif
 #include "m0_scale.h"
 extern "C" {
@@ -132,7 +133,9 @@ extern "C" void m0_lcd_init(void) {
     const int data[] = AKA_LCD_DATA;
     for (unsigned i = 0; i < 8; i++) config.data_gpio_nums[i] = data[i];
     config.bus_width = 8;
-    config.max_transfer_bytes = WIDE_QUEUE * sizeof line;
+    /* the largest transfer is a batch of eight 320-pixel rows (md_esp32.cpp,
+     * vx): esp_lcd asserts when one transfer outgrows this */
+    config.max_transfer_bytes = 8 * sizeof line;
     config.psram_trans_align = 64;
     config.sram_trans_align = 64;
     ESP_ERROR_CHECK(esp_lcd_new_i80_bus(&config, &bus));
@@ -150,7 +153,7 @@ extern "C" void m0_lcd_init(void) {
     command(0x11);
     delay(120);
     /* The official library's sequence: COLMOD 16 bits, INVON, NORON, rotation 3
-     * (MX | MV) with MADCTL's bit 3 set for the BGR-wired glass. */
+     * (MX | MV) with MADCTL's bit 3 clear: the pixels are RGB. */
     const uint8_t te = 0;
     command(0x3a, &m0_aka_lcd.colmod, 1);
     command(0x21);
@@ -185,7 +188,9 @@ extern "C" uint32_t m0_lcd_send_wide(const void *buf, uint8_t row0, uint8_t rows
     }
     return ++lcd_seq;
 }
+static bool wide_continue; /* the window's first batch is RAMWR, the next ones continue it */
 extern "C" void m0_lcd_wide_begin(uint8_t row0, uint8_t rows) {
+    wide_continue = false;
     const uint8_t x[] = {0, 0, 1, 63};
     const uint8_t r[] = {uint8_t(row0 >> 8), uint8_t(row0),
                          uint8_t((row0 + rows - 1) >> 8), uint8_t(row0 + rows - 1)};
@@ -198,7 +203,10 @@ extern "C" void m0_lcd_wide_reserve(void) {
     xSemaphoreTake(wide_slots, portMAX_DELAY);
 }
 extern "C" void m0_lcd_wide_submit(const void *batch, uint8_t rows) {
-    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(panel, 0x2c, batch, 320u * 2u * rows));
+    /* every RAMWR (0x2C) rewinds the write pointer to the window's corner: only
+     * the first batch of a window may use it, the others are 0x3C (continue) */
+    ESP_ERROR_CHECK(esp_lcd_panel_io_tx_color(panel, wide_continue ? 0x3c : 0x2c, batch, 320u * 2u * rows));
+    wide_continue = true;
 }
 extern "C" void m0_lcd_wide_flush(void) {
     while (uxSemaphoreGetCount(wide_slots) < WIDE_QUEUE) vTaskDelay(1);

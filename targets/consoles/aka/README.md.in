@@ -4,8 +4,7 @@ ESP32-S3 at 240 MHz, 8 MiB flash, octal PSRAM, 320×240 display on an
 8-bit i80 bus, four-bit SDMMC card and TAS2505 audio codec. Wiring is based
 on the official jmp42/Gamebuino_AKA_lib, not the earlier assumed SPI panel.
 
-Build and flash: `pio run -t upload`. The application partition is 0x370000
-bytes. RGB565 rows are doubled horizontally and scaled vertically to 240
+Build and flash: `pio run -t upload`. The application slot is 0x2EE000 bytes (3000K, as the official library). RGB565 rows are doubled horizontally and scaled vertically to 240
 lines. Saves and states use the FAT16/FAT32 card. Cartridge RAM stays in
 RAM; battery saves are written to the card.
 

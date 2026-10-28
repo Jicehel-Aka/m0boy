@@ -88,7 +88,7 @@ static void span_pixels(const MdFull *m, unsigned entry, unsigned row,
                         unsigned col0, int dir, unsigned n, uint8_t *dst, uint8_t *pri) {
     md_span_run(dst, pri, m->vram + (((entry & 0x7ffu) << 5) | (row << 2)),
                 (entry >> 9) & 0x30u,
-                (col0 & 7u) | (unsigned)(dir < 0) << 4 | (entry >> 7 & 0x100u) | n << 8);
+                (col0 & 7u) | (unsigned)(dir < 0) << 4 | (entry >> 10 & 0x20u) | n << 8);
 }
 #else
 #define span_pixels span_pixels_c
@@ -97,13 +97,13 @@ static void span_pixels(const MdFull *m, unsigned entry, unsigned row,
 #if MD_VIDEO_ASM
 /* Deterministic runs through the C and the Xtensa paths; returns the
  * number of differing pixels (0 = the kernel matches). */
-int md_span_selftest(void) {
+int md_span_selftest(MdFull *scratch) {
     uint8_t a[8], pa[8], b[8], pb[8];
     unsigned bad = 0;
-    MdFull m;
-    memset(&m, 0, sizeof m);
+    MdFull *const m = scratch; /* the machine is far too big for the task's stack */
+    memset(m, 0, sizeof *m);
     for (unsigned seed = 0; seed < 64u; ++seed) {
-        for (unsigned i = 0; i < 8; ++i) m.vram[8u * 32u + i] = (uint8_t)(seed * 37u + i * 29u);
+        for (unsigned i = 0; i < 8; ++i) m->vram[8u * 32u + i] = (uint8_t)(seed * 37u + i * 29u);
         for (unsigned pal = 0; pal <= 0x30u; pal += 0x10u)
             for (unsigned pr = 0; pr <= 1u; ++pr)
                 for (unsigned col = 0; col < 8u; ++col)
@@ -114,8 +114,8 @@ int md_span_selftest(void) {
                             if (dir == 1u && n > col + 1u) continue;
                             const unsigned entry = 8u | (dir ? 0x0800u : 0u) |
                                 pal << 9 | pr << 15;
-                            span_pixels_c(&m, entry, 0, col, dir ? -1 : 1, n, a, pa);
-                            md_span_run(b, pb, m.vram + 8u * 32u, pal,
+                            span_pixels_c(m, entry, 0, col, dir ? -1 : 1, n, a, pa);
+                            md_span_run(b, pb, m->vram + 8u * 32u, pal,
                                         col | dir << 4 | pr << 5 | n << 8);
                             for (unsigned i = 0; i < n; ++i)
                                 if (a[i] != b[i] || pa[i] != pb[i]) ++bad;

@@ -117,13 +117,15 @@ extern "C" void md_platform_audio_render(uint8_t *out, unsigned n) {
 
 extern "C" int m0boy_console_main(void) {
     m0_lcd_init();
-    md_full_reset(&machine);
 #if MD_VIDEO_ASM
-    if (md_span_selftest()) {   /* the tile-run kernel diverged from the C */
+    /* before the reset: the check borrows the machine's storage (it is far
+     * too big for this task's stack) and the reset clears it again */
+    if (md_span_selftest(&machine)) {   /* the tile-run kernel diverged from the C */
         m0_lcd_fill(M0_COLOR(0x00c00000));
         for (;;) { m0_watchdog_feed(); delay(1000); }
     }
 #endif
+    md_full_reset(&machine);
 #if MD_RENDER_THREAD
     for (unsigned i = 0; i < CTX_SLOTS; ++i) {
         slot_free[i] = xSemaphoreCreateBinary();

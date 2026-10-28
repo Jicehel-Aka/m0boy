@@ -49,7 +49,7 @@ def main():
             assert result.returncode == 0, result.stdout[-2000:] + result.stderr[-2000:]
             firmware = project / '.pio/build/aka/firmware.bin'
             assert firmware.is_file()
-            assert firmware.stat().st_size <= 0x370000
+            assert firmware.stat().st_size <= 0x2EE000
             print('aka: real ESP32 firmware built (%d bytes)' % firmware.stat().st_size)
             gm0 = os.environ.get('AKA_GM0')
             if gm0:

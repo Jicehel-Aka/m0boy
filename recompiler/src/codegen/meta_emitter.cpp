@@ -417,7 +417,8 @@ private:
      * in an executable and knows no budget. */
     size_t app_flash() const {
         return opt_.pc ? SIZE_MAX : opt_.espboy ? kEspApp
-             : opt_.odroid || opt_.aka ? 0x370000
+             : opt_.aka ? 0x2EE000 /* the AKA's official 3000K app slot */
+             : opt_.odroid ? 0x370000
              : opt_.pokitto ? 0x39000 : 245760;
     }
     std::vector<std::vector<uint8_t>> packed_sector_; /* per ROM sector (banks 1+) */

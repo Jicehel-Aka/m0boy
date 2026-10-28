@@ -101,7 +101,7 @@ void md_full_render(const MdFull *m, uint32_t *pixels, unsigned stride);
 void md_full_render_line(const MdFull *m, unsigned y, uint32_t *row);
 void md_full_render_line565(const MdFull *m, unsigned y, uint16_t *row);
 /* Xtensa-vs-C check of the tile runs (built under MD_VIDEO_ASM only). */
-int md_span_selftest(void);
+int md_span_selftest(MdFull *scratch);
 void md_full_audio_reset(MdFull *m);
 void md_full_sound_write(MdFull *m, uint32_t addr, uint8_t value);
 uint8_t md_full_sound_read(MdFull *m, uint32_t addr);
