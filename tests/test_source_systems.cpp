@@ -100,7 +100,8 @@ int main() {
                 system_descriptor(SystemId::pokitto).cpu == CpuId::m0plus &&
                 system_descriptor(SystemId::meta).supports(TargetId::pc) &&
                 system_descriptor(SystemId::pokitto).supports(TargetId::pc) &&
-                !system_descriptor(SystemId::meta).supports(TargetId::aka) &&
+                system_descriptor(SystemId::meta).supports(TargetId::aka) &&
+                !system_descriptor(SystemId::pokitto).supports(TargetId::aka) &&
                 !system_descriptor(SystemId::pokitto).supports(TargetId::meta) &&
                 !detect_system("firmware.bin"), "M0+ source profiles incorrect");
         std::string error;

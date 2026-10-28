@@ -18,7 +18,8 @@ typedef void (*M0Event)(void *board, M0Cpu *cpu, uint32_t cycles);
 
 struct M0Cpu {
     uint32_t r[16];
-    uint32_t cycles;
+    uint64_t cycles;                    /* the board's clock: peripherals read it directly */
+    uint32_t stores;                    /* writes and peripheral accesses so far (a loop that changes nothing leaves it alone) */
     uint8_t n, z, c, v, primask, fault, exception;
     uint32_t vector_base;
     void *board;
@@ -37,6 +38,9 @@ void m0_cpu_exception(M0Cpu *cpu, unsigned vector);
  * encodings; a generated C call may pass a literal, while the interpreter
  * obtains it from the bus. */
 void m0_cpu_execute(M0Cpu *cpu, uint32_t address, uint16_t op, uint16_t op2);
+
+/* Take the exception return named by an EXC_RETURN value (0xfffffff1/9). */
+void m0_cpu_exc_return(M0Cpu *cpu, uint32_t code);
 
 /* Small instruction primitives used by generated C regions. */
 static inline void m0_native_nz(M0Cpu *m, uint32_t value) {

@@ -16,49 +16,58 @@ build/bin/m0recomp firmware.bin --system meta --cpu m0plus --info
 build/bin/m0recomp firmware.bin --system pokitto --disasm --limit 40
 ```
 
-`--target pc` prépare désormais un projet contenant le firmware validé et un
-`run.py` qui le lance dans une copie intégrée du modèle de
-[gm0](https://github.com/r043v/gm0), remise sous MIT par son auteur pour
-m0boy (`targets/m0plus/gm0/LICENSE` conserve les notices tierces MIT).
-Ce modèle fournit le CPU M0+, les périphériques SAMD21 ou LPC11U68, l'écran,
-le stockage et les entrées. Le binaire `.bin`
-ne contient pas les fichiers de la carte : les passer au lanceur si le jeu en
-a besoin. Exemple :
+`--system meta --target pc` (et `--target aka`) écrit un projet **sans émulateur** :
+le code Thumb de `firmware.bin` atteint par le parcours statique et par
+`--coverage` est traduit en C, une fonction par Ko de flash
+(`src/m0_native_page_*.c`). Dans la fonction, chaque instruction a un label,
+les branchements directs de la page sont des `goto`, les cycles d'une chaîne
+d'instructions s'additionnent dans une variable locale, et la machine (timers,
+DMA, NVIC) n'est consultée qu'aux endroits où elle peut avoir changé : au début
+d'un bloc, où la marge avant la prochaine échéance (`samd21_room`) doit couvrir
+le plus long chemin du bloc — sinon l'instruction passe par l'interpréteur
+`m0_cpu.c`, qui avance l'horloge instruction par instruction —, et après une
+instruction qui a touché la machine (accès hors SRAM, saut d'attente, PRIMASK).
+Mêmes cycles et mêmes effets de bord que l'interpréteur, pas de décodage ni de
+dispatch par instruction (`m0_native_glue.h` est le vocabulaire des corps).
+`m0_machine.c` fournit SysTick et le NVIC, `samd21.c` la carte Gamebuino META
+(TC4/TC5, DMAC, SERCOM4 avec l'écran ST7735 et le pavé, PORT et IOBUS, DAC, ADC,
+SYSCTRL/GCLK). gm0 n'est pas dans le projet. Les périphériques sont paresseux :
+ils rattrapent l'horloge du CPU quand le guest touche un registre ou à la
+prochaine échéance ; le flux DMA vers l'écran est déroulé en bloc quand il va
+d'une mémoire SRAM à la fenêtre RAMWR ; les boucles d'attente (chargement,
+comparaison, branchement en arrière) dont la valeur ne change qu'à un événement
+sont avancées d'un coup jusqu'à cet événement.
 
 ```bash
-build/bin/m0recomp firmware.bin --system meta --target pc -o output/firmware-pc
+build/bin/m0recomp firmware.bin --system meta --target pc --coverage p1.cov -o output/firmware-pc
 cmake -G Ninja -S output/firmware-pc -B output/firmware-pc/build
 ninja -C output/firmware-pc/build
-python3 output/firmware-pc/run.py carte/ --frames 300
+output/firmware-pc/build/m0_firmware_pc          # fenêtre SDL2 : flèches, J=A K=B U=menu I=home
+output/firmware-pc/build/m0_headless --frames 600 --ppm out.ppm --wav out.wav
 ```
 
-L'exécutable `build/m0_firmware_pc` embarque le `.bin` ; il peut aussi être
-utilisé directement, par exemple `build/m0_firmware_pc --target meta carte/`.
-Une carte explicite reste nécessaire si le programme attend ses fichiers.
+Règle : `m0_headless --frames N` imprime `run_hash`, `image_hash`, `audio_hash` ;
+`--interp` (interpréteur seul) doit imprimer la même ligne (hors `idle_skipped`).
+Le profil est standard : `m0_headless --frames N --random SEED --profile p`
+(ou `--input script`, lignes « image masque-hexa ») écrit `p.cov` (instructions
+exécutées, relu par la régénération), `p.mmio` (accès aux registres ; une lecture
+`UNMODELLED-READ` est un registre dont la carte répond 0 sans modèle) et `p.hot`
+(cycles par instruction). Non modélisés pour l'instant : la carte SD (lue comme
+absente), l'écriture de la flash, les attentes du cache NVM (le décompte de
+cycles diffère donc légèrement de gm0 : Lapinou, 300 images, 241 094 733 contre
+241 095 159 cycles ; l'image est identique hors compteur de fps, et les valeurs
+écrites dans le DAC sont identiques à 99,99 %).
 
-Le modèle de carte exécute directement en C les instructions atteintes par le
-parcours : calculs et décalages, transferts, pile, branches et registres système.
-Les adresses non découvertes, le code en RAM et les mots de flash modifiés
-restent interprétés. Le décodage,
-les interruptions, les temps d'accès et les périphériques sont partagés avec
-l'interpréteur. `M0_INTERP=1 python3 .../run.py` force l'interprétation seule.
-Ce n'est donc pas encore une recompilation complète des firmwares.
+`--system pokitto --target pc` garde l'ancien chemin : une copie intégrée du
+modèle de [gm0](https://github.com/r043v/gm0), remise sous MIT par son auteur
+pour m0boy (`targets/m0plus/gm0/LICENSE` conserve les notices tierces MIT),
+avec `run.py` et `m0_native_pc` (harnais CPU : flash, SRAM, SysTick, NVIC).
 
-Le même projet contient une première traduction C des adresses flash atteintes
-depuis les vecteurs, augmentée par les adresses de `--coverage` (le format
-`EMU_PROF` de gm0, « adresse cycles », convient). Les instructions courantes
-MOV, calcul immédiat, accès mémoire et branches ont un corps C direct ; les
-autres passent par le cœur Thumb portable. Si le PC est en RAM ou si un mot de
-flash a changé, le repli interprète l'instruction. Le harnais CPU se construit
-avec `cmake -G Ninja -S output/firmware-pc -B output/firmware-pc/build`, puis
-compare `build/m0_native_pc --steps N` avec `--interp --steps N` sur
-`run_hash`. Il ne modélise encore que flash, SRAM, SysTick et NVIC : un
-firmware réel qui accède aux périphériques de la console doit utiliser
-`run.py` pour le moment.
-
-La cible AKA reste hors de la matrice : le modèle SAMD21/LPC11U68 de gm0 est
-une application SDL2 de bureau et n'est pas encore un runtime autonome
-compilable sur ESP32-S3. Un firmware META ne tourne pas sur Pokitto, ni
+`--system meta --target aka` écrit le projet PlatformIO du même runtime
+(`targets/m0plus/platform/m0_aka_native.cpp` : la carte, l'écran par le pilote
+i80 de l'AKA, l'audio du cœur ESP32 partagé). Il se construit (`pio run`) ; il
+n'est pas validé sur la console, la carte SD n'y est pas modélisée et la
+vitesse sur l'ESP32-S3 n'est pas mesurée. Pokitto n'a pas de cible AKA. Un firmware META ne tourne pas sur Pokitto, ni
 l'inverse.
 
 | Axe | Game Boy | SG-1000 | Game Gear | Master System | PICO-8 |

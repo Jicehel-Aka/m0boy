@@ -1,8 +1,10 @@
 #include "m0boy/m0plus_generator.h"
+#include <algorithm>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
 #include <map>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -166,11 +168,169 @@ bool write_blocks(const fs::path& path,
     return bool(out);
 }
 
+
+/* Standalone translation (META): one C function per 1 KiB of flash.  Inside
+ * it every translated instruction has a label, direct branches inside the
+ * page are gotos, and cycles are summed per chain.  See m0_native_glue.h for
+ * where the machine is consulted. */
+struct Entry { uint32_t pc; uint16_t op; unsigned size; std::string body; };
+
+static std::string strip_dialect(const std::string& in) {
+    std::string text = in;
+    /* the guard on the second halfword (flash is read-only here) */
+    const std::regex guard("if \\(\\(uint32_t\\)flash\\[pc \\+ 2u\\] \\+ \\(\\(uint32_t\\)flash\\[pc \\+ 3u\\] << 8\\) != 0x[0-9a-f]+u\\) break; ");
+    text = std::regex_replace(text, guard, "");
+    /* r15 is only written when a chain ends */
+    const std::regex pc_constant("regs\\[15\\] = 0x[0-9a-f]+u;");
+    text = std::regex_replace(text, pc_constant, ";");
+    /* REV: shifts, not a libgcc call (Xtensa has no byte-swap instruction) */
+    for (size_t at = text.find("__builtin_bswap32("); at != std::string::npos; at = text.find("__builtin_bswap32(", at))
+        text.replace(at, 18, "m0_bswap32(");
+    return text;
+}
+static unsigned max_cycles(const std::string& body) {
+    unsigned most = 1;
+    static const std::regex number("cyc = (0x[0-9a-f]+|[0-9]+)u?;");
+    for (std::sregex_iterator it(body.begin(), body.end(), number), end; it != end; ++it)
+        most = std::max<unsigned>(most, unsigned(std::stoul((*it)[1], nullptr, 0)));
+    if (body.find("BRANCH(") != std::string::npos) most = std::max(most, 2u);
+    return most;
+}
+
+bool write_native_pages(const fs::path& source,
+                        const std::map<uint32_t, std::pair<uint16_t, std::string>>& bodies,
+                        uint32_t base, size_t rom_size, std::string& error) {
+    std::map<uint32_t, Entry> entries;
+    for (const auto& [pc, e] : bodies)
+        entries[pc] = {pc, e.first, (e.first & 0xf800u) >= 0xe800u ? 4u : 2u, strip_dialect(e.second)};
+    auto branch_of = [](const Entry& e, uint32_t* target) {
+        static const std::regex direct("BRANCH\\(0x([0-9a-f]+)u\\)");
+        std::smatch m;
+        size_t count = 0;
+        for (size_t at = e.body.find("BRANCH("); at != std::string::npos; at = e.body.find("BRANCH(", at + 1)) ++count;
+        if (count == 1 && std::regex_search(e.body, m, direct)) { *target = uint32_t(std::stoul(m[1], nullptr, 16)); return 1; }
+        return count ? 2 : 0;                       /* 1: direct, 2: computed */
+    };
+    auto terminates = [](const Entry& e) { return e.body.find("BRANCH(") != std::string::npos; };
+    auto unconditional = [&](const Entry& e) { return terminates(e) && e.body.rfind("if (", 0) != 0; };
+    auto reaches_machine = [](const Entry& e) {
+        for (const char* word : {"LD", "ST", "ldm_t", "stm_t", "irq_work", "primask", "idle_spin"})
+            if (e.body.find(word) != std::string::npos) return true;
+        return false;
+    };
+    /* leaders: branch targets, what follows a branch, what nothing falls into;
+     * and every 24 straight-line instructions, so no chain outgrows its room */
+    std::set<uint32_t> leaders;
+    for (const auto& [pc, e] : entries) {
+        uint32_t target = 0;
+        const int kind = branch_of(e, &target);
+        if (kind == 1 && entries.count(target)) leaders.insert(target);
+        if (terminates(e)) leaders.insert(pc + e.size);
+        const auto previous = entries.find(pc);
+        bool fed = false;
+        if (previous != entries.begin()) {
+            const Entry& before = std::prev(previous)->second;
+            fed = before.pc + before.size == pc && !unconditional(before);
+        }
+        if (!fed) leaders.insert(pc);
+    }
+    {
+        unsigned run = 0;
+        for (const auto& [pc, e] : entries) {
+            if (leaders.count(pc)) run = 0;
+            if (++run > 24) { leaders.insert(pc); run = 1; }
+        }
+    }
+    /* bound: the longest a chain can run from here to its next check */
+    std::map<uint32_t, unsigned> bound;
+    for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+        const Entry& e = it->second;
+        const unsigned own = max_cycles(e.body);
+        const auto next = entries.find(e.pc + e.size);
+        const bool ends = terminates(e) || next == entries.end() || leaders.count(e.pc + e.size);
+        bound[e.pc] = own + (ends ? 0u : bound[e.pc + e.size]);
+    }
+    std::error_code ec;
+    for (const auto& file : fs::directory_iterator(source)) {
+        const auto name = file.path().filename().string();
+        if (name.starts_with("m0_native_page_") && file.path().extension() == ".c") fs::remove(file.path(), ec);
+    }
+    std::map<uint32_t, std::vector<const Entry*>> pages;       /* 1 KiB pages */
+    for (const auto& [pc, e] : entries) pages[pc >> 10].push_back(&e);
+    std::map<uint32_t, std::ostringstream> files;              /* 4 KiB per file */
+    std::ostringstream dispatch, header;
+    dispatch << "#include \"m0_native_glue.h\"\n#include \"m0_native_pages.h\"\n#include \"samd21.h\"\n"
+                "/* Flash is read-only here: translated code never re-reads its opcodes. */\n"
+                "int m0_native_step(M0Cpu *m) {\n"
+                "  uint32_t pc = m->r[15], index = pc - M0_FLASH_BASE;\n"
+                "  if (index >= " << rom_size << "u) return 0;\n"
+                "  uint32_t room = samd21_room((const Samd21 *)m->board);\n"
+                "  if (!room) return 0;\n  switch (pc >> 10) {\n";
+    for (const auto& [page, list] : pages) {
+        std::ostringstream& out = files[(page << 10) >> 12];
+        if (out.tellp() == 0) out << "#include \"m0_native_glue.h\"\n#include \"m0_native_pages.h\"\n";
+        std::ostringstream name;
+        name << "m0_page_" << std::hex << page;
+        header << "int " << name.str() << "(M0Cpu *m, uint32_t pc, uint32_t room);\n";
+        dispatch << "  case 0x" << std::hex << page << "u: return " << name.str() << "(m, pc, room);\n";
+        out << "int " << name.str() << "(M0Cpu *m, uint32_t pc, uint32_t room) {\n"
+               "uint32_t c = 0; int hw = 0; (void)hw;\nswitch (pc) {\n";
+        for (const Entry* e : list)
+            out << "case 0x" << std::hex << e->pc << "u: if (room < " << std::dec << bound[e->pc]
+                << "u) return 0; goto i_" << std::hex << e->pc << ";\n";
+        out << "default: return 0;\n}\n";
+        std::set<uint32_t> here;
+        for (const Entry* e : list) here.insert(e->pc);
+        for (size_t i = 0; i < list.size(); ++i) {
+            const Entry& e = *list[i];
+            const uint32_t next = e.pc + e.size;
+            std::ostringstream line;
+            line << std::hex;
+            if (leaders.count(e.pc))
+                line << "L_" << e.pc << ": if ((int32_t)(room - c) < " << std::dec << bound[e.pc] << std::hex
+                     << ") { m->r[15] = 0x" << e.pc << "u; goto out; }\n";
+            line << "i_" << e.pc << ": { uint32_t cyc = 1; int br = 0; uint32_t bt = 0; (void)bt; (void)br;\n"
+                 << e.body << "\nc += cyc;\n";
+            uint32_t target = 0;
+            const int kind = branch_of(e, &target);
+            if (kind) {
+                line << "if (br) { ";
+                if (kind == 1 && here.count(target))
+                    line << "if (hw) { m->r[15] = 0x" << target << "u; goto out; } goto L_" << target << ";";
+                else if (kind == 1) line << "m->r[15] = 0x" << target << "u; goto out;";
+                else line << "m0_native_branch(m, bt); goto out;";
+                line << " }\n";
+            }
+            if (reaches_machine(e)) line << "if (hw) { m->r[15] = 0x" << next << "u; goto out; }\n";
+            line << "}\n";
+            const bool flows = !unconditional(e);
+            const bool adjacent = i + 1 < list.size() && list[i + 1]->pc == next;
+            if (flows && !adjacent) line << "m->r[15] = 0x" << next << "u; goto out;\n";
+            out << line.str();
+        }
+        out << "out: m0_native_finish(m, c); return 1;\n}\n";
+    }
+    for (auto& [file, text] : files) {
+        std::ofstream unit(source / ("m0_native_page_" + [&] { std::ostringstream n; n << std::hex << (file << 12); return n.str(); }() + ".c"));
+        unit << text.str();
+        if (!unit) { error = "Cannot write M0+ native page"; return false; }
+    }
+    dispatch << "  default: return 0;\n  }\n}\n";
+    std::ofstream(source / "m0_native.c") << dispatch.str();
+    std::ofstream(source / "m0_native_pages.h") << header.str();
+    (void)base;
+    return true;
+}
+
 bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
               std::string& error, const fs::path& runtime_dir,
-              const std::vector<fs::path>& coverage) {
+              const std::vector<fs::path>& coverage, bool aka) {
     if (system != SystemId::meta && system != SystemId::pokitto) {
         error = "M0+ project requires --system meta or pokitto";
+        return false;
+    }
+    if (aka && system != SystemId::meta) {
+        error = "Only the META firmware has an AKA project";
         return false;
     }
     const auto inspector = system_descriptor(system).inspect;
@@ -185,7 +345,7 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
         std::ifstream previous(marker);
         std::string signature;
         std::getline(previous, signature);
-        if (signature != (system == SystemId::meta ? "meta-pc" : "pokitto-pc")) {
+        if (signature != std::string(system == SystemId::meta ? "meta" : "pokitto") + (aka ? "-aka" : "-pc")) {
             error = "Output directory belongs to another project";
             return false;
         }
@@ -204,13 +364,25 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
         fs::create_directories(source, ec);
         if (ec) { error = "Cannot create native source directory: " + ec.message(); return false; }
         const fs::path host = runtime_dir.parent_path() / "host/m0_native_host.c";
-        for (const fs::path& file : {runtime_dir / "m0_cpu.h", runtime_dir / "m0_cpu.c",
-                                     runtime_dir / "m0_machine.h", runtime_dir / "m0_machine.c", host}) {
+        std::vector<fs::path> shared = {runtime_dir / "m0_cpu.h", runtime_dir / "m0_cpu.c",
+                                        runtime_dir / "m0_machine.h", runtime_dir / "m0_machine.c"};
+        if (system != SystemId::meta) shared.push_back(host);
+        for (const fs::path& file : shared) {
             ec.clear();
             fs::copy_file(file, source / file.filename(), fs::copy_options::overwrite_existing, ec);
             if (ec) { error = "Cannot copy M0+ runtime " + file.string() + ": " + ec.message(); return false; }
         }
-        const fs::path gm0 = runtime_dir.parent_path() / "gm0";
+        const bool standalone = system == SystemId::meta;
+        if (standalone) {
+            const fs::path platform = runtime_dir.parent_path() / "platform";
+            for (const fs::path& file : {runtime_dir / "samd21.h", runtime_dir / "samd21.c",
+                                         runtime_dir / "m0_native_glue.h", platform / (aka ? "m0_aka_native.cpp" : "m0_pc.c")}) {
+                ec.clear();
+                fs::copy_file(file, source / file.filename(), fs::copy_options::overwrite_existing, ec);
+                if (ec) { error = "Cannot copy M0+ board " + file.string() + ": " + ec.message(); return false; }
+            }
+        } else {
+            const fs::path gm0 = runtime_dir.parent_path() / "gm0";
         for (const char* name : {"gm0.c", "aka.c", "aka.h", "esp8266.h",
                                  "esp8266_xt.h", "esp8266_rom_syms.h"}) {
             ec.clear();
@@ -220,6 +392,7 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
         ec.clear();
         fs::copy_file(gm0 / "LICENSE", output / "GM0-LICENSE", fs::copy_options::overwrite_existing, ec);
         if (ec) { error = "Cannot copy integrated gm0 license: " + ec.message(); return false; }
+        }
         std::ifstream binary(destination, std::ios::binary);
         const std::vector<uint8_t> bytes(std::istreambuf_iterator<char>{binary}, {});
         if (bytes.empty()) { error = "Cannot read firmware for M0+ C translation"; return false; }
@@ -228,8 +401,11 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
         if (!error.empty()) return false;
         size_t board_native = 0;
         {
-            std::ofstream code(source / "gm0_native.inc");
-            std::ofstream dispatch(source / "gm0_native_dispatch.inc");
+            std::ofstream code, dispatch;
+            if (system != SystemId::meta) {
+                code.open(source / "gm0_native.inc");
+                dispatch.open(source / "gm0_native_dispatch.inc");
+            }
             std::map<uint32_t, std::string> pages;
             std::map<uint32_t, std::pair<uint16_t, std::string>> bodies;
             for (uint32_t pc : compiled) {
@@ -407,6 +583,19 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                             spin = address.str();
                         }
                     }
+                    if (spin.empty() && to < pc && pc - to <= 40u) {
+                        /* a short loop with no store of its own (calls aside) */
+                        bool stores = false;
+                        for (uint32_t at = to; at < pc; at += 2) {
+                            const uint16_t w = half(bytes, at - base);
+                            if ((w & 0xe000u) == 0x6000u && !(w & 0x0800u)) stores = true;           /* STR/STRB */
+                            if ((w & 0xf000u) == 0x8000u && !(w & 0x0800u)) stores = true;           /* STRH */
+                            if ((w & 0xf000u) == 0x9000u && !(w & 0x0800u)) stores = true;           /* STR sp */
+                            if ((w & 0xf000u) == 0x5000u && ((w >> 9) & 7u) < 3u) stores = true;    /* STR reg */
+                            if ((w & 0xf800u) == 0xc000u || (w & 0xfe00u) == 0xb400u) stores = true; /* STM, PUSH */
+                        }
+                        if (!stores) spin = "loop_spin(0x" + [&] { std::ostringstream n; n << std::hex << pc; return n.str(); }() + "u); ";
+                    }
                     body << "if (" << conditions[(op >> 8) & 15u] << ") { " << spin << "BRANCH(0x" << to << "u); }";
                 }
                 else if ((op & 0xf800u) == 0xe000u) {
@@ -464,13 +653,9 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                 dispatch << "case 0x" << std::hex << page << "u: return gm0_page_" << page
                          << "(T, pc, op, waits, cycles);\n";
             }
-            if (!code || !dispatch) { error = "Cannot write gm0 native entries"; return false; }
-            if (system == SystemId::meta && !write_blocks(source / "gm0_blocks.inc", bodies)) {
-                error = "Cannot write gm0 block entries";
+            if (system != SystemId::meta && (!code || !dispatch)) { error = "Cannot write gm0 native entries"; return false; }
+            if (system == SystemId::meta && !write_native_pages(source, bodies, base, bytes.size(), error))
                 return false;
-            }
-            if (system != SystemId::meta) std::ofstream(source / "gm0_blocks.inc") << "/* META only */\n"
-                "static int gm0_block_run(uint32_t pc) { (void)pc; return 0; }\n";
         }
         {
             std::ofstream rom(source / "m0_rom.c");
@@ -483,13 +668,13 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
             rom << "\n};\n";
             if (!rom) { error = "Cannot write embedded M0+ firmware"; return false; }
         }
-        {
+        if (system != SystemId::meta) {
             std::ofstream bundle(source / "gm0_bundle.h");
             bundle << "#include <stdint.h>\nextern const uint8_t m0_rom[" << bytes.size()
                    << "];\n#define gm0_bundle_data m0_rom\n#define gm0_bundle_name \"firmware.bin\"\n";
             if (!bundle) { error = "Cannot write embedded firmware declaration"; return false; }
         }
-        {
+        if (system != SystemId::meta) {
             std::ofstream code(source / "m0_native.c");
             code << "#include \"m0_cpu.h\"\n"
                     "/* Fixed flash addresses dispatch to constant Thumb opcodes. "
@@ -574,7 +759,7 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
         /* Keep each C translation unit bounded. A large ROM with a long
          * straight-line walk otherwise gives GCC one enormous switch and
          * minutes of compilation even for a 64 KiB synthetic image. */
-        {
+        if (system != SystemId::meta) {
             std::ifstream generated(source / "m0_native.c");
             const std::string all(std::istreambuf_iterator<char>{generated}, {});
             std::map<uint32_t, std::string> pages;
@@ -622,7 +807,70 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                    << "board_native_entries=" << board_native << "\n"
                    << "dynamic_or_ram_entries=interpreter\n";
         }
-        {
+        if (aka) {
+            /* the AKA's PlatformIO project: the same sources, the ESP32 core and
+             * the AKA's pins and panel driver beside them */
+            const fs::path targets = runtime_dir.parent_path().parent_path();
+            const fs::path platform = runtime_dir.parent_path() / "platform";
+            const fs::path core = targets / "common/consoles/esp32", common = targets / "common/platform";
+            const fs::path aka_dir = targets / "consoles/aka";
+            auto copy = [&](const fs::path& from, const fs::path& to) {
+                std::error_code copy_error;
+                fs::create_directories(to.parent_path(), copy_error);
+                fs::copy_file(from, to, fs::copy_options::overwrite_existing, copy_error);
+                if (copy_error) { error = "Cannot copy " + from.string() + ": " + copy_error.message(); return false; }
+                return true;
+            };
+            for (const fs::path& file : {core / "esp32_hw.cpp", core / "esp32_hw.h", core / "esp32_sd.cpp",
+                                         aka_dir / "esp32_config.h", aka_dir / "aka_hw.cpp", aka_dir / "aka_hw.h",
+                                         platform / "md_audio.h", targets / "common/runtime/m0_scale.h",
+                                         targets / "meta/runtime/gbl_board.h"})
+                if (!copy(file, source / file.filename())) return false;
+            for (const char* name : {"m0_target.h", "m0_clock.h", "m0_lcd.h", "m0_menu.h", "m0_audio.h", "m0_sd.h"})
+                if (!copy(common / name, source / name)) return false;
+            if (!copy(aka_dir / "boards/gamebuino_aka.json", output / "boards/gamebuino_aka.json")) return false;
+            std::ofstream(source / "gbl_config.h") << "#pragma once\n#define GBL_TARGET_POKITTO 0\n#define GBL_TARGET_AKA 1\n"
+                                                      "#define GBL_GEN_VERSION \"0.2.9\"\n";
+            std::ofstream(source / "gbl_profile.h") << "#pragma once\n#include \"gbl_board.h\"\n#define META_OVERCLOCK 0\n"
+                                                       "#define META_AUDIO_DMA 0\n";
+            std::ofstream(source / "md_config.h") << "#pragma once\n";
+            for (const auto& entry : fs::directory_iterator(aka_dir)) {
+                if (entry.path().extension() != ".in") continue;
+                std::ifstream in(entry.path());
+                std::string text((std::istreambuf_iterator<char>(in)), {});
+                for (size_t at = text.find("@NAME@"); at != std::string::npos; at = text.find("@NAME@", at))
+                    text.replace(at, 6, "m0game");
+                if (entry.path().filename() == "platformio.ini.in") {
+                    const std::string flags = "-Os -Wno-unused-label";
+                    const size_t at = text.find(flags);
+                    if (at != std::string::npos)
+                        text.replace(at, flags.size(), "-O2 -Wno-unused-label -DM0_FLASH_BASE=0x4000u");
+                }
+                std::ofstream(output / entry.path().stem()) << text;
+            }
+        } else if (system == SystemId::meta) {
+            std::ofstream cmake(output / "CMakeLists.txt");
+            cmake << "cmake_minimum_required(VERSION 3.20)\nproject(m0_native C)\n"
+                     "set(CMAKE_C_STANDARD 11)\n"
+                     "file(GLOB M0_PAGES CONFIGURE_DEPENDS src/m0_native_page_*.c)\n"
+                     "set_property(GLOBAL PROPERTY JOB_POOLS m0_compile=4)\n"
+                     "add_library(m0_core STATIC src/m0_native.c ${M0_PAGES} src/m0_rom.c "
+                     "src/m0_cpu.c src/m0_machine.c src/samd21.c)\n"
+                     "target_include_directories(m0_core PUBLIC src)\n"
+                     "target_compile_definitions(m0_core PUBLIC M0_FLASH_BASE=0x4000u)\n"
+                     "target_compile_options(m0_core PRIVATE -O2)\n"
+                     "set_property(TARGET m0_core PROPERTY JOB_POOL_COMPILE m0_compile)\n"
+                     "add_executable(m0_headless src/m0_pc.c)\n"
+                     "target_compile_definitions(m0_headless PRIVATE M0_NO_SDL)\n"
+                     "target_link_libraries(m0_headless PRIVATE m0_core m)\n"
+                     "find_package(SDL2 QUIET)\n"
+                     "if(SDL2_FOUND)\n"
+                     "  add_executable(m0_firmware_pc src/m0_pc.c)\n"
+                     "  if(WIN32)\n    target_link_libraries(m0_firmware_pc PRIVATE SDL2::SDL2main)\n  endif()\n"
+                     "  target_link_libraries(m0_firmware_pc PRIVATE m0_core SDL2::SDL2 m)\n"
+                     "endif()\n";
+            if (!cmake) { error = "Cannot write M0+ native build"; return false; }
+        } else {
             std::ofstream cmake(output / "CMakeLists.txt");
             cmake << "cmake_minimum_required(VERSION 3.20)\nproject(m0_native C)\n"
                      "set(CMAKE_C_STANDARD 11)\n"
@@ -654,49 +902,91 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
     }
     {
         std::ofstream project(marker);
-        project << board << "-pc\n";
+        project << board << (aka ? "-aka\n" : "-pc\n");
         if (!project) { error = "Cannot write project marker"; return false; }
     }
-    {
-        std::ofstream launcher(output / "run.py");
-        launcher << "#!/usr/bin/env python3\n"
-                    "\"\"\"Run the embedded firmware in the integrated gm0 board emulator.\"\"\"\n"
-                    "import os\nimport shutil\nimport subprocess\nimport sys\n"
-                    "from pathlib import Path\n\n"
-                    "root = Path(__file__).resolve().parent\n"
-                    "local = root / 'build' / 'm0_firmware_pc'\n"
-                    "gm0 = os.environ.get('GM0') or (str(local) if local.is_file() else shutil.which('gm0'))\n"
-                    "if not gm0:\n"
-                    "    sys.exit('build this project with CMake/Ninja (SDL2 and zlib required), or set GM0=/path/to/gm0')\n"
-                    "args = [gm0]\n"
-                    "if Path(gm0).resolve() != local.resolve():\n"
-                    "    args.append(str(root / 'firmware.bin'))\n"
-                    "sys.exit(subprocess.call([*args, "
-                 << "'--target', '" << board << "', *sys.argv[1:]], cwd=root))\n";
-        if (!launcher) { error = "Cannot write PC launcher"; return false; }
-    }
-    {
+    if (aka) {
+        /* README.md came from the AKA template */
+    } else if (system == SystemId::meta) {
+        {
+            std::ofstream launcher(output / "run.py");
+            launcher << "#!/usr/bin/env python3\n"
+                        "\"\"\"Run the recompiled firmware (window with SDL2, or headless with --frames).\"\"\"\n"
+                        "import subprocess\nimport sys\nfrom pathlib import Path\n\n"
+                        "root = Path(__file__).resolve().parent\n"
+                        "for name in ('m0_firmware_pc', 'm0_headless'):\n"
+                        "    exe = root / 'build' / name\n"
+                        "    if exe.is_file():\n"
+                        "        sys.exit(subprocess.call([str(exe), *sys.argv[1:]], cwd=root))\n"
+                        "sys.exit('build this project first: cmake -G Ninja -S . -B build && ninja -C build')\n";
+            if (!launcher) { error = "Cannot write PC launcher"; return false; }
+        }
         std::ofstream readme(output / "README.md");
-        readme << "# " << board << " firmware on PC\n\n"
-                  "This project contains the supplied firmware image and an integrated "
-                  "gm0 board emulator (MIT, with third-party notices in `GM0-LICENSE`). "
-                  "Build it with CMake/Ninja, SDL2 and zlib, then run:\n\n"
+        readme << "# meta firmware on PC (recompiled, no emulator)\n\n"
+                  "The Thumb code of `firmware.bin` is translated to C at generation "
+                  "(`src/m0_native_page_*.c`, the same cycles and side effects as the "
+                  "fallback interpreter `m0_cpu.c`); code the walk did not reach "
+                  "(RAM code, unprofiled paths) runs in that interpreter. `samd21.c` is "
+                  "the board: TC4/TC5, DMAC, SERCOM4 (ST7735 and pad), PORT, DAC, with "
+                  "`m0_machine.c` for SysTick and the NVIC. Poll loops whose value only "
+                  "an event changes (load, compare, branch back) are spent up to the next "
+                  "event.\n\n"
                   "```sh\ncmake -G Ninja -S . -B build && ninja -C build\n"
-                  "python3 run.py [card.img or card/] "
-                  "[gm0 options]\n```\n\n"
-                  "The PC executable embeds the firmware, and can run independently of "
-                  "`firmware.bin` or `run.py`; pass `--target " << board << "` when "
-                  "running it directly. gm0 supplies the Cortex-M0+ machine, " << board
-               << " peripherals, display, input and SD card. The raw `.bin` has no "
-                  "card contents; pass an image or folder when the application needs one. "
-                  "For Pokitto loader `.pop` files, extract the firmware `.bin` first.\n\n"
-                  "The board emulator executes generated C for selected Thumb instructions "
-                  "and interprets the rest. Set `M0_INTERP=1` to use the interpreter only. "
-                  "The separate `m0_native_pc` program builds with CMake/Ninja and "
-                  "compares fixed-address C dispatch with the Thumb fallback "
-                  "(`--interp --steps N`). It models the CPU, SRAM and NVIC only; "
-                  "a real firmware requiring board peripherals runs through `run.py`.\n";
+                  "build/m0_firmware_pc                  # window (SDL2): arrows, J=A K=B U=menu I=home\n"
+                  "build/m0_headless --frames 600 --ppm out.ppm --wav out.wav\n```\n\n"
+                  "Headless runs print `run_hash`, `image_hash` and `audio_hash`; "
+                  "`--interp` runs the interpreter only and must print the same line.\n\n"
+                  "## Profile\n\n"
+                  "```sh\nbuild/m0_headless --frames 3000 --random 1 --profile p1   # p1.cov p1.mmio p1.hot\n"
+                  "m0recomp firmware.bin --system meta --target pc --coverage p1.cov -o <project>\n```\n\n"
+                  "`.cov` is the executed code (what a regeneration translates), `.mmio` the "
+                  "register accesses (`UNMODELLED-READ`: a register the board answers 0 for "
+                  "without a model), `.hot` the instructions that spend the most cycles. "
+                  "Not modelled yet: the SD card (it reads as absent), flash writes, "
+                  "Pokitto.\n";
         if (!readme) { error = "Cannot write PC README"; return false; }
+    } else {
+    {
+            std::ofstream launcher(output / "run.py");
+            launcher << "#!/usr/bin/env python3\n"
+                        "\"\"\"Run the embedded firmware in the integrated gm0 board emulator.\"\"\"\n"
+                        "import os\nimport shutil\nimport subprocess\nimport sys\n"
+                        "from pathlib import Path\n\n"
+                        "root = Path(__file__).resolve().parent\n"
+                        "local = root / 'build' / 'm0_firmware_pc'\n"
+                        "gm0 = os.environ.get('GM0') or (str(local) if local.is_file() else shutil.which('gm0'))\n"
+                        "if not gm0:\n"
+                        "    sys.exit('build this project with CMake/Ninja (SDL2 and zlib required), or set GM0=/path/to/gm0')\n"
+                        "args = [gm0]\n"
+                        "if Path(gm0).resolve() != local.resolve():\n"
+                        "    args.append(str(root / 'firmware.bin'))\n"
+                        "sys.exit(subprocess.call([*args, "
+                     << "'--target', '" << board << "', *sys.argv[1:]], cwd=root))\n";
+            if (!launcher) { error = "Cannot write PC launcher"; return false; }
+        }
+        {
+            std::ofstream readme(output / "README.md");
+            readme << "# " << board << " firmware on PC\n\n"
+                      "This project contains the supplied firmware image and an integrated "
+                      "gm0 board emulator (MIT, with third-party notices in `GM0-LICENSE`). "
+                      "Build it with CMake/Ninja, SDL2 and zlib, then run:\n\n"
+                      "```sh\ncmake -G Ninja -S . -B build && ninja -C build\n"
+                      "python3 run.py [card.img or card/] "
+                      "[gm0 options]\n```\n\n"
+                      "The PC executable embeds the firmware, and can run independently of "
+                      "`firmware.bin` or `run.py`; pass `--target " << board << "` when "
+                      "running it directly. gm0 supplies the Cortex-M0+ machine, " << board
+                   << " peripherals, display, input and SD card. The raw `.bin` has no "
+                      "card contents; pass an image or folder when the application needs one. "
+                      "For Pokitto loader `.pop` files, extract the firmware `.bin` first.\n\n"
+                      "The board emulator executes generated C for selected Thumb instructions "
+                      "and interprets the rest. Set `M0_INTERP=1` to use the interpreter only. "
+                      "The separate `m0_native_pc` program builds with CMake/Ninja and "
+                      "compares fixed-address C dispatch with the Thumb fallback "
+                      "(`--interp --steps N`). It models the CPU, SRAM and NVIC only; "
+                      "a real firmware requiring board peripherals runs through `run.py`.\n";
+            if (!readme) { error = "Cannot write PC README"; return false; }
+        }
     }
     error.clear();
     return true;

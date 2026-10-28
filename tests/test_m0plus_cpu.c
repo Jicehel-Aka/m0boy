@@ -91,6 +91,27 @@ int main(void) {
         assert(!machine.cpu.fault && machine.cpu.exception == 0 &&
                machine.cpu.r[0] == 42 && machine.cpu.r[15] == 0x400a);
     }
+    {
+        /* POP {r4, pc} that returns from an exception unstacks the frame
+         * from the SP it leaves, not from the one it started with. */
+        uint8_t image[128] = {0};
+        M0Machine machine;
+        image[1] = 0x01; image[3] = 0x20;
+        image[4] = 9; image[5] = 0x40;
+        image[60] = 0x41; image[61] = 0x40;                 /* SysTick vector = 0x4041 */
+        image[8] = 0x21; image[9] = 0x20;                   /* MOVS r0,#33 */
+        image[10] = 0x00; image[11] = 0xbf;                 /* NOP: resumes here */
+        image[64] = 0x10; image[65] = 0xb5;                 /* PUSH {r4, lr} */
+        image[66] = 0x10; image[67] = 0xbd;                 /* POP {r4, pc} */
+        m0_machine_init(&machine, image, sizeof image, 0x4000, 0x20000000);
+        m0_cpu_step(&machine.cpu);
+        m0_machine_write(&machine, 0xe000ed04, 1u << 26, 4);
+        m0_cpu_step(&machine.cpu);                          /* NOP, then the SysTick entry */
+        assert(machine.cpu.exception == 15 && machine.cpu.r[15] == 0x4040);
+        m0_cpu_step(&machine.cpu); m0_cpu_step(&machine.cpu);
+        assert(!machine.cpu.fault && machine.cpu.exception == 0 && machine.cpu.r[0] == 33 &&
+               machine.cpu.r[13] == 0x20000100 && machine.cpu.r[15] == 0x400c);
+    }
     puts("M0+ CPU basic bus/branch parity OK");
     return 0;
 }

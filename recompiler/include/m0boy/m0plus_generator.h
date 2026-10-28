@@ -11,5 +11,6 @@ namespace m0boy::m0plus {
 bool generate(const std::filesystem::path& firmware, SystemId system,
               const std::filesystem::path& output, std::string& error,
               const std::filesystem::path& runtime_dir = {},
-              const std::vector<std::filesystem::path>& coverage = {});
+              const std::vector<std::filesystem::path>& coverage = {},
+              bool aka = false);
 }

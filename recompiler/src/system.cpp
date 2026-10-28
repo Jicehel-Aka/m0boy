@@ -48,6 +48,8 @@ constexpr std::array pce_targets = {TargetId::desktop, TargetId::pc, TargetId::a
 constexpr std::array vectrex_targets = {TargetId::meta, TargetId::pc, TargetId::aka};
 constexpr std::array megadrive_targets = {TargetId::desktop, TargetId::meta, TargetId::pc, TargetId::aka};
 constexpr std::array m0plus_targets = {TargetId::pc};
+// the META firmware also runs on the AKA, through the standalone SAMD21 runtime
+constexpr std::array meta_source_targets = {TargetId::pc, TargetId::aka};
 // SNES: the 65C816/PPU/APU runtime on the desktop harness and the PC's
 // SDL2 window (the cartridge embedded); the consoles wait on the RAM
 // budget — the runtime holds ~434 KiB between WRAM, VRAM, A-RAM, the
@@ -94,7 +96,7 @@ constexpr std::array system_table = {
      * start; META is linked at 0x4000, Pokitto at zero.  Execution/codegen
      * PC projects include the board emulator. */
     SystemDescriptor{SystemId::meta, "meta", CpuId::m0plus, 0x4004,
-                     32768, 32768, m0plus::inspect_meta, m0plus_targets},
+                     32768, 32768, m0plus::inspect_meta, meta_source_targets},
     SystemDescriptor{SystemId::pokitto, "pokitto", CpuId::m0plus, 0x0004,
                      32768, 32768, m0plus::inspect_pokitto, m0plus_targets},
 };
@@ -117,7 +119,7 @@ constexpr std::array target_table = {
                 "PC (SDL2 window, SD card as a file image)"},
     TargetFacts{TargetId::odroid, "odroid", false, 327680, 4194304, 2097152, 320, 240, true,
                 "ODROID-GO (ESP32-WROVER, ILI9341, 16 MiB flash, 4 MiB PSRAM)"},
-    TargetFacts{TargetId::aka, "aka", false, 327680, 8388608, 0x370000, 320, 240, true,
+    TargetFacts{TargetId::aka, "aka", false, 327680, 8388608, 0x2EE000, /* the official 3000K app slot */ 320, 240, true,
                 "Gamebuino AKA (ESP32-S3, 8 MiB flash, octal PSRAM, i80 LCD, SDMMC)"},
 };
 }

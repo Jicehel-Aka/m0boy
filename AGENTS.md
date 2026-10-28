@@ -70,6 +70,16 @@ m0boy recompiles Game Boy ROMs into native firmwares for the Gamebuino META
   sweeps of call/jump targets the reachability walk cannot prove:
   `--pce-sweep`, `--nes-sweep`, `--vectrex-sweep`, `--megadrive-sweep`,
   `--meta-sweep`, discipline in `recompiler/include/m0boy/sweep.h`.
+- M0+ source (`--system meta --target pc`, `recompiler/src/system/m0plus/`,
+  `targets/m0plus/runtime/`, `docs/MULTI_SYSTEM.fr.md`): Thumb -> C entries
+  (`m0_native_glue.h` is their vocabulary over `M0Cpu`), `m0_cpu.c` as fallback,
+  `m0_machine.c` (SysTick/NVIC), `samd21.c` (the META board), frontend
+  `targets/m0plus/platform/m0_pc.c`; no gm0 in the generated project (Pokitto
+  still uses gm0's copy). Rule: `m0_headless --frames N` prints the same
+  `run_hash`/`image_hash`/`audio_hash` as `--interp`
+  (`tests/test_m0plus_e2e.py`); the profile is `--profile prefix`
+  (`.cov` for regeneration, `.mmio`, `.hot`). Against gm0 (Lapinou) the image
+  and the DAC value sequence match; cycles differ slightly (no NVM wait model).
 - `tools/gb-emu/`: gamebuino-emulator fork used for profiling runs.
 
 ## Build and test

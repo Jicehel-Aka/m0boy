@@ -2,7 +2,7 @@
 #include <string.h>
 
 static uint32_t rd(M0Cpu *m, uint32_t a, unsigned n) { return m->read(m->board, a, n); }
-static void wr(M0Cpu *m, uint32_t a, uint32_t v, unsigned n) { m->write(m->board, a, v, n); }
+static void wr(M0Cpu *m, uint32_t a, uint32_t v, unsigned n) { ++m->stores; m->write(m->board, a, v, n); }
 static uint32_t reg(const M0Cpu *m, unsigned r, uint32_t pc) { return r == 15 ? pc + 4u : m->r[r]; }
 static void nz(M0Cpu *m, uint32_t v) { m->n = (uint8_t)(v >> 31); m->z = (uint8_t)(v == 0); }
 static uint32_t add(M0Cpu *m, uint32_t a, uint32_t b, unsigned carry) {
@@ -34,6 +34,8 @@ static void exception_return(M0Cpu *m, uint32_t code) {
     if (!(psr & (1u << 24))) m->fault = 1;
     m->r[15] = pc & ~1u;
 }
+static void exception_return(M0Cpu *m, uint32_t code);
+void m0_cpu_exc_return(M0Cpu *m, uint32_t code) { exception_return(m, code); }
 static void branch(M0Cpu *m, uint32_t target) {
     if (target == 0xfffffff1u || target == 0xfffffff9u) {
         exception_return(m, target); return;
@@ -229,9 +231,11 @@ void m0_cpu_execute(M0Cpu *m, uint32_t pc, uint16_t op, uint16_t op2) {
         unsigned n = count(mask); uint32_t sp = m->r[13];
         for (unsigned r = 0; r < 16; ++r) if (mask & (1u << r)) {
             uint32_t value = rd(m, sp, 4); sp += 4;
-            if (r == 15) branch(m, value); else m->r[r] = value;
+            if (r == 15) { m->r[13] = sp; branch(m, value); } /* an EXC_RETURN unstacks from the new SP */
+            else m->r[r] = value;
         }
-        m->r[13] = sp; cycles = (mask & (1u << 15) ? 3 : 1) + n;
+        if (!(mask & (1u << 15))) m->r[13] = sp;
+        cycles = (mask & (1u << 15) ? 3 : 1) + n;
     } else if ((op & 0xf500u) == 0xb100u) {
         uint32_t offset = ((op >> 9) & 1u) << 6 | ((op >> 3) & 31u) << 1;
         if (!!m->r[d] == !!(op & 0x0800u)) { branch_local(m, pc + 4u + offset); cycles = 2; }

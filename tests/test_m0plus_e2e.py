@@ -40,6 +40,22 @@ def main(recompiler: pathlib.Path) -> None:
             assert count >= 14, status
             run("cmake", "-G", "Ninja", "-S", project, "-B", project / "build")
             run("ninja", "-C", project / "build")
+            if board == "meta":
+                # No emulator: the translated entries, the CPU and the SAMD21
+                # board.  The interpreter-only run must give the same line.
+                assert not (project / "src" / "gm0.c").exists()
+                exe = project / "build" / "m0_headless"
+                native = run(exe, "--frames", 3)
+                interp = run(exe, "--frames", 3, "--interp")
+                assert "fault=0" in native, native
+                assert re.sub(r"idle_skipped=\d+ ", "", native) == re.sub(r"idle_skipped=\d+ ", "", interp), (native, interp)
+                # the standard profile: coverage a regeneration reads back
+                run(exe, "--frames", 3, "--random", 1, "--profile", project / "p")
+                assert (project / "p.cov").read_text().strip(), "empty coverage"
+                assert (project / "p.mmio").exists() and (project / "p.hot").exists()
+                run(recompiler, firmware, "--system", board, "--target", "pc",
+                    "--coverage", project / "p.cov", "-o", project)
+                continue
             exe = project / "build" / "m0_native_pc"
             native = run(exe, "--steps", 40)
             interp = run(exe, "--interp", "--steps", 40)

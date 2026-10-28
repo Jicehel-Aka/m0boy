@@ -39,6 +39,12 @@ void m0_machine_init(M0Machine *, const uint8_t *flash, size_t flash_size,
 uint32_t m0_machine_read(void *machine, uint32_t address, unsigned width);
 void m0_machine_write(void *machine, uint32_t address, uint32_t value, unsigned width);
 void m0_machine_tick(void *machine, M0Cpu *cpu, uint32_t cycles);
+unsigned m0_machine_pending_exception_slow(const M0Machine *);
+/* The exception the next tick would take (0: none). */
+static inline unsigned m0_machine_pending_exception(const M0Machine *m) {
+    if (!(m->systick_pending | m->pendsv_pending | (m->nvic_pending & m->nvic_enable))) return 0;
+    return m0_machine_pending_exception_slow(m);
+}
 void m0_machine_irq(M0Machine *, unsigned irq);
 
 #ifdef __cplusplus

@@ -103,15 +103,46 @@ void m0_machine_write(void *context, uint32_t address, uint32_t value, unsigned 
 void m0_machine_irq(M0Machine *m, unsigned irq) {
     if (irq < 32) m->nvic_pending |= 1u << irq;
 }
+/* The exception the next tick would take (0: none), by the NVIC rules: not
+ * under PRIMASK, and only above the priority of a live handler. */
+unsigned m0_machine_pending_exception_slow(const M0Machine *m) {
+    const M0Cpu *cpu = &m->cpu;
+    if (cpu->primask || cpu->fault) return 0;
+    /* nothing pending and enabled: no exception to choose (the common case) */
+    if (!(m->systick_pending | m->pendsv_pending | (m->nvic_pending & m->nvic_enable))) return 0;
+    unsigned selected = 0; uint8_t priority = 255;
+    if (m->systick_pending && m->systick_priority < priority)
+        selected = 15, priority = m->systick_priority;
+    if (m->pendsv_pending && m->pendsv_priority < priority)
+        selected = 14, priority = m->pendsv_priority;
+    uint32_t ready = m->nvic_pending & m->nvic_enable;
+    for (uint32_t bits = ready; bits; bits &= bits - 1) {
+        unsigned irq = (unsigned)__builtin_ctz(bits);
+        if (m->irq_priority[irq] < priority) selected = irq + 16, priority = m->irq_priority[irq];
+    }
+    if (!selected) return 0;
+    /* A live handler may only be preempted by a higher-priority exception.
+     * The board can refine this with device-specific NVIC priority bits. */
+    if (cpu->exception) {
+        uint8_t active = cpu->exception == 15 ? m->systick_priority :
+                         cpu->exception == 14 ? m->pendsv_priority :
+                         cpu->exception >= 16 ? m->irq_priority[cpu->exception - 16] : 0;
+        if (priority >= active) return 0;
+    }
+    return selected;
+}
+
 void m0_machine_tick(void *context, M0Cpu *cpu, uint32_t cycles) {
     M0Machine *m = context;
-    /* CPU exceptions add entry cycles without invoking this callback. Account
-     * from the absolute counter so those cycles are seen at the next step. */
-    uint64_t delta = (uint32_t)(cpu->cycles - (uint32_t)m->accounted_cycles);
+    /* CPU exceptions and block-accumulated cycles reach the clock without a
+     * callback: account from the absolute counter. */
+    uint64_t delta = cpu->cycles - m->accounted_cycles;
     (void)cycles;
     m->accounted_cycles += delta;
     if (m->peripheral_tick) m->peripheral_tick(m->peripheral, (uint32_t)delta);
-    if (m->systick_ctrl & 1u) {
+    if ((m->systick_ctrl & 1u) && m->systick_val > delta) {
+        m->systick_val -= (uint32_t)delta;                    /* no wrap: the common case */
+    } else if (m->systick_ctrl & 1u) {
         while (delta) {
             uint32_t remaining = m->systick_val ? m->systick_val : m->systick_load + 1u;
             if (delta < remaining) { m->systick_val = remaining - (uint32_t)delta; break; }
@@ -121,24 +152,8 @@ void m0_machine_tick(void *context, M0Cpu *cpu, uint32_t cycles) {
             if (m->systick_ctrl & 2u) m->systick_pending = 1;
         }
     }
-    if (cpu->primask || cpu->fault) return;
-    unsigned selected = 0; uint8_t priority = 255;
-    if (m->systick_pending && m->systick_priority < priority)
-        selected = 15, priority = m->systick_priority;
-    if (m->pendsv_pending && m->pendsv_priority < priority)
-        selected = 14, priority = m->pendsv_priority;
-    uint32_t ready = m->nvic_pending & m->nvic_enable;
-    for (unsigned irq = 0; irq < 32; ++irq) if ((ready & (1u << irq)) && m->irq_priority[irq] < priority)
-        selected = irq + 16, priority = m->irq_priority[irq];
+    unsigned selected = m0_machine_pending_exception(m);
     if (!selected) return;
-    /* A live handler may only be preempted by a higher-priority exception.
-     * The board can refine this with device-specific NVIC priority bits. */
-    if (cpu->exception) {
-        uint8_t active = cpu->exception == 15 ? m->systick_priority :
-                         cpu->exception == 14 ? m->pendsv_priority :
-                         cpu->exception >= 16 ? m->irq_priority[cpu->exception - 16] : 0;
-        if (priority >= active) return;
-    }
     if (selected == 15) m->systick_pending = 0;
     else if (selected == 14) m->pendsv_pending = 0;
     else m->nvic_pending &= ~(1u << (selected - 16));
