@@ -138,6 +138,8 @@ extern "C" int m0boy_console_main(void) {
                           m0_bprof[0][1] / 240u / frames, m0_bprof[0][0] / frames, m0_bprof[1][1] / 240u / frames, m0_bprof[1][0] / frames,
                           m0_bprof[2][1] / 240u / frames, m0_bprof[2][0] / frames, m0_bprof[3][1] / 240u / frames, m0_bprof[3][0] / frames,
                           m0_bprof[4][1] / 240u / frames, m0_bprof[4][0] / frames, m0_bprof[5][1] / 240u / frames, m0_bprof[5][0] / frames);
+            Serial.printf("[rom] per frame: native-path ROM reads %u (%u us), interpreter fetch/reads %u (%u us)\n",
+                          m0_bprof[6][0] / frames, m0_bprof[6][1] / 240u / frames, m0_bprof[7][0] / frames, m0_bprof[7][1] / 240u / frames);
             memset(m0_bprof, 0, sizeof m0_bprof);
             m0_stat_native = m0_stat_interp = m0_stat_hw_n = m0_stat_hw_t = m0_stat_int_t = m0_stat_nat_t = 0;
             { static unsigned n; if (++n % 5 == 0) m0_prof_report(); else if (n % 5 == 1) m0_prof_reset(); }

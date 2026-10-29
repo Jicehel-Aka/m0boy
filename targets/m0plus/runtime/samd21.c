@@ -628,9 +628,11 @@ static uint32_t board_read(void *ctx, uint32_t a, unsigned width) {
     if (a >= 0x40000000u) ++b->m.cpu.stores;                /* a peripheral read is not a repeat */
     if (a < 0x20000000u || (a - 0x00400000u) < 0x40000u) {   /* bootloader area, flash alias */
         uint32_t o = a >= 0x00400000u ? a - 0x00400000u : a, v = 0;
+        PF_BEGIN();
         if (o >= b->m.flash_base && o - b->m.flash_base + width <= b->m.flash_size)
             for (unsigned i = 0; i < width; ++i) v |= (uint32_t)b->m.flash[o - b->m.flash_base + i] << (8 * i);
         else v = width == 4 ? ~0u : (1u << (8 * width)) - 1u;
+        PF_END(PF_SLOW);
         return v;
     }
     if (a >= 0x60000000u && a < 0x60000100u) {              /* IOBUS PORT */
@@ -779,7 +781,7 @@ uint32_t m0_native_ld_slow(M0Cpu *m, uint32_t a, unsigned n, uint32_t *c, int *h
     const M0Machine *b = (const M0Machine *)m->board;
     uint32_t o = a - b->flash_base, v = 0;
     /* code and constants: reading the flash has no side effect and no wait state */
-    if (o <= b->flash_size - n) { memcpy(&v, b->flash + o, n); return v; }
+    if (o <= b->flash_size - n) { PF_BEGIN(); memcpy(&v, b->flash + o, n); PF_END(PF_WRITE); return v; }
     ++m->stores;
     if (pure_status(a)) {
         PF_BEGIN();
