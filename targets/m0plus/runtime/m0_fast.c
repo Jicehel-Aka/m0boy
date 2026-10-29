@@ -31,9 +31,35 @@ static inline uint16_t rom16(const uint8_t *f, uint32_t o) { return *(const uint
 static inline uint16_t rom16(const uint8_t *f, uint32_t o) { return (uint16_t)(f[o] | f[o + 1] << 8); }
 #endif
 uint32_t m0_stat_insn;
-/* 0xae08 (line doubling of Cat's and Coins) has a kernel: used when the ROM holds exactly its code */
+/* Hand-written kernels for the hot loops of the games we know (chosen by profile).  A kernel is tried when
+ * a backward branch lands on its head and the ROM holds exactly the code it was written for; it runs whole
+ * turns of the loop (registers, flags, cycles and store counts as the loop would leave them) and the
+ * interpreter does the rest, so a kernel may decline at will. */
 static const uint16_t m0_ae08_code[17] = {0x6a79,0x428b,0xda0d,0x6af8,0x009a,0x18c1,0x6ab8,0x0049,0x6900,0x3301,0x5a09,0x18a8,0xba49,0x8041,0xb29b,0x52a9,0xe7ee};
-static int8_t m0_ae08_ok = -1;
+typedef struct { uint32_t pc; uint16_t len; int8_t ok; const uint16_t *code;
+                 int (*fn)(M0Cpu *, uint32_t *, uint32_t, uint32_t); } M0Kernel;
+static int m0k_call_ae08(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound) { return m0k_ae08(m, c, room, bound); }
+static int m0k_call_lp4b18(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound) { return m0k_lp4b18(m, c, room, bound); }
+static int m0k_call_lp864a(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound) { return m0k_lp864a(m, c, room, bound); }
+static M0Kernel m0_kernels[] = {
+    {0xae08u, 17, -1, m0_ae08_code, m0k_call_ae08},
+    {0x4b18u, 34, -1, m0_lp_copy_code, m0k_call_lp4b18},
+    {0x864au, 50, -1, m0_lp_mix_code, m0k_call_lp864a},
+};
+static M0_HOT int kernel_at(M0Cpu *m, uint32_t pc, uint32_t *c, uint32_t room,
+                            const uint8_t *flash, uint32_t fbase, uint32_t fsize) {
+    for (unsigned i = 0; i < sizeof m0_kernels / sizeof m0_kernels[0]; ++i) {
+        M0Kernel *k = &m0_kernels[i];
+        if (k->pc != pc) continue;
+        if (k->ok < 0) {
+            const uint32_t o = pc - fbase;
+            k->ok = o + 2u * k->len <= fsize;
+            for (unsigned j = 0; k->ok && j < k->len; ++j) if (rom16(flash, o + 2u * j) != k->code[j]) k->ok = 0;
+        }
+        return k->ok > 0 && k->fn(m, c, room, 16u);
+    }
+    return 0;
+}
 
 static M0_HOT const M0Spin *spin_of(const uint8_t *f, uint32_t fbase, uint32_t fsize, uint32_t pc, uint32_t to) {
     M0Spin *s = &m0_spin_cache[(pc >> 1) & 255u];
@@ -103,14 +129,6 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
         if ((int32_t)(room - c) < 12) break;
         const uint32_t o = pc - fbase;
         if (o > fsize - 4u || (o & 1u)) break;
-        if (__builtin_expect(pc == 0xae08u, 0)) {
-            if (m0_ae08_ok < 0) {
-                m0_ae08_ok = 1;
-                for (unsigned i = 0; i < 17; ++i) if (o + 34u > fsize || rom16(flash, o + 2u * i) != m0_ae08_code[i]) m0_ae08_ok = 0;
-            }
-            if (m0_ae08_ok > 0 && m0k_ae08(m, &c, room, 12u)) ran = 1;
-            if ((int32_t)(room - c) < 12) break;
-        }
         const uint32_t op = rom16(flash, o);
         const unsigned d = op & 7u, a = (op >> 3) & 7u, b = (op >> 6) & 7u;
         unsigned cyc = 1;
@@ -318,7 +336,9 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
             next = pc + 4u + (uint32_t)((int32_t)(imm << 7) >> 7); cyc = 3; break; }
         default: goto bail;
         }
-        c += cyc; pc = next; ran = 1; ++insn;
+        c += cyc; ran = 1; ++insn;
+        if (__builtin_expect(next < pc, 0) && !hw) (void)kernel_at(m, next, &c, room, flash, fbase, fsize);
+        pc = next;
         if (hw) { r[15] = pc; goto out_noreload; }
         continue;
     bail:

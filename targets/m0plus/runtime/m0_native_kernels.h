@@ -73,4 +73,68 @@ static inline int m0k_ae08(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound)
     m->stores += (r[5] + (i << 2) >= m->dead_below) ? 2u * n : 0u;
     return 1;
 }
+static const uint16_t __attribute__((unused)) m0_lp_copy_code[34] = {0x8810,0x3e04,0x8018,0x8850,0x8058,0x8890,0x8098,0x88d0,0x3208,0x80d8,0x3308,0xe013,0x5a17,0x521f,0x3002,0xe013,0x1949,0x42a1,0xd215,0x8803,0x3002,0x9301,0x000b,0x9a01,0x3a01,0x9201,0xd3f4,0x7846,0x1c82,0x7800,0x0040,0x181b,0x2e04,0xd8dd};
+static const uint16_t __attribute__((unused)) m0_lp_mix_code[50] = {0x9806,0x0a1e,0x5636,0x9804,0x195b,0x4346,0x8820,0x1236,0x1836,0x9807,0x8026,0x4298,0xd820,0x9800,0x2800,0xd113,0x4668,0x8800,0x8610,0x19db,0x62d3,0x9b05,0x3258,0x4293,0xd1bb,0x680a,0x9b02,0x4694,0x4463,0x600b,0x9a03,0x684b,0x1a9a,0x604a,0xb009,0xbdf0,0x6a90,0x7b86,0x2002,0x4206,0xd009,0x006e,0x426d,0xb22d,0x1b9b,0x8615,0x4660,0x3402,0x42a0,0xd8cd};
+
+/* ---- Lapinou ------------------------------------------------------------ */
+/* Lapinou 0x4b18: for (; n > 4; n -= 4) { dst[0..3] = src[0..3]; src += 4; dst += 4; }  (halfwords)
+ * r2 = src, r3 = dst, r6 = n.  Runs whole turns that end back at the head (the last turn, which
+ * falls out of the loop, is left to the caller).  24 cycles a turn. */
+static inline int m0k_lp4b18(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound) {
+    uint32_t *r = m->r;
+    const uint32_t src = r[2], dst = r[3], n = r[6];
+    if (n < 9u || n > 0xffffu || ((src | dst) & 1u)) return 0;
+    uint32_t k = (n - 5u) / 4u, left = room - *c;
+    if (left < bound + 24u) return 0;
+    if (k > (left - bound) / 24u) k = (left - bound) / 24u;
+    if (!k) return 0;
+    const uint8_t *s = m0k_ptr(m, src, k << 3, 0);
+    uint8_t *d = m0k_ptr(m, dst, k << 3, 1);
+    if (!s || !d || m0k_overlap(src, k << 3, dst, k << 3)) return 0;
+    memcpy(d, s, (size_t)k << 3);
+    uint16_t last; memcpy(&last, s + (k << 3) - 2, 2);
+    const uint32_t total = k << 2;
+    uint32_t dead = 0;                                   /* stores below the watched loop's stack pointer do not count */
+    if (m->dead_below > dst) { dead = (m->dead_below - dst + 1u) >> 1; if (dead > total) dead = total; }
+    m->stores += total - dead;
+    r[0] = last; r[2] = src + (k << 3); r[3] = dst + (k << 3); r[6] = n - (k << 2);
+    (void)m0_native_addm(m, r[6], ~4u, 1u, 15u);          /* the flags the loop's last cmp r6,#4 leaves */
+    *c += 24u * k;
+    return 1;
+}
+
+/* Lapinou 0x864a: the audio mixer's inner loop,
+ *   do { out[i] += (int8)wave[pos >> 8] * vol >> 8; pos += step; } while (limit > pos && end > ++out)
+ * r3 = pos, r4 = out, r5 = step, ip = end, [sp+0x10] = vol, [sp+0x18] = wave, [sp+0x1c] = limit.
+ * Turns are run while they end back at the head; 25 cycles a turn. */
+static inline int m0k_lp864a(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound) {
+    uint32_t *r = m->r, vol, wave, limit;
+    const uint32_t sp = r[13], end = r[12], step = r[5];
+    if (!m0k_word(m, sp + 0x10u, &vol) || !m0k_word(m, sp + 0x18u, &wave) || !m0k_word(m, sp + 0x1cu, &limit)) return 0;
+    uint32_t pos = r[3], out = r[4], left = room - *c, k = 0, last = 0;
+    if (left < bound + 25u || (out & 1u)) return 0;
+    const uint32_t kmax = (left - bound) / 25u, out0 = out;
+    while (k < kmax) {
+        const uint32_t npos = pos + step;
+        if (!(limit > npos) || !(end > out + 2u)) break;                 /* this turn would leave the loop */
+        const uint32_t wa = wave + (pos >> 8);
+        const uint8_t *w = m0k_ptr(m, wa, 1, 0);
+        uint8_t *o = m0k_ptr(m, out, 2, 1);
+        if (!w || !o) break;
+        if (m0k_overlap(out, 2, sp + 0x10u, 16) || (wa >= out0 && wa < out + 2u)) break;   /* the stores must not feed the loop */
+        uint16_t old; memcpy(&old, o, 2);
+        const uint32_t prod = (uint32_t)(int32_t)(int8_t)*w * vol;
+        last = (uint32_t)((int32_t)prod >> 8) + old;
+        const uint16_t lo = (uint16_t)last; memcpy(o, &lo, 2);
+        pos = npos; out += 2u; ++k;
+    }
+    if (!k) return 0;
+    uint32_t dead = 0;
+    if (m->dead_below > out0) { dead = (m->dead_below - out0 + 1u) >> 1; if (dead > k) dead = k; }
+    m->stores += k - dead;
+    r[0] = end; r[3] = pos; r[4] = out; r[6] = last;
+    (void)m0_native_addm(m, end, ~out, 1u, 15u);                          /* the cmp that closes the turn */
+    *c += 25u * k;
+    return 1;
+}
 #endif
