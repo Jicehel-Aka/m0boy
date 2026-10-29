@@ -7,10 +7,10 @@
 #define M0_NOW() 0u
 #endif
 /* board-model profile: [slot][0]=calls, [slot][1]=ESP32 cycles (inclusive) */
-uint32_t m0_prof[8][2];
+uint32_t m0_bprof[8][2];
 enum { PF_SYNC, PF_PURE, PF_TICK, PF_ROOM, PF_IDLE, PF_LOOP, PF_WRITE, PF_SLOW };
 #define PF_BEGIN() const uint32_t pf_t0 = M0_NOW()
-#define PF_END(s) do { m0_prof[s][0]++; m0_prof[s][1] += M0_NOW() - pf_t0; } while (0)
+#define PF_END(s) do { m0_bprof[s][0]++; m0_bprof[s][1] += M0_NOW() - pf_t0; } while (0)
 
 /* Gamebuino META board model.  Register semantics follow the SAMD21
  * datasheet and what the META firmwares rely on (lib and homebrew); every
