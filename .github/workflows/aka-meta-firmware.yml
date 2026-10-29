@@ -117,7 +117,7 @@ jobs:
               done
               sel=" ${hot[*]:0:$n} "
               awk -v sel="$sel" '/case 0x[0-9a-f]+u: r = m0_page_/ { match($0, /0x[0-9a-f]+/); h=substr($0, RSTART+2, RLENGTH-2); if (index(sel, " " h " ") == 0) next } { print }' "$RUNNER_TEMP/orig/m0_native.c" > src/m0_native.c
-              grep -c "case 0x.*m0_page_" src/m0_native.c
+              grep -c "case 0x.*m0_page_" src/m0_native.c || true
             fi
             echo "=== essai avec $n pages en RAM interne (mode ${{ inputs.mode }}) ==="
             if pio run > "$RUNNER_TEMP/build.log" 2>&1; then tail -n 25 "$RUNNER_TEMP/build.log"; break; fi
