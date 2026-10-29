@@ -14,6 +14,7 @@ extern "C" {
 extern "C" const uint8_t m0_rom[];
 extern "C" const uint32_t m0_rom_size;
 extern "C" int m0_native_step(M0Cpu *);
+extern "C" uint32_t m0_prof[8][2];
 extern "C" uint32_t m0_stat_native, m0_stat_interp, m0_stat_hw_n, m0_stat_hw_t, m0_stat_int_t, m0_stat_nat_t;
 
 /* Sampling profiler: a task on the otherwise idle core reads the guest PC a
@@ -133,6 +134,11 @@ extern "C" int m0boy_console_main(void) {
             Serial.printf("[time] per frame, us: native chains %u (of which machine accesses %u, %u accesses), interpreter %u\n",
                           m0_stat_nat_t / 240u / frames, m0_stat_hw_t / 240u / frames, m0_stat_hw_n / frames,
                           m0_stat_int_t / 240u / frames);
+            Serial.printf("[board] per frame us (calls): sync %u (%u) pure %u (%u) tick %u (%u) room %u (%u) idle %u (%u) loop %u (%u)\n",
+                          m0_prof[0][1] / 240u / frames, m0_prof[0][0] / frames, m0_prof[1][1] / 240u / frames, m0_prof[1][0] / frames,
+                          m0_prof[2][1] / 240u / frames, m0_prof[2][0] / frames, m0_prof[3][1] / 240u / frames, m0_prof[3][0] / frames,
+                          m0_prof[4][1] / 240u / frames, m0_prof[4][0] / frames, m0_prof[5][1] / 240u / frames, m0_prof[5][0] / frames);
+            memset(m0_prof, 0, sizeof m0_prof);
             m0_stat_native = m0_stat_interp = m0_stat_hw_n = m0_stat_hw_t = m0_stat_int_t = m0_stat_nat_t = 0;
             { static unsigned n; if (++n % 5 == 0) m0_prof_report(); else if (n % 5 == 1) m0_prof_reset(); }
             Serial.printf("[heap] free %u min %u\n", (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());

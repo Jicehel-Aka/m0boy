@@ -1,5 +1,16 @@
 #include "samd21.h"
 #include <string.h>
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#include "xtensa/hal.h"
+#define M0_NOW() ((uint32_t)xthal_get_ccount())
+#else
+#define M0_NOW() 0u
+#endif
+/* board-model profile: [slot][0]=calls, [slot][1]=ESP32 cycles (inclusive) */
+uint32_t m0_prof[8][2];
+enum { PF_SYNC, PF_PURE, PF_TICK, PF_ROOM, PF_IDLE, PF_LOOP, PF_WRITE, PF_SLOW };
+#define PF_BEGIN() const uint32_t pf_t0 = M0_NOW()
+#define PF_END(s) do { m0_prof[s][0]++; m0_prof[s][1] += M0_NOW() - pf_t0; } while (0)
 
 /* Gamebuino META board model.  Register semantics follow the SAMD21
  * datasheet and what the META firmwares rely on (lib and homebrew); every
@@ -275,7 +286,7 @@ static uint32_t spi_fast_pixels(Samd21 *b, unsigned ch, uint32_t due) {
     return n;
 }
 
-static void sync(Samd21 *b) {
+static void sync_impl(Samd21 *b) {
     static int busy;
     if (busy) return;
     busy = 1;
@@ -323,6 +334,8 @@ static void sync(Samd21 *b) {
     b->next_event = next;
     busy = 0;
 }
+
+static void sync(Samd21 *b) { PF_BEGIN(); sync_impl(b); PF_END(PF_SYNC); }
 
 /* ------------------------------------------------------------- registers */
 
@@ -644,10 +657,12 @@ static void board_write(void *ctx, uint32_t a, uint32_t v, unsigned width) {
     sync(b);
 }
 static void board_tick(void *ctx, uint32_t delta) {
+    PF_BEGIN();
     Samd21 *b = ctx;
     (void)delta;
     if (b->m.cpu.cycles >= b->next_event) sync(b);
     b->m.nvic_pending |= line_cache;
+    PF_END(PF_TICK);
 }
 
 /* ------------------------------------------------------------------ API */
@@ -679,12 +694,6 @@ int samd21_init(Samd21 *b, const uint8_t *flash, size_t flash_size, uint32_t fla
 void samd21_buttons(Samd21 *b, uint8_t pressed) { b->buttons = (uint8_t)~pressed; }
 void samd21_sd(Samd21 *b, Samd21SdRead r, Samd21SdWrite w) { b->sd_read = r; b->sd_write = w; }
 
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
-#include "xtensa/hal.h"
-#define M0_NOW() ((uint32_t)xthal_get_ccount())
-#else
-#define M0_NOW() 0u
-#endif
 /* ESP32 cycles spent: in the board for machine accesses (n = count), in the interpreter, in native chains */
 uint32_t m0_stat_hw_n, m0_stat_hw_t, m0_stat_int_t, m0_stat_nat_t;
 /* counters for the AKA runtime's [perf] line: chains run natively / instructions interpreted */
@@ -736,7 +745,7 @@ void samd21_audio(Samd21 *b, uint8_t *out, unsigned n) {
     b->audio_k = k; b->audio_cur = cur;
 }
 
-uint32_t samd21_room(const Samd21 *b) {
+static uint32_t samd21_room_impl(const Samd21 *b) {
     const M0Machine *m = &b->m;
     if (m->cpu.fault || m0_machine_pending_exception(m)) return 0;
     uint64_t now = m->cpu.cycles;
@@ -748,6 +757,8 @@ uint32_t samd21_room(const Samd21 *b) {
     if (limit <= now) return 0;
     return limit - now > 0x7fffffffu ? 0x7fffffffu : (uint32_t)(limit - now);
 }
+
+uint32_t samd21_room(const Samd21 *b) { PF_BEGIN(); uint32_t r = samd21_room_impl(b); PF_END(PF_ROOM); return r; }
 
 /* Registers whose read changes nothing (SERCOM4 INTFLAG, TC4/TC5 INTFLAG,
  * STATUS, COUNT, DAC STATUS): the board only has to know the time. */
@@ -771,9 +782,11 @@ uint32_t m0_native_ld_slow(M0Cpu *m, uint32_t a, unsigned n, uint32_t *c, int *h
     if (o <= b->flash_size - n) { memcpy(&v, b->flash + o, n); return v; }
     ++m->stores;
     if (pure_status(a)) {
+        PF_BEGIN();
         m->cycles += *c;                /* the board sees the time of the access, the chain goes on */
         v = m->read(m->board, a, n);
         m->cycles -= *c;
+        PF_END(PF_PURE);
         return v;
     }
     m->cycles += *c; *c = 0; *hw = 1;
@@ -791,13 +804,13 @@ void m0_native_st_slow(M0Cpu *m, uint32_t a, uint32_t v, unsigned n, uint32_t *c
     { const uint32_t t0 = M0_NOW(); m->write(m->board, a, v, n); m0_stat_hw_n++; m0_stat_hw_t += M0_NOW() - t0; }
 }
 
-void m0_native_idle(M0Cpu *m, uint32_t pc, uint32_t addr) { samd21_idle((Samd21 *)m->board, pc, addr); }
+void m0_native_idle(M0Cpu *m, uint32_t pc, uint32_t addr) { PF_BEGIN(); samd21_idle((Samd21 *)m->board, pc, addr); PF_END(PF_IDLE); }
 
 /* A short loop with no store, visited again with the same registers, flags
  * and machine state: nothing changes until an event, so the iterations up to
  * the next deadline are skipped (cycles only).  `pending` is the chain's
  * cycles not yet on the clock.  Returns the cycles skipped. */
-uint32_t m0_native_loop(M0Cpu *m, uint32_t pc, uint32_t pending) {
+static uint32_t m0_native_loop_impl(M0Cpu *m, uint32_t pc, uint32_t pending) {
     Samd21 *b = (Samd21 *)m->board;
     struct Samd21Loop *l = &b->loop;
     uint64_t now = m->cycles + pending;
@@ -827,3 +840,4 @@ uint32_t m0_native_loop(M0Cpu *m, uint32_t pc, uint32_t pending) {
     l->at += n * period;
     return (uint32_t)(n * period);
 }
+uint32_t m0_native_loop(M0Cpu *m, uint32_t pc, uint32_t pending) { PF_BEGIN(); uint32_t r = m0_native_loop_impl(m, pc, pending); PF_END(PF_LOOP); return r; }
