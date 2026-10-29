@@ -21,6 +21,11 @@ on:
         description: "Pages a mettre en RAM interne (hex, separees par des espaces, ex: 24 2b 3a), vues par la ligne [prof] de la console. Vide = choix automatique par profil PC"
         type: string
         default: ""
+      opt:
+        description: "Optimisation du compilateur : Os (code plus petit, moins de ratés de cache flash) ou O2"
+        type: choice
+        options: ["Os", "O2"]
+        default: "Os"
       parties:
         description: "Parties aleatoires jouees pour decouvrir le code a traduire (plus = mieux couvert, plus long)"
         type: string
@@ -81,6 +86,8 @@ jobs:
         env:
           PLATFORMIO_BUILD_FLAGS: ${{ inputs.bgr && '-DAKA_LCD_BGR=1' || '' }}
         run: |
+          sed -i "s/-O2/-${{ inputs.opt }}/" platformio.ini
+          grep -n "build_flags" platformio.ini
           read -r -a hot < "$RUNNER_TEMP/hot_pages.txt" || true
           n=${{ inputs.iram }}
           while true; do
@@ -99,7 +106,7 @@ jobs:
             # les erreurs, lisibles dans les annotations du run
             { grep -i -E "error|undefined|overflow|will not fit|region|fatal" "$RUNNER_TEMP/build.log" | head -n 10; tail -n 6 "$RUNNER_TEMP/build.log"; } | while IFS= read -r l; do echo "::error::[n=$n] ${l:0:400}"; done || true
             [ "$n" -eq 0 ] && exit 1
-            n=$(( n > 4 ? n - 4 : 0 ))
+            n=$(( n > 0 ? n - 1 : 0 ))
             for f in src/m0_native_page_*.c; do sed -i '1{/esp_attr.h/d}' "$f"; done
           done
       - name: Paquet
