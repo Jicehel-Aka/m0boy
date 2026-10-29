@@ -272,11 +272,38 @@ static uint32_t spi_fast_pixels(Samd21 *b, unsigned ch, uint32_t due) {
     uint32_t src = b->dma_src[ch] - (uint32_t)(b->dma_cnt[ch] - b->dma_idx[ch]), o = src - b->m.ram_base;
     if (!n || o > M0_MACHINE_RAM_BYTES || n > M0_MACHINE_RAM_BYTES - o) return 0;
     const uint8_t *p = b->m.ram + o;
-    for (uint32_t i = 0; i < n; ++i) {
-        if (b->lcd_arg & 1) lcd_put(b, (uint16_t)((b->lcd_tmp << 8) | p[i]));
-        else b->lcd_tmp = p[i];
-        ++b->lcd_arg;
+    uint32_t i = 0;
+    if ((b->lcd_arg & 1) && i < n) {                         /* the low byte of a pixel begun before */
+        lcd_put(b, (uint16_t)((b->lcd_tmp << 8) | p[i])); ++i;
     }
+    /* whole pixels, a run of one panel row at a time, window state in locals */
+    if (b->lcd_x >= 0 && b->lcd_xe < SAMD21_W && b->lcd_ye < SAMD21_H) {
+        const unsigned swap = !b->lcd_bgr;
+        int x = b->lcd_x, y = b->lcd_y;
+        while (i + 1u < n) {
+            if (x > b->lcd_xe || y < 0 || y >= SAMD21_H) break;      /* odd window: the slow path below */
+            uint32_t run = (n - i) >> 1, row = (uint32_t)(b->lcd_xe - x + 1);
+            if (run > row) run = row;
+            uint16_t *d = b->pix + y * SAMD21_W + x;
+            const uint8_t *s = p + i;
+            if (swap) {
+                for (uint32_t k = 0; k < run; ++k, s += 2) {
+                    uint32_t v = ((uint32_t)s[0] << 8) | s[1];
+                    d[k] = (uint16_t)((v >> 11) | (v & 0x07e0u) | ((v & 0x1fu) << 11));
+                }
+            } else {
+                for (uint32_t k = 0; k < run; ++k, s += 2) d[k] = (uint16_t)(((uint32_t)s[0] << 8) | s[1]);
+            }
+            i += run << 1;
+            x += (int)run;
+            if (x > b->lcd_xe) { x = b->lcd_xs; if (++y > b->lcd_ye) y = b->lcd_ys; }
+        }
+        b->lcd_x = x; b->lcd_y = y;
+    }
+    for (; i + 1u < n; i += 2u) lcd_put(b, (uint16_t)(((uint32_t)p[i] << 8) | p[i + 1]));
+    if (i < n) { b->lcd_tmp = p[i]; ++i; }
+    else if (n >= 2u && !(b->lcd_arg + (int)n & 1)) b->lcd_tmp = p[n - 2u];   /* the last high byte, as byte by byte */
+    b->lcd_arg += (int)n;
     b->dma_idx[ch] += (uint16_t)n;
     b->ser_data = 0x80;
     b->spi_prev = b->spi_last = b->m.cpu.cycles;
