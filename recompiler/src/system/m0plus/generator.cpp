@@ -1,5 +1,7 @@
 #include "m0boy/m0plus_generator.h"
 #include <algorithm>
+#include <cctype>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
@@ -239,6 +241,94 @@ bool write_native_pages(const fs::path& source,
             if (e.body.find(word) != std::string::npos) return true;
         return false;
     };
+    /* Flags nobody reads before they are written again are not computed.  Backward
+     * liveness over the translated instructions: where a successor is not
+     * translated or not known (computed branch, return, exit to the
+     * interpreter) every flag counts as live.  N=8 Z=4 C=2 V=1. */
+    {
+        enum : unsigned { FN = 8, FZ = 4, FC = 2, FV = 1, FALL = 15 };
+        struct Use { unsigned reads = 0, kills = 0; bool opaque = false; };
+        std::map<uint32_t, Use> use;
+        auto flag_bit = [](char c) -> unsigned { return c == 'N' ? FN : c == 'Z' ? FZ : c == 'C' ? FC : FV; };
+        for (const auto& [pc, e] : entries) {
+            Use u;
+            const std::string& b = e.body;
+            const bool conditional = b.find("if (") != std::string::npos;
+            for (size_t at = b.find('f'); at != std::string::npos; at = b.find('f', at + 1)) {
+                if (at + 2 > b.size() || !(b[at + 1] == 'N' || b[at + 1] == 'Z' || b[at + 1] == 'C' || b[at + 1] == 'V')) continue;
+                if (at && (std::isalnum((unsigned char)b[at - 1]) || b[at - 1] == '_')) continue;
+                if (at + 2 < b.size() && (std::isalnum((unsigned char)b[at + 2]) || b[at + 2] == '_')) continue;
+                const bool write = b.compare(at + 2, 3, " = ") == 0 && b.compare(at + 2, 4, " == ") != 0;
+                if (write) { if (!conditional) u.kills |= flag_bit(b[at + 1]); else if (b[at + 1] == 'C') u.reads |= FC; }
+                else u.reads |= flag_bit(b[at + 1]);
+            }
+            if (b.find("setNZ(") != std::string::npos) u.kills |= FN | FZ;
+            if (b.find("addSetCond(") != std::string::npos) u.kills |= FALL;
+            if (b.find("loop_spin") != std::string::npos || b.find("idle_spin") != std::string::npos ||
+                b.find("return ") != std::string::npos || b.find("stepTicks") != std::string::npos ||
+                b.find("m0_cpu_") != std::string::npos || b.find("exc_active") != std::string::npos)
+                u.opaque = true;
+            use[pc] = u;
+        }
+        std::map<uint32_t, unsigned> live_in, live_out;
+        for (const auto& [pc, e] : entries) { live_in[pc] = FALL; live_out[pc] = FALL; }
+        for (bool changed = true; changed;) {
+            changed = false;
+            for (auto it = entries.rbegin(); it != entries.rend(); ++it) {
+                const Entry& e = it->second;
+                const Use& u = use[e.pc];
+                unsigned out = 0;
+                uint32_t target = 0;
+                const int kind = branch_of(e, &target);
+                if (u.opaque || kind == 2) out = FALL;
+                else {
+                    if (kind == 1) out |= entries.count(target) ? live_in[target] : FALL;
+                    if (!unconditional(e)) {
+                        const uint32_t next = e.pc + e.size;
+                        out |= entries.count(next) ? live_in[next] : FALL;
+                    }
+                }
+                const unsigned in = u.opaque ? FALL : (u.reads | (out & ~u.kills));
+                if (out != live_out[e.pc] || in != live_in[e.pc]) { live_out[e.pc] = out; live_in[e.pc] = in; changed = true; }
+            }
+        }
+        auto close_of = [](const std::string& t, size_t open) {
+            int depth = 0;
+            for (size_t i = open; i < t.size(); ++i) {
+                if (t[i] == '(') ++depth;
+                else if (t[i] == ')' && --depth == 0) return i;
+            }
+            return std::string::npos;
+        };
+        auto rewrite = [&](std::string text, const char* name, const char* replacement, unsigned mask) {
+            const std::string key = std::string(name) + "(";
+            for (size_t at = text.find(key); at != std::string::npos; at = text.find(key, at + 1)) {
+                if (at && (std::isalnum((unsigned char)text[at - 1]) || text[at - 1] == '_')) continue;
+                const size_t close = close_of(text, at + key.size() - 1);
+                if (close == std::string::npos) continue;
+                text.insert(close, ", " + std::to_string(mask));
+                text.replace(at, key.size() - 1, replacement);
+                at += std::strlen(replacement);
+            }
+            return text;
+        };
+        for (auto& [pc, e] : entries) {
+            if (use[pc].opaque) continue;
+            const unsigned live = live_out[pc];
+            e.body = rewrite(e.body, "setNZ", "setNZm", live & (FN | FZ));
+            e.body = rewrite(e.body, "addSetCond", "addSetCondM", live & FALL);
+            for (const char f : {'N', 'Z', 'C', 'V'}) {
+                if (live & flag_bit(f)) continue;
+                const std::string key = std::string("f") + f + " = ";
+                for (size_t at = e.body.find(key); at != std::string::npos; at = e.body.find(key, at)) {
+                    if (e.body.compare(at, key.size() + 1, key + "=") == 0 || (at && (std::isalnum((unsigned char)e.body[at - 1]) || e.body[at - 1] == '_'))) { ++at; continue; }
+                    const size_t semi = e.body.find(';', at);
+                    if (semi == std::string::npos) break;
+                    e.body.erase(at, semi - at + 1);
+                }
+            }
+        }
+    }
     /* leaders: branch targets, what follows a branch, what nothing falls into;
      * and every 24 straight-line instructions, so no chain outgrows its room */
     std::set<uint32_t> leaders;
@@ -304,9 +394,18 @@ bool write_native_pages(const fs::path& source,
         dispatch << "    case 0x" << std::hex << page << "u: r = " << name.str() << "(m, pc, left); break;\n";
         out << "int " << name.str() << "(M0Cpu *m, uint32_t pc, uint32_t room) {\n"
                "uint32_t c = 0; int hw = 0; (void)hw;\nswitch (pc) {\n";
-        for (const Entry* e : list)
+        /* Only addresses something can resume at get a case: leaders, what follows
+         * a machine access, what follows a gap, the page start, and every 4th
+         * instruction (interrupt returns land anywhere; the interpreter steps
+         * the few instructions up to the next entry). */
+        for (size_t i = 0; i < list.size(); ++i) {
+            const Entry* e = list[i];
+            const bool prev_adjacent = i && list[i - 1]->pc + list[i - 1]->size == e->pc;
+            const bool entry = !i || !prev_adjacent || leaders.count(e->pc) || reaches_machine(*list[i - 1]) || i % 4 == 0;
+            if (!entry) continue;
             out << "case 0x" << std::hex << e->pc << "u: if (room < " << std::dec << bound[e->pc]
                 << "u) return 0; goto i_" << std::hex << e->pc << ";\n";
+        }
         out << "default: return 0;\n}\n";
         std::set<uint32_t> here;
         for (const Entry* e : list) here.insert(e->pc);

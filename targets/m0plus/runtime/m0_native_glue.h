@@ -34,6 +34,8 @@ extern const uint8_t m0_rom[];
 #define pk_blx(op) ((void)0)
 #define stepTicks m0_native_sink
 #define setNZ(r) m0_native_nz(m, (r))
+#define setNZm(r, live) m0_native_nzm(m, (r), (live))
+#define addSetCondM(a, b, k, live) m0_native_addm(m, (a), (b), (unsigned)(k), (live))
 #define addSetCond(a, b, k) m0_native_add(m, (a), (b), (unsigned)(k))
 #define BRANCH(t) do { cyc = 2; br = 1; bt = (t); } while (0)
 #define LD32(a) m0_ld(m, (a), 4, &c, &hw)
@@ -49,6 +51,19 @@ extern const uint8_t m0_rom[];
 #define idle_spin(pc, addr) do { m->cycles += c; c = 0; hw = 1; m0_native_idle(m, (pc), (addr)); } while (0)
 
 static uint32_t m0_native_sink;
+/* Flag-setting with only the flags somebody reads (the generator's liveness
+ * says which: 8=N 4=Z 2=C 1=V); a constant `live` folds the rest away. */
+static inline void m0_native_nzm(M0Cpu *m, uint32_t value, unsigned live) {
+    if (live & 8u) m->n = (uint8_t)(value >> 31);
+    if (live & 4u) m->z = (uint8_t)(value == 0);
+}
+static inline uint32_t m0_native_addm(M0Cpu *m, uint32_t a, uint32_t b, unsigned carry, unsigned live) {
+    const uint32_t value = a + b + carry;
+    if (live & 2u) m->c = (uint8_t)(carry ? value <= a : value < a);
+    if (live & 1u) m->v = (uint8_t)((~(a ^ b) & (a ^ value)) >> 31);
+    m0_native_nzm(m, value, live);
+    return value;
+}
 static inline uint32_t m0_bswap32(uint32_t x) {
     return x << 24 | (x & 0xff00u) << 8 | (x >> 8 & 0xff00u) | x >> 24;
 }
