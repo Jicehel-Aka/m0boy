@@ -131,9 +131,39 @@ jobs:
         run: |
           out="$RUNNER_TEMP/pack/$NAME"
           mkdir -p "$out"
-          cd "$RUNNER_TEMP/aka/.pio/build/aka"
-          cp firmware.bin bootloader.bin partitions.bin "$out/" 2>/dev/null || true
+          build="$RUNNER_TEMP/aka/.pio/build/aka"
+          cp "$build/firmware.bin" "$build/bootloader.bin" "$build/partitions.bin" "$out/"
           cp "$RUNNER_TEMP/aka/aka.csv" "$out/"
+          pkgs="$HOME/.platformio/packages"
+          boot="$(find "$pkgs" -name boot_app0.bin | head -n 1)"
+          cp "$boot" "$out/boot_app0.bin"
+          esptool="$(find "$pkgs" -name esptool.py | head -n 1)"
+          # image unique (tout d'un coup a 0x0), comme le paquet de Lapinou
+          python3 "$esptool" --chip esp32s3 merge_bin -o "$out/$NAME-aka-flash.bin" --flash_mode dio --flash_freq 80m --flash_size 8MB \
+            0x0 "$out/bootloader.bin" 0x8000 "$out/partitions.bin" 0xe000 "$out/boot_app0.bin" 0x10000 "$out/firmware.bin"
+          nm="$(find "$pkgs" -name 'xtensa-esp32s3-elf-nm' | head -n 1)"
+          if [ -n "$nm" ] && [ -f "$build/firmware.elf" ]; then "$nm" -n --defined-only "$build/firmware.elf" > "$out/firmware.sym" || true; fi
+          cat > "$out/FLASH.txt" <<EOF
+          Image unique (tout d'un coup) :
+          esptool.py --chip esp32s3 --port PORT write_flash --flash_mode dio --flash_freq 80m --flash_size 8MB 0x0 $NAME-aka-flash.bin
+
+          Ou les quatre fichiers :
+          esptool.py --chip esp32s3 --port PORT write_flash --flash_mode dio --flash_freq 80m --flash_size 8MB 0x0000 bootloader.bin 0x8000 partitions.bin 0xe000 boot_app0.bin 0x10000 firmware.bin
+          EOF
+          sed -i 's/^          //' "$out/FLASH.txt"
+          printf '{\n  "title": "%s",\n  "author": "m0boy",\n  "description": "Converted with m0boy",\n  "version": "%s",\n  "date": "%s"\n}\n' \
+            "$NAME" "$(cat targets/meta/VERSION 2>/dev/null || echo 0)" "$(date +%F)" > "$out/meta.json"
+          cat > "$out/README.md" <<EOF
+          # $NAME - Gamebuino AKA (firmware META recompile, sans emulateur)
+
+          Le code Thumb du firmware META est traduit en C et tourne sur l'ESP32-S3 au-dessus d'un modele de carte
+          SAMD21 (TC4/TC5, DMAC, SERCOM4 avec l'ST7735, DAC, PORT). Flash : voir FLASH.txt (esptool).
+          Meme cible ESP32-S3 que les autres firmwares AKA (croix, A, B, MENU).
+
+          Non valide sur console : la vitesse depend du jeu (lignes [perf] sur le port serie), la carte SD n'est pas modelisee.
+          Mode : ${{ inputs.mode }}, optimisation : ${{ inputs.opt }}, couleurs BGR : ${{ inputs.bgr }}.
+          EOF
+          sed -i 's/^          //' "$out/README.md"
           ls -la "$out"
           echo "PACK=$RUNNER_TEMP/pack" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
