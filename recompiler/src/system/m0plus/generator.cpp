@@ -366,6 +366,17 @@ bool write_native_pages(const fs::path& source,
         const auto name = file.path().filename().string();
         if (name.starts_with("m0_native_page_") && file.path().extension() == ".c") fs::remove(file.path(), ec);
     }
+    struct Kernel { uint32_t pc; const char* name; std::vector<uint16_t> code; };
+    static const std::vector<Kernel> kernels = {
+        {0xae08, "ae08", {0x6a79, 0x428b, 0xda0d, 0x6af8, 0x009a, 0x18c1, 0x6ab8, 0x0049, 0x6900, 0x3301,
+                          0x5a09, 0x18a8, 0xba49, 0x8041, 0xb29b, 0x52a9, 0xe7ee}},
+    };
+    auto matches = [&](const Kernel& k) {
+        if (k.pc < base || k.pc - base + k.code.size() * 2 > rom.size()) return false;
+        for (size_t i = 0; i < k.code.size(); ++i)
+            if (half(rom, k.pc - base + i * 2) != k.code[i]) return false;
+        return true;
+    };
     std::map<uint32_t, std::vector<const Entry*>> pages;       /* 1 KiB pages */
     for (const auto& [pc, e] : entries) pages[pc >> 10].push_back(&e);
     std::map<uint32_t, std::ostringstream> files;              /* 4 KiB per file */
@@ -417,6 +428,11 @@ bool write_native_pages(const fs::path& source,
             if (leaders.count(e.pc))
                 line << "L_" << e.pc << ": if ((int32_t)(room - c) < " << std::dec << bound[e.pc] << std::hex
                      << ") { m->r[15] = 0x" << e.pc << "u; goto out; }\n";
+            /* hand-written loop kernels (m0_native_kernels.h), only for the exact code they were written for */
+            for (const Kernel& k : kernels)
+                if (k.pc == e.pc && leaders.count(e.pc) && matches(k)) {
+                    line << "if (m0k_" << k.name << "(m, &c, room, " << std::dec << bound[e.pc] << "u)) { }\n" << std::hex;
+                }
             line << "i_" << e.pc << ": { uint32_t cyc = 1; int br = 0; uint32_t bt = 0; (void)bt; (void)br;\n"
                  << e.body << "\nc += cyc;\n";
             uint32_t target = 0;
@@ -506,7 +522,7 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
         if (standalone) {
             const fs::path platform = runtime_dir.parent_path() / "platform";
             for (const fs::path& file : {runtime_dir / "samd21.h", runtime_dir / "samd21.c",
-                                         runtime_dir / "m0_native_glue.h", platform / (aka ? "m0_aka_native.cpp" : "m0_pc.c")}) {
+                                         runtime_dir / "m0_native_glue.h", runtime_dir / "m0_native_kernels.h", platform / (aka ? "m0_aka_native.cpp" : "m0_pc.c")}) {
                 ec.clear();
                 fs::copy_file(file, source / file.filename(), fs::copy_options::overwrite_existing, ec);
                 if (ec) { error = "Cannot copy M0+ board " + file.string() + ": " + ec.message(); return false; }
