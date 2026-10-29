@@ -24,7 +24,16 @@ enum { SPIN_NONE = 0, SPIN_LOOP = 1, SPIN_IDLE = 2 };
 typedef struct { uint32_t pc; uint8_t kind, rn; uint16_t imm; } M0Spin;
 static M0Spin m0_spin_cache[256];
 
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+/* the ROM copy is 4-aligned (m0_aka_native.cpp) and instructions are halfword aligned: one load */
+static inline uint16_t rom16(const uint8_t *f, uint32_t o) { return *(const uint16_t *)(f + o); }
+#else
 static inline uint16_t rom16(const uint8_t *f, uint32_t o) { return (uint16_t)(f[o] | f[o + 1] << 8); }
+#endif
+uint32_t m0_stat_insn;
+/* 0xae08 (line doubling of Cat's and Coins) has a kernel: used when the ROM holds exactly its code */
+static const uint16_t m0_ae08_code[17] = {0x6a79,0x428b,0xda0d,0x6af8,0x009a,0x18c1,0x6ab8,0x0049,0x6900,0x3301,0x5a09,0x18a8,0xba49,0x8041,0xb29b,0x52a9,0xe7ee};
+static int8_t m0_ae08_ok = -1;
 
 static M0_HOT const M0Spin *spin_of(const uint8_t *f, uint32_t fbase, uint32_t fsize, uint32_t pc, uint32_t to) {
     M0Spin *s = &m0_spin_cache[(pc >> 1) & 255u];
@@ -87,13 +96,21 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
     const uint8_t *flash = bd->flash;
     const uint32_t fbase = bd->flash_base, fsize = bd->flash_size;
     uint32_t *r = m->r;
-    uint32_t c = 0, pc = r[15];
+    uint32_t c = 0, pc = r[15], insn = 0;
     int hw = 0, ran = 0;
     if (m->fault) return 0;
     for (;;) {
         if ((int32_t)(room - c) < 12) break;
         const uint32_t o = pc - fbase;
         if (o > fsize - 4u || (o & 1u)) break;
+        if (__builtin_expect(pc == 0xae08u, 0)) {
+            if (m0_ae08_ok < 0) {
+                m0_ae08_ok = 1;
+                for (unsigned i = 0; i < 17; ++i) if (o + 34u > fsize || rom16(flash, o + 2u * i) != m0_ae08_code[i]) m0_ae08_ok = 0;
+            }
+            if (m0_ae08_ok > 0 && m0k_ae08(m, &c, room, 12u)) ran = 1;
+            if ((int32_t)(room - c) < 12) break;
+        }
         const uint32_t op = rom16(flash, o);
         const unsigned d = op & 7u, a = (op >> 3) & 7u, b = (op >> 6) & 7u;
         unsigned cyc = 1;
@@ -301,7 +318,7 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
             next = pc + 4u + (uint32_t)((int32_t)(imm << 7) >> 7); cyc = 3; break; }
         default: goto bail;
         }
-        c += cyc; pc = next; ran = 1;
+        c += cyc; pc = next; ran = 1; ++insn;
         if (hw) { r[15] = pc; goto out_noreload; }
         continue;
     bail:
@@ -309,6 +326,7 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
     }
     r[15] = pc;
 out_noreload:
+    m0_stat_insn += insn;
     if (hw) { m0_native_finish(m, c); return 1; }
     if (!ran) return 0;
     m->cycles += c;

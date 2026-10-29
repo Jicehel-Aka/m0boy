@@ -77,17 +77,20 @@ void m0_native_st_slow(M0Cpu *m, uint32_t a, uint32_t v, unsigned n, uint32_t *c
 static inline uint32_t m0_ld(M0Cpu *m, uint32_t a, unsigned n, uint32_t *c, int *hw) {
     M0Machine *b = (M0Machine *)m->board;
     uint32_t o = a - b->ram_base, v = 0;
-    if (__builtin_expect(o <= M0_MACHINE_RAM_BYTES - n, 1)) { memcpy(&v, b->ram + o, n); return v; }
+    if (__builtin_expect(o <= M0_MACHINE_RAM_BYTES - n && !(a & (n - 1u)), 1)) {
+        memcpy(&v, __builtin_assume_aligned(b->ram + o, n), n);       /* aligned: one load */
+        return v;
+    }
     return m0_native_ld_slow(m, a, n, c, hw);
 }
 static inline void m0_st(M0Cpu *m, uint32_t a, uint32_t v, unsigned n, uint32_t *c, int *hw) {
     M0Machine *b = (M0Machine *)m->board;
     uint32_t o = a - b->ram_base;
-    if (__builtin_expect(o <= M0_MACHINE_RAM_BYTES - n, 1)) {
+    if (__builtin_expect(o <= M0_MACHINE_RAM_BYTES - n && !(a & (n - 1u)), 1)) {
         /* stores below the stack pointer of the loop being watched are dead
          * once the call returns: they do not make an iteration differ */
         m->stores += a >= m->dead_below;
-        memcpy(b->ram + o, &v, n);
+        memcpy(__builtin_assume_aligned(b->ram + o, n), &v, n);
         return;
     }
     ++m->stores;

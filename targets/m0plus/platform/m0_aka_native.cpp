@@ -14,7 +14,7 @@ extern "C" {
 extern "C" const uint8_t m0_rom[];
 extern "C" const uint32_t m0_rom_size;
 extern "C" int m0_native_step(M0Cpu *);
-extern "C" uint32_t m0_bprof[8][2];
+extern "C" uint32_t m0_bprof[8][2], m0_stat_insn;
 extern "C" uint32_t m0_stat_native, m0_stat_interp, m0_stat_hw_n, m0_stat_hw_t, m0_stat_int_t, m0_stat_nat_t;
 
 /* Sampling profiler: a task on the otherwise idle core reads the guest PC a
@@ -87,6 +87,9 @@ extern "C" int m0boy_console_main(void) {
     } else if (uint8_t *copy2 = (uint8_t *)ps_malloc(m0_rom_size)) {
         memcpy(copy2, m0_rom, m0_rom_size); rom = copy2;
     }
+    if (((uintptr_t)rom & 3u) != 0) {
+        if (uint8_t *copy3 = (uint8_t *)ps_malloc(m0_rom_size)) { memcpy(copy3, rom, m0_rom_size); rom = copy3; }
+    }
     if (samd21_init(&board, rom, m0_rom_size, M0_FLASH_BASE, pixels)) {
         m0_lcd_fill(M0_COLOR(0x00800000));
         for (;;) delay(1000);
@@ -140,6 +143,9 @@ extern "C" int m0boy_console_main(void) {
                           m0_bprof[4][1] / 240u / frames, m0_bprof[4][0] / frames, m0_bprof[5][1] / 240u / frames, m0_bprof[5][0] / frames);
             Serial.printf("[rom] per frame: native-path ROM reads %u (%u us), interpreter fetch/reads %u (%u us)\n",
                           m0_bprof[6][0] / frames, m0_bprof[6][1] / 240u / frames, m0_bprof[7][0] / frames, m0_bprof[7][1] / 240u / frames);
+            Serial.printf("[fast] %u guest instructions per frame, %u ESP cycles each (all included)\n",
+                          m0_stat_insn / frames, m0_stat_insn ? (unsigned)((uint64_t)m0_stat_nat_t / m0_stat_insn) : 0u);
+            m0_stat_insn = 0;
             memset(m0_bprof, 0, sizeof m0_bprof);
             m0_stat_native = m0_stat_interp = m0_stat_hw_n = m0_stat_hw_t = m0_stat_int_t = m0_stat_nat_t = 0;
             { static unsigned n; if (++n % 5 == 0) m0_prof_report(); else if (n % 5 == 1) m0_prof_reset(); }
