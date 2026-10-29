@@ -105,6 +105,7 @@ static inline void m0_native_branch(M0Cpu *m, uint32_t t) {
 }
 /* a poll loop (load, compare, branch back) whose value only an event can
  * change: the board spends the wait up to its next deadline */
+int m0_fast_run(M0Cpu *m, uint32_t room);
 void m0_native_idle(M0Cpu *m, uint32_t pc, uint32_t addr);
 uint32_t m0_native_loop(M0Cpu *m, uint32_t pc, uint32_t pending);
 #include "m0_native_kernels.h"

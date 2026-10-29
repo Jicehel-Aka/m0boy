@@ -459,7 +459,7 @@ bool write_native_pages(const fs::path& source,
         unit << text.str();
         if (!unit) { error = "Cannot write M0+ native page"; return false; }
     }
-    dispatch << "    default: r = 0; break;\n    }\n"
+    dispatch << "    default: r = m0_fast_run(m, left); break;\n    }\n"
                 "    if (!r) break;\n    ran = 1;\n    if (r == 1) return 1;\n  }\n"
                 "  if (ran && m->event) m->event(m->board, m, 0);\n  return ran;\n}\n";
     std::ofstream(source / "m0_native.c") << dispatch.str();
@@ -522,7 +522,7 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
         if (standalone) {
             const fs::path platform = runtime_dir.parent_path() / "platform";
             for (const fs::path& file : {runtime_dir / "samd21.h", runtime_dir / "samd21.c",
-                                         runtime_dir / "m0_native_glue.h", runtime_dir / "m0_native_kernels.h", platform / (aka ? "m0_aka_native.cpp" : "m0_pc.c")}) {
+                                         runtime_dir / "m0_native_glue.h", runtime_dir / "m0_native_kernels.h", runtime_dir / "m0_fast.c", platform / (aka ? "m0_aka_native.cpp" : "m0_pc.c")}) {
                 ec.clear();
                 fs::copy_file(file, source / file.filename(), fs::copy_options::overwrite_existing, ec);
                 if (ec) { error = "Cannot copy M0+ board " + file.string() + ": " + ec.message(); return false; }
@@ -1001,7 +1001,7 @@ bool generate(const fs::path& firmware, SystemId system, const fs::path& output,
                      "file(GLOB M0_PAGES CONFIGURE_DEPENDS src/m0_native_page_*.c)\n"
                      "set_property(GLOBAL PROPERTY JOB_POOLS m0_compile=4)\n"
                      "add_library(m0_core STATIC src/m0_native.c ${M0_PAGES} src/m0_rom.c "
-                     "src/m0_cpu.c src/m0_machine.c src/samd21.c)\n"
+                     "src/m0_cpu.c src/m0_machine.c src/samd21.c src/m0_fast.c)\n"
                      "target_include_directories(m0_core PUBLIC src)\n"
                      "target_compile_definitions(m0_core PUBLIC M0_FLASH_BASE=0x4000u)\n"
                      "target_compile_options(m0_core PRIVATE -O2)\n"
