@@ -21,6 +21,9 @@ struct M0Machine {
     const uint8_t *flash;
     size_t flash_size;
     uint32_t flash_base, ram_base;
+    /* optional copy of a window of hot code in fast memory: starts read here, [code_lo, code_lo+code_len) */
+    const uint8_t *code_win;
+    uint32_t code_lo, code_len;
     uint8_t ram[M0_MACHINE_RAM_BYTES];
     void *peripheral;
     M0PeripheralRead peripheral_read;

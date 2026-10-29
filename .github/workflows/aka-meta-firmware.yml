@@ -31,6 +31,10 @@ on:
         type: choice
         options: ["hybride", "natif"]
         default: "hybride"
+      fenetre:
+        description: "Ko de code chaud lus depuis la RAM interne par l'interpreteur (utile quand la ROM tient en PSRAM, ex. Lapinou). 0 = aucune"
+        type: string
+        default: "64"
       parties:
         description: "Parties aleatoires jouees pour decouvrir le code a traduire (plus = mieux couvert, plus long)"
         type: string
@@ -70,6 +74,8 @@ jobs:
       - name: Pages chaudes en RAM interne
         env:
           PAGES: ${{ inputs.pages }}
+          FENETRE: ${{ inputs.fenetre }}
+          ROM: ${{ inputs.rom }}
         run: |
           python3 - <<'PY'
           import re, glob, os, collections
@@ -85,12 +91,34 @@ jobs:
               order = [int(x, 16) for x in manual]
           open(tmp + "/hot_pages.txt", "w").write(" ".join("%x" % p for p in order))
           print("pages les plus chaudes :", " ".join("%x" % p for p in order[:12]))
+          # fenetre de code chaud (RAM interne) : la plage contigue de FENETRE Ko qui couvre le plus de cycles
+          flags = ""
+          kb = int(os.environ.get("FENETRE", "0") or 0)
+          if kb > 0 and pg:
+              cm = open(tmp + "/pc/CMakeLists.txt").read()
+              base = int(re.search(r"M0_FLASH_BASE=(0x[0-9a-fA-F]+)", cm).group(1), 16)
+              size = os.path.getsize(os.environ["ROM"]) if os.path.exists(os.environ["ROM"]) else 0
+              end = base + size
+              best = (-1, 0)
+              first = min(pg); last = max(pg)
+              for lo in range(max(first, base >> 10), last + 1):
+                  if ((lo << 10) + kb * 1024) > end: break
+                  tot = sum(pg.get(q, 0) for q in range(lo, lo + kb))
+                  if tot > best[0]: best = (tot, lo)
+              if best[0] > 0:
+                  # le profil PC surestime les boucles d'attente : on recule de 1/8 de fenetre pour garder le code voisin
+                  best = (best[0], max(base >> 10, best[1] - kb // 8))
+                  flags = "-DM0_CODE_WIN_LO=0x%xu -DM0_CODE_WIN_LEN=%du" % (best[1] << 10, kb * 1024)
+                  print("fenetre de code chaud : %05x..%05x (%.0f%% des cycles)" % (best[1] << 10, (best[1] << 10) + kb * 1024, 100.0 * best[0] / sum(pg.values())))
+          open(tmp + "/win_flags.txt", "w").write(flags)
           PY
       - name: Compilation PlatformIO
         working-directory: ${{ runner.temp }}/aka
         env:
           PLATFORMIO_BUILD_FLAGS: ${{ inputs.bgr && '-DAKA_LCD_BGR=1' || '' }}
         run: |
+          export PLATFORMIO_BUILD_FLAGS="$PLATFORMIO_BUILD_FLAGS $(cat "$RUNNER_TEMP/win_flags.txt")"
+          echo "flags: $PLATFORMIO_BUILD_FLAGS"
           sed -i "s/-O2/-${{ inputs.opt }}/" platformio.ini
           grep -n "build_flags" platformio.ini
           read -r -a hot < "$RUNNER_TEMP/hot_pages.txt" || true

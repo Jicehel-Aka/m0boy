@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <string.h>
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 extern "C" {
 #include "samd21.h"
 #include "m0_audio.h"
@@ -98,6 +99,20 @@ extern "C" int m0boy_console_main(void) {
     m0_bench(&board, pixels);
     m0_prof_pc = &board.m.cpu.r[15];
     xTaskCreatePinnedToCore(m0_prof_task, "m0prof", 2048, nullptr, 1, nullptr, 0);
+#if defined(M0_CODE_WIN_LO) && defined(M0_CODE_WIN_LEN)
+    {   /* hot code in internal RAM: the ROM image may sit in PSRAM, whose cache misses cost ~300 cycles */
+        const uint32_t lo = M0_CODE_WIN_LO, len = M0_CODE_WIN_LEN;
+        if (lo >= M0_FLASH_BASE && lo - M0_FLASH_BASE + len <= m0_rom_size && len > 8u &&
+            !esp_ptr_internal(rom)) {
+            uint8_t *w = (uint8_t *)heap_caps_malloc(len, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            if (w) {
+                memcpy(w, rom + (lo - M0_FLASH_BASE), len);
+                board.m.code_win = w; board.m.code_lo = lo; board.m.code_len = len - 4u;
+                Serial.printf("[bench] code window %05x..%05x copied to internal RAM\n", (unsigned)lo, (unsigned)(lo + len));
+            }
+        }
+    }
+#endif
     Serial.printf("[bench] ROM read from %s\n", rom == m0_rom ? "flash" : "RAM copy");
     uint32_t next = m0_micros();
     /* Profiling: prints, once a second on the serial port (115200), where the

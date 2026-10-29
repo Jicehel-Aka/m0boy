@@ -121,6 +121,8 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
     M0Machine *bd = (M0Machine *)m->board;
     const uint8_t *flash = bd->flash;
     const uint32_t fbase = bd->flash_base, fsize = bd->flash_size;
+    const uint8_t *const cw = bd->code_win;
+    const uint32_t cwlo = bd->code_lo, cwlen = bd->code_len;
     uint32_t *r = m->r;
     uint32_t c = 0, pc = r[15], insn = 0;
     int hw = 0, ran = 0;
@@ -129,7 +131,9 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
         if ((int32_t)(room - c) < 12) break;
         const uint32_t o = pc - fbase;
         if (o > fsize - 4u || (o & 1u)) break;
-        const uint32_t op = rom16(flash, o);
+        const uint32_t wo = pc - cwlo;
+        const uint8_t *const fp = wo < cwlen ? cw + wo : flash + o;
+        const uint32_t op = rom16(fp, 0);
         const unsigned d = op & 7u, a = (op >> 3) & 7u, b = (op >> 6) & 7u;
         unsigned cyc = 1;
         uint32_t next = pc + 2u;
@@ -327,7 +331,7 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
         case 28: { /* B */
             next = pc + 4u + (uint32_t)(((int32_t)((op & 0x7ffu) << 21)) >> 20); cyc = 2; break; }
         case 30: { /* BL */
-            const uint32_t op2 = rom16(flash, o + 2u);
+            const uint32_t op2 = rom16(fp, 2);
             if ((op2 & 0xd000u) != 0xd000u) goto bail;
             const uint32_t s = (op >> 10) & 1u;
             const uint32_t i1 = !(((op2 >> 13) & 1u) ^ s), i2 = !(((op2 >> 11) & 1u) ^ s);
