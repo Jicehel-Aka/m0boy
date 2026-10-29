@@ -3,7 +3,6 @@
 #include <Arduino.h>
 #include <string.h>
 #include "esp_heap_caps.h"
-#include "esp_memory_utils.h"
 extern "C" {
 #include "samd21.h"
 #include "m0_audio.h"
@@ -83,8 +82,9 @@ extern "C" int m0boy_console_main(void) {
      * it all the time.  A copy in internal RAM (or PSRAM) makes those reads
      * 10-50x quicker. */
     const uint8_t *rom = m0_rom;
+    bool rom_internal = false;
     if (uint8_t *copy = (uint8_t *)heap_caps_malloc(m0_rom_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) {
-        memcpy(copy, m0_rom, m0_rom_size); rom = copy;
+        memcpy(copy, m0_rom, m0_rom_size); rom = copy; rom_internal = true;
     } else if (uint8_t *copy2 = (uint8_t *)ps_malloc(m0_rom_size)) {
         memcpy(copy2, m0_rom, m0_rom_size); rom = copy2;
     }
@@ -103,7 +103,7 @@ extern "C" int m0boy_console_main(void) {
     {   /* hot code in internal RAM: the ROM image may sit in PSRAM, whose cache misses cost ~300 cycles */
         const uint32_t lo = M0_CODE_WIN_LO, len = M0_CODE_WIN_LEN;
         if (lo >= M0_FLASH_BASE && lo - M0_FLASH_BASE + len <= m0_rom_size && len > 8u &&
-            !esp_ptr_internal(rom)) {
+            !rom_internal) {
             uint8_t *w = (uint8_t *)heap_caps_malloc(len, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
             if (w) {
                 memcpy(w, rom + (lo - M0_FLASH_BASE), len);
