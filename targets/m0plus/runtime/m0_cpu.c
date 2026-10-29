@@ -2,7 +2,7 @@
 #include <string.h>
 
 static uint32_t rd(M0Cpu *m, uint32_t a, unsigned n) { return m->read(m->board, a, n); }
-static void wr(M0Cpu *m, uint32_t a, uint32_t v, unsigned n) { ++m->stores; m->write(m->board, a, v, n); }
+static void wr(M0Cpu *m, uint32_t a, uint32_t v, unsigned n) { m->stores += a >= m->dead_below; m->write(m->board, a, v, n); }
 static uint32_t reg(const M0Cpu *m, unsigned r, uint32_t pc) { return r == 15 ? pc + 4u : m->r[r]; }
 static void nz(M0Cpu *m, uint32_t v) { m->n = (uint8_t)(v >> 31); m->z = (uint8_t)(v == 0); }
 static uint32_t add(M0Cpu *m, uint32_t a, uint32_t b, unsigned carry) {

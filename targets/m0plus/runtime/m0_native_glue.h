@@ -83,8 +83,14 @@ static inline uint32_t m0_ld(M0Cpu *m, uint32_t a, unsigned n, uint32_t *c, int 
 static inline void m0_st(M0Cpu *m, uint32_t a, uint32_t v, unsigned n, uint32_t *c, int *hw) {
     M0Machine *b = (M0Machine *)m->board;
     uint32_t o = a - b->ram_base;
+    if (__builtin_expect(o <= M0_MACHINE_RAM_BYTES - n, 1)) {
+        /* stores below the stack pointer of the loop being watched are dead
+         * once the call returns: they do not make an iteration differ */
+        m->stores += a >= m->dead_below;
+        memcpy(b->ram + o, &v, n);
+        return;
+    }
     ++m->stores;
-    if (__builtin_expect(o <= M0_MACHINE_RAM_BYTES - n, 1)) { memcpy(b->ram + o, &v, n); return; }
     m0_native_st_slow(m, a, v, n, c, hw);
 }
 static inline void m0_stm(M0Cpu *m, uint32_t a, uint32_t list, uint32_t *c, int *hw) {

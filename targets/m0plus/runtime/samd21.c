@@ -801,6 +801,7 @@ uint32_t m0_native_loop(M0Cpu *m, uint32_t pc, uint32_t pending) {
     Samd21 *b = (Samd21 *)m->board;
     struct Samd21Loop *l = &b->loop;
     uint64_t now = m->cycles + pending;
+    m->dead_below = m->r[13];
     const int same = l->pc == pc && l->stores == m->stores && l->flags == (uint32_t)(m->n | m->z << 1 | m->c << 2 | m->v << 3) &&
                      !memcmp(l->r, m->r, sizeof l->r);
     uint64_t period = now - l->at;

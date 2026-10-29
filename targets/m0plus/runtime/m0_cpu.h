@@ -19,6 +19,7 @@ typedef void (*M0Event)(void *board, M0Cpu *cpu, uint32_t cycles);
 struct M0Cpu {
     uint32_t r[16];
     uint64_t cycles;                    /* the board's clock: peripherals read it directly */
+    uint32_t dead_below;                /* stores under this address (the watched loop's SP) are scratch */
     uint32_t stores;                    /* writes and peripheral accesses so far (a loop that changes nothing leaves it alone) */
     uint8_t n, z, c, v, primask, fault, exception;
     uint32_t vector_base;
