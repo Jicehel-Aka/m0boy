@@ -679,6 +679,14 @@ int samd21_init(Samd21 *b, const uint8_t *flash, size_t flash_size, uint32_t fla
 void samd21_buttons(Samd21 *b, uint8_t pressed) { b->buttons = (uint8_t)~pressed; }
 void samd21_sd(Samd21 *b, Samd21SdRead r, Samd21SdWrite w) { b->sd_read = r; b->sd_write = w; }
 
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#include "xtensa/hal.h"
+#define M0_NOW() ((uint32_t)xthal_get_ccount())
+#else
+#define M0_NOW() 0u
+#endif
+/* ESP32 cycles spent: in the board for machine accesses (n = count), in the interpreter, in native chains */
+uint32_t m0_stat_hw_n, m0_stat_hw_t, m0_stat_int_t, m0_stat_nat_t;
 /* counters for the AKA runtime's [perf] line: chains run natively / instructions interpreted */
 uint32_t m0_stat_native, m0_stat_interp;
 void samd21_frame(Samd21 *b, int (*native_step)(M0Cpu *)) {
@@ -698,8 +706,11 @@ void samd21_frame(Samd21 *b, int (*native_step)(M0Cpu *)) {
             if (b->mmio) b->mmio->pc = pc;
             m0_cpu_step(cpu);
             b->step_hook(b->hook_ctx, pc, cpu->cycles - c0);
-        } else if (native_step && native_step(cpu)) { m0_stat_native++; }
-        else { m0_stat_interp++; m0_cpu_step(cpu); }
+        } else {
+            const uint32_t t0 = M0_NOW();
+            if (native_step && native_step(cpu)) { m0_stat_native++; m0_stat_nat_t += M0_NOW() - t0; }
+            else { m0_stat_interp++; m0_cpu_step(cpu); m0_stat_int_t += M0_NOW() - t0; }
+        }
     }
     sync(b);
     b->frac += 11u;                                         /* 803649.1.. cycles per frame */
@@ -766,7 +777,8 @@ uint32_t m0_native_ld_slow(M0Cpu *m, uint32_t a, unsigned n, uint32_t *c, int *h
         return v;
     }
     m->cycles += *c; *c = 0; *hw = 1;
-    return m->read(m->board, a, n);
+    { const uint32_t t0 = M0_NOW(); v = m->read(m->board, a, n); m0_stat_hw_n++; m0_stat_hw_t += M0_NOW() - t0; }
+    return v;
 }
 void m0_native_st_slow(M0Cpu *m, uint32_t a, uint32_t v, unsigned n, uint32_t *c, int *hw) {
     if (pure_write(a)) {
@@ -776,7 +788,7 @@ void m0_native_st_slow(M0Cpu *m, uint32_t a, uint32_t v, unsigned n, uint32_t *c
         return;
     }
     m->cycles += *c; *c = 0; *hw = 1;
-    m->write(m->board, a, v, n);
+    { const uint32_t t0 = M0_NOW(); m->write(m->board, a, v, n); m0_stat_hw_n++; m0_stat_hw_t += M0_NOW() - t0; }
 }
 
 void m0_native_idle(M0Cpu *m, uint32_t pc, uint32_t addr) { samd21_idle((Samd21 *)m->board, pc, addr); }
