@@ -26,6 +26,11 @@ on:
         type: choice
         options: ["Os", "O2"]
         default: "Os"
+      mode:
+        description: "hybride = interpreteur + pages chaudes natives, tout en RAM interne (code lu de la flash evite) ; natif = tout le code natif depuis la flash"
+        type: choice
+        options: ["hybride", "natif"]
+        default: "hybride"
       parties:
         description: "Parties aleatoires jouees pour decouvrir le code a traduire (plus = mieux couvert, plus long)"
         type: string
@@ -89,6 +94,8 @@ jobs:
           sed -i "s/-O2/-${{ inputs.opt }}/" platformio.ini
           grep -n "build_flags" platformio.ini
           read -r -a hot < "$RUNNER_TEMP/hot_pages.txt" || true
+          mkdir -p "$RUNNER_TEMP/orig"
+          for f in m0_cpu.c m0_machine.c samd21.c m0_native.c; do cp "src/$f" "$RUNNER_TEMP/orig/$f"; done
           n=${{ inputs.iram }}
           while true; do
             git -C . status >/dev/null 2>&1 || true
@@ -101,7 +108,18 @@ jobs:
               done
             done
             if [ "$n" -gt 0 ]; then sed -i '1i #include "esp_attr.h"' src/m0_native_page_*.c; fi
-            echo "=== essai avec $n pages en RAM interne ==="
+            if [ "${{ inputs.mode }}" = "hybride" ]; then
+              # l'interpreteur et le modele de carte vivent en RAM interne ; seules les pages choisies restent natives
+              for f in m0_cpu.c m0_machine.c samd21.c; do
+                cp "$RUNNER_TEMP/orig/$f" "src/$f"
+                sed -i -E '/^(if|for|while|switch|else|struct|union|enum|typedef)/!{/^[A-Za-z_][^;=#]*\)[[:space:]]*\{[[:space:]]*$/s/^/IRAM_ATTR /}' "src/$f"
+                sed -i '1i #include "esp_attr.h"' "src/$f"
+              done
+              sel=" ${hot[*]:0:$n} "
+              awk -v sel="$sel" '/case 0x[0-9a-f]+u: r = m0_page_/ { match($0, /0x[0-9a-f]+/); h=substr($0, RSTART+2, RLENGTH-2); if (index(sel, " " h " ") == 0) next } { print }' "$RUNNER_TEMP/orig/m0_native.c" > src/m0_native.c
+              grep -c "case 0x.*m0_page_" src/m0_native.c
+            fi
+            echo "=== essai avec $n pages en RAM interne (mode ${{ inputs.mode }}) ==="
             if pio run > "$RUNNER_TEMP/build.log" 2>&1; then tail -n 25 "$RUNNER_TEMP/build.log"; break; fi
             # les erreurs, lisibles dans les annotations du run
             { grep -i -E "error|undefined|overflow|will not fit|region|fatal" "$RUNNER_TEMP/build.log" | head -n 10; tail -n 6 "$RUNNER_TEMP/build.log"; } | while IFS= read -r l; do echo "::error::[n=$n] ${l:0:400}"; done || true
@@ -120,5 +138,5 @@ jobs:
           echo "PACK=$RUNNER_TEMP/pack" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:
-          name: firmware-aka-${{ env.NAME }}
+          name: firmware-aka-${{ env.NAME }}-${{ inputs.mode }}
           path: ${{ env.PACK }}
