@@ -24,9 +24,16 @@ extern "C" uint32_t m0_stat_native, m0_stat_interp, m0_stat_hw_n, m0_stat_hw_t, 
 #define M0_PROF_PAGES 256
 static volatile uint32_t m0_prof[M0_PROF_PAGES + 1];
 static volatile const uint32_t *m0_prof_pc;
+#ifdef M0_FAST_PROF
+extern "C" volatile uint32_t m0_fast_pc;
+#endif
 static void m0_prof_task(void *) {
     for (;;) {
-        uint32_t pc = *m0_prof_pc - M0_FLASH_BASE;
+        uint32_t pc = *m0_prof_pc;
+#ifdef M0_FAST_PROF
+        if (m0_fast_pc) pc = m0_fast_pc;
+#endif
+        pc -= M0_FLASH_BASE;
         uint32_t i = pc >> 10;
         m0_prof[i < M0_PROF_PAGES ? i : M0_PROF_PAGES]++;
         vTaskDelay(1);

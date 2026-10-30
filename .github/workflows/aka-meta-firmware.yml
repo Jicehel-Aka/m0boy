@@ -115,7 +115,7 @@ jobs:
       - name: Compilation PlatformIO
         working-directory: ${{ runner.temp }}/aka
         env:
-          PLATFORMIO_BUILD_FLAGS: ${{ inputs.bgr && '-DAKA_LCD_BGR=1' || '' }}
+          PLATFORMIO_BUILD_FLAGS: ${{ inputs.bgr && '-DAKA_LCD_BGR=1 -DM0_FAST_PROF=1' || '-DM0_FAST_PROF=1' }}
         run: |
           export PLATFORMIO_BUILD_FLAGS="$PLATFORMIO_BUILD_FLAGS $(cat "$RUNNER_TEMP/win_flags.txt")"
           echo "flags: $PLATFORMIO_BUILD_FLAGS"

@@ -116,6 +116,12 @@ static inline int cond_ok(const M0Cpu *m, unsigned code) {
 #define SUBF(a, b, k) m0_native_addm(m, (a), ~(b), (k), 15u)
 #define NZ(v) m0_native_nzm(m, (v), 12u)
 
+#ifdef M0_FAST_PROF
+volatile uint32_t m0_fast_pc;     /* the guest PC being interpreted, for the AKA sampler (0 outside) */
+#define FAST_PC(v) (m0_fast_pc = (v))
+#else
+#define FAST_PC(v) ((void)0)
+#endif
 /* returns 0: nothing run; 1: run and the clock has been ticked; 2: run, cycles on the clock */
 int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
     M0Machine *bd = (M0Machine *)m->board;
@@ -131,6 +137,7 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
         if ((int32_t)(room - c) < 12) break;
         const uint32_t o = pc - fbase;
         if (o > fsize - 4u || (o & 1u)) break;
+        FAST_PC(pc);
         const uint32_t wo = pc - cwlo;
         const uint8_t *const fp = wo < cwlen ? cw + wo : flash + o;
         const uint32_t op = rom16(fp, 0);
@@ -296,6 +303,9 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
                 }
                 r[d] = v;
             } else if (op == 0xbf00u) { /* NOP */
+            } else if ((op & 0xffefu) == 0xb662u) { /* CPSID i / CPSIE i */
+                primask = (uint8_t)((op >> 4) & 1u);
+                if (!(op & 0x10u)) hw = 1;                 /* unmasked: the board looks at the pending lines */
             } else goto bail;
             break; }
         case 24: { /* STMIA */
@@ -332,7 +342,20 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
             next = pc + 4u + (uint32_t)(((int32_t)((op & 0x7ffu) << 21)) >> 20); cyc = 2; break; }
         case 30: { /* BL */
             const uint32_t op2 = rom16(fp, 2);
-            if ((op2 & 0xd000u) != 0xd000u) goto bail;
+            if ((op2 & 0xd000u) != 0xd000u) {
+                if (op == 0xf3bfu) { next = pc + 4u; cyc = 4; break; }              /* DSB DMB ISB */
+                if (op == 0xf3efu && (op2 & 0xf000u) == 0x8000u) {                    /* MRS */
+                    const uint32_t sys = op2 & 255u;
+                    uint32_t value = 0;
+                    if (sys <= 3) value = (uint32_t)m->n << 31 | (uint32_t)m->z << 30 | (uint32_t)m->c << 29 |
+                                          (uint32_t)m->v << 28 | ((sys & 1u) ? m->exception : 0u);
+                    else if (sys >= 5 && sys <= 7) value = (sys & 1u) ? m->exception : 0u;
+                    else if (sys == 8 || sys == 9) value = r[13];
+                    else if (sys == 16) value = primask;
+                    r[(op2 >> 8) & 15u] = value; next = pc + 4u; cyc = 4; break;
+                }
+                goto bail;
+            }
             const uint32_t s = (op >> 10) & 1u;
             const uint32_t i1 = !(((op2 >> 13) & 1u) ^ s), i2 = !(((op2 >> 11) & 1u) ^ s);
             const uint32_t imm = (s << 24) | (i1 << 23) | (i2 << 22) | ((op & 0x3ffu) << 12) | ((op2 & 0x7ffu) << 1);
@@ -350,6 +373,7 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
     }
     r[15] = pc;
 out_noreload:
+    FAST_PC(0);
     m0_stat_insn += insn;
     if (hw) { m0_native_finish(m, c); return 1; }
     if (!ran) return 0;
