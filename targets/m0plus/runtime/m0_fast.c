@@ -128,6 +128,12 @@ volatile uint32_t m0_fast_pc;     /* the guest PC being interpreted, for the AKA
 #else
 #define FAST_PC(v) ((void)0)
 #endif
+/* Cycles kept before the deadline: an instruction that would start closer than this is left to m0_cpu_step.  A
+ * chain that stops inside the margin ticks the clock itself (m0_native_finish), so the board sees the deadline at
+ * the instruction boundary the interpreter would.  12 was safe; 1 differs from the interpreter, 2 and more match. */
+#ifndef M0_FAST_MARGIN
+#define M0_FAST_MARGIN 3
+#endif
 /* returns 0: nothing run; 1: run and the clock has been ticked; 2: run, cycles on the clock */
 int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
     M0Machine *bd = (M0Machine *)m->board;
@@ -140,7 +146,7 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
     int hw = 0, ran = 0;
     if (m->fault) return 0;
     for (;;) {
-        if ((int32_t)(room - c) < 12) break;
+        if ((int32_t)(room - c) < M0_FAST_MARGIN) break;
         const uint32_t o = pc - fbase;
         if (o > fsize - 4u || (o & 1u)) break;
         FAST_PC(pc);
@@ -381,7 +387,7 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
 out_noreload:
     FAST_PC(0);
     m0_stat_insn += insn;
-    if (hw) { m0_native_finish(m, c); return 1; }
+    if (hw || (ran && (int32_t)(room - c) < M0_FAST_MARGIN)) { m0_native_finish(m, c); return 1; }
     if (!ran) return 0;
     m->cycles += c;
     return 2;
