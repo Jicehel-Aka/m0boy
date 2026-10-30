@@ -82,8 +82,12 @@ static M0_HOT const M0Spin *spin_of(const uint8_t *f, uint32_t fbase, uint32_t f
         if (to + 4u == pc) {
             const uint16_t ld = rom16(f, to - fbase), cmp = rom16(f, to + 2u - fbase);
             const unsigned kind = ld & 0xf800u;
-            if ((kind == 0x6800u || kind == 0x7800u || kind == 0x8800u) && (cmp & 0xf800u) == 0x2800u &&
-                ((cmp >> 8) & 7u) == (ld & 7u) && (ld & 7u) != ((ld >> 3) & 7u)) {
+            const unsigned rd = ld & 7u;
+            /* the value is tested by CMP #imm, a shift by an immediate (the bit-test idiom) or TST */
+            const int tested = ((cmp & 0xf800u) == 0x2800u && ((cmp >> 8) & 7u) == rd) ||
+                               ((cmp & 0xe000u) == 0x0000u && (cmp & 0x1800u) != 0x1800u && ((cmp >> 3) & 7u) == rd) ||
+                               ((cmp & 0xffc0u) == 0x4200u && ((cmp & 7u) == rd || ((cmp >> 3) & 7u) == rd));
+            if ((kind == 0x6800u || kind == 0x7800u || kind == 0x8800u) && tested && rd != ((ld >> 3) & 7u)) {
                 const unsigned imm5 = (ld >> 6) & 31u, scale = kind == 0x6800u ? 4u : kind == 0x8800u ? 2u : 1u;
                 s->kind = SPIN_IDLE; s->rn = (uint8_t)((ld >> 3) & 7u); s->imm = (uint16_t)(imm5 * scale);
                 return s;

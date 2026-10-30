@@ -622,7 +622,8 @@ void samd21_profile_mmio(const Samd21 *b, FILE *out) {
  * TC/DMAC flag; a SERCOM flag follows the clock and is left alone. */
 void samd21_idle(Samd21 *b, uint32_t loop_pc, uint32_t addr) {
     M0Machine *m = &b->m;
-    int polled = addr - m->ram_base < M0_MACHINE_RAM_BYTES ||
+    const int spi_flag = addr == 0x42001818u && b->spi_dma < 0;             /* SERCOM4 INTFLAG with no SPI DMA running (a read would sync it): it changes at known cycles, see below */
+    int polled = spi_flag || addr - m->ram_base < M0_MACHINE_RAM_BYTES ||
                  (addr >= 0x42003000u && addr < 0x42003800u) || (addr >= 0x41004800u && addr < 0x41004900u);
     uint64_t now = b->m.cpu.cycles;
     if (!polled) { b->idle_run = 0; return; }
@@ -640,10 +641,15 @@ void samd21_idle(Samd21 *b, uint32_t loop_pc, uint32_t addr) {
         uint64_t st = m->systick_val ? m->systick_val : (uint64_t)m->systick_load + 1u;
         if (now + st < limit) limit = now + st;
     }
+    if (spi_flag) {                                       /* the flag moves at these cycles: never skip past the first */
+        const uint64_t at[3] = { b->spi_prev, b->spi_last, b->rx_n ? b->rx[0].done : 0 };
+        for (int i = 0; i < 3; ++i) if (at[i] + period > now && at[i] < limit) limit = at[i];   /* one not yet seen by the last read counts too */
+    }
     if (limit <= now + 2 * period) return;
     uint64_t n = (limit - now) / period - 1u;
     if (!n) return;
     m->cpu.cycles += (uint32_t)(n * period);
+    if (spi_flag) m->cpu.stores += (uint32_t)n;           /* each skipped read counted, as board_read does */
     b->idle_skipped += n * period;
     b->idle_at += n * period;
 }
