@@ -204,4 +204,29 @@ static inline int m0k_cc_tcopy(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bo
     *c += cyc;
     return 1;
 }
+
+/* Lapinou 0x4b30: the tail of the sprite copy, for (; r0 != r6; r0 += 2) *(u16 *)(r3 + r0) = r7 = *(u16 *)(r2 + r0);
+ * (head 0x4b30..0x4b36, then 0x4b60 cmp r6, r0 / bne).  10 cycles a turn; the turn that leaves the loop is the caller's. */
+static const uint16_t __attribute__((unused)) m0_lp_tail_code[4] = {0x5a17,0x521f,0x3002,0xe013};
+static inline int m0k_lp4b30(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound) {
+    uint32_t *r = m->r;
+    const uint8_t *tail = m0k_ptr(m, 0x4b60u, 4, 0);
+    if (!tail || tail[0] != 0x86 || tail[1] != 0x42 || tail[2] != 0xe5 || tail[3] != 0xd1) return 0;   /* cmp r6, r0 ; bne 0x4b30 */
+    const uint32_t off = r[0], end = r[6], src = r[2], dst = r[3];
+    if ((off | end | src | dst) & 1u || end <= off || end - off < 4u || end > 0xffffu) return 0;
+    uint32_t k = ((end - off) >> 1) - 1u, left = room - *c;
+    if (left < bound + 10u) return 0;
+    if (k > (left - bound) / 10u) k = (left - bound) / 10u;
+    if (!k) return 0;
+    const uint8_t *s = m0k_ptr(m, src + off, k << 1, 0);
+    uint8_t *d = m0k_ptr(m, dst + off, k << 1, 1);
+    if (!s || !d || m0k_overlap(src + off, k << 1, dst + off, k << 1)) return 0;
+    uint16_t last; memcpy(&last, s + (k << 1) - 2, 2);
+    memcpy(d, s, (size_t)k << 1);
+    m->stores += m0k_live_stores(m, dst + off, k);
+    r[0] = off + (k << 1); r[7] = last;
+    (void)m0_native_addm(m, r[6], ~r[0], 1u, 15u);            /* cmp r6, r0 */
+    *c += 10u * k;
+    return 1;
+}
 #endif
