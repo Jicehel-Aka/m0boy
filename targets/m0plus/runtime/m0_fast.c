@@ -41,10 +41,14 @@ typedef struct { uint32_t pc; uint16_t len; int8_t ok; const uint16_t *code;
 static int m0k_call_ae08(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound) { return m0k_ae08(m, c, room, bound); }
 static int m0k_call_lp4b18(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound) { return m0k_lp4b18(m, c, room, bound); }
 static int m0k_call_lp864a(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound) { return m0k_lp864a(m, c, room, bound); }
+static int m0k_call_ccfill(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound) { return m0k_cc_fill(m, c, room, bound); }
+static int m0k_call_cctcopy(M0Cpu *m, uint32_t *c, uint32_t room, uint32_t bound) { return m0k_cc_tcopy(m, c, room, bound); }
 static M0Kernel m0_kernels[] = {
     {0xae08u, 17, -1, m0_ae08_code, m0k_call_ae08},
     {0x4b18u, 34, -1, m0_lp_copy_code, m0k_call_lp4b18},
     {0x864au, 50, -1, m0_lp_mix_code, m0k_call_lp864a},
+    {0xe1cau, 8, -1, m0_cc_fill_code, m0k_call_ccfill},
+    {0xdbaau, 15, -1, m0_cc_tcopy_code, m0k_call_cctcopy},
 };
 static M0_HOT int kernel_at(M0Cpu *m, uint32_t pc, uint32_t *c, uint32_t room,
                             const uint8_t *flash, uint32_t fbase, uint32_t fsize) {
