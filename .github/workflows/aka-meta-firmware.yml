@@ -13,6 +13,10 @@ on:
         description: "Ordre des couleurs BGR de l'ecran (coche si rouge et bleu sont inverses)"
         type: boolean
         default: true
+      profil:
+        description: "Profil [prof] precis par instruction (ralentit l'interpreteur d'environ 5 %) ; decoche pour la vitesse maximale"
+        type: boolean
+        default: false
       iram:
         description: "Pages (1 Ko de code ARM chacune) les plus chaudes copiees en RAM interne, essayees de la plus grande valeur vers 0 jusqu'a ce que ca tienne"
         type: string
@@ -115,7 +119,7 @@ jobs:
       - name: Compilation PlatformIO
         working-directory: ${{ runner.temp }}/aka
         env:
-          PLATFORMIO_BUILD_FLAGS: ${{ inputs.bgr && '-DAKA_LCD_BGR=1 -DM0_FAST_PROF=1' || '-DM0_FAST_PROF=1' }}
+          PLATFORMIO_BUILD_FLAGS: ${{ format('{0} {1}', inputs.bgr && '-DAKA_LCD_BGR=1' || '', inputs.profil && '-DM0_FAST_PROF=1' || '') }}
         run: |
           export PLATFORMIO_BUILD_FLAGS="$PLATFORMIO_BUILD_FLAGS $(cat "$RUNNER_TEMP/win_flags.txt")"
           echo "flags: $PLATFORMIO_BUILD_FLAGS"
