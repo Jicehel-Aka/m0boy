@@ -848,9 +848,14 @@ static uint32_t m0_native_loop_impl(M0Cpu *m, uint32_t pc, uint32_t pending) {
                      !memcmp(l->r, m->r, sizeof l->r);
     uint64_t period = now - l->at;
     if (!same) {
+        /* the same loop seen again after its state moved (a polled flag, an event
+         * routine): the period it had is kept as a hint, so one identical
+         * iteration at that period is enough to skip, not three */
+        const int hint = l->pc == pc && l->period != 0;
         l->pc = pc; l->stores = m->stores; l->flags = (uint32_t)(m->n | m->z << 1 | m->c << 2 | m->v << 3);
         memcpy(l->r, m->r, sizeof l->r);
-        l->at = now; l->period = 0; l->run = 0;
+        l->at = now; l->run = hint ? 1 : 0;
+        if (!hint) l->period = 0;
         return 0;
     }
     l->at = now;
