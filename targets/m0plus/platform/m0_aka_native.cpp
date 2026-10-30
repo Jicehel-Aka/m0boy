@@ -165,7 +165,7 @@ extern "C" int m0boy_console_main(void) {
                           m0_bprof[4][1] / 240u / frames, m0_bprof[4][0] / frames, m0_bprof[5][1] / 240u / frames, m0_bprof[5][0] / frames);
             Serial.printf("[rom] per frame: native-path ROM reads %u (%u us), interpreter fetch/reads %u (%u us)\n",
                           m0_bprof[6][0] / frames, m0_bprof[6][1] / 240u / frames, m0_bprof[7][0] / frames, m0_bprof[7][1] / 240u / frames);
-            Serial.printf("[fast] %u guest instructions per frame, %u ESP cycles each (all included)\n",
+            Serial.printf("[fast] %u guest cycles per frame, %u ESP cycles per guest cycle (all included)\n",
                           m0_stat_insn / frames, m0_stat_insn ? (unsigned)((uint64_t)m0_stat_nat_t / m0_stat_insn) : 0u);
             m0_stat_insn = 0;
             memset(m0_bprof, 0, sizeof m0_bprof);

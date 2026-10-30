@@ -52,6 +52,13 @@ static M0Kernel m0_kernels[] = {
     {0xe1cau, 8, -1, m0_cc_fill_code, m0k_call_ccfill},
     {0xdbaau, 15, -1, m0_cc_tcopy_code, m0k_call_cctcopy},
 };
+/* a backward branch only looks at the kernel table when its target hashes onto a kernel head */
+static uint8_t m0_kmap[512];
+static int m0_kmap_ready;
+static void m0_kmap_init(void) {
+    for (unsigned i = 0; i < sizeof m0_kernels / sizeof m0_kernels[0]; ++i) m0_kmap[(m0_kernels[i].pc >> 1) & 511u] = 1;
+    m0_kmap_ready = 1;
+}
 static M0_HOT int kernel_at(M0Cpu *m, uint32_t pc, uint32_t *c, uint32_t room,
                             const uint8_t *flash, uint32_t fbase, uint32_t fsize) {
     for (unsigned i = 0; i < sizeof m0_kernels / sizeof m0_kernels[0]; ++i) {
@@ -123,7 +130,7 @@ static inline int cond_ok(const M0Cpu *m, unsigned code) {
 #define NZ(v) m0_native_nzm(m, (v), 12u)
 
 #ifdef M0_FAST_PROF
-volatile uint32_t m0_fast_pc;     /* the guest PC being interpreted, for the AKA sampler (0 outside) */
+uint32_t m0_fast_pc;     /* the guest PC being interpreted, for the AKA sampler (0 outside); a plain store: a volatile one costs a memw on Xtensa */
 #define FAST_PC(v) (m0_fast_pc = (v))
 #else
 #define FAST_PC(v) ((void)0)
@@ -134,29 +141,92 @@ volatile uint32_t m0_fast_pc;     /* the guest PC being interpreted, for the AKA
 #ifndef M0_FAST_MARGIN
 #define M0_FAST_MARGIN 3
 #endif
+/* The accesses of the glue take &c and &hw, which keeps the chain's cycle count and the machine flag in memory
+ * (a store every step).  Here the slow path gets copies, so both stay in registers on the fast one. */
+static inline __attribute__((always_inline)) uint32_t m0f_ld(M0Cpu *m, uint32_t a, unsigned n, uint32_t *c, int *hw) {
+    M0Machine *b = (M0Machine *)m->board;
+    const uint32_t o = a - b->ram_base;
+    if (__builtin_expect(o <= M0_MACHINE_RAM_BYTES - n && !(a & (n - 1u)), 1)) {
+        uint32_t v = 0;
+        memcpy(&v, __builtin_assume_aligned(b->ram + o, n), n);
+        return v;
+    }
+    uint32_t cc = *c; int hh = *hw;
+    const uint32_t v = m0_native_ld_slow(m, a, n, &cc, &hh);
+    *c = cc; *hw = hh;
+    return v;
+}
+static inline __attribute__((always_inline)) void m0f_st(M0Cpu *m, uint32_t a, uint32_t v, unsigned n, uint32_t *c, int *hw) {
+    M0Machine *b = (M0Machine *)m->board;
+    const uint32_t o = a - b->ram_base;
+    if (__builtin_expect(o <= M0_MACHINE_RAM_BYTES - n && !(a & (n - 1u)), 1)) {
+        m->stores += a >= m->dead_below;
+        memcpy(__builtin_assume_aligned(b->ram + o, n), &v, n);
+        return;
+    }
+    ++m->stores;
+    uint32_t cc = *c; int hh = *hw;
+    m0_native_st_slow(m, a, v, n, &cc, &hh);
+    *c = cc; *hw = hh;
+}
+#undef LD32
+#undef LD16
+#undef LD8
+#undef ST32
+#undef ST16
+#undef ST8
+#define LD32(a) m0f_ld(m, (a), 4, &c, &hw)
+#define LD16(a) m0f_ld(m, (a), 2, &c, &hw)
+#define LD8(a) m0f_ld(m, (a), 1, &c, &hw)
+#define ST32(a, v) m0f_st(m, (a), (v), 4, &c, &hw)
+#define ST16(a, v) m0f_st(m, (a), (v), 2, &c, &hw)
+#define ST8(a, v) m0f_st(m, (a), (v), 1, &c, &hw)
+
+/* instruction fields, taken where a handler needs them (not all decoded ahead of the dispatch) */
+#define d (op & 7u)
+#define a ((op >> 3) & 7u)
+#define b ((op >> 6) & 7u)
 /* returns 0: nothing run; 1: run and the clock has been ticked; 2: run, cycles on the clock */
 int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
     M0Machine *bd = (M0Machine *)m->board;
-    const uint8_t *flash = bd->flash;
-    const uint32_t fbase = bd->flash_base, fsize = bd->flash_size;
-    const uint8_t *const cw = bd->code_win;
-    const uint32_t cwlo = bd->code_lo, cwlen = bd->code_len;
     uint32_t *r = m->r;
-    uint32_t c = 0, pc = r[15], insn = 0;
-    int hw = 0, ran = 0;
+    uint32_t c = 0, pc = r[15];
+    int hw = 0;
     if (m->fault) return 0;
+    if (pc & 1u) return 0;
+    if (__builtin_expect(!m0_kmap_ready, 0)) m0_kmap_init();
+    /* the fetch region: instructions are read through `pb + pc` while pc stays in [plo, plo + plen); the code
+     * window (when there is one) and the two stretches of ROM around it are three regions, so one range check
+     * a step replaces the bounds and window tests */
+    const uint8_t *pb = 0; uint32_t plo = 0, pend = 0;
+#define RESOLVE_FETCH(at) do { \
+        const uint8_t *const flash = bd->flash, *const cw = bd->code_win; \
+        const uint32_t fbase = bd->flash_base, fsize = bd->flash_size, cwlo = bd->code_lo, cwlen = bd->code_len; \
+        const uint32_t w_ = (at) - cwlo, o_ = (at) - fbase; \
+        if (w_ < cwlen) { pb = cw - cwlo; plo = cwlo; pend = cwlo + (cwlen > 2u ? cwlen - 2u : 0u); \
+                          if (w_ >= pend - plo) { pb = flash - fbase; plo = pend; pend = plo; } } \
+        else if (o_ > fsize - 4u) { pb = 0; pend = 0; } \
+        else if (!cwlen || (at) < cwlo) { pb = flash - fbase; plo = fbase; \
+                          pend = (cwlen && cwlo > fbase ? cwlo : fbase + fsize - 3u); } \
+        else { pb = flash - fbase; plo = cwlo + cwlen; pend = fbase + fsize - 3u; } \
+    } while (0)
     for (;;) {
         if ((int32_t)(room - c) < M0_FAST_MARGIN) break;
-        const uint32_t o = pc - fbase;
-        if (o > fsize - 4u || (o & 1u)) break;
+        if (__builtin_expect(pc >= pend, 0)) {
+            RESOLVE_FETCH(pc);
+            if (pc < plo || pc >= pend) {
+                /* the window's last halfword (or an edge case): the plain ROM read, bounds as before */
+                const uint32_t o = pc - bd->flash_base;
+                if (o > bd->flash_size - 4u) break;
+                pb = bd->flash - bd->flash_base; plo = pc; pend = pc + 2u;
+            }
+        }
         FAST_PC(pc);
-        const uint32_t wo = pc - cwlo;
-        const uint8_t *const fp = wo < cwlen ? cw + wo : flash + o;
+        const uint8_t *const fp = pb + pc;
         const uint32_t op = rom16(fp, 0);
-        const unsigned d = op & 7u, a = (op >> 3) & 7u, b = (op >> 6) & 7u;
         unsigned cyc = 1;
         uint32_t next = pc + 2u;
-        switch (op >> 11) {
+        switch ((op >> 11) & 31u) {
         case 0: { /* LSLS imm */
             uint32_t v = r[a]; const unsigned n = (op >> 6) & 31u;
             if (n) { m->c = (uint8_t)((v >> (32 - n)) & 1u); v <<= n; }
@@ -240,9 +310,12 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
             break; }
         case 9: { /* LDR literal */
             const uint32_t addr = ((pc + 4u) & ~3u) + ((op & 255u) << 2);
-            const uint32_t fo = addr - fbase;
-            if (fo <= fsize - 4u) memcpy(&r[(op >> 8) & 7u], flash + fo, 4);
-            else r[(op >> 8) & 7u] = LD32(addr);
+            if (addr - plo < pend - plo) memcpy(&r[(op >> 8) & 7u], pb + addr, 4);      /* the literal pool is in the fetch region */
+            else {
+                const uint32_t fo = addr - bd->flash_base;
+                if (fo <= bd->flash_size - 4u) memcpy(&r[(op >> 8) & 7u], bd->flash + fo, 4);
+                else r[(op >> 8) & 7u] = LD32(addr);
+            }
             cyc = 2; break; }
         case 10: case 11: { /* register offset */
             const uint32_t addr = r[a] + r[b];
@@ -340,7 +413,7 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
                 const uint32_t to = pc + 4u + (uint32_t)((int32_t)(int8_t)(op & 255u) * 2);
                 cyc = 2;
                 if (to < pc) {
-                    const M0Spin *s = spin_of(flash, fbase, fsize, pc, to);
+                    const M0Spin *s = spin_of(bd->flash, bd->flash_base, bd->flash_size, pc, to);
                     if (s->kind == SPIN_LOOP) { r[15] = pc; c += m0_native_loop(m, pc, c); }
                     else if (s->kind == SPIN_IDLE) {
                         r[15] = pc;
@@ -373,10 +446,13 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
             const uint32_t imm = (s << 24) | (i1 << 23) | (i2 << 22) | ((op & 0x3ffu) << 12) | ((op2 & 0x7ffu) << 1);
             r[14] = (pc + 4u) | 1u;
             next = pc + 4u + (uint32_t)((int32_t)(imm << 7) >> 7); cyc = 3; break; }
-        default: goto bail;
+        case 29: case 31: goto bail;
         }
-        c += cyc; ran = 1; ++insn;
-        if (__builtin_expect(next < pc, 0) && !hw) (void)kernel_at(m, next, &c, room, flash, fbase, fsize);
+        c += cyc;
+        if (__builtin_expect(next < pc, 0)) {
+            if (next < plo) pend = 0;                 /* left the region downwards: resolve again at the next step */
+            if (m0_kmap[(next >> 1) & 511u] && !hw) { uint32_t kc = c; (void)kernel_at(m, next, &kc, room, bd->flash, bd->flash_base, bd->flash_size); c = kc; }
+        }
         pc = next;
         if (hw) { r[15] = pc; goto out_noreload; }
         continue;
@@ -386,9 +462,12 @@ int M0_HOT m0_fast_run(M0Cpu *m, uint32_t room) {
     r[15] = pc;
 out_noreload:
     FAST_PC(0);
-    m0_stat_insn += insn;
-    if (hw || (ran && (int32_t)(room - c) < M0_FAST_MARGIN)) { m0_native_finish(m, c); return 1; }
-    if (!ran) return 0;
+    m0_stat_insn += c;                               /* guest cycles run here */
+    if (hw || (c && (int32_t)(room - c) < M0_FAST_MARGIN)) { m0_native_finish(m, c); return 1; }
+    if (!c) return 0;
     m->cycles += c;
     return 2;
 }
+#undef d
+#undef a
+#undef b
